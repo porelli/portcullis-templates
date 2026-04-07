@@ -1,0 +1,226 @@
+name: Test Apps
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PORTCULLIS_DOMAIN: portcullis.local
+  VAULT_DEV_TOKEN: ci-test-token
+  KEYCLOAK_ADMIN: admin
+  KEYCLOAK_ADMIN_PASSWORD: ci-admin-pass
+  POSTGRES_PASSWORD: ci-pg-pass
+  LLDAP_ADMIN_PASSWORD: ci-lldap-pass
+  LLDAP_JWT_SECRET: ci-jwt-secret-value
+  LLDAP_BASE_DN: dc=portcullis,dc=local
+  FORWARD_AUTH_CLIENT_SECRET: ci-forward-auth-secret
+  FORWARD_AUTH_COOKIE_SECRET: Y2ktY29va2llLXNlY3JldC0zMi1ieXRlcw==
+
+jobs:
+  # ── Detect which templates changed ──────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.filter.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed apps
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # First push — test all apps
+            APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
+          else
+            # Get changed directories
+            BASE=${{ github.event.pull_request.base.sha || github.event.before }}
+            APPS=$(git diff --name-only "$BASE" HEAD | grep '/' | cut -d/ -f1 | sort -u | while read dir; do
+              [ -f "$dir/compose.yml" ] && echo "$dir"
+            done | jq -R . | jq -sc .)
+          fi
+          # If lib.sh or workflow changed, test everything
+          if git diff --name-only "$BASE" HEAD 2>/dev/null | grep -qE '^tests/lib\.sh|^\.github/'; then
+            APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
+          fi
+          # Fallback: if empty, test nothing
+          [ "$APPS" = "null" ] || [ "$APPS" = "[]" ] && APPS='[]'
+          echo "apps=$APPS"
+          echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+
+  # ── Cache infra Docker images ───────────────────────────
+  cache-infra:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.apps != '[]'
+    timeout-minutes: 10
+    steps:
+      - name: Cache Docker images
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-images
+          key: infra-images-v1
+          restore-keys: infra-images-
+
+      - name: Pull and cache images
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/docker-images
+          docker pull postgres:18-alpine
+          docker pull hashicorp/vault:1.21
+          docker pull lldap/lldap:stable
+          docker pull quay.io/keycloak/keycloak:26.5
+          docker pull quay.io/oauth2-proxy/oauth2-proxy:v7.9.0
+          docker pull python:3-alpine
+          docker pull traefik:v3.6
+          docker save \
+            postgres:18-alpine \
+            hashicorp/vault:1.21 \
+            lldap/lldap:stable \
+            quay.io/keycloak/keycloak:26.5 \
+            quay.io/oauth2-proxy/oauth2-proxy:v7.9.0 \
+            python:3-alpine \
+            traefik:v3.6 \
+            -o /tmp/docker-images/infra.tar
+
+  # ── Per-app tests (parallel) ────────────────────────────
+  test:
+    needs: [changes, cache-infra]
+    if: needs.changes.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.changes.outputs.apps) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone core repo (for infra compose + scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: porelli/portcullis
+          path: core
+
+      - name: Restore Docker image cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-images
+          key: infra-images-v1
+          restore-keys: infra-images-
+
+      - name: Load cached images
+        run: |
+          if [ -f /tmp/docker-images/infra.tar ]; then
+            docker load -i /tmp/docker-images/infra.tar
+          else
+            cd core && docker compose pull postgres vault lldap keycloak
+          fi
+
+      - name: Create .env and CI override
+        working-directory: core
+        run: |
+          cat > .env << 'ENVEOF'
+          PORTCULLIS_DOMAIN=portcullis.local
+          ACME_EMAIL=ci@portcullis.local
+          VAULT_DEV_TOKEN=ci-test-token
+          KEYCLOAK_ADMIN=admin
+          KEYCLOAK_ADMIN_PASSWORD=ci-admin-pass
+          POSTGRES_PASSWORD=ci-pg-pass
+          LLDAP_ADMIN_PASSWORD=ci-lldap-pass
+          LLDAP_JWT_SECRET=ci-jwt-secret-value
+          LLDAP_BASE_DN=dc=portcullis,dc=local
+          FORWARD_AUTH_CLIENT_SECRET=ci-forward-auth-secret
+          FORWARD_AUTH_COOKIE_SECRET=Y2ktY29va2llLXNlY3JldC0zMi1ieXRlcw==
+          CLOUDFLARE_API_TOKEN=
+          ENVEOF
+          sed -i 's/^[[:space:]]*//' .env
+
+          mkdir -p certs
+
+          cat > docker-compose.ci.yml << 'YML'
+          services:
+            keycloak:
+              command: ["start-dev", "--import-realm", "--http-enabled=true", "--http-port=8080", "--hostname=https://auth.portcullis.local", "--health-enabled=true"]
+              ports:
+                - "127.0.0.1:8080:8080"
+                - "127.0.0.1:9000:9000"
+            lldap:
+              ports:
+                - "127.0.0.1:17170:17170"
+          YML
+          sed -i 's/^          //' docker-compose.ci.yml
+
+      - name: Boot infrastructure
+        working-directory: core
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d postgres vault lldap traefik
+          sleep 10
+
+          for i in $(seq 1 30); do docker compose exec -T vault vault status > /dev/null 2>&1 && break; sleep 2; done
+          for i in $(seq 1 30); do docker compose exec -T postgres pg_isready -U keycloak > /dev/null 2>&1 && break; sleep 2; done
+          for i in $(seq 1 30); do docker compose exec -T lldap /app/lldap healthcheck --config-file /data/lldap_config.toml > /dev/null 2>&1 && break; sleep 2; done
+
+          # Vault PKI
+          export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=$VAULT_DEV_TOKEN DOMAIN=$PORTCULLIS_DOMAIN CERT_DIR=./certs
+          curl -fsSL https://releases.hashicorp.com/vault/1.15.4/vault_1.15.4_linux_amd64.zip -o vault.zip
+          unzip -o vault.zip -d /usr/local/bin/ && rm vault.zip
+          ./scripts/setup-vault-pki.sh --with-server-cert
+
+          cat > traefik/dynamic/ci-certs.yml << 'EOF'
+          tls:
+            certificates:
+              - certFile: /certs/server.crt
+                keyFile: /certs/server.key
+          EOF
+          cp certs/ca-chain.crt certs/ca-bundle-with-staging.crt
+
+          # Keycloak
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d keycloak
+          for i in $(seq 1 90); do curl -sf http://localhost:9000/health/ready > /dev/null 2>&1 && break; sleep 3; done
+
+          jq --arg pass "$LLDAP_ADMIN_PASSWORD" \
+            '(.components["org.keycloak.storage.UserStorageProvider"][0].config.bindCredential) = [$pass]' \
+            keycloak/realm-export.json > /tmp/realm.json
+          cp /tmp/realm.json keycloak/realm-export.json
+          export KEYCLOAK_URL=http://localhost:8080
+          ./scripts/configure-keycloak.sh
+          ./scripts/register-oidc-clients.sh
+
+          # Auth services
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d forward-auth group-gate
+          sleep 5
+          echo "Infrastructure ready"
+
+      - name: "Test: ${{ matrix.app }}"
+        env:
+          PROJECT_DIR: ${{ github.workspace }}/core
+          TEMPLATES_DIR: ${{ github.workspace }}
+        run: |
+          # Point lib.sh at the core project for compose commands
+          export PROJECT_DIR="${{ github.workspace }}/core"
+          # Tests expect templates under PROJECT_DIR/templates
+          ln -sf "${{ github.workspace }}" "$PROJECT_DIR/templates" 2>/dev/null || true
+          bash tests/apps/${{ matrix.app }}.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: core
+        run: |
+          echo "=== Docker Status ==="
+          docker compose ps
+          echo "=== Logs ==="
+          for svc in traefik keycloak forward-auth group-gate lldap; do
+            echo "--- $svc ---"
+            docker compose logs --tail=10 "$svc" 2>/dev/null || true
+          done
+
+      - name: Cleanup
+        if: always()
+        working-directory: core
+        run: docker compose down -v 2>/dev/null || true
