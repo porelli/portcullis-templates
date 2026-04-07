@@ -105,6 +105,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: porelli/portcullis
+          token: ${{ secrets.PORTCULLIS_PAT }}
           path: core
 
       - name: Restore Docker image cache
