@@ -19,3 +19,4 @@ config_files: []
 urls:
   - label: Docs
     url: "https://docs.{{DOMAIN}}"
+
