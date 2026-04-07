@@ -1,6 +1,83 @@
 #!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
 # Shared test library for Portcullis app auth tests.
-# Source this from each test script: source "$(dirname "$0")/../lib.sh"
+#
+# Source from each test script:
+#   cd "$(dirname "$0")/../.."
+#   source tests/lib.sh
+#
+# QUIRKS & GOTCHAS (read before editing):
+#
+# 1. BASH ARITHMETIC UNDER set -e
+#    Never use (( COUNT++ )) — when COUNT is 0, bash evaluates the
+#    expression as 0 (falsy) and returns exit code 1, which kills
+#    the script under set -e. Use COUNT=$((COUNT + 1)) instead.
+#
+# 2. TRAP EXIT + set -e INTERACTION
+#    The `trap report EXIT` runs when the script exits for ANY reason
+#    including set -e failures. The trap does NOT override the exit
+#    code — if set -e killed the script, exit code 1 propagates even
+#    if report() doesn't call exit. This means any unguarded failure
+#    in a test script will show "0 FAILED, N passed" but still exit 1.
+#
+# 3. _find_compose AND set -e
+#    _find_compose returns 1 when no file is found. If called as
+#    VAR=$(_find_compose "app"), set -e kills the script before the
+#    caller can handle the error. Always use || to guard:
+#      compose_path=$(_find_compose "$app") || { fail "not found"; return 1; }
+#    Or in tests that do inline lookup, use || true:
+#      COMPOSE=$(_find_compose "$APP_ID" || true)
+#
+# 4. RESOLVE_OPTS WILDCARD
+#    curl's --resolve flag does NOT support glob patterns. The
+#    "*.domain:443:127.0.0.1" syntax is accepted by curl but only
+#    matches literal "*", not wildcards. In CI, tests that need HTTPS
+#    access to Traefik-routed apps should use container IPs directly
+#    instead of going through Traefik. RESOLVE_OPTS is kept for
+#    reference but is unreliable in CI.
+#
+# 5. CROSS-NETWORK DNS (ISOLATED APPS)
+#    App containers are on the portcullis-proxy network (for Traefik)
+#    and their own default network. They CANNOT reach core services
+#    (keycloak, lldap, postgres) by DNS name — this is by design.
+#    Tests must NOT assert_container_can_reach "http://keycloak:8080/..."
+#    For OIDC connectivity, check env var configuration instead.
+#
+# 6. PROJECT_DIR vs TEMPLATES_DIR
+#    In CI, these point to different directories:
+#      PROJECT_DIR  = core repo checkout (has .env, certs/, scripts/)
+#      TEMPLATES_DIR = templates repo checkout (has <app>/compose.yml)
+#    Compose files are found via TEMPLATES_DIR but --project-directory
+#    is PROJECT_DIR (so ./certs/ and ./scripts/ paths resolve from core).
+#    The --project-directory must be the HOST path for Docker bind mount
+#    resolution when Hub runs inside a container.
+#
+# 7. CONTAINER NAMING
+#    compose_up uses -p portcullis, so containers are named
+#    portcullis-<service>-1. app_container_ip looks for this pattern.
+#    If a compose file has service "wiki" under project "portcullis",
+#    the container is "portcullis-wiki-1".
+#
+# 8. IMAGE PULL TIMES IN CI
+#    GitHub Actions runners pull images on every job (no daemon cache
+#    between jobs). Large images (GitLab 2GB+, Plex 500MB+) can take
+#    60+ seconds, eating into wait_for_url timeouts. For unreliable
+#    apps, prefer static compose-config tests over container tests.
+#
+# 9. PORT CONFLICTS
+#    Apps binding host ports (AdGuard/Pi-hole on port 53) may conflict
+#    with the CI runner's systemd-resolved. Container tests for these
+#    apps are unreliable. Use static tests instead.
+#
+# 10. STATIC vs CONTAINER TESTS
+#     Two test patterns exist:
+#     - Static: grep compose.yml for labels/env/ports (no Docker needed)
+#     - Container: compose_up + wait_for_url + curl (needs Docker + infra)
+#     Static tests are faster and more reliable. Container tests verify
+#     actual app behavior but are flaky in CI. Prefer static for:
+#     apps with port conflicts, very large images, complex startup, or
+#     apps that need mounted content files (docs site).
+# ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 # ── Config ─────────────────────────────────────────────────
@@ -11,8 +88,12 @@ LLDAP_PASS="${LLDAP_ADMIN_PASSWORD:-ci-lldap-pass}"
 KC_ADMIN="${KEYCLOAK_ADMIN:-admin}"
 KC_PASS="${KEYCLOAK_ADMIN_PASSWORD:-ci-admin-pass}"
 PROJECT_DIR="${PROJECT_DIR:-.}"
+
+# QUIRK #4: Wildcard in --resolve doesn't actually work in curl.
+# Kept for reference; tests should use container IPs directly.
 RESOLVE_OPTS="--resolve *.${DOMAIN}:443:127.0.0.1 --cacert certs/ca-chain.crt"
 
+# QUIRK #1: Use $((X + 1)) not ((X++)) to avoid exit code 1 when X=0.
 PASS_COUNT=0
 FAIL_COUNT=0
 TEST_NAME="${TEST_NAME:-unknown}"
@@ -24,6 +105,9 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo -e "  ${RED}FAIL${NC} $*"; }
 info() { echo -e "  ${YELLOW}INFO${NC} $*"; }
 section() { echo -e "\n=== $* ==="; }
 
+# QUIRK #2: trap runs on any exit. If set -e killed the script,
+# the original non-zero exit code is preserved even though report()
+# doesn't call exit when FAIL_COUNT=0.
 report() {
   echo ""
   if [ "$FAIL_COUNT" -gt 0 ]; then
@@ -45,6 +129,8 @@ wait_for_url() {
     fi
     sleep 1
   done
+  # QUIRK #8: In CI, image pull eats into this timeout.
+  # Increase timeout for large apps or use static tests.
   fail "Timeout waiting for $label ($url)"
   return 1
 }
@@ -136,7 +222,6 @@ lldap_create_user() {
   local username="$1" email="$2" password="${3:-}"
   lldap_graphql "mutation { createUser(user: {id: \\\"$username\\\", email: \\\"$email\\\"}) { id } }" > /dev/null 2>&1 || true
   if [ -n "$password" ]; then
-    # Set password via LLDAP admin API (GraphQL doesn't support this directly)
     local token
     token=$(lldap_token)
     curl -sf -o /dev/null "$LLDAP_URL/api/graphql" \
@@ -161,12 +246,10 @@ lldap_add_to_group() {
 lldap_sync_keycloak() {
   local token
   token=$(keycloak_admin_token)
-  # Find LDAP provider ID
   local ldap_id
   ldap_id=$(curl -sf "$KEYCLOAK_URL/admin/realms/portcullis/components" \
     -H "Authorization: Bearer $token" | jq -r '.[] | select(.providerId=="ldap") | .id')
   if [ -n "$ldap_id" ]; then
-    # Sync groups
     local mapper_id
     mapper_id=$(curl -sf "$KEYCLOAK_URL/admin/realms/portcullis/components?parent=$ldap_id" \
       -H "Authorization: Bearer $token" | jq -r '.[] | select(.providerId=="group-ldap-mapper") | .id')
@@ -175,7 +258,6 @@ lldap_sync_keycloak() {
         "$KEYCLOAK_URL/admin/realms/portcullis/user-storage/$ldap_id/mappers/$mapper_id/sync?direction=fedToKeycloak" \
         -H "Authorization: Bearer $token"
     fi
-    # Full user sync
     curl -sf -o /dev/null -X POST \
       "$KEYCLOAK_URL/admin/realms/portcullis/user-storage/$ldap_id/sync?action=triggerFullSync" \
       -H "Authorization: Bearer $token"
@@ -187,6 +269,8 @@ assert_http_code() {
   local url="$1" expected="$2"
   shift 2
   local actual
+  # QUIRK #4: RESOLVE_OPTS uses a glob that curl doesn't actually expand.
+  # Use container IPs for reliable CI testing instead of Traefik routing.
   actual=$(curl -sf -o /dev/null -w "%{http_code}" $RESOLVE_OPTS "$@" "$url" 2>/dev/null || echo "000")
   if [ "$actual" = "$expected" ]; then
     pass "$url → HTTP $actual"
@@ -198,12 +282,13 @@ assert_http_code() {
 assert_redirect_to_keycloak() {
   local url="$1"
   shift
+  # QUIRK #4: This function relies on RESOLVE_OPTS which is unreliable.
+  # Prefer static compose-config tests for forward-auth apps in CI.
   local location
   location=$(curl -sf -o /dev/null -w "%{redirect_url}" -L --max-redirs 0 $RESOLVE_OPTS "$@" "$url" 2>/dev/null || true)
   if echo "$location" | grep -q "auth\.$DOMAIN"; then
     pass "$url → redirects to Keycloak"
   else
-    # oauth2-proxy may redirect to /oauth2/sign_in first
     local location2
     location2=$(curl -sf -o /dev/null -w "%{redirect_url}" -L --max-redirs 2 $RESOLVE_OPTS "$@" "$url" 2>/dev/null || true)
     if echo "$location2" | grep -q "auth\.$DOMAIN"; then
@@ -239,11 +324,13 @@ assert_body_contains() {
 }
 
 assert_container_can_reach() {
+  # QUIRK #5: App containers are on isolated networks and CANNOT reach
+  # core services (keycloak, lldap) by DNS. Don't use this to test
+  # OIDC discovery — check env var configuration instead.
   local container="$1" url="$2"
   if docker exec "$container" curl -sf "$url" > /dev/null 2>&1; then
     pass "$container can reach $url"
   else
-    # Try wget (some containers don't have curl)
     if docker exec "$container" wget -qO- "$url" > /dev/null 2>&1; then
       pass "$container can reach $url"
     else
@@ -253,11 +340,15 @@ assert_container_can_reach() {
 }
 
 # ── Compose helpers ────────────────────────────────────────
+# QUIRK #6: TEMPLATES_DIR and PROJECT_DIR serve different purposes.
+# TEMPLATES_DIR = where compose files live (templates repo)
+# PROJECT_DIR   = where .env and certs/ live (core repo)
 TEMPLATES_DIR="${TEMPLATES_DIR:-$PROJECT_DIR/templates}"
 
 _find_compose() {
+  # QUIRK #3: Returns exit 1 when not found. Guard with || to avoid
+  # set -e killing the caller. See header comment for details.
   local app_id="$1"
-  # Check templates repo layout (app/compose.yml) and core layout (templates/app/compose.yml)
   for p in "$TEMPLATES_DIR/$app_id/compose.yml" "templates/$app_id/compose.yml" "$app_id/compose.yml"; do
     [ -f "$p" ] && echo "$p" && return 0
   done
@@ -267,8 +358,12 @@ _find_compose() {
 compose_up() {
   local app_id="$1"
   local compose_path
+  # QUIRK #3: Guard _find_compose with || to prevent set -e exit.
   compose_path=$(_find_compose "$app_id") || { fail "compose.yml not found for $app_id"; return 1; }
   info "Starting $app_id..."
+  # QUIRK #7: -p portcullis means containers are named portcullis-<service>-1.
+  # QUIRK #6: --project-directory is PROJECT_DIR (core repo) so ./certs/
+  # bind mounts resolve correctly even though the compose file is elsewhere.
   COMPOSE_IGNORE_ORPHANS=true docker compose \
     -p portcullis \
     -f "$compose_path" \
@@ -290,8 +385,11 @@ compose_down() {
 }
 
 app_container_ip() {
+  # QUIRK #7: Container names follow the pattern portcullis-<service>-1.
+  # Returns the first non-empty IP across all networks. If the container
+  # is on multiple networks (default + portcullis-proxy), either IP works
+  # for direct HTTP access from the CI host.
   local app_id="$1" service="${2:-$1}"
-  # Get first non-empty IP (prefer default network)
   docker inspect "portcullis-${service}-1" --format '{{range $net, $conf := .NetworkSettings.Networks}}{{if $conf.IPAddress}}{{$conf.IPAddress}}{{end}} {{end}}' 2>/dev/null | awk '{print $1}'
 }
 
@@ -306,5 +404,3 @@ app_logs() {
     --env-file "$PROJECT_DIR/.env" \
     logs --tail "$lines" --no-color 2>&1
 }
-# v2 - all tests fixed
-# trigger all tests
