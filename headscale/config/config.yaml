@@ -1,0 +1,39 @@
+server_url: https://vpn.PORTCULLIS_DOMAIN_PLACEHOLDER
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 0.0.0.0:9090
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+oidc:
+  only_start_if_oidc_is_available: true
+  issuer: https://auth.PORTCULLIS_DOMAIN_PLACEHOLDER/realms/portcullis
+  client_id: headscale
+  client_secret: HEADSCALE_OIDC_SECRET_PLACEHOLDER
+  scope: [openid, profile, email]
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    private_key_path: /var/lib/headscale/derp_private.key
+    stun_listen_addr: 0.0.0.0:3478
+
+dns:
+  magic_dns: true
+  base_domain: vpn.internal
+  nameservers:
+    global: [1.1.1.1, 9.9.9.9]
+  override_local_dns: false
+
+log:
+  level: info
