@@ -32,22 +32,36 @@ jobs:
       - name: Detect changed apps
         id: filter
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-            # First push — test all apps
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+
+          # First push or missing base — test all apps
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "First push or missing base — testing all apps"
             APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
-          else
-            # Get changed directories
-            BASE=${{ github.event.pull_request.base.sha || github.event.before }}
-            APPS=$(git diff --name-only "$BASE" HEAD | grep '/' | cut -d/ -f1 | sort -u | while read dir; do
-              [ -f "$dir/compose.yml" ] && echo "$dir"
-            done | jq -R . | jq -sc .)
+            echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+            echo "apps=$APPS"
+            exit 0
           fi
-          # If lib.sh or workflow changed, test everything
+
+          echo "Base: $BASE"
+          echo "Changed files:"
+          git diff --name-only "$BASE" HEAD || true
+
+          # If tests/lib.sh or workflow changed, test all apps
           if git diff --name-only "$BASE" HEAD 2>/dev/null | grep -qE '^tests/lib\.sh|^\.github/'; then
+            echo "Test infra changed — testing all apps"
             APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
+            echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+            echo "apps=$APPS"
+            exit 0
           fi
-          # Fallback: if empty, test nothing
-          [ "$APPS" = "null" ] || [ "$APPS" = "[]" ] && APPS='[]'
+
+          # Find changed app directories (those with compose.yml)
+          APPS=$(git diff --name-only "$BASE" HEAD | grep '/' | cut -d/ -f1 | sort -u | while read dir; do
+            [ -f "$dir/compose.yml" ] && echo "$dir"
+          done | jq -R . | jq -sc .)
+
+          [ "$APPS" = "null" ] && APPS='[]'
           echo "apps=$APPS"
           echo "apps=$APPS" >> "$GITHUB_OUTPUT"
 
