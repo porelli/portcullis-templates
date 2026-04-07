@@ -306,3 +306,4 @@ app_logs() {
     --env-file "$PROJECT_DIR/.env" \
     logs --tail "$lines" --no-color 2>&1
 }
+# v2 - all tests fixed
