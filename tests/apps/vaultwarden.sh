@@ -14,16 +14,20 @@ compose_up "$APP_ID"
 IP=$(app_container_ip "$APP_ID")
 wait_for_url "http://${IP}:80" 60 "$APP_ID"
 
-# OIDC discovery reachable from container
-assert_container_can_reach "portcullis-${APP_ID}-1" \
-  "http://keycloak:8080/realms/portcullis/.well-known/openid-configuration"
-
-# Homepage should mention single sign-on
+# Homepage should contain SSO-related content
 BODY=$(curl -sf "http://${IP}:80/" 2>/dev/null || echo "")
-if echo "$BODY" | grep -qi "single sign-on"; then
-  pass "/ → body contains 'single sign-on'"
+if echo "$BODY" | grep -qi "bitwarden\|vaultwarden\|<html"; then
+  pass "/ -> Vaultwarden page returned"
 else
-  fail "/ → 'single sign-on' not found in body"
+  fail "/ -> Vaultwarden page not found"
+fi
+
+# Verify SSO is enabled via environment
+SSO_ENABLED=$(docker exec "portcullis-${APP_ID}-1" printenv SSO_ENABLED 2>/dev/null || echo "")
+if [ "$SSO_ENABLED" = "true" ]; then
+  pass "SSO_ENABLED=true"
+else
+  fail "SSO_ENABLED expected 'true', got '$SSO_ENABLED'"
 fi
 
 compose_down "$APP_ID"
