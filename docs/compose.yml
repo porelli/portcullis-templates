@@ -19,4 +19,3 @@ services:
 networks:
   portcullis-proxy:
     external: true
-# CI test trigger

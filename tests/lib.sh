@@ -291,7 +291,8 @@ compose_down() {
 
 app_container_ip() {
   local app_id="$1" service="${2:-$1}"
-  docker inspect "portcullis-${service}-1" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo ""
+  # Get first non-empty IP (prefer default network)
+  docker inspect "portcullis-${service}-1" --format '{{range $net, $conf := .NetworkSettings.Networks}}{{if $conf.IPAddress}}{{$conf.IPAddress}}{{end}} {{end}}' 2>/dev/null | awk '{print $1}'
 }
 
 app_logs() {
