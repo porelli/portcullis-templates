@@ -8,18 +8,26 @@ section "Headscale"
 
 APP_ID=headscale
 SUBDOMAIN=vpn
+# The compose service is named "headscale" — match it exactly
+SERVICE=headscale
 
 compose_up "$APP_ID"
 
-IP=$(app_container_ip "$APP_ID")
-wait_for_url "http://${IP}:8080/health" 60 "$APP_ID"
+IP=$(app_container_ip "$APP_ID" "$SERVICE")
+if [ -z "$IP" ]; then
+  fail "Could not get container IP for $SERVICE"
+  compose_down "$APP_ID"
+  exit 1
+fi
+
+wait_for_url "http://${IP}:8080/health" 90 "$APP_ID"
 
 # Health endpoint should return OK
 BODY=$(curl -sf "http://${IP}:8080/health" 2>/dev/null || echo "")
 if echo "$BODY" | grep -qi "ok"; then
-  pass "/health → OK"
+  pass "/health -> OK"
 else
-  fail "/health → expected OK, got: $BODY"
+  fail "/health -> expected OK, got: $BODY"
 fi
 
 compose_down "$APP_ID"

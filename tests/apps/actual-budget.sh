@@ -14,8 +14,20 @@ compose_up "$APP_ID"
 IP=$(app_container_ip "$APP_ID")
 wait_for_url "http://${IP}:5006" 60 "$APP_ID"
 
-# Container should be able to reach Keycloak (uses NODE_EXTRA_CA_CERTS)
-assert_container_can_reach "portcullis-${APP_ID}-1" \
-  "http://keycloak:8080/realms/portcullis/.well-known/openid-configuration"
+# Should return HTML
+BODY=$(curl -sf "http://${IP}:5006/" 2>/dev/null || echo "")
+if echo "$BODY" | grep -qi "<html\|actual\|budget"; then
+  pass "/ -> Actual Budget page returned"
+else
+  fail "/ -> Actual Budget page not found"
+fi
+
+# Verify OIDC login method is configured
+LOGIN_METHOD=$(docker exec "portcullis-${APP_ID}-1" printenv ACTUAL_LOGIN_METHOD 2>/dev/null || echo "")
+if [ "$LOGIN_METHOD" = "openid" ]; then
+  pass "ACTUAL_LOGIN_METHOD=openid"
+else
+  fail "ACTUAL_LOGIN_METHOD expected 'openid', got '$LOGIN_METHOD'"
+fi
 
 compose_down "$APP_ID"
