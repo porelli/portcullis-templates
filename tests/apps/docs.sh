@@ -2,7 +2,6 @@
 # Test: Docs (public, no auth)
 # Static config check only — docs app needs mounted content files.
 set -euo pipefail
-set -x
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
 TEST_NAME="docs"

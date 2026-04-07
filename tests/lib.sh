@@ -19,8 +19,8 @@ TEST_NAME="${TEST_NAME:-unknown}"
 
 # ── Output ─────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-pass() { ((PASS_COUNT++)); echo -e "  ${GREEN}PASS${NC} $*"; }
-fail() { ((FAIL_COUNT++)); echo -e "  ${RED}FAIL${NC} $*"; }
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo -e "  ${GREEN}PASS${NC} $*"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo -e "  ${RED}FAIL${NC} $*"; }
 info() { echo -e "  ${YELLOW}INFO${NC} $*"; }
 section() { echo -e "\n=== $* ==="; }
 
