@@ -13,7 +13,7 @@ services:
       PROXY_BASE_URL: https://llm.${PORTCULLIS_DOMAIN:-portcullis.local}
       AUTO_REDIRECT_UI_LOGIN_TO_SSO: "true"
     volumes:
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
       - litellm-db
     networks:
