@@ -29,7 +29,7 @@ services:
     volumes:
       - headscale-data:/var/lib/headscale
       - headscale-config:/etc/headscale:ro
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
       headscale-init:
         condition: service_completed_successfully
@@ -56,10 +56,10 @@ services:
       HEADPLANE_OIDC__HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
       HEADPLANE_SERVER__COOKIE_SECRET: ${HEADPLANE_COOKIE_SECRET:-changeme-cookie-secret}
       HEADPLANE_SERVER__BASE_URL: https://vpn-admin.${PORTCULLIS_DOMAIN:-portcullis.local}
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle-with-staging.crt
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
       - headplane-data:/var/lib/headplane
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-bundle-with-staging.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
     depends_on:
       - headscale
     networks:

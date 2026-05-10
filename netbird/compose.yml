@@ -31,7 +31,7 @@ services:
       - netbird-config:/etc/netbird
       - ./templates/netbird/management.json.tmpl:/etc/netbird/management.json.tmpl:ro
       - ./templates/netbird/management-entrypoint.sh:/etc/netbird/management-entrypoint.sh:ro
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       COTURN_EXTERNAL_IP: ${COTURN_EXTERNAL_IP:-}

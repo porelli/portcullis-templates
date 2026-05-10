@@ -8,11 +8,11 @@ services:
       DB_DATABASE_NAME: immich
       REDIS_HOSTNAME: immich-redis
       IMMICH_CONFIG_FILE: /etc/immich/config.json
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle-with-staging.crt
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
       - immich-upload:/usr/src/app/upload
       - immich-config:/etc/immich:ro
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-bundle-with-staging.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
     depends_on:
       immich-init:
         condition: service_completed_successfully

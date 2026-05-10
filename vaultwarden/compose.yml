@@ -13,7 +13,7 @@ services:
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
     volumes:
       - vaultwarden-data:/data
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     networks:
       - default
       - portcullis-proxy

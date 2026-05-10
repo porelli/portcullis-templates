@@ -8,10 +8,10 @@ services:
       ACTUAL_OPENID_CLIENT_SECRET: ${ACTUAL_OIDC_SECRET:-}
       ACTUAL_OPENID_SERVER_HOSTNAME: https://budget.${PORTCULLIS_DOMAIN:-portcullis.local}
       ACTUAL_OPENID_ENFORCE: "true"
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle-with-staging.crt
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
       - actual-data:/data
-      - ./certs/ca-bundle-with-staging.crt:/etc/ssl/certs/ca-bundle-with-staging.crt:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
     networks:
       - default
       - portcullis-proxy
