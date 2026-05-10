@@ -3,7 +3,6 @@ description: Network-wide ad blocking via DNS sinkhole
 icon: "\U0001F6AB"
 category: networking
 tags: [dns, adblock, privacy, filtering]
-conflicts: [adguard]
 
 auth:
   method: forward-auth
@@ -13,6 +12,24 @@ auth:
   access_group: users_pihole
   admin_group: admin_pihole
   notes: No SSO support. Has its own web password. Access gated by group-gate middleware.
+
+ports:
+  - key: PIHOLE_DNS_TCP_HOST
+    label: DNS (TCP)
+    description: Resolver port for TCP-based queries
+    container: 53
+    protocol: tcp
+    default: 53
+    required: true
+    service: pihole
+  - key: PIHOLE_DNS_UDP_HOST
+    label: DNS (UDP)
+    description: Resolver port for UDP-based queries
+    container: 53
+    protocol: udp
+    default: 53
+    required: true
+    service: pihole
 
 env:
   - key: PIHOLE_WEBPASSWORD

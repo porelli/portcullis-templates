@@ -3,7 +3,6 @@ description: Modern wiki — mTLS if cert present, WebAuthn fallback
 icon: "\U0001F4D6"
 category: productivity
 tags: [wiki, docs, knowledge-base]
-conflicts: []
 
 auth:
   method: forward-auth

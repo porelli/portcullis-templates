@@ -3,7 +3,6 @@ description: Mesh VPN + zero-trust networking with TURN relay
 icon: "\U0001F426"
 category: vpn
 tags: [vpn, wireguard, mesh, zero-trust]
-conflicts: [headscale]
 
 auth:
   method: native-oidc
@@ -13,6 +12,34 @@ auth:
   access_group: users_netbird
   admin_group: admin_netbird
   notes: Dashboard uses OIDC. Management API validates JWT audience. No group-based access restriction — all OIDC users can access dashboard.
+
+ports:
+  - key: COTURN_STUN_PORT
+    label: STUN/TURN
+    description: NAT traversal endpoint for NetBird peers
+    container: 3478
+    protocol: udp
+    default: 3478
+    required: true
+    service: coturn
+    network_mode_host: true
+  - key: COTURN_TURNS_PORT
+    label: TURNS (TLS)
+    description: TLS-protected TURN relay
+    container: 5349
+    protocol: tcp
+    default: 5349
+    required: true
+    service: coturn
+    network_mode_host: true
+  - key: COTURN_MEDIA_RANGE
+    label: TURN media relays
+    description: UDP port range used for relayed peer traffic
+    protocol: udp
+    range: "49152-65535"
+    required: true
+    service: coturn
+    network_mode_host: true
 
 env:
   - key: NETBIRD_OIDC_CLIENT_SECRET

@@ -3,7 +3,6 @@ description: Unified LLM proxy — OpenAI-compatible API for 100+ models with au
 icon: "\U0001F916"
 category: ai
 tags: [llm, ai, openai, proxy, api]
-conflicts: []
 
 auth:
   method: native-oidc

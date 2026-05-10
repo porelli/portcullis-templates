@@ -3,7 +3,6 @@ description: Free and open-source media server — movies, TV, music, live TV
 icon: "\U0001F4FA"
 category: media
 tags: [media, movies, tv, music, streaming, opensource]
-conflicts: []
 
 auth:
   method: native-oidc

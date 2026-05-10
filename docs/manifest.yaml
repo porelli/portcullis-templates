@@ -3,7 +3,6 @@ description: Public documentation — no authentication
 icon: "\U0001F4C4"
 category: public
 tags: [docs, static, nginx]
-conflicts: []
 
 auth:
   method: public

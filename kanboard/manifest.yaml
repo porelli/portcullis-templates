@@ -3,7 +3,6 @@ description: Minimalist Kanban project management with header-based auth
 icon: "\U0001F4CB"
 category: productivity
 tags: [kanban, projects, tasks, boards]
-conflicts: []
 
 auth:
   method: header-auth
