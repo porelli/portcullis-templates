@@ -194,7 +194,6 @@ jobs:
                 keyFile: /certs/server.key
           EOF
           cp certs/ca-chain.crt certs/ca-bundle.crt
-          cp certs/ca-chain.crt certs/ca-bundle-with-staging.crt  # back-compat for any stale mounts
 
           # Keycloak
           docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d keycloak
