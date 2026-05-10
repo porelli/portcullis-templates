@@ -64,10 +64,13 @@
 #    60+ seconds, eating into wait_for_url timeouts. For unreliable
 #    apps, prefer static compose-config tests over container tests.
 #
-# 9. PORT CONFLICTS
-#    Apps binding host ports (AdGuard/Pi-hole on port 53) may conflict
-#    with the CI runner's systemd-resolved. Container tests for these
-#    apps are unreliable. Use static tests instead.
+# 9. HOST PORT BINDINGS
+#    Apps binding host ports (e.g. AdGuard/Pi-hole on 53) declare them in
+#    manifest.yaml under "ports:". The Hub emits the effective bindings
+#    into a per-app compose override — base compose.yml files must not
+#    contain "ports:" for anything the manifest declares. CI tests for
+#    these apps use static manifest checks, not container boots, because
+#    the runner's systemd-resolved would fight over 53.
 #
 # 10. STATIC vs CONTAINER TESTS
 #     Two test patterns exist:
