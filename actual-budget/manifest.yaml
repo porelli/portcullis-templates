@@ -3,7 +3,6 @@ description: Privacy-first local budgeting app with bank sync
 icon: "\U0001F4B0"
 category: finance
 tags: [budget, finance, money, tracking]
-conflicts: []
 
 auth:
   method: native-oidc

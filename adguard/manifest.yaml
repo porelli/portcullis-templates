@@ -3,7 +3,6 @@ description: Network-wide ad and tracker blocking with DNS-over-HTTPS
 icon: "\U0001F6E1"
 category: networking
 tags: [dns, adblock, privacy, filtering]
-conflicts: [pihole]
 
 auth:
   method: forward-auth
@@ -13,6 +12,24 @@ auth:
   access_group: users_adguard
   admin_group: admin_adguard
   notes: No SSO support. Has its own local admin password set during setup wizard. Access gated by group-gate middleware.
+
+ports:
+  - key: ADGUARD_DNS_TCP_HOST
+    label: DNS (TCP)
+    description: Resolver port for TCP-based queries
+    container: 53
+    protocol: tcp
+    default: 53
+    required: true
+    service: adguard
+  - key: ADGUARD_DNS_UDP_HOST
+    label: DNS (UDP)
+    description: Resolver port for UDP-based queries
+    container: 53
+    protocol: udp
+    default: 53
+    required: true
+    service: adguard
 
 env: []
 keycloak_clients: []

@@ -3,7 +3,6 @@ description: Self-hosted photo and video backup with AI-powered search
 icon: "\U0001F4F7"
 category: media
 tags: [photos, videos, backup, ai, gallery]
-conflicts: []
 
 auth:
   method: native-oidc

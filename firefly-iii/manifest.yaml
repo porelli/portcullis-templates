@@ -3,7 +3,6 @@ description: Self-hosted personal finance manager with double-entry bookkeeping
 icon: "\U0001F4B8"
 category: finance
 tags: [finance, accounting, budget, bookkeeping]
-conflicts: []
 
 auth:
   method: header-auth

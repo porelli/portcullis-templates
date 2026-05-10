@@ -3,7 +3,6 @@ description: Lightweight Bitwarden-compatible password manager
 icon: "\U0001F510"
 category: security
 tags: [passwords, bitwarden, vault, secrets]
-conflicts: []
 
 auth:
   method: native-oidc

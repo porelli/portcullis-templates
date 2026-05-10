@@ -3,7 +3,6 @@ description: Complete DevOps platform — Git, CI/CD, container registry, issue 
 icon: "\U0001F98A"
 category: devops
 tags: [git, ci-cd, devops, registry, issues]
-conflicts: []
 
 auth:
   method: native-oidc

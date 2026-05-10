@@ -3,7 +3,6 @@ description: Self-hosted Tailscale control server with Headplane admin UI
 icon: "\U0001F310"
 category: vpn
 tags: [vpn, wireguard, mesh, tailscale]
-conflicts: [netbird]
 
 auth:
   method: native-oidc

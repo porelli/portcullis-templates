@@ -3,7 +3,6 @@ description: Vault web interface — mTLS only (high security)
 icon: "\U0001F512"
 category: security
 tags: [vault, secrets, pki]
-conflicts: []
 
 auth:
   method: mtls

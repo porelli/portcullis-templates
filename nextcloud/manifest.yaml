@@ -3,7 +3,6 @@ description: Self-hosted productivity platform — files, calendar, contacts, of
 icon: "\u2601"
 category: productivity
 tags: [files, calendar, office, collaboration]
-conflicts: []
 
 auth:
   method: native-oidc

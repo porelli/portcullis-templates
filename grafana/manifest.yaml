@@ -3,7 +3,6 @@ description: Monitoring dashboards — protected by WebAuthn
 icon: "\U0001F4CA"
 category: monitoring
 tags: [monitoring, dashboards, metrics]
-conflicts: []
 
 auth:
   method: header-auth

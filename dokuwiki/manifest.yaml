@@ -3,7 +3,6 @@ description: Simple, file-based wiki — no database required, easy backups
 icon: "\U0001F4DD"
 category: productivity
 tags: [wiki, docs, knowledge-base, file-based]
-conflicts: []
 
 auth:
   method: forward-auth

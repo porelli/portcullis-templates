@@ -4,9 +4,6 @@ services:
     environment:
       WEBPASSWORD: ${PIHOLE_WEBPASSWORD:-changeme}
       VIRTUAL_HOST: pihole.${PORTCULLIS_DOMAIN:-portcullis.local}
-    ports:
-      - "53:53/tcp"
-      - "53:53/udp"
     volumes:
       - pihole-data:/etc/pihole
       - pihole-dnsmasq:/etc/dnsmasq.d

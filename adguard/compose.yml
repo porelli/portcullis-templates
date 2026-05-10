@@ -1,9 +1,6 @@
 services:
   adguard:
     image: adguard/adguardhome:latest
-    ports:
-      - "${HOST_IP:-0.0.0.0}:53:53/tcp"
-      - "${HOST_IP:-0.0.0.0}:53:53/udp"
     volumes:
       - adguard-work:/opt/adguardhome/work
       - adguard-conf:/opt/adguardhome/conf
