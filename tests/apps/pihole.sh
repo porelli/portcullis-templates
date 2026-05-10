@@ -37,9 +37,10 @@ else
   fail "Traefik loadbalancer port mismatch (expected 80)"
 fi
 
-# DNS ports exposed
-if grep -q '53:53' "$COMPOSE"; then
-  pass "DNS port 53 exposed"
+# DNS ports declared in manifest (Hub writes bindings into the per-app override)
+MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
+if grep -q 'PIHOLE_DNS_TCP_HOST' "$MANIFEST" && grep -q 'PIHOLE_DNS_UDP_HOST' "$MANIFEST"; then
+  pass "DNS ports declared in manifest"
 else
-  fail "DNS port 53 not exposed"
+  fail "DNS ports not declared in manifest"
 fi
