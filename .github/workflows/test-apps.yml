@@ -1,16 +1,14 @@
 name: Test Apps
 
 # Integration tests: boot core infra (Keycloak, LLDAP, Traefik, Vault, ...)
-# and each changed template. Needs the PORTCULLIS_PAT secret to clone the
-# private core repo, which GitHub withholds from pull requests opened from
-# forks. Those runs are skipped with a notice; a maintainer reviews the PR
-# and then runs this workflow by hand (Actions -> Test Apps -> Run workflow,
-# pr = <number>). Static checks for everyone live in lint.yml.
+# and each changed template. Core (porelli/portcullis) is public and cloned
+# anonymously, so the full integration tests also run for pull requests
+# from forks. No job references a secret. Static checks live in lint.yml.
 #
-# Trust boundary: template / PR code only runs in the `test` job, which
-# references no secret. Core is cloned with the PAT in `fetch-core` (which
-# checks out nothing from the PR; for dispatched PR runs .core-ref is read
-# from the PR's base commit) and handed over as an artifact verified by
+# Trust boundary: template / PR code only runs in the `test` job. Core is
+# cloned in `fetch-core` (which checks out nothing from the PR; for PR runs
+# .core-ref is read from the PR's base commit, so a PR can't choose the core
+# version it is tested against) and handed over as an artifact verified by
 # digest. Image caches are written only by `fetch-core` (infra) and
 # `app-images` (per-app, push to main only), which run no template code;
 # `test` treats every cached tarball as untrusted: it drops any name a
@@ -27,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       pr:
-        description: "Pull request number to test (fork PRs: review the diff first, it runs with core access)"
+        description: "Pull request number to re-test (default: the selected branch)"
         required: false
         type: string
       ref:
@@ -85,27 +83,15 @@ jobs:
           BEFORE: ${{ github.event.before }}
           INPUT_PR: ${{ inputs.pr }}
           INPUT_REF: ${{ inputs.ref }}
-          HAS_PAT: ${{ secrets.PORTCULLIS_PAT != '' }}
         run: |
-          skip() {
-            echo "::notice title=Integration tests skipped::$1"
-            { echo "### Integration tests skipped"; echo; echo "$1"; } >> "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
-            skip "PR #$PR_NUMBER comes from a fork, so GitHub withholds the secrets the integration tests need. Lint ran. A maintainer will review the change and run Actions -> Test Apps -> Run workflow with pr=$PR_NUMBER."
-          fi
-          if [ "$HAS_PAT" != true ]; then
-            skip "PORTCULLIS_PAT is not available to this run (for Dependabot PRs add it as a Dependabot secret, or run the workflow by hand with pr=<number>)."
-          fi
 
           # checkout_ref: code under test. trusted_ref: where .core-ref is
           # read from ("" = the event's default ref).
           checkout_ref="" expect_sha="" base="" trusted_ref=""
           case "$EVENT" in
-            pull_request) base="$PR_BASE_SHA" ;;   # same-repo PR (writers only)
+            # Forks included: no secrets are involved. .core-ref comes from the
+            # PR's base, never from the PR itself.
+            pull_request) base="$PR_BASE_SHA"; trusted_ref="$PR_BASE_SHA"; [ "$HEAD_REPO" = "$REPO" ] || echo "Fork PR #$PR_NUMBER from $HEAD_REPO" >> "$GITHUB_STEP_SUMMARY" ;;
             push) base="$BEFORE"; trusted_ref="$SHA" ;;
             workflow_dispatch)
               if [ -n "$INPUT_PR" ]; then
@@ -217,7 +203,7 @@ jobs:
           done | jq -R . | jq -sc 'map(select(length > 0))' | sed 's/^/apps=/' | tee -a "$GITHUB_OUTPUT"
 
   # ── Clone core + warm the infra image cache (trusted code only) ──
-  # The only job that sees PORTCULLIS_PAT and the only one that writes the
+  # Clones the public core repo (no token) and is the only one that writes the
   # cache. It checks out nothing but .core-ref from a trusted commit.
   fetch-core:
     needs: [gate, changes]
@@ -255,7 +241,6 @@ jobs:
         with:
           repository: porelli/portcullis
           ref: ${{ steps.core.outputs.ref }}
-          token: ${{ secrets.PORTCULLIS_PAT }}
           path: core
           persist-credentials: false
 

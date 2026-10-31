@@ -41,8 +41,7 @@ bash tests/compose-config.sh       # docker compose config for every template
 - Every image is pinned by version tag and `@sha256:` digest; Dependabot
   proposes updates weekly.
 - CI tests the templates against the core version in [`.core-ref`](.core-ref).
-  Pull requests from forks get the lint job right away; integration tests run
-  once a maintainer triggers them.
+  Pull requests from forks get both lint and the full integration tests.
 
 ## Auth Methods
 

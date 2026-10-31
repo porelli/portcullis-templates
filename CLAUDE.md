@@ -10,7 +10,7 @@ Default app marketplace for Portcullis. Contains 22 app templates with manifest.
 - `tests/validate.py` — schema + repo rules (run `python3 tests/validate.py`; needs `tests/requirements.txt`). Add new rules here, with a contributor-facing hint
 - `tests/compose-config.sh` — `docker compose config -q` per template with dummy generated env
 - `.core-ref` — core ref CI tests against (contracts §1); `.github/dependabot.yml` must list every template dir
-- CI: `lint.yml` (all PRs incl. forks, no secrets), `test-apps.yml` (integration; fork PRs skipped, maintainers dispatch with `pr=<n>`; only `fetch-core` sees `PORTCULLIS_PAT`; image caches are written only by `fetch-core` (infra) and `app-images` (per-app, push to main only, list from `tests/app-images.sh`); `test` runs template code with no secrets, saves no cache, strips names from loaded tarballs and binds every image by a pinned-digest pull), `docs-dispatch.yml` (push to main → `templates-updated` to portcullis-docs)
+- CI: `lint.yml` (all PRs incl. forks, no secrets), `test-apps.yml` (integration for every PR incl. forks; core is public and cloned without a token, no job references a secret; `.core-ref` read from the PR base; image caches are written only by `fetch-core` (infra) and `app-images` (per-app, push to main only, list from `tests/app-images.sh`); `test` runs template code with no secrets, saves no cache, strips names from loaded tarballs and binds every image by a pinned-digest pull), `docs-dispatch.yml` (push to main → `templates-updated` to portcullis-docs)
 - Contributor docs: `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/`
 
 ## Critical Rules

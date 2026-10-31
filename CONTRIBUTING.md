@@ -71,31 +71,28 @@ The integration tests (`tests/apps/*.sh` against a real Keycloak/LLDAP/Traefik
 stack) need the private core repo, so you normally cannot run them locally;
 CI runs them for you once a maintainer approves (see below).
 
-## What CI runs, and why fork PRs only get lint at first
+## What CI runs
 
 | Workflow | When | Secrets | What |
 |----------|------|---------|------|
 | **Lint** (`lint.yml`) | every push and PR, including forks | none | `tests/validate.py`, `docker compose config` for every template, shellcheck, actionlint |
-| **Test Apps** (`test-apps.yml`) | push to `main`, PRs from branches of this repo, manual runs | `PORTCULLIS_PAT` | boots core at the ref in `.core-ref`, then runs `tests/apps/<app>.sh` for every changed template |
+| **Test Apps** (`test-apps.yml`) | push to `main`, every PR **including forks**, manual runs | none | boots core at the ref in `.core-ref`, then runs `tests/apps/<app>.sh` for every changed template |
 | **Notify docs** (`docs-dispatch.yml`) | push to `main` | `DOCS_DISPATCH_TOKEN` | asks the docs site to regenerate the app pages |
 
-The integration job clones the private core repo with `PORTCULLIS_PAT`.
-GitHub never gives secrets to workflows triggered by a pull request from a
-fork, so for fork PRs **Test Apps is skipped with a notice instead of
-failing**. That is expected. After reviewing your change, a maintainer runs
-**Actions -> Test Apps -> Run workflow** with `pr = <your PR number>`. That
-run tests the exact commit that was reviewed (it aborts if the PR head moved).
-Push new commits and the maintainer re-runs it.
+Core ([porelli/portcullis](https://github.com/porelli/portcullis)) is public
+and cloned anonymously, so your fork PR gets the full integration tests
+automatically. No job in Test Apps references a secret. Maintainers can
+re-run a PR by hand with **Actions -> Test Apps -> Run workflow**, `pr = <number>`;
+that run tests the exact head commit and aborts if the PR moved.
 
 We deliberately do not use `pull_request_target`: it would run fork code with
-secrets and a write token. Inside Test Apps, the trust boundary is per job:
+a write token. Inside Test Apps, the trust boundary is per job:
 
 - `gate` and `changes` decide what to test; they run no template code.
-- `fetch-core` is the **only** job that references `PORTCULLIS_PAT`. It checks
-  out nothing from the PR except `.core-ref`, read from a trusted commit (for
-  a dispatched PR run: the PR's *base* commit, so a PR cannot point CI at
-  another core ref). It clones core, packs it as an artifact and writes the
-  infra image cache.
+- `fetch-core` checks out nothing from the PR except `.core-ref`, read from a
+  trusted commit (for PR runs, the PR's *base* commit, so a PR cannot point CI
+  at another core ref). It clones core, packs it as an artifact, and is the
+  only job besides `app-images` that writes an image cache.
 - `app-images` runs only on pushes to `main` (never for PRs or manual runs).
   It reads each tested app's `compose.yml` (`tests/app-images.sh`), pulls its
   pinned images and writes that app's image cache. It starts no container.
@@ -111,7 +108,7 @@ secrets and a write token. Inside Test Apps, the trust boundary is per job:
 
 `.core-ref` holds the core version the templates are tested against: a tag
 such as `v1.4.0`, or `main` during development. Changing it re-tests every
-template. (For fork PRs the base branch's `.core-ref` is used.)
+template. (For PRs the base branch's `.core-ref` is used.)
 
 ## Choosing an auth method
 
