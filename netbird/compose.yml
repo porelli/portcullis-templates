@@ -1,6 +1,8 @@
+# netbird-management and netbird-signal: keep on the same release (lockstep).
+# netbird-dashboard is versioned separately.
 services:
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.18.0@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3
     network_mode: host
     volumes:
       - coturn-data:/var/lib/coturn
@@ -18,7 +20,7 @@ services:
       --log-file=stdout
 
   netbird-management:
-    image: netbirdio/management:latest
+    image: netbirdio/management:0.82.0@sha256:07c8f979fcc980678cc64e584cf6b7b27204ceb4c871531b29e2dce39592e9ff
     entrypoint: ["/bin/sh", "/etc/netbird/management-entrypoint.sh"]
     command: >
       --port 8011
@@ -62,7 +64,7 @@ services:
     restart: unless-stopped
 
   netbird-signal:
-    image: netbirdio/signal:latest
+    image: netbirdio/signal:0.82.0@sha256:0c0c38bbef7dcdfa1822b6d59844615db55dc7303b664e7aed498151edc0dbfb
     networks:
       - default
       - portcullis-proxy
@@ -78,7 +80,7 @@ services:
     restart: unless-stopped
 
   netbird-dashboard:
-    image: netbirdio/dashboard:latest
+    image: netbirdio/dashboard:v2.96.0@sha256:340b13c00b84349572a2acc5605e907cb09250a9e6461c757097eabdb8e02f2c
     environment:
       NETBIRD_MGMT_API_ENDPOINT: https://netbird.${PORTCULLIS_DOMAIN:-portcullis.local}
       NETBIRD_MGMT_GRPC_API_ENDPOINT: https://netbird.${PORTCULLIS_DOMAIN:-portcullis.local}

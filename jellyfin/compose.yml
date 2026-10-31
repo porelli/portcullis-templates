@@ -1,6 +1,6 @@
 services:
   jellyfin:
-    image: jellyfin/jellyfin:latest
+    image: jellyfin/jellyfin:12.4@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771
     environment:
       JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   jellyfin-setup:
-    image: python:3-alpine
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |

@@ -21,6 +21,9 @@ auth:
     first enable to make that SSO user the administrator instead. Connection
     permissions are managed in the Guacamole UI. Changing either value after
     the database is initialized has no effect.
+    Upgrades: guacamole, guacamole-init and guacd are pinned to the same
+    release and must move together; apply the upstream database schema
+    upgrade scripts for each release in between before starting the new one.
 
 settings:
   - key: GUACAMOLE_ADMIN_USER

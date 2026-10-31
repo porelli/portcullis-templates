@@ -1,6 +1,8 @@
+# headscale and headplane: upgrade headscale one minor at a time and pick a
+# headplane release that supports it.
 services:
   headscale-init:
-    image: alpine:latest
+    image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     entrypoint: ["/bin/sh", "-c"]
     # $$VAR: expanded by the container shell from the environment below,
     # not interpolated by compose into the command string.
@@ -24,7 +26,7 @@ services:
       - ./templates/headscale/config/config.yaml:/tmp/config.yaml.tmpl:ro
 
   headscale:
-    image: headscale/headscale:latest
+    image: headscale/headscale:0.29.7@sha256:11f81665e842809db9fe3006a38c56a66e968baa5abd4bac498e86445572b970
     command: serve
     environment:
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
@@ -48,7 +50,7 @@ services:
     restart: unless-stopped
 
   headplane:
-    image: ghcr.io/tale/headplane:latest
+    image: ghcr.io/tale/headplane:0.8.2@sha256:b053a0a6699d0a67be3f0d9bae8e7dbe35ed67ae8448412adcbad7ea49866faa
     environment:
       HEADPLANE_LOAD_ENV_OVERRIDES: "true"
       HEADPLANE_HEADSCALE__URL: http://headscale:8080

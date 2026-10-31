@@ -1,6 +1,6 @@
 services:
   actual-budget:
-    image: actualbudget/actual-server:latest
+    image: actualbudget/actual-server:26.10.0@sha256:24645e971da6bb1a1f953d6859e307a0b29be1e8b4130a35b3220c209b5b860c
     environment:
       ACTUAL_LOGIN_METHOD: openid
       ACTUAL_OPENID_DISCOVERY_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration

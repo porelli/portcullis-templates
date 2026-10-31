@@ -1,6 +1,6 @@
 services:
   pihole:
-    image: pihole/pihole:latest
+    image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
     environment:
       # Pi-hole v6: WEBPASSWORD/VIRTUAL_HOST were removed in favour of FTLCONF_*.
       FTLCONF_webserver_api_password: ${PIHOLE_WEBPASSWORD:?PIHOLE_WEBPASSWORD must be set}

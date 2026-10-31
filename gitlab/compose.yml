@@ -1,6 +1,6 @@
 services:
   gitlab:
-    image: gitlab/gitlab-ce:latest
+    image: gitlab/gitlab-ce:19.5.3-ce.0@sha256:6863d156a1a477bd6f69fc674b671d0163cd8b06bf63bb17cc4a4a803b78b27c
     hostname: git.${PORTCULLIS_DOMAIN:-portcullis.local}
     environment:
       GITLAB_OMNIBUS_CONFIG: |

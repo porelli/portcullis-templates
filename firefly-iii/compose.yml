@@ -1,6 +1,6 @@
 services:
   firefly-iii:
-    image: fireflyiii/core:latest
+    image: fireflyiii/core:version-6.7.9@sha256:d51ab6a3a7b91a5c892441578e0da7f2935f84f36bd1151fc3833acc6e060871
     # remote_user_guard trusts HTTP_X_FORWARDED_USER from any peer and has no
     # proxy allowlist, so the image's nginx (serversideup fpm-nginx, which
     # includes /etc/nginx/server-opts.d/*.conf in its server block) answers
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   firefly-db:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     environment:
       POSTGRES_DB: firefly
       POSTGRES_USER: firefly

@@ -1,6 +1,7 @@
+# guacamole, guacamole-init and guacd: keep on the same release (lockstep).
 services:
   guacamole:
-    image: guacamole/guacamole:latest
+    image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
     environment:
       GUACD_HOSTNAME: guacd
       MYSQL_HOSTNAME: guacamole-db
@@ -64,7 +65,7 @@ services:
     restart: unless-stopped
 
   guacamole-init:
-    image: guacamole/guacamole:latest
+    image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
     entrypoint: ["/bin/sh", "-c"]
     # Builds the MySQL init script (only executed by MySQL on first boot of
     # an empty data volume). The upstream schema creates guacadmin with the
@@ -101,10 +102,10 @@ services:
       - guacamole-initdb:/initdb
 
   guacd:
-    image: guacamole/guacd:latest
+    image: guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
 
   guacamole-db:
-    image: mysql:8
+    image: mysql:8.4.13@sha256:a0225d1ea6631c8bc2385dc4c2faba17bbf1834ecf369e1659a9a382bd8d5dd7
     environment:
       MYSQL_ROOT_PASSWORD: ${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}
       MYSQL_DATABASE: guacamole

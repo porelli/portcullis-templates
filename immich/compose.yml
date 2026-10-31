@@ -1,6 +1,7 @@
+# immich-server and immich-machine-learning: keep on the same release (lockstep).
 services:
   immich-server:
-    image: ghcr.io/immich-app/immich-server:release
+    image: ghcr.io/immich-app/immich-server:v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6
     environment:
       DB_HOSTNAME: immich-db
       DB_USERNAME: immich
@@ -33,7 +34,7 @@ services:
     restart: unless-stopped
 
   immich-init:
-    image: alpine:latest
+    image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     entrypoint: ["/bin/sh", "-c"]
     # Regenerated on every start: the config is fully derived from the
     # template + env (and Immich treats a config file as read-only anyway).
@@ -65,7 +66,7 @@ services:
       - ./templates/immich/immich-config.json.tmpl:/tmp/config.json.tmpl:ro
 
   immich-setup:
-    image: alpine:latest
+    image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     entrypoint: ["/bin/sh", "/setup.sh"]
     environment:
       IMMICH_ADMIN_PASSWORD: ${IMMICH_ADMIN_PASSWORD:?IMMICH_ADMIN_PASSWORD must be set}
@@ -76,12 +77,12 @@ services:
     restart: "no"
 
   immich-machine-learning:
-    image: ghcr.io/immich-app/immich-machine-learning:release
+    image: ghcr.io/immich-app/immich-machine-learning:v3.3.5@sha256:5b28c9352c8374b8a1ed96fbdd8d6755fea6e43510ec43fdf6538aa02ea40f56
     volumes:
       - immich-ml-cache:/cache
 
   immich-redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
 
   immich-db:
     # Immich's own Postgres image (VectorChord + pgvecto.rs for migration from

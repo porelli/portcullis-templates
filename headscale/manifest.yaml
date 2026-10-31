@@ -18,6 +18,9 @@ auth:
     `docker exec portcullis-headscale-headscale-1 headscale apikeys create --expiration 365d`,
     paste it into the "Headscale API key" setting, then restart the app.
     Renew it before it expires.
+    Upgrades: Headscale is pinned; upgrade one minor release at a time (its
+    database migrations do not support skipping) and pick the Headplane release
+    that supports that Headscale version.
 
 settings:
   - key: HEADSCALE_API_KEY

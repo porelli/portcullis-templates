@@ -11,7 +11,14 @@ auth:
   group_admin: false
   access_group: users_gitlab
   admin_group: admin_gitlab
-  notes: Full OIDC with Keycloak. No forward-auth in front of GitLab so git-over-HTTPS, the API and CI runners work with personal access tokens. Any realm user can sign in (accounts auto-created); group restriction and role mapping via OIDC claims not yet configured.
+  notes: >
+    Full OIDC with Keycloak. No forward-auth in front of GitLab so
+    git-over-HTTPS, the API and CI runners work with personal access tokens.
+    Any realm user can sign in (accounts auto-created); group restriction and
+    role mapping via OIDC claims not yet configured.
+    Upgrades: the image is pinned; GitLab must be upgraded along its documented
+    upgrade path (required stops between versions), never by jumping straight
+    to the newest release.
 
 env:
   - key: GITLAB_ROOT_PASSWORD

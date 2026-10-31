@@ -16,6 +16,8 @@ auth:
     login (admin account uses NEXTCLOUD_ADMIN_PASSWORD). No OIDC app is
     installed yet. Desktop/mobile sync clients and WebDAV cannot pass the
     forward-auth redirect.
+    Upgrades: the image is pinned; Nextcloud only upgrades one major version at
+    a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
 
 env:
   - key: NEXTCLOUD_ADMIN_PASSWORD

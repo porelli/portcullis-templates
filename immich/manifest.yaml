@@ -16,6 +16,9 @@ auth:
     while OIDC is configured. Promote an SSO user to admin with
     `docker exec <immich-server container> immich-admin grant-admin`.
     roleClaim available but not yet mapped to groups.
+    Upgrades: immich-server and immich-machine-learning are pinned to the same
+    release and must always move together; read the upstream release notes for
+    breaking changes and keep immich-db on the image upstream specifies.
 
 settings:
   - key: IMMICH_EXTERNAL_PATH

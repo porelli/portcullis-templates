@@ -1,6 +1,6 @@
 services:
   wiki:
-    image: requarks/wiki:2
+    image: requarks/wiki:2.5.317@sha256:e4708eed80c014449c0c8426c8d466c7a52a62131555bb44372fa48378b448b8
     environment:
       DB_TYPE: postgres
       DB_HOST: wiki-db
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
 
   wiki-db:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     environment:
       POSTGRES_DB: wiki
       POSTGRES_USER: wiki

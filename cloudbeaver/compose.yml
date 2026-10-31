@@ -1,6 +1,6 @@
 services:
   cloudbeaver:
-    image: dbeaver/cloudbeaver:latest
+    image: dbeaver/cloudbeaver:26.2.3@sha256:0c875296f85ffd7c0ffaaaeff678cd2f383890050297585318d7cf8f49024d1f
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
@@ -19,7 +19,7 @@ services:
   # team/role/name headers CloudBeaver would otherwise accept from the client
   # (oauth2-proxy never sets them, so Traefik passes client values through).
   cloudbeaver-gate:
-    image: nginx:alpine
+    image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
     environment:
       PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
     command:

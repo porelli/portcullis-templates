@@ -1,6 +1,6 @@
 services:
   dokuwiki:
-    image: linuxserver/dokuwiki:latest
+    image: linuxserver/dokuwiki:2026-07-14c-ls332@sha256:fac142ae9f7df5d3457037bc8bb668f8bfc6a6b9e02d5d1a5743bf1d030f9a10
     environment:
       PUID: "1000"
       PGID: "1000"
