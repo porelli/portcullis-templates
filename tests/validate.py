@@ -55,7 +55,7 @@ CORE_VARS = {
 }
 
 # Subdomains owned by core (group-gate-map.conf); templates must not route them.
-CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll"}
+CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics"}  # contracts §4
 
 PROXY_NET = "portcullis-proxy"
 AUTH_MW = "portcullis-auth@docker"
