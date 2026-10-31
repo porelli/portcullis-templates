@@ -867,6 +867,16 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
         tokenised = PUBLIC_TOKEN in norm
         if tokenised and p.get("supporting"):
             r.error(where, f"a {PUBLIC_TOKEN} path cannot be supporting (supporting paths are token-free and always open)")
+        if p.get("exact"):
+            if tokenised:
+                r.error(where, f"a {PUBLIC_TOKEN} path cannot be exact")
+            if not str(p.get("justification") or "").strip():
+                r.error(where, "exact path needs a justification (which app route, why the share page needs it)")
+            if p.get("broad"):
+                r.error(where, "broad: true on an exact path")
+        elif p.get("supporting") and re.search(r"\.[A-Za-z0-9]{1,8}$", norm.rsplit("/", 1)[-1]):
+            r.error(where, "supporting prefix names a file; supporting prefixes only serve static files below them",
+                    "use exact: true (with a justification) for a single file or route")
         base = token_base(norm)
         if base == "/":
             r.error(where, "would open / in mode all", PUBLIC_HINT)
@@ -875,10 +885,12 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
             if seg_overlap(base.lower(), f):
                 r.error(where, f"overlaps {f}, which can never be public")
         broad = base.lower() in PUBLIC_BROAD or (base.count("/") == 1 and base.lower().endswith(".php"))
-        if broad and not (p.get("broad") and str(p.get("justification") or "").strip()):
+        if p.get("exact"):
+            pass  # one path, no subpaths: the broad list does not apply
+        elif broad and not (p.get("broad") and str(p.get("justification") or "").strip()):
             r.error(where, f"{base} is a broad prefix (whole API / front controller)",
                     "narrow it to the share endpoints, or set broad: true with a justification")
-        if p.get("broad") and not broad:
+        elif p.get("broad") and not broad:
             r.error(where, f"broad: true on {base}, which is not a broad prefix")
         for ap in auth.get("admin_paths") or []:
             if isinstance(ap, str) and seg_overlap(base, ap.rstrip("/") or "/"):

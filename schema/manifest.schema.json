@@ -201,6 +201,26 @@
           "pattern": "^\\^.*\\$$",
           "maxLength": 200
         },
+        "credential_headers": {
+          "description": "Request headers besides Authorization / Proxy-Authorization the app logs a user in with (API keys, session tokens); stripped on public paths.",
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"}
+        },
+        "credential_cookies": {
+          "description": "Cookies the app logs a user in with (session, remember-me). Requests carrying one (loosely matched, case-insensitive, percent-encoded or PHP-mangled) don't match the public router.",
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
+        },
+        "credential_query": {
+          "description": "Query parameters the app logs a user in with (e.g. apiKey). Requests carrying one don't match the public router.",
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
+        },
+        "static_extensions": {
+          "description": "File extensions supporting paths may serve in addition to the defaults (avif css eot gif ico jpeg jpg js map mjs otf png svg ttf webp woff woff2). Never script extensions.",
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9]{1,8}$", "not": {"enum": ["php", "php3", "php4", "php5", "php7", "php8", "phtml", "phar", "pht", "phps", "cgi", "fcgi", "pl", "py", "rb", "sh", "asp", "aspx", "jsp", "jspx", "shtml", "htaccess", "exe", "dll"]}}
+        },
         "service": {
           "description": "Compose service the public router targets. Default: the only service with HTTP routers.",
           "$ref": "#/$defs/serviceName"
@@ -227,17 +247,23 @@
         },
         "description": {"$ref": "#/$defs/singleLine", "minLength": 1, "maxLength": 200},
         "supporting": {
-          "description": "Token-free path the share page needs (static assets, l10n, theming): opened in both modes. Token-free paths without supporting are opened only in mode all.",
+          "description": "Token-free path the share page needs: opened in both modes, and only for static files (dot-free directories, a file with a static extension) unless exact. Token-free paths without supporting are opened only in mode all.",
+          "type": "boolean"
+        },
+        "exact": {
+          "description": "Opens only this exact path (no subpaths), for a single app route the share page needs. Needs justification; not with {token}.",
           "type": "boolean"
         },
         "broad": {
-          "description": "Acknowledges a prefix on the broad list (e.g. /api, /index.php, bare *.php); needs justification.",
+          "description": "Acknowledges a prefix on the broad list (e.g. /api, /index.php, bare *.php); needs justification. Not with exact.",
           "type": "boolean"
         },
         "justification": {"$ref": "#/$defs/singleLine", "minLength": 1}
       },
-      "if": {"properties": {"broad": {"const": true}}, "required": ["broad"]},
-      "then": {"required": ["justification"]}
+      "allOf": [
+        {"if": {"properties": {"broad": {"const": true}}, "required": ["broad"]}, "then": {"required": ["justification"]}},
+        {"if": {"properties": {"exact": {"const": true}}, "required": ["exact"]}, "then": {"required": ["justification"]}}
+      ]
     },
     "setting": {
       "type": "object",
