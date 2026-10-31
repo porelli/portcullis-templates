@@ -29,6 +29,19 @@ else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
 
+# Static: CloudBeaver logs in by username (X-Forwarded-User), never email
+CONF="$(dirname "$COMPOSE")/cloudbeaver-runtime.conf"
+if grep -q '"user-header": "X-Forwarded-User"' "$CONF" && ! grep -qi 'X-Forwarded-Email' "$CONF"; then
+  pass "reverseProxy user-header is X-Forwarded-User (LLDAP username)"
+else
+  fail "reverseProxy must use user-header X-Forwarded-User and no email header"
+fi
+if grep -q 'proxy_set_header X-Forwarded-Email ""' "$COMPOSE" && grep -q 'http_x_forwarded_email' "$COMPOSE"; then
+  pass "gate rejects foreign X-Forwarded-Email and strips it"
+else
+  fail "gate does not handle X-Forwarded-Email"
+fi
+
 # Static: CloudBeaver itself stays off portcullis-proxy; only the gate is
 # routed by Traefik and it trusts X-Forwarded-User from Traefik alone
 assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
@@ -43,5 +56,6 @@ fi
 GATE_IP=$(app_container_ip "$APP_ID" cloudbeaver-gate)
 assert_http_code "http://${GATE_IP}:8978/" 200
 assert_spoofed_identity_rejected "http://${GATE_IP}:8978/" 403
+assert_spoofed_email_rejected "http://${GATE_IP}:8978/" 403
 
 compose_down "$APP_ID"

@@ -370,6 +370,30 @@ assert_spoofed_identity_rejected() {
   fi
 }
 
+# Same for X-Forwarded-Email (group-gate forwards the user-editable LLDAP
+# email in it; apps may show it, never key accounts on it).
+assert_spoofed_email_rejected() {
+  local url="$1" expected="${2:-403}"
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Forwarded-Email: admin@example.com" "$url" 2>/dev/null || true)
+  if [ "$code" = "$expected" ]; then
+    pass "$url with spoofed X-Forwarded-Email → HTTP $code"
+  else
+    fail "$url with spoofed X-Forwarded-Email → expected HTTP $expected, got ${code:-none}"
+  fi
+}
+
+# Static check: compose sets `KEY: value` (exact, optional quotes).
+# Identity must never be keyed on the user-editable email.
+assert_compose_setting() {
+  local compose="$1" key="$2" value="$3"
+  if grep -Eq "^[[:space:]]*${key}:[[:space:]]*[\"']?${value}[\"']?[[:space:]]*(#.*)?$" "$compose"; then
+    pass "$key: $value"
+  else
+    fail "$key is not '$value' in $compose"
+  fi
+}
+
 assert_container_can_reach() {
   # QUIRK #5: App containers are on isolated networks and CANNOT reach
   # core services (keycloak, lldap) by DNS. Don't use this to test

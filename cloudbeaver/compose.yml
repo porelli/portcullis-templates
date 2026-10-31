@@ -15,9 +15,11 @@ services:
     restart: unless-stopped
 
   # Only service on portcullis-proxy. Answers 403 to any request carrying
-  # X-Forwarded-User that does not come from Traefik, and always drops the
-  # team/role/name headers CloudBeaver would otherwise accept from the client
-  # (oauth2-proxy never sets them, so Traefik passes client values through).
+  # X-Forwarded-User or X-Forwarded-Email that does not come from Traefik,
+  # and always drops the team/role/name headers CloudBeaver would otherwise
+  # accept from the client (oauth2-proxy never sets them, so Traefik passes
+  # client values through) plus X-Forwarded-Email (CloudBeaver logs in by
+  # the user-header = LLDAP username only; the email is never needed).
   cloudbeaver-gate:
     image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
     environment:
@@ -35,8 +37,9 @@ services:
           listen 8978;
           client_max_body_size 0;
           set \$$portcullis_reject "";
+          set \$$portcullis_ident "\$$http_x_forwarded_user\$$http_x_forwarded_email";
           if (\$$remote_addr != "$$PORTCULLIS_TRAEFIK_IP") { set \$$portcullis_reject 1; }
-          if (\$$http_x_forwarded_user = "") { set \$$portcullis_reject ""; }
+          if (\$$portcullis_ident = "") { set \$$portcullis_reject ""; }
           if (\$$portcullis_reject) { return 403; }
           location / {
             proxy_pass http://cloudbeaver:8978;
@@ -51,6 +54,7 @@ services:
             proxy_set_header X-First-name "";
             proxy_set_header X-Last-name "";
             proxy_set_header X-Full-name "";
+            proxy_set_header X-Forwarded-Email "";
             proxy_buffering off;
             proxy_read_timeout 1h;
             proxy_send_timeout 1h;

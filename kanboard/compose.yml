@@ -9,8 +9,13 @@ services:
     environment:
       PLUGIN_INSTALLER: "true"
       REVERSE_PROXY_AUTH: "true"
+      # Users are matched on the username column (ReverseProxyUserProvider:
+      # external id column "username") = immutable LLDAP username. The email
+      # header only fills the profile; Kanboard never links accounts by it.
       REVERSE_PROXY_USER_HEADER: HTTP_X_FORWARDED_USER
-      REVERSE_PROXY_DEFAULT_ADMIN: admin
+      REVERSE_PROXY_EMAIL_HEADER: HTTP_X_FORWARDED_EMAIL
+      # LLDAP username that gets the Kanboard admin role (manifest setting).
+      REVERSE_PROXY_DEFAULT_ADMIN: ${KANBOARD_ADMIN_USER:-admin}
       # Kanboard ignores REVERSE_PROXY_USER_HEADER unless REMOTE_ADDR is in
       # this list: only Traefik (static IP on portcullis-proxy) may assert it.
       TRUSTED_PROXY_NETWORKS: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32

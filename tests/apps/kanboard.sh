@@ -46,3 +46,7 @@ fi
 
 # REVERSE_PROXY_USER_HEADER is honoured only from TRUSTED_PROXY_NETWORKS
 assert_traefik_only_trust "$COMPOSE" TRUSTED_PROXY_NETWORKS
+
+# Identity = LLDAP username; the email header only fills the profile
+assert_compose_setting "$COMPOSE" REVERSE_PROXY_USER_HEADER HTTP_X_FORWARDED_USER
+assert_compose_setting "$COMPOSE" REVERSE_PROXY_EMAIL_HEADER HTTP_X_FORWARDED_EMAIL

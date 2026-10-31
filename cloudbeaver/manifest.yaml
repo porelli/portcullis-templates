@@ -11,7 +11,7 @@ auth:
   group_admin: false
   access_group: users_cloudbeaver
   admin_group: admin_cloudbeaver
-  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name headers. Roles and connections are managed in CloudBeaver.
+  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User (the immutable LLDAP username; the provider has no email header) and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User or X-Forwarded-Email from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name and X-Forwarded-Email headers. Accounts created when the header carried the email are named after it; rename them to the LLDAP username in CloudBeaver's admin UI. Roles and connections are managed in CloudBeaver.
 
 env: []
 keycloak_clients: []

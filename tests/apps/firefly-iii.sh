@@ -34,8 +34,14 @@ COMPOSE=$(_find_compose "$APP_ID")
 assert_traefik_only_trust "$COMPOSE" TRUSTED_PROXIES
 assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
 
-# nginx answers 403 to X-Forwarded-User from any peer other than Traefik
+# nginx answers 403 to X-Forwarded-User / X-Forwarded-Email from any peer
+# other than Traefik
 assert_spoofed_identity_rejected "http://${IP}:8080/" 403
+assert_spoofed_email_rejected "http://${IP}:8080/" 403
+
+# Identity = LLDAP username; email only as notification address
+assert_compose_setting "$COMPOSE" AUTHENTICATION_GUARD_HEADER HTTP_X_FORWARDED_USER
+assert_compose_setting "$COMPOSE" AUTHENTICATION_GUARD_EMAIL HTTP_X_FORWARDED_EMAIL
 
 if grep -q 'portcullis-auth@docker' "$COMPOSE" && grep -q 'portcullis-groups@docker' "$COMPOSE"; then
   pass "Forward-auth + group-gate middleware configured"

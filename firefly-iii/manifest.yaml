@@ -11,7 +11,19 @@ auth:
   group_admin: false
   access_group: users_firefly
   admin_group: admin_firefly
-  notes: Uses remote_user_guard with X-Forwarded-User header from oauth2-proxy. remote_user_guard has no proxy allowlist, so the container's nginx rejects (403) any request carrying X-Forwarded-User that does not come from Traefik (PORTCULLIS_TRAEFIK_IP); TRUSTED_PROXIES is likewise limited to Traefik. Auto-creates user on first login. No group-based admin support.
+  notes: >
+    Uses remote_user_guard: the account is keyed on X-Forwarded-User, the
+    immutable LLDAP username (stored in Firefly's email column; Firefly does
+    not require an address there). X-Forwarded-Email (user-editable in LLDAP)
+    only sets the notification address and never selects an account.
+    remote_user_guard has no proxy allowlist, so the container's nginx rejects
+    (403) any request carrying X-Forwarded-User or X-Forwarded-Email that does
+    not come from Traefik (PORTCULLIS_TRAEFIK_IP); TRUSTED_PROXIES is likewise
+    limited to Traefik. Auto-creates user on first login. No group-based admin
+    support. Upgrading from a release that keyed users on email: the old
+    accounts are named after the email; rename them to the LLDAP username
+    (users.email column) before users log in again, or they get new empty
+    accounts.
 
 env:
   - key: FIREFLY_APP_KEY
