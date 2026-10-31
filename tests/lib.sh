@@ -526,8 +526,9 @@ app_logs() {
 }
 
 # ── Public exceptions (QUIRK #12) ──────────────────────────
-# Mirror of the Hub's coreIdentityHeaders (internal/hub/public.go); the
-# manifest's auth.identity_headers are added, all also in underscore form.
+# Mirror of the Hub's coreIdentityHeaders + credentialHeaders
+# (internal/hub/public.go); the manifest's auth.identity_headers and
+# public_access.credential_headers are added, all also in underscore form.
 PUBLIC_CORE_HEADERS=(Remote-Email Remote-Groups Remote-Name Remote-User
   X-Auth-Request-Access-Token X-Auth-Request-Email X-Auth-Request-Groups
   X-Auth-Request-Preferred-Username X-Auth-Request-User
@@ -537,8 +538,9 @@ PUBLIC_CORE_HEADERS=(Remote-Email Remote-Groups Remote-Name Remote-User
 _public_strip_headers() {
   local manifest="$1" h
   {
-    printf '%s\n' "${PUBLIC_CORE_HEADERS[@]}"
+    printf '%s\n' "${PUBLIC_CORE_HEADERS[@]}" Authorization Proxy-Authorization
     sed -n 's/^  identity_headers:[[:space:]]*\[\(.*\)\].*/\1/p' "$manifest" | tr ',' '\n' | tr -d ' "\047'
+    _manifest_public_list "$manifest" credential_headers
   } | while read -r h; do
     [ -n "$h" ] || continue
     echo "$h"
@@ -546,57 +548,107 @@ _public_strip_headers() {
   done | LC_ALL=C sort -u
 }
 
-# Print "<prefix> <supporting 0|1>" for each auth.public_access path of a
-# manifest (block-style list as used in this repo).
+# Print "<prefix> <supporting 0|1> <exact 0|1>" for each auth.public_access
+# path of a manifest (block-style list as used in this repo).
 _manifest_public_paths() {
   awk '
-    function flush() { if (prefix != "") print prefix, sup; prefix = ""; sup = 0 }
+    function flush() { if (prefix != "") print prefix, sup, ex; prefix = ""; sup = 0; ex = 0 }
     /^  public_access:/ { in_pa = 1; next }
     in_pa && /^ {0,2}[^ #]/ { flush(); in_pa = 0 }
     in_pa && /^[[:space:]]*- prefix:/ {
       flush()
       v = $0; sub(/^[[:space:]]*- prefix:[[:space:]]*/, "", v); sub(/[[:space:]]*(#.*)?$/, "", v); gsub(/["\047]/, "", v)
-      prefix = v; sup = 0; next
+      prefix = v; next
     }
     in_pa && /^[[:space:]]*supporting:[[:space:]]*true/ { sup = 1 }
+    in_pa && /^[[:space:]]*exact:[[:space:]]*true/ { ex = 1 }
     END { flush() }
   ' "$1"
 }
 
+# _manifest_public_list <manifest> <key>: items of a flow list under
+# auth.public_access (e.g. credential_cookies: [a, b]).
+_manifest_public_list() {
+  sed -n "s/^    $2:[[:space:]]*\\[\\(.*\\)\\].*/\\1/p" "$1" | tr ',' '\n' | tr -d ' "\047' | sed '/^$/d'
+}
+
 # public_routed_prefixes <manifest> <all|listed> [token...]
-# The literal prefixes the Hub routes (PublicPlan.Effective), sorted.
+# The entries the Hub routes (PublicPlan.Effective), sorted: "p" prefix,
+# "=p" exact path, "~p" static files under p.
 public_routed_prefixes() {
-  local manifest="$1" mode="$2" prefix sup tok
+  local manifest="$1" mode="$2" prefix sup ex tok enc
   shift 2
   if [ "$mode" = listed ] && [ $# -eq 0 ]; then return 0; fi
-  while read -r prefix sup; do
+  while read -r prefix sup ex; do
     prefix="${prefix%/}"
-    if [ "$mode" != listed ]; then
-      case "$prefix" in
-        */\{token\}*) echo "${prefix%%/\{token\}*}" ;;
-        *) echo "$prefix" ;;
-      esac
-    elif [ "$sup" = 1 ]; then
-      echo "$prefix"
-    else
-      case "$prefix" in
-        *\{token\}*) for tok in "$@"; do echo "${prefix/\{token\}/$tok}"; done ;;
-      esac
-    fi
+    enc="$prefix"
+    if [ "$ex" = 1 ]; then enc="=$prefix"; elif [ "$sup" = 1 ]; then enc="~$prefix"; fi
+    case "$prefix" in
+      *\{token\}*)
+        if [ "$mode" = listed ]; then
+          for tok in "$@"; do echo "${prefix/\{token\}/$tok}"; done
+        else
+          echo "${prefix%%/\{token\}*}"
+        fi ;;
+      *)
+        if [ "$sup" = 1 ] || [ "$mode" != listed ]; then echo "$enc"; fi ;;
+    esac
   done < <(_manifest_public_paths "$manifest") | LC_ALL=C sort -u
 }
 
-# write_public_override <app> <service> <host-arg> <tier> <out> <prefix...>
+# Mirror of the Hub's StaticExtensions (internal/templates/public.go).
+PUBLIC_STATIC_EXTS="avif|css|eot|gif|ico|jpeg|jpg|js|map|mjs|otf|png|svg|ttf|webp|woff|woff2"
+
+# _public_matchers <entry>: Traefik matchers for one routed entry, with
+# backslashes doubled for a YAML double-quoted scalar.
+_public_matchers() {
+  local e="$1" p
+  case "$e" in
+    =*) echo "Path(\`${e#=}\`)" ;;
+    ~*) p="${e#\~}"; echo "PathRegexp(\`^${p//./\\\\.}(/[A-Za-z0-9_~@+-]+)*/[A-Za-z0-9_~@+-][A-Za-z0-9._~@+-]*\\\\.($PUBLIC_STATIC_EXTS)\$\$\`)" ;;
+    *) echo "Path(\`$e\`) || PathPrefix(\`$e/\`)" ;;
+  esac
+}
+
+# _public_cookie_regexp <name...>: the Hub's cookieRegexp, YAML-escaped.
+_public_cookie_regexp() {
+  local alts="" n c i alt
+  for n in "$@"; do
+    alt=""
+    for ((i = 0; i < ${#n}; i++)); do
+      c="${n:i:1}"
+      case "$c" in
+        _|.) alt+='(?:[_. \\[]|%[0-9a-f]{2})' ;;
+        *) alt+="(?:$c|%[0-9a-f]{2})" ;;
+      esac
+    done
+    alts="${alts:+$alts|}$alt"
+  done
+  echo "(?i)(?:^|[;,])\\\\s*(?:$alts)\\\\s*="
+}
+
+# write_public_override <app> <service> <host-arg> <tier> <out> <entry...>
 # Writes the labels the Hub generates for a public router: every router of
 # the compose file gets <tier> (one TLS tier per host), plus
-# portcullis-public-<app> without forward-auth and its strip middleware.
+# portcullis-public-<app> without forward-auth, its credential exclusions
+# and its strip middleware. Entries as printed by public_routed_prefixes.
 write_public_override() {
-  local app="$1" svc="$2" host="$3" tier="$4" out="$5" compose r p rule="" hdr
+  local app="$1" svc="$2" host="$3" tier="$4" out="$5" compose manifest r e rule="" hdr q
   shift 5
   compose=$(_find_compose "$app") || { fail "compose.yml not found for $app"; return 1; }
-  for p in "$@"; do
-    rule="${rule:+$rule || }Path(\`$p\`) || PathPrefix(\`$p/\`)"
+  manifest="$(dirname "$compose")/manifest.yaml"
+  for e in "$@"; do
+    rule="${rule:+$rule || }$(_public_matchers "$e")"
   done
+  rule="Host(\`$host\`) && ($rule)"
+  local cookies=()
+  while read -r q; do cookies+=("$q"); done < <(_manifest_public_list "$manifest" credential_cookies)
+  if [ ${#cookies[@]} -gt 0 ]; then
+    rule+=" && !HeaderRegexp(\`Cookie\`, \`$(_public_cookie_regexp "${cookies[@]}")\`)"
+  fi
+  while read -r q; do
+    rule+=" && !QueryRegexp(\`$q\`, \`.*\`)"
+  done < <(_manifest_public_list "$manifest" credential_query)
   {
     echo "services:"
     echo "  $svc:"
@@ -604,14 +656,14 @@ write_public_override() {
     grep -oE 'traefik\.http\.routers\.[^.]+\.rule' "$compose" | sed -E 's/^traefik\.http\.routers\.([^.]+)\.rule$/\1/' | sort -u | while read -r r; do
       echo "      traefik.http.routers.$r.tls.options: $tier"
     done
-    echo "      traefik.http.routers.portcullis-public-$app.rule: \"Host(\`$host\`) && ($rule)\""
+    echo "      traefik.http.routers.portcullis-public-$app.rule: \"$rule\""
     echo "      traefik.http.routers.portcullis-public-$app.entrypoints: websecure"
     echo "      traefik.http.routers.portcullis-public-$app.tls: \"true\""
     echo "      traefik.http.routers.portcullis-public-$app.tls.options: $tier"
     echo "      traefik.http.routers.portcullis-public-$app.priority: \"10000\""
     echo "      traefik.http.routers.portcullis-public-$app.middlewares: portcullis-public-strip-$app@docker,rate-limit@file,security-headers@file"
     echo "      traefik.http.routers.portcullis-public-$app.service: \"$svc\""
-    _public_strip_headers "$(dirname "$compose")/manifest.yaml" | while read -r hdr; do
+    _public_strip_headers "$manifest" | while read -r hdr; do
       echo "      traefik.http.middlewares.portcullis-public-strip-$app.headers.customrequestheaders.$hdr: \"\""
     done
   } > "$out"
@@ -626,26 +678,29 @@ via_traefik() {
     --resolve "$host:443:127.0.0.1" "$@" "https://$host$path" 2>/dev/null || echo "000 "
 }
 
-# assert_public_path <host> <path>: answered by the app, not sent to Keycloak.
+# assert_public_path <host> <path> [curl args...]: answered by the app, not
+# sent to Keycloak.
 assert_public_path() {
-  local out code loc
-  out=$(via_traefik "$1" "$2"); code=${out%% *}; loc=${out#* }
+  local out code loc host="$1" path="$2"
+  shift 2
+  out=$(via_traefik "$host" "$path" "$@"); code=${out%% *}; loc=${out#* }
   if echo "$loc" | grep -q "auth\.$DOMAIN"; then
-    fail "public $2 → redirected to Keycloak ($code $loc)"
+    fail "public $path → redirected to Keycloak ($code $loc)"
   elif [ "$code" = 000 ] || [ "$code" = 502 ] || [ "$code" = 421 ] || [ "$code" -ge 500 ] 2>/dev/null; then
-    fail "public $2 → HTTP $code (not answered by the app)"
+    fail "public $path → HTTP $code (not answered by the app)"
   else
-    pass "public $2 → HTTP $code, no Keycloak redirect"
+    pass "public $path → HTTP $code, no Keycloak redirect"
   fi
 }
 
-# assert_gated_path <host> <path>: still behind forward-auth.
+# assert_gated_path <host> <path> [curl args...]: still behind forward-auth.
 assert_gated_path() {
-  local out code loc
-  out=$(via_traefik "$1" "$2"); code=${out%% *}; loc=${out#* }
+  local out code loc host="$1" path="$2"
+  shift 2
+  out=$(via_traefik "$host" "$path" "$@"); code=${out%% *}; loc=${out#* }
   if echo "$loc" | grep -q "auth\.$DOMAIN"; then
-    pass "gated $2 → HTTP $code to Keycloak"
+    pass "gated $path → HTTP $code to Keycloak"
   else
-    fail "gated $2 → expected a redirect to auth.$DOMAIN, got $code ${loc:-<none>}"
+    fail "gated $path → expected a redirect to auth.$DOMAIN, got $code ${loc:-<none>}"
   fi
 }
