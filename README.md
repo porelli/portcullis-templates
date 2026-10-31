@@ -20,15 +20,39 @@ The Hub auto-loads this repo. To add it manually or re-add after removal:
    - **Name:** `portcullis`
    - **URL:** `https://github.com/porelli/portcullis-templates.git`
 
-## Creating Your Own Templates
+## Contributing
 
-See the [Manifest Reference](https://porelli.github.io/portcullis-docs/guides/manifest-reference/) and [Adding an App](https://porelli.github.io/portcullis-docs/guides/adding-an-app/) guides.
+New templates and fixes are welcome, including from forks. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md): step-by-step guide, auth method choice,
+security rules and what CI runs.
+
+Quick local check (no Docker daemon needed):
+
+```bash
+pip install -r tests/requirements.txt
+python3 tests/validate.py          # manifest schema + repo rules
+bash tests/compose-config.sh       # docker compose config for every template
+```
+
+- Manifests follow [`schema/manifest.schema.json`](schema/manifest.schema.json)
+  (JSON Schema 2020-12); see also the
+  [Manifest Reference](https://porelli.github.io/portcullis-docs/guides/manifest-reference/)
+  and [Adding an App](https://porelli.github.io/portcullis-docs/guides/adding-an-app/).
+- Every image is pinned by version tag and `@sha256:` digest; Dependabot
+  proposes updates weekly.
+- CI tests the templates against the core version in [`.core-ref`](.core-ref).
+  Pull requests from forks get the lint job right away; integration tests run
+  once a maintainer triggers them.
 
 ## Auth Methods
 
 | Method | Apps |
 |--------|------|
-| **Native OIDC** | Actual Budget, GitLab, Headscale, Immich, Jellyfin, LiteLLM, NetBird, Vaultwarden |
+| **Native OIDC** | Actual Budget, GitLab\*, Headscale, Immich, Jellyfin, LiteLLM\*, NetBird, Vaultwarden\* |
 | **Forward Auth** | AdGuard, DokuWiki, Nextcloud, Pi-hole, Scrutiny, Wiki.js |
 | **Header Auth** | CloudBeaver, Firefly III, Grafana, Guacamole, Kanboard |
 | **Custom/Public** | Plex (plex.tv accounts), Docs (public), Vault UI (mTLS, placeholder) |
+
+\* Native OIDC plus forward-auth + group-gate on specific paths: GitLab and
+LiteLLM gate their login paths by group (`users_<app>`), Vaultwarden's `/admin`
+requires `admin_vaultwarden` (`auth.admin_paths`).

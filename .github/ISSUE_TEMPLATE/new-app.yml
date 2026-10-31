@@ -1,0 +1,49 @@
+name: New app request
+description: Suggest an app for the Portcullis catalog (or announce that you are writing a template)
+labels: [new-app]
+body:
+  - type: input
+    id: app
+    attributes:
+      label: App
+      description: Name and project URL
+      placeholder: Uptime Kuma, https://github.com/louislam/uptime-kuma
+    validations:
+      required: true
+  - type: input
+    id: image
+    attributes:
+      label: Official container image
+      placeholder: louislam/uptime-kuma
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication support
+      description: What the app supports (see "Choosing an auth method" in CONTRIBUTING.md)
+      multiple: true
+      options:
+        - OpenID Connect (native-oidc)
+        - Trusted header / reverse-proxy auth (header-auth)
+        - Own login only (forward-auth)
+        - No authentication
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: groups
+    attributes:
+      label: Groups and roles
+      description: Can the app restrict login to a group, or map a group/claim to admin? Link the docs if you know.
+  - type: textarea
+    id: extras
+    attributes:
+      label: Extra requirements
+      description: Databases, host ports (DNS, TURN, ...), devices, privileged mode, multi-image upgrade constraints
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to write this template myself

@@ -1,0 +1,36 @@
+name: Bug report
+description: A template does not work, or behaves insecurely
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues** (auth bypass, header spoofing, exposed secrets): please do not open a public issue; use a private security advisory on this repository instead.
+  - type: input
+    id: app
+    attributes:
+      label: Template (app id)
+      placeholder: grafana
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Templates commit, core version, Hub version
+      placeholder: "templates abc1234, core v1.4.0, hub 1.4.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker compose -p portcullis logs <service>` and the Hub log around the failure (redact secrets)"
+      render: text

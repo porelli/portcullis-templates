@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://porelli.github.io/portcullis-docs/
+    about: Guides for installing Portcullis and writing templates
