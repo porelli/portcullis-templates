@@ -27,19 +27,24 @@ auth:
     # Generated: 32 lowercase hex (uuid without dashes); API-created tokens
     # may also use the dashed uuid form.
     token_pattern: '^([0-9a-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$'
+    # Logins are not honoured on public paths: Authorization (API keys,
+    # service account tokens, basic auth) is stripped, and requests with the
+    # session cookie (grafana_session, [auth] login_cookie_name) don't match
+    # the public router.
+    credential_cookies: [grafana_session]
     paths:
       - prefix: "/public-dashboards/{token}"
         description: Shared dashboard viewer page
       - prefix: "/api/public/dashboards/{token}"
         description: Dashboard JSON, annotations and panel queries of the shared dashboard
       - prefix: /public/build
-        description: JS/CSS bundles, favicon and logos (static)
+        description: JS/CSS bundles, favicon and logos
         supporting: true
       - prefix: /public/fonts
-        description: Fonts (static)
+        description: Fonts
         supporting: true
       - prefix: /public/plugins
-        description: Assets of non-core panel plugins (static; reveals which plugins are installed)
+        description: Assets of non-core panel plugins (reveals which plugins are installed)
         supporting: true
   notes: Proxy auth with X-Forwarded-User header, accepted only from Traefik (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP). Auto-creates users as Viewer role. Admin role requires manual promotion in Grafana. Access gated by group-gate.
 
