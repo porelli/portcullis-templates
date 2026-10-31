@@ -250,10 +250,17 @@ jobs:
         id: images
         working-directory: core
         run: |
+          set -euo pipefail
+          # Core's compose requires every secret (${VAR:?}); a throwaway .env
+          # from the CLI lets `config --images` resolve. It's not shipped.
+          ./portcullis init --env-only --non-interactive --domain portcullis.local \
+            --email ci@portcullis.local --dns-provider none >/dev/null
           # Skip locally built images and the hub (pulled by core as needed).
           docker compose config --images \
-            | grep -v -e '^portcullis-enroll$' -e 'portcullis-hub' \
+            | { grep -v -e '^portcullis-enroll$' -e 'portcullis-hub' || true; } \
             | sort -u > ../infra-images.txt
+          rm -f .env
+          [ -s ../infra-images.txt ] || { echo "::error::no infra images resolved from core compose"; exit 1; }
           cat ../infra-images.txt
           echo "key=infra-images-$(sha256sum ../infra-images.txt | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
@@ -281,6 +288,7 @@ jobs:
       - name: Pull images
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
           mkdir -p /tmp/docker-images
           xargs -n1 docker pull < infra-images.txt
           xargs docker save -o /tmp/docker-images/infra.tar < infra-images.txt
