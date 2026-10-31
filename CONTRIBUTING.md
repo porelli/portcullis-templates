@@ -163,11 +163,12 @@ stripped). Rules, all checked by `tests/validate.py`:
   `static_extensions`, never script extensions). A single app route the
   page needs is `exact: true` with a `justification`. Other token-free paths
   open only in mode `all`.
-- Logins must not ride the public router: `Authorization` and
-  `Proxy-Authorization` are always stripped; list other login headers in
-  `credential_headers` (stripped), login cookies in `credential_cookies` and
-  login query parameters in `credential_query` (requests carrying them don't
-  match the public router and go through the gated one).
+- Logins must not ride the public router: list the app's other login
+  headers in `credential_headers`, login cookies in `credential_cookies` and
+  login query parameters in `credential_query`. Core's public guard
+  (group-gate) refuses requests carrying any of them, or `Authorization` /
+  `Proxy-Authorization`, with cookie / query names normalised the way PHP
+  does. Check every authentication source of the app at the pinned version.
 - Broad prefixes (`/api`, `/index.php`, bare `*.php`, `/ocs/v2.php`, ...) need
   `broad: true` and a `justification`; `/admin`, `/oauth2` and `/.well-known`
   are never public, and public paths may not overlap `admin_paths` or another

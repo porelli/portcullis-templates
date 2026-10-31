@@ -202,17 +202,17 @@
           "maxLength": 200
         },
         "credential_headers": {
-          "description": "Request headers besides Authorization / Proxy-Authorization the app logs a user in with (API keys, session tokens); stripped on public paths.",
+          "description": "Request headers besides Authorization / Proxy-Authorization the app logs a user in with (API keys, session tokens). Core's public guard refuses requests carrying one; the Hub also strips them.",
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"}
         },
         "credential_cookies": {
-          "description": "Cookies the app logs a user in with (session, remember-me). Requests carrying one (loosely matched: case-insensitive, percent-encoded, PHP-mangled with _ . space + [) don't match the public router.",
+          "description": "Cookies the app logs a user in with (session, remember-me). Core's public guard refuses requests carrying one (names normalised like PHP, raw and percent-decoded, case-insensitive).",
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
         },
         "credential_query": {
-          "description": "Query parameters the app logs a user in with (e.g. apiKey). Requests carrying one, in any PHP-mangled spelling (each _ or . as _ . space [), don't match the public router. At most 3 '_' / '.' per name.",
+          "description": "Query parameters the app logs a user in with (e.g. apiKey). Core's public guard refuses requests carrying one (names normalised like PHP, case-insensitive).",
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
         },

@@ -86,8 +86,10 @@
 #     compose.yml never carries the public router: the Hub generates it in
 #     the per-app override when the exception is on (see the Hub's
 #     internal/hub/public.go). Tests emulate that override with
-#     write_public_override and pass it to compose_up via COMPOSE_OVERRIDE.
-#     Keep publicStripHeaders below in sync with the Hub.
+#     write_public_override and pass it to compose_up via COMPOSE_OVERRIDE,
+#     and give core's real public guard (group-gate /public-guard, policy
+#     file version 3) its entry with write_public_policy. Keep the header and
+#     extension lists below in sync with the Hub.
 #
 # 10. STATIC vs CONTAINER TESTS
 #     Two test patterns exist:
@@ -610,48 +612,14 @@ _public_matchers() {
   esac
 }
 
-# _public_cookie_regexp <name...>: the Hub's cookieRegexp, YAML-escaped.
-_public_cookie_regexp() {
-  local alts="" n c i alt
-  for n in "$@"; do
-    alt=""
-    for ((i = 0; i < ${#n}; i++)); do
-      c="${n:i:1}"
-      case "$c" in
-        _|.) alt+='(?:[_. +\\[]|%[0-9a-f]{2})' ;;
-        *) alt+="(?:$c|%[0-9a-f]{2})" ;;
-      esac
-    done
-    alts="${alts:+$alts|}$alt"
-  done
-  echo "(?i)(?:^|[;,])\\\\s*(?:$alts)\\\\s*="
-}
-
-# _public_query_variants <name>: the Hub's queryKeyVariants (every "_" / "."
-# as "_", ".", " " or "[", the key spellings PHP reads as <name>).
-_public_query_variants() {
-  local name="$1" variants=("") next c i o a
-  for ((i = 0; i < ${#name}; i++)); do
-    c="${name:i:1}"
-    next=()
-    for o in "${variants[@]}"; do
-      case "$c" in
-        _|.) for a in "_" "." " " "["; do next+=("$o$a"); done ;;
-        *) next+=("$o$c") ;;
-      esac
-    done
-    variants=("${next[@]}")
-  done
-  printf '%s\n' "${variants[@]}"
-}
-
 # write_public_override <app> <service> <host-arg> <tier> <out> <entry...>
 # Writes the labels the Hub generates for a public router: every router of
 # the compose file gets <tier> (one TLS tier per host), plus
-# portcullis-public-<app> without forward-auth, its credential exclusions
-# and its strip middleware. Entries as printed by public_routed_prefixes.
+# portcullis-public-<app> without forward-auth, behind core's public guard
+# (see write_public_policy) and the strip middleware. Entries as printed by
+# public_routed_prefixes.
 write_public_override() {
-  local app="$1" svc="$2" host="$3" tier="$4" out="$5" compose manifest r e rule="" hdr q
+  local app="$1" svc="$2" host="$3" tier="$4" out="$5" compose manifest r e rule="" hdr
   shift 5
   compose=$(_find_compose "$app") || { fail "compose.yml not found for $app"; return 1; }
   manifest="$(dirname "$compose")/manifest.yaml"
@@ -659,14 +627,6 @@ write_public_override() {
     rule="${rule:+$rule || }$(_public_matchers "$e")"
   done
   rule="Host(\`$host\`) && ($rule)"
-  local cookies=()
-  while read -r q; do cookies+=("$q"); done < <(_manifest_public_list "$manifest" credential_cookies)
-  if [ ${#cookies[@]} -gt 0 ]; then
-    rule+=" && !HeaderRegexp(\`Cookie\`, \`$(_public_cookie_regexp "${cookies[@]}")\`)"
-  fi
-  while read -r q; do
-    rule+=" && !QueryRegexp(\`$q\`, \`.*\`)"
-  done < <(_manifest_public_list "$manifest" credential_query | while read -r q; do _public_query_variants "$q" | LC_ALL=C sort; done)
   {
     echo "services:"
     echo "  $svc:"
@@ -679,12 +639,64 @@ write_public_override() {
     echo "      traefik.http.routers.portcullis-public-$app.tls: \"true\""
     echo "      traefik.http.routers.portcullis-public-$app.tls.options: $tier"
     echo "      traefik.http.routers.portcullis-public-$app.priority: \"10000\""
-    echo "      traefik.http.routers.portcullis-public-$app.middlewares: portcullis-public-strip-$app@docker,rate-limit@file,security-headers@file"
+    echo "      traefik.http.routers.portcullis-public-$app.middlewares: portcullis-public-guard@docker,portcullis-public-strip-$app@docker,rate-limit@file,security-headers@file"
     echo "      traefik.http.routers.portcullis-public-$app.service: \"$svc\""
     _public_strip_headers "$manifest" | while read -r hdr; do
       echo "      traefik.http.middlewares.portcullis-public-strip-$app.headers.customrequestheaders.$hdr: \"\""
     done
   } > "$out"
+}
+
+# public_published_entries <manifest> <all|listed>: what the Hub publishes
+# for core's public guard (PublicPlan.Effective's published list: listed
+# mode keeps {token}).
+public_published_entries() {
+  local manifest="$1" mode="$2" prefix sup ex enc
+  while read -r prefix sup ex; do
+    prefix="${prefix%/}"
+    enc="$prefix"
+    if [ "$ex" = 1 ]; then enc="=$prefix"; elif [ "$sup" = 1 ]; then enc="~$prefix"; fi
+    case "$prefix" in
+      *\{token\}*) if [ "$mode" = listed ]; then echo "$prefix"; else echo "${prefix%%/\{token\}*}"; fi ;;
+      *) if [ "$sup" = 1 ] || [ "$mode" != listed ]; then echo "$enc"; fi ;;
+    esac
+  done < <(_manifest_public_paths "$manifest") | LC_ALL=C sort -u
+}
+
+# write_public_policy <subdomain> <manifest> <all|listed>: the policy file
+# (version 3) the Hub would write for this public exception, into core's
+# hub_data volume, so core's real public guard (group-gate /public-guard)
+# runs in the test. clear_public_policy empties it again.
+write_public_policy() {
+  local sub="$1" manifest="$2" mode="$3" pattern
+  pattern=$(sed -n "s/^    token_pattern:[[:space:]]*['\"]\\(.*\\)['\"][[:space:]]*$/\\1/p" "$manifest")
+  public_published_entries "$manifest" "$mode" | jq -R . | jq -s \
+    --arg sub "$sub" --arg pattern "$pattern" --arg exts "$PUBLIC_STATIC_EXTS" \
+    --argjson extra_exts "$(_manifest_public_list "$manifest" static_extensions | jq -R . | jq -s .)" \
+    --argjson headers "$(_manifest_public_list "$manifest" credential_headers | jq -R . | jq -s .)" \
+    --argjson cookies "$(_manifest_public_list "$manifest" credential_cookies | jq -R . | jq -s .)" \
+    --argjson query "$(_manifest_public_list "$manifest" credential_query | jq -R . | jq -s .)" '
+      {version: 3, public_paths: {($sub): ({
+        paths: map(if startswith("=") then {path: .[1:], match: "exact"}
+                   elif startswith("~") then {path: .[1:], match: "static"}
+                   else {path: ., match: "prefix"} end),
+        static_extensions: (($exts | split("|")) + $extra_exts | unique),
+        credential_headers: (["Authorization", "Proxy-Authorization"] + $headers),
+        credential_cookies: $cookies, credential_query: $query}
+        + (if $pattern != "" then {token_pattern: $pattern} else {} end))}}' | _hub_data_write
+}
+
+clear_public_policy() { echo '{}' | _hub_data_write; }
+
+# Write stdin as group-gate-policy.json into core's hub_data volume
+# (atomically), using the image group-gate already runs (no extra pull).
+_hub_data_write() {
+  local cid image
+  cid=$(docker ps -q --filter label=com.docker.compose.project=portcullis --filter label=com.docker.compose.service=group-gate | head -1)
+  [ -n "$cid" ] || { fail "group-gate is not running"; return 1; }
+  image=$(docker inspect -f '{{.Config.Image}}' "$cid")
+  docker run --rm -i --user 0 --entrypoint sh -v portcullis_hub_data:/d "$image" \
+    -c 'cat > /d/.policy.tmp && chmod 644 /d/.policy.tmp && mv /d/.policy.tmp /d/group-gate-policy.json'
 }
 
 # via_traefik <host> <path> [curl args...]: "<code> <redirect_url>" of an
@@ -708,6 +720,19 @@ assert_public_path() {
     fail "public $path → HTTP $code (not answered by the app)"
   else
     pass "public $path → HTTP $code, no Keycloak redirect"
+  fi
+}
+
+# assert_public_refused <host> <path> [curl args...]: core's public guard
+# answers 403 (a credential, or a path outside the published patterns).
+assert_public_refused() {
+  local out code loc host="$1" path="$2"
+  shift 2
+  out=$(via_traefik "$host" "$path" "$@"); code=${out%% *}; loc=${out#* }
+  if [ "$code" = 403 ] && [ -z "$loc" ]; then
+    pass "public $path ${*:+($*)} → refused by the public guard (403)"
+  else
+    fail "public $path ${*:+($*)} → expected 403 from the public guard, got $code ${loc:-<none>}"
   fi
 }
 

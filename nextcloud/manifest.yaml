@@ -27,9 +27,8 @@ auth:
     # Share tokens: 6-32 chars of Nextcloud's human-readable alphabet, or
     # custom tokens of letters, digits and '-' (ShareAPIController.php).
     token_pattern: '^[A-Za-z0-9-]{1,32}$'
-    # Remember-me login cookies (lib/private/User/Session.php): requests
-    # carrying them don't match the public router (they go through
-    # forward-auth). Authorization (Basic login with a
+    # Remember-me login cookies (lib/private/User/Session.php): core's
+    # public guard refuses requests carrying them (403). Authorization (Basic login with a
     # password / app password, base.php tryBasicAuthLogin) is always
     # stripped; public WebDAV only uses Basic optionally (PublicAuth.php),
     # the browser uses the share session. The PHP session cookie stays:

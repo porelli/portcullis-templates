@@ -23,10 +23,9 @@ auth:
     description: >-
       Shared links (/share/<key>, /s/<slug>) for visitors without a client
       certificate. Immich's shared-link key, password and expiry still apply.
-    # Logins are not honoured on public paths: Authorization and these
-    # API-key / session headers are stripped, and requests carrying the
-    # session cookie or an apiKey / sessionKey parameter don't match the
-    # public router (server/src/enum.ts ImmichCookie, ImmichHeader,
+    # Logins are not honoured on public paths: core's public guard refuses
+    # requests carrying Authorization, these API-key / session headers, the
+    # session cookie or an apiKey / sessionKey parameter (server/src/enum.ts ImmichCookie, ImmichHeader,
     # ImmichQuery).
     credential_headers: [x-api-key, x-immich-user-token, x-immich-session-token]
     credential_cookies: [immich_access_token, immich_maintenance_token]

@@ -18,8 +18,9 @@ ROUTED=()
 while read -r p; do ROUTED+=("$p"); done < <(public_routed_prefixes "$MANIFEST" listed "$TOKEN")
 COMPOSE_OVERRIDE=$(mktemp)
 export COMPOSE_OVERRIDE
-# The Hub also strips Authorization and excludes requests carrying
-# grafana_session (both part of the emulated override).
+# Core's real public guard checks paths and credentials: give it the
+# policy-file entry the Hub would publish (version 3).
+write_public_policy grafana "$MANIFEST" listed
 # shellcheck disable=SC2016 # ${PORTCULLIS_DOMAIN} is for compose to expand
 write_public_override "$APP_ID" grafana 'grafana.${PORTCULLIS_DOMAIN:-portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
 
@@ -88,15 +89,19 @@ assert_gated_path "$HOST" "/"
 assert_gated_path "$HOST" "/api/user"
 # Supporting paths serve static files only.
 assert_gated_path "$HOST" "/public/build/"
-# A Grafana login cookie never rides the public router (it would let a
-# stolen session past the gateway's hardware-key check).
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: grafana_session=stolen"
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: a=1; grafana%5Fsession=stolen"
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: grafana+session=stolen"
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: renderKey=stolen"
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN?auth_token=stolen"
-assert_gated_path "$HOST" "/public-dashboards/$TOKEN?auth.token=stolen"
+# Logins never ride the public router: core's public guard refuses
+# requests carrying a Grafana credential (403, no redirect), with cookie /
+# query names normalised the way PHP does (and case-insensitively).
+for h in "Cookie: grafana_session=stolen" "Cookie: a=1; grafana%5Fsession=stolen" "Cookie: GRAFANA_SESSION=stolen" \
+         "Cookie:  grafana.session=stolen" "Cookie: renderKey=stolen" "Authorization: Basic YWRtaW46YWRtaW4=" \
+         "Authorization: Bearer glsa_stolen" "X-Access-Token: stolen"; do
+  assert_public_refused "$HOST" "/public-dashboards/$TOKEN" -H "$h"
+done
+for q in "auth_token=stolen" "auth.token=stolen" "+auth_token=stolen" "auth_token%5B%5D=stolen" "auth%5Ftoken=stolen"; do
+  assert_public_refused "$HOST" "/public-dashboards/$TOKEN?$q"
+done
 
+clear_public_policy
 compose_down "$APP_ID"
 rm -f "$COMPOSE_OVERRIDE"
 
