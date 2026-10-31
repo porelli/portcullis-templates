@@ -347,28 +347,49 @@ jobs:
           path: /tmp/docker-images
           key: ${{ needs.fetch-core.outputs.cache_key }}
 
-      # The cache is not a trust boundary (any job of a run can reach the
-      # cache service), so every infra image is re-checked against the
-      # registry: digest-pinned refs must carry that digest, everything else
-      # is re-pulled by tag (layers are already local, so this is cheap and
-      # re-points the tag at the registry's image if the cache was tampered).
+      # The cache is not a trust boundary: a run of untrusted code on the
+      # default branch scope could have created the cache entry, and the
+      # RepoDigests metadata inside a loaded tarball can claim anything.
+      # What can't be faked is the image ID: it is the sha256 of the image
+      # config, which pins every layer's diff_id, and `docker load` verifies
+      # layers against it. So:
+      #   - digest-pinned refs: resolve the expected config digest from the
+      #     registry (linux/amd64) and compare it with the loaded image ID;
+      #     on mismatch delete the image and pull it fresh.
+      #   - tag-only refs: `docker pull` resolves the manifest from the
+      #     registry and re-points the tag if the cached image differs.
       - name: Load and verify infra images
         run: |
+          set -euo pipefail
           if [ -f /tmp/docker-images/infra.tar ]; then
-            docker load -i /tmp/docker-images/infra.tar
+            docker load -q -i /tmp/docker-images/infra.tar
           else
             echo "No image cache; pulling"
           fi
+          expected_config() { # <image@sha256:...> -> linux/amd64 config digest
+            local ref="$1" repo="${1%@*}" raw plat
+            raw=$(docker manifest inspect "$ref")
+            if jq -e '.manifests' >/dev/null <<<"$raw"; then
+              plat=$(jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest' <<<"$raw" | head -1)
+              [ -n "$plat" ] || return 1
+              raw=$(docker manifest inspect "${repo%:*}@$plat")
+            fi
+            jq -r '.config.digest' <<<"$raw"
+          }
           while read -r img; do
             [ -n "$img" ] || continue
             case "$img" in
               *@sha256:*)
-                want="${img##*@}"
-                if docker image inspect --format '{{join .RepoDigests "\n"}}' "$img" 2>/dev/null | grep -qF "@$want"; then
-                  echo "verified $img"
+                want=$(expected_config "$img") || { echo "::error::cannot resolve $img"; exit 1; }
+                got=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
+                if [ "$got" = "$want" ]; then
+                  echo "verified $img ($want)"
                 else
-                  echo "::warning::$img missing or digest mismatch after cache load; pulling"
+                  echo "::warning::$img: loaded image ${got:-<none>} != registry config $want; pulling fresh"
+                  [ -z "$got" ] || docker image rm -f "$got" >/dev/null
                   docker pull -q "$img"
+                  got=$(docker image inspect --format '{{.Id}}' "$img")
+                  [ "$got" = "$want" ] || { echo "::error::$img still mismatches after pull"; exit 1; }
                 fi
                 ;;
               *) docker pull -q "$img" ;;
@@ -397,6 +418,11 @@ jobs:
           PORTCULLIS_TRAEFIK_IP=172.31.250.2
           ENVEOF
           sed -i 's/^[[:space:]]*//' .env
+          # Fixed CI credentials above are what tests/lib.sh uses; init keeps
+          # existing values and only generates what's missing (e.g.
+          # HUB_PROXY_SECRET), so the .env matches core's own CI.
+          ./portcullis init --env-only --non-interactive --domain portcullis.local \
+            --email ci@portcullis.local --dns-provider none
 
           # Bind-mount sources must exist before compose runs, or Docker
           # creates them root-owned and core's scripts can't write into them
@@ -433,17 +459,16 @@ jobs:
           GOT_IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "portcullis-proxy").IPAddress}}' "$(docker compose ps -q traefik)")
           test "$GOT_IP" = "$TRAEFIK_IP" || { echo "Traefik IP on portcullis-proxy is $GOT_IP, want $TRAEFIK_IP"; exit 1; }
 
-          # Vault in server mode: core's script starts, initialises and
-          # unseals it and writes secrets/ (root token in vault-init.json).
-          ./scripts/vault-init.sh
+          # Vault in server mode: core's CLI starts, initialises and unseals
+          # it and writes secrets/ (root token in vault-init.json).
+          ./portcullis vault init
 
           for _ in $(seq 1 30); do docker compose exec -T postgres pg_isready -U keycloak > /dev/null 2>&1 && break; sleep 2; done
           for _ in $(seq 1 30); do docker compose exec -T lldap /app/lldap healthcheck --config-file /data/lldap_config.toml > /dev/null 2>&1 && break; sleep 2; done
 
-          # Vault PKI. The admin token comes from secrets/vault-init.json
-          # (scripts/lib/vault-common.sh); with no host vault CLI the script
-          # runs the CLI inside the vault container.
-          DOMAIN=$PORTCULLIS_DOMAIN CERT_DIR=./certs ./scripts/setup-vault-pki.sh --with-server-cert
+          # Vault PKI (admin token from secrets/vault-init.json; with no host
+          # vault CLI it runs the CLI inside the vault container).
+          ./portcullis pki setup --with-server-cert
 
           cat > traefik/dynamic/ci-certs.yml << 'EOF'
           tls:
@@ -457,13 +482,10 @@ jobs:
           docker compose up -d keycloak
           for _ in $(seq 1 90); do curl -sf http://localhost:9000/health/ready > /dev/null 2>&1 && break; sleep 3; done
 
-          jq --arg pass "$LLDAP_ADMIN_PASSWORD" \
-            '(.components["org.keycloak.storage.UserStorageProvider"][0].config.bindCredential) = [$pass]' \
-            keycloak/realm-export.json > /tmp/realm.json
-          cp /tmp/realm.json keycloak/realm-export.json
-          export KEYCLOAK_URL=http://localhost:8080
-          ./scripts/configure-keycloak.sh
-          ./scripts/register-oidc-clients.sh
+          # LDAP bind credentials and the forward-auth secret are pushed
+          # through the admin API (the realm export only has placeholders).
+          ./portcullis keycloak configure
+          ./portcullis oidc register
 
           # Auth services
           docker compose up -d forward-auth group-gate
