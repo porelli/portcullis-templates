@@ -71,3 +71,17 @@ if public_routed_prefixes "$MANIFEST" all | grep -qxE '/index\.php|/ocs(/.*)?|/r
 else
   pass "mode all stays off /index.php, /ocs, /remote.php, /apps, /core"
 fi
+# Supporting paths are static files only (except the one justified exact
+# route), and logins never ride the public router.
+if echo "$ROUTED" | grep -qx '[~]/apps/theming' && echo "$ROUTED" | grep -qx '=/core/mimeicon'; then
+  pass "supporting paths are static-only / exact"
+else
+  fail "supporting paths not static-only: $ROUTED"
+fi
+for c in nc_username nc_token nc_session_id; do
+  if _manifest_public_list "$MANIFEST" credential_cookies | grep -qx "$c"; then
+    pass "login cookie $c excluded from the public router"
+  else
+    fail "login cookie $c not declared in credential_cookies"
+  fi
+done

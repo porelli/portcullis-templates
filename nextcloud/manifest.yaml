@@ -27,6 +27,15 @@ auth:
     # Share tokens: 6-32 chars of Nextcloud's human-readable alphabet, or
     # custom tokens of letters, digits and '-' (ShareAPIController.php).
     token_pattern: '^[A-Za-z0-9-]{1,32}$'
+    # Remember-me login cookies (lib/private/User/Session.php): requests
+    # carrying them don't match the public router (they go through
+    # forward-auth). Authorization (Basic login with a
+    # password / app password, base.php tryBasicAuthLogin) is always
+    # stripped; public WebDAV only uses Basic optionally (PublicAuth.php),
+    # the browser uses the share session. The PHP session cookie stays:
+    # password-protected shares and CSRF tokens need it, and the routes
+    # below are share-scoped or static files only.
+    credential_cookies: [nc_username, nc_token, nc_session_id]
     paths:
       - prefix: "/s/{token}"
         description: Share page, password form, download and direct preview
@@ -38,50 +47,54 @@ auth:
         description: Chunked uploads to file-drop / editable shares
       - prefix: "/apps/files_sharing/publicpreview/{token}"
         description: Thumbnails of the shared files
+      # Supporting paths serve static files only (css, js, images, fonts):
+      # the Hub matches them by extension, so no PHP route under them.
       - prefix: /dist
-        description: Compiled JS/CSS of core, files, files_sharing and systemtags (static)
+        description: Compiled JS/CSS of core, files, files_sharing and systemtags
         supporting: true
       - prefix: /core/css
-        description: Core stylesheets (static)
+        description: Core stylesheets
         supporting: true
       - prefix: /core/img
-        description: Core images (static)
+        description: Core images
         supporting: true
       - prefix: /core/js
-        description: mimetypelist.js and the oc.js config (same data the page inlines)
+        description: mimetypelist.js (and the oc.js config fallback, same data the page inlines)
         supporting: true
       - prefix: /core/l10n
-        description: Core translations (static)
+        description: Core translations
         supporting: true
       - prefix: /core/mimeicon
-        description: File-type icon redirect for files without a preview
+        description: File-type icon for files without a preview
         supporting: true
+        exact: true
+        justification: "#[PublicPage] PreviewController::getMimeIconUrl, only redirects to a static icon (core/Controller/PreviewController.php)"
       - prefix: /apps/theming
-        description: Theme CSS, favicon, manifest and icons (its admin routes still need a Nextcloud login)
+        description: Theme stylesheets and icons (*.css / *.svg / *.png; its admin routes have no file extension)
         supporting: true
       - prefix: /apps/viewer
-        description: In-browser image/video/audio viewer (static, no routes)
-        supporting: true
-      - prefix: /apps/files_pdfviewer
-        description: PDF viewer (pdf.js and its viewer page; settings API needs a login)
+        description: In-browser image/video/audio viewer (static app, no routes)
         supporting: true
       - prefix: /apps/files/l10n
-        description: Files UI translations (static)
+        description: Files UI translations
         supporting: true
       - prefix: /apps/systemtags/l10n
-        description: System tags translations (static)
+        description: System tags translations
         supporting: true
       - prefix: /apps/files_sharing/css
-        description: Share page styles (static)
+        description: Share page styles
         supporting: true
       - prefix: /apps/files_sharing/img
-        description: Share page images (static)
+        description: Share page images
         supporting: true
       - prefix: /apps/files_sharing/l10n
-        description: Share page translations (static)
+        description: Share page translations
         supporting: true
-      - prefix: /apps/text
-        description: Markdown / README viewer (token in the request body, so only in mode all)
+      - prefix: /apps/text/js
+        description: Markdown / README viewer scripts
+        supporting: true
+      - prefix: /apps/text/public
+        description: Markdown / README viewer public sessions (token in the request body, so only in mode all)
   notes: >
     Access gated by forward-auth + group-gate; Nextcloud then shows its own
     login (admin account uses NEXTCLOUD_ADMIN_PASSWORD). No OIDC app is
@@ -90,8 +103,10 @@ auth:
     headers (no user_oidc / header login), so the user-editable LLDAP email
     plays no part in which Nextcloud account is used.
     Public exceptions (Hub, off for every share until listed): only the
-    listed share links and the static assets their page needs bypass the
-    gateway. Share-password brute force then faces the internet, limited by
+    listed share links and the static files their page needs bypass the
+    gateway; logins (Basic auth, remember-me cookies) are not honoured there.
+    The PDF viewer page (a PHP route) is not public, so PDFs on a share
+    download instead of opening inline; Markdown renders only in mode all. Share-password brute force then faces the internet, limited by
     Nextcloud's own brute-force protection (it sees the client IP via
     TRUSTED_PROXIES = Traefik). Apps installed under /custom_apps that hook
     the share page are not covered.
