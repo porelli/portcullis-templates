@@ -290,7 +290,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/docker-images
-          xargs -n1 docker pull < infra-images.txt
+          while read -r img; do
+            [ -n "$img" ] || continue
+            for i in 1 2 3 4 5; do docker pull -q "$img" && break; [ "$i" = 5 ] && exit 1; sleep $((i * 15)); done
+          done < infra-images.txt
           xargs docker save -o /tmp/docker-images/infra.tar < infra-images.txt
 
       - name: Save image cache
@@ -374,6 +377,8 @@ jobs:
           else
             echo "No image cache; pulling"
           fi
+          # Registries rate-limit bursts (toomanyrequests): retry with backoff.
+          pull() { local i; for i in 1 2 3 4 5; do docker pull -q "$1" && return 0; echo "pull $1 failed (attempt $i), retrying"; sleep $((i * 15)); done; return 1; }
           expected_config() { # <image@sha256:...> -> linux/amd64 config digest
             local ref="$1" repo="${1%@*}" raw plat
             raw=$(docker manifest inspect "$ref")
@@ -395,12 +400,12 @@ jobs:
                 else
                   echo "::warning::$img: loaded image ${got:-<none>} != registry config $want; pulling fresh"
                   [ -z "$got" ] || docker image rm -f "$got" >/dev/null
-                  docker pull -q "$img"
+                  pull "$img"
                   got=$(docker image inspect --format '{{.Id}}' "$img")
                   [ "$got" = "$want" ] || { echo "::error::$img still mismatches after pull"; exit 1; }
                 fi
                 ;;
-              *) docker pull -q "$img" ;;
+              *) pull "$img" ;;
             esac
           done < infra-images.txt
 
