@@ -174,6 +174,16 @@ list it in `auth.admin_paths`; group-gate then additionally requires
   server (Firefly III, Guacamole) or keep the app off `portcullis-proxy` behind
   a small gate (CloudBeaver). Never trust `**`, `0.0.0.0/0`, `::/0` or the
   proxy subnet: every other app container shares that network.
+- **Identity is the LLDAP username, never the email.** LLDAP lets every user
+  change their own email, so Keycloak marks it unverified and an email-keyed
+  account could be taken over. Forward-auth passes `X-Forwarded-User` (the
+  immutable LLDAP username) and `X-Forwarded-Email` (display and
+  notifications only). Header-auth apps key accounts on `X-Forwarded-User`;
+  OIDC apps key on `sub` or `preferred_username` and must not link or create
+  accounts by email match (look for settings like "match/link by email",
+  "auto link user"; if the app cannot turn it off, see `immich/`). A gate that
+  rejects a foreign `X-Forwarded-User` must reject `X-Forwarded-Email` too.
+  `tests/validate.py` flags known email-linking settings.
 - **No published HTTP ports.** HTTP(S) goes through Traefik only. Non-HTTP
   host ports (DNS, TURN, ...) are declared under `ports:` in the manifest; the
   Hub detects collisions and writes the bindings.
