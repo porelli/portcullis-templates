@@ -526,9 +526,13 @@ jobs:
             [ "$v" = KEYCLOAK_ADMIN ] || echo "::add-mask::$val"
             echo "$v=$val" >> "$GITHUB_ENV"
           done
-          # ./templates is the Hub's template overlay; in CI it is this repo,
-          # so `./templates/<app>/...` mounts resolve (tests/lib.sh quirk #6).
-          ln -sfn "$WORKSPACE" templates
+          # ./templates is the Hub's template overlay (the Hub copies each app
+          # dir there before `compose up`), so `./templates/<app>/...` mounts
+          # resolve (tests/lib.sh quirk #6). Copy, don't symlink: the core CLI
+          # chowns ./templates to the Hub's uid, which must not hit the
+          # workspace itself.
+          mkdir -p templates
+          tar -C "$WORKSPACE" --exclude=./core --exclude=./.git -cf - . | tar -C templates -xf -
 
           cat > docker-compose.ci.yml << 'YML'
           services:
