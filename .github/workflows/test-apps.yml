@@ -8,7 +8,7 @@ on:
 
 env:
   # Core version the templates are tested against (branch or tag).
-  CORE_REF: modernize
+  CORE_REF: main
   PORTCULLIS_DOMAIN: portcullis.local
   KEYCLOAK_ADMIN: admin
   KEYCLOAK_ADMIN_PASSWORD: ci-admin-pass
