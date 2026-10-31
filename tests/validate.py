@@ -872,8 +872,6 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
                 r.error(where, f"a {PUBLIC_TOKEN} path cannot be exact")
             if not str(p.get("justification") or "").strip():
                 r.error(where, "exact path needs a justification (which app route, why the share page needs it)")
-            if p.get("broad"):
-                r.error(where, "broad: true on an exact path")
         elif p.get("supporting") and re.search(r"\.[A-Za-z0-9]{1,8}$", norm.rsplit("/", 1)[-1]):
             r.error(where, "supporting prefix names a file; supporting prefixes only serve static files below them",
                     "use exact: true (with a justification) for a single file or route")
@@ -885,9 +883,9 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
             if seg_overlap(base.lower(), f):
                 r.error(where, f"overlaps {f}, which can never be public")
         broad = base.lower() in PUBLIC_BROAD or (base.count("/") == 1 and base.lower().endswith(".php"))
-        if p.get("exact"):
-            pass  # one path, no subpaths: the broad list does not apply
-        elif broad and not (p.get("broad") and str(p.get("justification") or "").strip()):
+        # Exact paths too: an exact /index.php is still the whole front
+        # controller (PATH_INFO, query routing).
+        if broad and not (p.get("broad") and str(p.get("justification") or "").strip()):
             r.error(where, f"{base} is a broad prefix (whole API / front controller)",
                     "narrow it to the share endpoints, or set broad: true with a justification")
         elif p.get("broad") and not broad:
@@ -897,6 +895,10 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
                 r.error(where, f"overlaps admin path {ap}")
     if norm_paths and all(p.get("supporting") for _, p in norm_paths):
         r.error(w, "auth.public_access has only supporting paths")
+    for q in pa.get("credential_query") or []:
+        if isinstance(q, str) and q.count("_") + q.count(".") > 3:
+            r.error(w, f"auth.public_access.credential_query {q!r} has more than 3 '_' / '.'",
+                    "each one multiplies the key spellings the Hub must exclude (PHP name mangling)")
     has_token = any(PUBLIC_TOKEN in n for n, _ in norm_paths)
     if pa.get("default_mode") == "listed" and not has_token:
         r.error(w, f"auth.public_access.default_mode listed needs a path with {PUBLIC_TOKEN}")

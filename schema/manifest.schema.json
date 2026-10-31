@@ -207,12 +207,12 @@
           "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"}
         },
         "credential_cookies": {
-          "description": "Cookies the app logs a user in with (session, remember-me). Requests carrying one (loosely matched, case-insensitive, percent-encoded or PHP-mangled) don't match the public router.",
+          "description": "Cookies the app logs a user in with (session, remember-me). Requests carrying one (loosely matched: case-insensitive, percent-encoded, PHP-mangled with _ . space + [) don't match the public router.",
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
         },
         "credential_query": {
-          "description": "Query parameters the app logs a user in with (e.g. apiKey). Requests carrying one don't match the public router.",
+          "description": "Query parameters the app logs a user in with (e.g. apiKey). Requests carrying one, in any PHP-mangled spelling (each _ or . as _ . space [), don't match the public router. At most 3 '_' / '.' per name.",
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"}
         },
@@ -251,11 +251,11 @@
           "type": "boolean"
         },
         "exact": {
-          "description": "Opens only this exact path (no subpaths), for a single app route the share page needs. Needs justification; not with {token}.",
+          "description": "Opens only this exact path (no subpaths), for a single app route the share page needs. Needs justification; not with {token}. A broad-list path (e.g. /index.php, /api) still needs broad: true.",
           "type": "boolean"
         },
         "broad": {
-          "description": "Acknowledges a prefix on the broad list (e.g. /api, /index.php, bare *.php); needs justification. Not with exact.",
+          "description": "Acknowledges a prefix or exact path on the broad list (e.g. /api, /index.php, bare *.php); needs justification. Only on broad-list paths.",
           "type": "boolean"
         },
         "justification": {"$ref": "#/$defs/singleLine", "minLength": 1}
