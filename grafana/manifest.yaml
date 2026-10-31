@@ -11,6 +11,36 @@ auth:
   group_admin: false
   access_group: users_grafana
   admin_group: admin_grafana
+  # GF_AUTH_PROXY_HEADER_NAME: stripped by the Hub on public paths.
+  identity_headers: [X-Forwarded-User]
+  # Externally shared ("public") dashboards, Grafana 13.3.0: enabled by
+  # default upstream ([public_dashboards] enabled = true), routes in
+  # pkg/api/api.go and pkg/services/publicdashboards/internal/api/api.go.
+  # Listed mode: nothing is public until an admin lists a dashboard's token.
+  public_access:
+    enabled_by_default: true
+    default_mode: listed
+    description: >-
+      Externally shared dashboards (/public-dashboards/<access token>) for
+      people without a Portcullis account. Grafana serves them read-only and
+      anonymously; identity headers are stripped on these paths.
+    # Generated: 32 lowercase hex (uuid without dashes); API-created tokens
+    # may also use the dashed uuid form.
+    token_pattern: '^([0-9a-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$'
+    paths:
+      - prefix: "/public-dashboards/{token}"
+        description: Shared dashboard viewer page
+      - prefix: "/api/public/dashboards/{token}"
+        description: Dashboard JSON, annotations and panel queries of the shared dashboard
+      - prefix: /public/build
+        description: JS/CSS bundles, favicon and logos (static)
+        supporting: true
+      - prefix: /public/fonts
+        description: Fonts (static)
+        supporting: true
+      - prefix: /public/plugins
+        description: Assets of non-core panel plugins (static; reveals which plugins are installed)
+        supporting: true
   notes: Proxy auth with X-Forwarded-User header, accepted only from Traefik (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP). Auto-creates users as Viewer role. Admin role requires manual promotion in Grafana. Access gated by group-gate.
 
 env: []

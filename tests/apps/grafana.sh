@@ -8,6 +8,19 @@ section "Grafana"
 
 APP_ID=grafana
 
+# Public exception ON in listed mode with one listed dashboard token: the
+# override the Hub would generate (tests/lib.sh quirk #12), every router of
+# the host on the default policy's tier (authaware@file).
+TOKEN=$(openssl rand -hex 16)
+OTHER=$(openssl rand -hex 16)
+MANIFEST="$(dirname "$(_find_compose "$APP_ID")")/manifest.yaml"
+ROUTED=()
+while read -r p; do ROUTED+=("$p"); done < <(public_routed_prefixes "$MANIFEST" listed "$TOKEN")
+COMPOSE_OVERRIDE=$(mktemp)
+export COMPOSE_OVERRIDE
+# shellcheck disable=SC2016 # ${PORTCULLIS_DOMAIN} is for compose to expand
+write_public_override "$APP_ID" grafana 'grafana.${PORTCULLIS_DOMAIN:-portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")
@@ -49,5 +62,29 @@ else
   fail "Grafana must use HEADER_PROPERTY username and no GF_AUTH_PROXY_HEADERS"
 fi
 
+section "Public exception through Traefik"
+HOST="grafana.$DOMAIN"
+# Traefik picks the container up from the docker provider within seconds.
+for _ in $(seq 1 30); do
+  out=$(via_traefik "$HOST" /)
+  case "${out%% *}" in 000|404|502) sleep 1 ;; *) break ;; esac
+done
+if docker inspect "portcullis-${APP_ID}-1" --format '{{json .Config.Labels}}' | grep -q 'portcullis-public-strip-grafana.headers.customrequestheaders.X-Forwarded-User'; then
+  pass "public router strips X-Forwarded-User (GF_AUTH_PROXY_HEADER_NAME)"
+else
+  fail "public router lacks the X-Forwarded-User strip"
+fi
+# Listed dashboard: answered by Grafana without Keycloak.
+assert_public_path "$HOST" "/public-dashboards/$TOKEN"
+assert_public_path "$HOST" "/api/public/dashboards/$TOKEN"
+# Unlisted dashboard, a non-public path, and a segment-boundary near miss
+# stay behind forward-auth.
+assert_gated_path "$HOST" "/public-dashboards/$OTHER"
+assert_gated_path "$HOST" "/api/public/dashboards/$OTHER"
+assert_gated_path "$HOST" "/public-dashboards/${TOKEN}x"
+assert_gated_path "$HOST" "/"
+assert_gated_path "$HOST" "/api/user"
+
 compose_down "$APP_ID"
+rm -f "$COMPOSE_OVERRIDE"
 
