@@ -125,6 +125,13 @@
         "access_group": {"$ref": "#/$defs/group"},
         "admin_group": {"$ref": "#/$defs/group"},
         "notes": {"type": "string"},
+        "public_access": {"$ref": "#/$defs/publicAccess"},
+        "identity_headers": {
+          "description": "Request headers a header-auth app reads the user from (e.g. X-Forwarded-User). Required for header-auth apps with public_access: the Hub strips them, their underscore forms and the core identity headers on public paths.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"}
+        },
         "admin_paths": {
           "description": "Path prefixes that additionally require admin_group (group-gate path_groups, contracts §4). Only effective on routers that use portcullis-groups@docker. Segment-boundary prefix match: /admin matches /admin and /admin/x, not /administrator.",
           "type": "array",
@@ -155,6 +162,14 @@
           "then": {"required": ["admin_group"]}
         },
         {
+          "if": {"properties": {"method": {"const": "header-auth"}}, "required": ["method", "public_access"]},
+          "then": {"required": ["identity_headers"], "properties": {"identity_headers": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"method": {"enum": ["mtls", "custom", "public"]}}, "required": ["method"]},
+          "then": {"not": {"required": ["public_access"]}}
+        },
+        {
           "if": {"properties": {"method": {"const": "public"}}, "required": ["method"]},
           "then": {
             "properties": {
@@ -164,6 +179,65 @@
           }
         }
       ]
+    },
+    "publicAccess": {
+      "description": "Public path exceptions (contracts §3): when on, the Hub adds a Traefik router for these paths WITHOUT forward-auth/group-gate, so anonymous visitors can use the app's share links. The app's own auth still applies. Only for forward-auth, header-auth and native-oidc apps. More rules (one {token}, broad prefixes, overlaps, token_pattern probes) live in tests/validate.py and the Hub.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paths"],
+      "properties": {
+        "enabled_by_default": {
+          "description": "Initial state of the Hub toggle until an admin chooses. Default false.",
+          "type": "boolean"
+        },
+        "description": {"$ref": "#/$defs/singleLine", "maxLength": 500},
+        "default_mode": {
+          "description": "listed: only shares whose tokens an admin lists in the Hub (needs a {token} path); all: every share. Default: listed if a path has {token}, else all.",
+          "enum": ["all", "listed"]
+        },
+        "token_pattern": {
+          "description": "Anchored regular expression (^...$) every listed share token must match; required iff a path has {token}. Must not accept '/', '.', '..', spaces, backticks, '$' or '%'.",
+          "type": "string",
+          "pattern": "^\\^.*\\$$",
+          "maxLength": 200
+        },
+        "service": {
+          "description": "Compose service the public router targets. Default: the only service with HTTP routers.",
+          "$ref": "#/$defs/serviceName"
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/publicPath"}
+        }
+      }
+    },
+    "publicPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "description"],
+      "properties": {
+        "prefix": {
+          "description": "Segment-boundary path prefix (/s matches /s and /s/..., not /sx). One whole segment may be {token}: listed mode opens it per listed share, all mode up to the segment before it. Not / itself, no wildcards, no '..', '%', '?', '#'.",
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^(/([A-Za-z0-9._~-]+|\\{token\\}))+/?$",
+          "not": {"pattern": "\\.\\."}
+        },
+        "description": {"$ref": "#/$defs/singleLine", "minLength": 1, "maxLength": 200},
+        "supporting": {
+          "description": "Token-free path the share page needs (static assets, l10n, theming): opened in both modes. Token-free paths without supporting are opened only in mode all.",
+          "type": "boolean"
+        },
+        "broad": {
+          "description": "Acknowledges a prefix on the broad list (e.g. /api, /index.php, bare *.php); needs justification.",
+          "type": "boolean"
+        },
+        "justification": {"$ref": "#/$defs/singleLine", "minLength": 1}
+      },
+      "if": {"properties": {"broad": {"const": true}}, "required": ["broad"]},
+      "then": {"required": ["justification"]}
     },
     "setting": {
       "type": "object",

@@ -143,6 +143,33 @@ Admin panels on a path (e.g. Vaultwarden's `/admin`): route the path through a
 list it in `auth.admin_paths`; group-gate then additionally requires
 `admin_group` for it.
 
+Public share links (e.g. Nextcloud `/s/<token>`): declare them in
+`auth.public_access` — never as a router without forward-auth in
+`compose.yml`. When an admin turns the exception on in the Hub, the Hub adds
+the public router itself (no forward-auth, no group-gate, identity headers
+stripped). Rules, all checked by `tests/validate.py`:
+
+- Only for `forward-auth`, `header-auth` and `native-oidc` apps. Header-auth
+  apps also list the headers they trust in `auth.identity_headers`.
+- `paths[].prefix`: segment-boundary prefix of letters, digits and `. _ ~ -`;
+  not `/`, no wildcards, `..`, `%`, `?`, `#`. At most 20, each with a
+  `description`. Read the upstream routes at the pinned version and keep the
+  list as narrow as the share page allows.
+- Put the share token in the path as one `{token}` segment where the app
+  allows it (`/s/{token}`) and give an anchored `token_pattern`: admins can
+  then open single shares (`listed` mode). Static assets / l10n the page
+  needs are `supporting: true`; other token-free paths open only in mode
+  `all`.
+- Broad prefixes (`/api`, `/index.php`, bare `*.php`, `/ocs/v2.php`, ...) need
+  `broad: true` and a `justification`; `/admin`, `/oauth2` and `/.well-known`
+  are never public, and public paths may not overlap `admin_paths` or another
+  router's `Path`/`PathPrefix` (login gates). Routers on the app's hosts may
+  only use `Host`, `Path`, `PathPrefix`, `Method`, `Header`, `Query`,
+  `ClientIP`, without negation.
+- `enabled_by_default: true` only if nothing is opened until an admin acts
+  (listed mode) or the exception can't weaken the host (see Immich: on, it
+  drops the handshake mTLS requirement under an mTLS-only policy).
+
 ## Compose rules
 
 `tests/validate.py` checks all of these.

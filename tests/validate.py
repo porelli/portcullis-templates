@@ -102,6 +102,42 @@ LOGIN_GATES = {
 }
 
 
+# Public path exceptions (auth.public_access): mirror of the Hub's
+# internal/templates/public.go. Paths on the public router skip forward-auth
+# and group-gate, so they are validated strictly.
+PUBLIC_RESERVED = "portcullis-public-"
+PUBLIC_METHODS = {"forward-auth", "header-auth", "native-oidc"}
+PUBLIC_TOKEN = "{token}"
+PUBLIC_SEG_RE = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
+PUBLIC_BROAD = {
+    "/api", "/apps", "/index.php", "/ocs", "/ocs/v1.php", "/ocs/v2.php", "/remote.php", "/remote.php/dav",
+    "/remote.php/webdav", "/public.php", "/dav", "/webdav", "/graphql", "/rest", "/v1", "/v2", "/v3",
+    "/auth", "/login", "/user", "/users", "/account", "/settings", "/identity", "/sso", "/oidc",
+}
+PUBLIC_FORBIDDEN = ["/oauth2", "/admin", "/.well-known"]
+PUBLIC_TOKEN_PROBES = ["", ".", "..", "a/b", "/", "a`b", "a b", "%2F", "${X}", "a)b", "a\nb"]
+PUBLIC_NARROW_MATCHERS = {"host", "path", "pathprefix", "method", "header", "headerregexp", "query", "queryregexp", "clientip"}
+PUBLIC_HINT = f"see {DOCS_URL}/manifest-reference/#authpublic_access"
+
+
+def seg_overlap(a: str, b: str) -> bool:
+    if a == "/" or b == "/":
+        return True
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def token_base(p: str) -> str:
+    i = p.find("/" + PUBLIC_TOKEN)
+    return p if i < 0 else (p[:i] or "/")
+
+
+def rule_path_overlaps(kind: str, v: str, p: str) -> bool:
+    """Traefik Path/PathPrefix value v vs a segment-boundary prefix p."""
+    if kind == "Path":
+        return v == p or v.startswith(p + "/")
+    return (p + "/").startswith(v) or v.startswith(p + "/")
+
+
 # Identity must never be keyed on (or linked by) the email: LLDAP lets every
 # user change their own email, Keycloak marks it unverified and group-gate
 # forwards it separately in X-Forwarded-Email (display / notifications only).
@@ -531,6 +567,7 @@ def check_compose(t: Template, r: Report) -> None:
             r.error(where, "has traefik.http.* labels but not traefik.enable: \"true\"")
 
     check_routers(t, routers, r)
+    check_public_access(t, services, routers, r)
     check_identity(t, services, r)
 
 
@@ -776,6 +813,127 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                     "without it any Keycloak realm user can sign in; see the auth notes in manifest.yaml")
     if t.id in LOGIN_GATES and not auth.get("group_access"):
         r.error(t.m_where, "security regression: login is gated by group-gate, so group_access must be true")
+
+
+def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+    for sname, svc in services.items():
+        for k in labels_of(svc if isinstance(svc, dict) else {}):
+            mm = re.match(r"^traefik\.(?:http|tcp)\.(routers|middlewares)\.([^.]+)\.", k)
+            if mm and mm.group(2).startswith(PUBLIC_RESERVED):
+                r.error(f"{t.c_where}: services.{sname}", f"{mm.group(1)[:-1]} name {mm.group(2)} uses the prefix {PUBLIC_RESERVED}",
+                        "that prefix is reserved for the router the Hub generates from auth.public_access")
+    auth = (t.manifest or {}).get("auth") or {}
+    pa = auth.get("public_access")
+    if not isinstance(pa, dict):
+        return
+    w = t.m_where
+    if auth.get("method") not in PUBLIC_METHODS:
+        r.error(w, f"auth.public_access needs auth.method forward-auth, header-auth or native-oidc (got {auth.get('method')!r})",
+                "mtls apps have no auth besides the TLS handshake; public/custom apps have no gate to skip")
+        return
+    if auth.get("method") == "header-auth":
+        hdrs = [h for h in (auth.get("identity_headers") or []) if isinstance(h, str)]
+        if not hdrs:
+            r.error(w, "header-auth app with auth.public_access needs auth.identity_headers",
+                    "list the headers the app trusts (e.g. X-Forwarded-User); the Hub strips them on public paths")
+        envtext = t.compose_values
+        for h in sorted({m.group(0) for m in re.finditer(r"\b(?:X|Remote)-[A-Za-z0-9-]+", envtext)}):
+            if re.search(r"(?i)user|email|login|name|group", h) and h.lower() not in {x.lower() for x in hdrs} \
+                    and not h.lower().startswith(("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip")):
+                r.error(w, f"compose.yml mentions identity-like header {h} that auth.identity_headers does not list",
+                        "every header the app may read the user from must be stripped on the public router")
+    paths = [p for p in (pa.get("paths") or []) if isinstance(p, dict) and isinstance(p.get("prefix"), str)]
+    seen: Set[str] = set()
+    norm_paths: List[Tuple[str, Dict[str, Any]]] = []
+    for p in paths:
+        raw = p["prefix"]
+        where = f"{w}: auth.public_access {raw}"
+        if raw.count(PUBLIC_TOKEN) > 1:
+            r.error(where, f"more than one {PUBLIC_TOKEN}", PUBLIC_HINT)
+            continue
+        check = raw.replace(PUBLIC_TOKEN, "x")
+        if raw.count(PUBLIC_TOKEN) == 1 and PUBLIC_TOKEN not in raw.rstrip("/").split("/"):
+            r.error(where, f"{PUBLIC_TOKEN} must be a whole path segment", PUBLIC_HINT)
+            continue
+        if not PUBLIC_SEG_RE.match(check) or ".." in check or "." in check.split("/"):
+            r.error(where, "prefix must be /segment[/segment...] of letters, digits and . _ ~ - (no /, //, .., wildcards, %, ?, #)",
+                    PUBLIC_HINT)
+            continue
+        norm = raw.rstrip("/")
+        if norm in seen:
+            r.error(where, "duplicate prefix")
+        seen.add(norm)
+        norm_paths.append((norm, p))
+        tokenised = PUBLIC_TOKEN in norm
+        if tokenised and p.get("supporting"):
+            r.error(where, f"a {PUBLIC_TOKEN} path cannot be supporting (supporting paths are token-free and always open)")
+        base = token_base(norm)
+        if base == "/":
+            r.error(where, "would open / in mode all", PUBLIC_HINT)
+            continue
+        for f in PUBLIC_FORBIDDEN:
+            if seg_overlap(base.lower(), f):
+                r.error(where, f"overlaps {f}, which can never be public")
+        broad = base.lower() in PUBLIC_BROAD or (base.count("/") == 1 and base.lower().endswith(".php"))
+        if broad and not (p.get("broad") and str(p.get("justification") or "").strip()):
+            r.error(where, f"{base} is a broad prefix (whole API / front controller)",
+                    "narrow it to the share endpoints, or set broad: true with a justification")
+        if p.get("broad") and not broad:
+            r.error(where, f"broad: true on {base}, which is not a broad prefix")
+        for ap in auth.get("admin_paths") or []:
+            if isinstance(ap, str) and seg_overlap(base, ap.rstrip("/") or "/"):
+                r.error(where, f"overlaps admin path {ap}")
+    if norm_paths and all(p.get("supporting") for _, p in norm_paths):
+        r.error(w, "auth.public_access has only supporting paths")
+    has_token = any(PUBLIC_TOKEN in n for n, _ in norm_paths)
+    if pa.get("default_mode") == "listed" and not has_token:
+        r.error(w, f"auth.public_access.default_mode listed needs a path with {PUBLIC_TOKEN}")
+    pat = pa.get("token_pattern")
+    if has_token:
+        if not isinstance(pat, str) or not pat.startswith("^") or not pat.endswith("$") or pat.endswith("\\$"):
+            r.error(w, "auth.public_access.token_pattern is required and must be anchored (^...$)", PUBLIC_HINT)
+        else:
+            try:
+                rx = re.compile(pat)
+            except re.error as e:
+                r.error(w, f"auth.public_access.token_pattern does not compile: {e}")
+            else:
+                bad = [x for x in PUBLIC_TOKEN_PROBES if rx.match(x) and rx.fullmatch(x)]
+                if bad:
+                    r.error(w, f"auth.public_access.token_pattern accepts {bad[0]!r}",
+                            "tokens may only use letters, digits and . _ ~ - and never be '.' or '..'")
+    elif pat:
+        r.error(w, f"auth.public_access.token_pattern is set but no path has {PUBLIC_TOKEN}")
+
+    # Routing: the service the Hub puts the public router on, and no overlap
+    # with the path matchers of the app's other routers on the same hosts.
+    by_service: Dict[str, List[str]] = {}
+    for name, rt in routers.items():
+        by_service.setdefault(rt.get("_service", ""), []).append(name)
+    svc = pa.get("service")
+    if not svc:
+        if len(by_service) != 1:
+            r.error(w, f"auth.public_access: {len(by_service)} services have HTTP routers; set auth.public_access.service")
+            return
+        svc = next(iter(by_service))
+    if svc not in by_service:
+        r.error(w, f"auth.public_access.service {svc!r} has no HTTP router")
+        return
+    hosts = {h.lower() for n in by_service[svc] for h in HOST_RE.findall(routers[n].get("rule", ""))}
+    for name, rt in sorted(routers.items()):
+        rule = rt.get("rule", "")
+        if not hosts & {h.lower() for h in HOST_RE.findall(rule)}:
+            continue
+        opaque = sorted({m for m in re.findall(r"([A-Za-z]+)\(", rule) if m.lower() not in PUBLIC_NARROW_MATCHERS})
+        if opaque or "!" in rule:
+            r.error(w, f"auth.public_access: router {name} uses {', '.join(opaque) or 'a negation'}; "
+                    "the Hub can't tell whether public paths overlap it", "use only Host/Path/PathPrefix (+ Method/Header/Query/ClientIP) on the app's hosts")
+            continue
+        for kind, v in re.findall(r"(PathPrefix|Path)\(`([^`]*)`\)", rule):
+            for norm, _ in norm_paths:
+                if rule_path_overlaps(kind, v, token_base(norm)):
+                    r.error(w, f"auth.public_access {norm} overlaps router {name} ({kind}(`{v}`))",
+                            "public paths may not cover paths another router (login gate, admin router) handles")
 
 
 def check_cross(templates: List[Template], r: Report) -> None:
