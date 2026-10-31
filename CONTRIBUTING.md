@@ -94,13 +94,19 @@ secrets and a write token. Inside Test Apps, the trust boundary is per job:
 - `fetch-core` is the **only** job that references `PORTCULLIS_PAT`. It checks
   out nothing from the PR except `.core-ref`, read from a trusted commit (for
   a dispatched PR run: the PR's *base* commit, so a PR cannot point CI at
-  another core ref). It clones core, packs it as an artifact and is the only
-  job that writes the infra image cache.
+  another core ref). It clones core, packs it as an artifact and writes the
+  infra image cache.
+- `app-images` runs only on pushes to `main` (never for PRs or manual runs).
+  It reads each tested app's `compose.yml` (`tests/app-images.sh`), pulls its
+  pinned images and writes that app's image cache. It starts no container.
 - `test` runs your `tests/apps/<app>.sh` and compose file. It references no
-  secret, downloads core by artifact id with digest verification, and treats
-  the image cache as untrusted: after `docker load` every core image is
-  checked against the digest pinned in core's compose (or re-pulled by tag
-  from the registry), and re-pulled on any mismatch.
+  secret, writes no cache, downloads core by artifact id with digest
+  verification, and treats every image cache as untrusted: after
+  `docker load` it removes any name the tarball set, then binds every image
+  (core's and the app's) with a `docker pull` of the digest pinned in the
+  compose file. The pull checks the manifest against that digest and reuses
+  a loaded image only if its ID (the hash of its config, which pins every
+  layer) is the one that manifest names; otherwise it downloads it fresh.
 - Every job has a read-only `contents: read` token.
 
 `.core-ref` holds the core version the templates are tested against: a tag

@@ -11,8 +11,11 @@ name: Test Apps
 # references no secret. Core is cloned with the PAT in `fetch-core` (which
 # checks out nothing from the PR; for dispatched PR runs .core-ref is read
 # from the PR's base commit) and handed over as an artifact verified by
-# digest. The image cache is written only by `fetch-core`; `test` re-verifies
-# every image it loads from it against the registry.
+# digest. Image caches are written only by `fetch-core` (infra) and
+# `app-images` (per-app, push to main only), which run no template code;
+# `test` treats every cached tarball as untrusted: it drops any name a
+# tarball sets and binds every image ref by a registry pull of the pinned
+# digest, which only reuses loaded content whose image ID matches.
 #
 # Never switch this to pull_request_target: it would run fork code with
 # secrets and a write token.
@@ -139,6 +142,7 @@ jobs:
       contents: read
     outputs:
       apps: ${{ steps.filter.outputs.apps }}
+      cache_apps: ${{ steps.cache-apps.outputs.apps }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,6 +203,18 @@ jobs:
             esac
             if [ -f "$dir/compose.yml" ]; then echo "$dir"; fi
           done | sort -u | emit
+
+      # Push to main only: changed apps whose test boots the template (the
+      # ones with images to cache, see tests/app-images.sh). Reads files only.
+      - name: Select apps for the image cache
+        id: cache-apps
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          APPS: ${{ steps.filter.outputs.apps }}
+        run: |
+          jq -r '.[]' <<< "$APPS" | while read -r a; do
+            if grep -q '^[^#]*compose_up' "tests/apps/$a.sh" 2>/dev/null; then echo "$a"; fi
+          done | jq -R . | jq -sc 'map(select(length > 0))' | sed 's/^/apps=/' | tee -a "$GITHUB_OUTPUT"
 
   # ── Clone core + warm the infra image cache (trusted code only) ──
   # The only job that sees PORTCULLIS_PAT and the only one that writes the
@@ -303,6 +319,76 @@ jobs:
           path: /tmp/docker-images
           key: ${{ steps.images.outputs.key }}
 
+  # ── Warm the per-app image caches (trusted runs only) ──
+  # Push to main only: never PRs, never dispatched runs (a dispatched PR run
+  # executes in the default branch's cache scope). Runs no template code:
+  # tests/app-images.sh from the pushed commit reads <app>/compose.yml, then
+  # the pinned images are pulled and saved; no container is started. Keys
+  # hash the image list, so any tag/digest bump makes a new entry.
+  app-images:
+    needs: [gate, changes]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.cache_apps != '' && needs.changes.outputs.cache_apps != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.changes.outputs.cache_apps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            tests/app-images.sh
+            tests/apps/${{ matrix.app }}.sh
+            ${{ matrix.app }}/compose.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Resolve app images
+        id: images
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          set -euo pipefail
+          bash tests/app-images.sh "$APP" > "$RUNNER_TEMP/app-images.txt"
+          cat "$RUNNER_TEMP/app-images.txt"
+          if [ -s "$RUNNER_TEMP/app-images.txt" ]; then
+            echo "key=app-images-$APP-$(sha256sum "$RUNNER_TEMP/app-images.txt" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Look up app image cache
+        id: cache
+        if: steps.images.outputs.key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/app-images
+          key: ${{ steps.images.outputs.key }}
+          lookup-only: true
+
+      - name: Pull app images
+        if: steps.images.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/app-images
+          # Registries rate-limit bursts (toomanyrequests): retry with backoff.
+          while read -r img; do
+            [ -n "$img" ] || continue
+            for i in 1 2 3 4 5; do docker pull -q "$img" && break; [ "$i" = 5 ] && exit 1; echo "pull $img failed (attempt $i), retrying"; sleep $((i * 15)); done
+          done < "$RUNNER_TEMP/app-images.txt"
+          xargs docker save -o /tmp/app-images/images.tar < "$RUNNER_TEMP/app-images.txt"
+
+      - name: Save app image cache
+        if: steps.images.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/app-images
+          key: ${{ steps.images.outputs.key }}
+
   # ── Per-app tests (parallel) — runs template code, no secrets ──
   test:
     needs: [gate, changes, fetch-core]
@@ -358,56 +444,86 @@ jobs:
           path: /tmp/docker-images
           key: ${{ needs.fetch-core.outputs.cache_key }}
 
-      # The cache is not a trust boundary: a run of untrusted code on the
-      # default branch scope could have created the cache entry, and the
-      # RepoDigests metadata inside a loaded tarball can claim anything.
-      # What can't be faked is the image ID: it is the sha256 of the image
-      # config, which pins every layer's diff_id, and `docker load` verifies
-      # layers against it. So:
-      #   - digest-pinned refs: resolve the expected config digest from the
-      #     registry (linux/amd64) and compare it with the loaded image ID;
-      #     on mismatch delete the image and pull it fresh.
-      #   - tag-only refs: `docker pull` resolves the manifest from the
-      #     registry and re-points the tag if the cached image differs.
-      - name: Load and verify infra images
+      # Same list and key as `app-images` (which saves it on push to main).
+      # Computed from the code under test: it only picks which entry to
+      # restore, and everything restored is verified below.
+      - name: Resolve app images
+        id: app-images
+        env:
+          APP: ${{ matrix.app }}
         run: |
           set -euo pipefail
-          if [ -f /tmp/docker-images/infra.tar ]; then
-            docker load -q -i /tmp/docker-images/infra.tar
-          else
-            echo "No image cache; pulling"
+          bash tests/app-images.sh "$APP" > "$RUNNER_TEMP/app-images.txt"
+          cat "$RUNNER_TEMP/app-images.txt"
+          if [ -s "$RUNNER_TEMP/app-images.txt" ]; then
+            echo "key=app-images-$APP-$(sha256sum "$RUNNER_TEMP/app-images.txt" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           fi
-          # Registries rate-limit bursts (toomanyrequests): retry with backoff.
-          pull() { local i; for i in 1 2 3 4 5; do docker pull -q "$1" && return 0; echo "pull $1 failed (attempt $i), retrying"; sleep $((i * 15)); done; return 1; }
-          expected_config() { # <image@sha256:...> -> linux/amd64 config digest
-            local ref="$1" repo="${1%@*}" raw plat
-            raw=$(docker manifest inspect "$ref")
-            if jq -e '.manifests' >/dev/null <<<"$raw"; then
-              plat=$(jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest' <<<"$raw" | head -1)
-              [ -n "$plat" ] || return 1
-              raw=$(docker manifest inspect "${repo%:*}@$plat")
-            fi
-            jq -r '.config.digest' <<<"$raw"
+
+      - name: Restore app image cache
+        if: steps.app-images.outputs.key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/app-images
+          key: ${{ steps.app-images.outputs.key }}
+
+      # The cache is not a trust boundary: a run of untrusted code on the
+      # default branch scope could have created a cache entry, and the names
+      # and RepoDigests inside a loaded tarball can claim anything. What
+      # can't be faked is the image ID: it is the sha256 of the image config,
+      # which pins every layer's diff_id, and `docker load` verifies layers
+      # against it. So:
+      #   - every name a tarball sets is removed right after `docker load`
+      #     (our tarballs are saved by digest ref and carry none), so a
+      #     planted tag (e.g. `alpine:latest`, which core's scripts run) can
+      #     never be used;
+      #   - every image ref is then bound by `docker pull` from the registry.
+      #     For digest-pinned refs the engine checks the manifest against the
+      #     pinned digest, reads the config digest from it and skips the
+      #     download only if an image with exactly that ID was loaded;
+      #     anything else is pulled fresh. The ref's image ID is therefore
+      #     the config digest of the pinned manifest; the step then checks
+      #     the ref carries the pinned digest (set only by a verified pull).
+      #   - tag-only refs are resolved by the same pull.
+      # One pull per image, no separate manifest lookups: when the cache
+      # matches it costs a manifest fetch (~0.5 s), not a download.
+      - name: Load and verify images
+        env:
+          APP_IMAGES: ${{ runner.temp }}/app-images.txt
+        run: |
+          set -euo pipefail
+          load() {
+            local out ref id
+            out=$(docker load -q -i "$1")
+            echo "$1: $(grep -c '^Loaded image' <<< "$out" || true) images loaded"
+            # Keep the content (park it under a name nothing uses), drop the name.
+            sed -n 's/^Loaded image: //p' <<< "$out" | while read -r ref; do
+              id=$(docker image inspect --format '{{.Id}}' "$ref")
+              docker tag "$id" "ci-cache-untrusted/loaded:${id#sha256:}"
+              docker image rm "$ref" > /dev/null
+              echo "::warning::$1 set the name $ref; removed"
+            done
           }
+          for tar in /tmp/docker-images/infra.tar /tmp/app-images/images.tar; do
+            if [ -f "$tar" ]; then load "$tar"; else echo "No cached $tar; pulling"; fi
+          done
+          # Registries rate-limit bursts (toomanyrequests): retry with backoff.
+          pull() { local i; for i in 1 2 3 4 5; do docker pull -q "$1" > /dev/null && return 0; echo "pull $1 failed (attempt $i), retrying"; sleep $((i * 15)); done; return 1; }
+          # After the pull, RepoDigests holds <repo>@<pinned digest> only if
+          # the engine fetched and verified that manifest (loaded names were
+          # all removed above), so this is a local check, no registry call.
           while read -r img; do
             [ -n "$img" ] || continue
+            pull "$img" || { echo "::error::cannot pull $img"; exit 1; }
             case "$img" in
               *@sha256:*)
-                want=$(expected_config "$img") || { echo "::error::cannot resolve $img"; exit 1; }
-                got=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
-                if [ "$got" = "$want" ]; then
-                  echo "verified $img ($want)"
-                else
-                  echo "::warning::$img: loaded image ${got:-<none>} != registry config $want; pulling fresh"
-                  [ -z "$got" ] || docker image rm -f "$got" >/dev/null
-                  pull "$img"
-                  got=$(docker image inspect --format '{{.Id}}' "$img")
-                  [ "$got" = "$want" ] || { echo "::error::$img still mismatches after pull"; exit 1; }
-                fi
+                pinned="${img##*@}"
+                digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$img")
+                grep -q "@${pinned}\$" <<< "$digests" || { echo "::error::$img: no registry-verified digest after pull"; exit 1; }
+                echo "verified $img -> $(docker image inspect --format '{{.Id}}' "$img")"
                 ;;
-              *) pull "$img" ;;
+              *) echo "pulled $img" ;;
             esac
-          done < infra-images.txt
+          done < <(cat infra-images.txt "$APP_IMAGES" | LC_ALL=C sort -u)
 
       - name: Create .env and CI override
         working-directory: core

@@ -59,10 +59,13 @@
 #    the container is "portcullis-wiki-1".
 #
 # 8. IMAGE PULL TIMES IN CI
-#    GitHub Actions runners pull images on every job (no daemon cache
-#    between jobs). Large images (GitLab 2GB+, Plex 500MB+) can take
-#    60+ seconds, eating into wait_for_url timeouts. For unreliable
-#    apps, prefer static compose-config tests over container tests.
+#    GitHub Actions runners start with an empty daemon. test-apps.yml
+#    loads the app's images from a cache warmed on pushes to main (see
+#    tests/app-images.sh) before the test runs, but a cache miss (new
+#    image version, evicted entry) means compose_up pulls them. Large
+#    images (GitLab 2GB+, Plex 500MB+) can take 60+ seconds, eating into
+#    wait_for_url timeouts. For unreliable apps, prefer static
+#    compose-config tests over container tests.
 #
 # 9. HOST PORT BINDINGS
 #    Apps binding host ports (e.g. AdGuard/Pi-hole on 53) declare them in
