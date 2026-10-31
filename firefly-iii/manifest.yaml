@@ -11,7 +11,7 @@ auth:
   group_admin: false
   access_group: users_firefly
   admin_group: admin_firefly
-  notes: Uses remote_user_guard with X-Forwarded-User header from oauth2-proxy. Auto-creates user on first login. No group-based admin support.
+  notes: Uses remote_user_guard with X-Forwarded-User header from oauth2-proxy. remote_user_guard has no proxy allowlist, so the container's nginx rejects (403) any request carrying X-Forwarded-User that does not come from Traefik (PORTCULLIS_TRAEFIK_IP); TRUSTED_PROXIES is likewise limited to Traefik. Auto-creates user on first login. No group-based admin support.
 
 env:
   - key: FIREFLY_APP_KEY

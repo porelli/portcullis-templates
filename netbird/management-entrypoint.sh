@@ -13,8 +13,9 @@ if [ ! -f "$CONFIG" ]; then
     -e "s|\${COTURN_AUTH_SECRET}|${COTURN_AUTH_SECRET}|g" \
     -e "s|\${NETBIRD_OIDC_CLIENT_SECRET}|${NETBIRD_OIDC_CLIENT_SECRET}|g" \
     "$TEMPLATE" > "$CONFIG"
-  echo "Config generated:"
-  cat "$CONFIG"
+  chmod 600 "$CONFIG"
+  # Do not print the generated config: it contains the TURN and OIDC secrets.
+  echo "Config generated."
 else
   echo "management.json already exists, skipping generation."
 fi

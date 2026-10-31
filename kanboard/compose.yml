@@ -11,7 +11,9 @@ services:
       REVERSE_PROXY_AUTH: "true"
       REVERSE_PROXY_USER_HEADER: HTTP_X_FORWARDED_USER
       REVERSE_PROXY_DEFAULT_ADMIN: admin
-      TRUSTED_PROXY_NETWORKS: "0.0.0.0/0"
+      # Kanboard ignores REVERSE_PROXY_USER_HEADER unless REMOTE_ADDR is in
+      # this list: only Traefik (static IP on portcullis-proxy) may assert it.
+      TRUSTED_PROXY_NETWORKS: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
     volumes:
       - kanboard-data:/var/www/app/data
       - kanboard-plugins:/var/www/app/plugins

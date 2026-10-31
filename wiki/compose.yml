@@ -6,7 +6,7 @@ services:
       DB_HOST: wiki-db
       DB_PORT: "5432"
       DB_USER: wiki
-      DB_PASS: ${WIKI_DB_PASSWORD:-changeme}
+      DB_PASS: ${WIKI_DB_PASSWORD:?WIKI_DB_PASSWORD must be set}
       DB_NAME: wiki
     depends_on:
       - wiki-db
@@ -27,7 +27,7 @@ services:
     environment:
       POSTGRES_DB: wiki
       POSTGRES_USER: wiki
-      POSTGRES_PASSWORD: ${WIKI_DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${WIKI_DB_PASSWORD:?WIKI_DB_PASSWORD must be set}
     volumes:
       - wiki-db-data:/var/lib/postgresql/data
 

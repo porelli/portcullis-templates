@@ -12,7 +12,7 @@ services:
       --realm=${PORTCULLIS_DOMAIN:-portcullis.local}
       --external-ip=${COTURN_EXTERNAL_IP:-}
       --use-auth-secret
-      --static-auth-secret=${COTURN_AUTH_SECRET:-coturn-secret}
+      --static-auth-secret=${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
       --no-cli
       --fingerprint
       --log-file=stdout
@@ -35,7 +35,7 @@ services:
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       COTURN_EXTERNAL_IP: ${COTURN_EXTERNAL_IP:-}
-      COTURN_AUTH_SECRET: ${COTURN_AUTH_SECRET:-coturn-secret}
+      COTURN_AUTH_SECRET: ${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
       NETBIRD_OIDC_CLIENT_SECRET: ${NETBIRD_OIDC_CLIENT_SECRET:-}
     depends_on:
       - coturn

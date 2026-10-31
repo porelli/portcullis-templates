@@ -6,14 +6,45 @@ services:
       MYSQL_HOSTNAME: guacamole-db
       MYSQL_DATABASE: guacamole
       MYSQL_USER: guacamole
-      MYSQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-changeme}
-      OPENID_AUTHORIZATION_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/auth
-      OPENID_JWKS_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/certs
-      OPENID_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
-      OPENID_CLIENT_ID: guacamole
-      OPENID_REDIRECT_URI: https://remote.${PORTCULLIS_DOMAIN:-portcullis.local}
-      HTTP_AUTH_ENABLED: "true"
+      MYSQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}
+      # Users authenticated by the header extension get a matching DB
+      # account on first login (no permissions until an admin grants them).
+      MYSQL_AUTO_CREATE_ACCOUNTS: "true"
+      # Header auth: trust X-Forwarded-User set by oauth2-proxy via the
+      # forward-auth middleware below.
+      HEADER_ENABLED: "true"
       HTTP_AUTH_HEADER: X-Forwarded-User
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+    # The header extension has no proxy allowlist, so only Traefik may send
+    # X-Forwarded-User: a Tomcat RewriteValve answers 403 to any request that
+    # carries the header from another peer on portcullis-proxy. This replays
+    # the image's entrypoint (source every /opt/guacamole/entrypoint.d/*.sh)
+    # and adds the valve to the generated CATALINA_BASE just before Tomcat
+    # starts.
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        case "$$PORTCULLIS_TRAEFIK_IP" in
+          ""|*[!0-9.]*) echo "PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1 ;;
+        esac
+        TRAEFIK_IP_RE=$$(printf '%s' "$$PORTCULLIS_TRAEFIK_IP" | sed 's/\./\\./g')
+        for SCRIPT in /opt/guacamole/entrypoint.d/*.sh; do
+          if [ "$${SCRIPT##*/}" = 999-start-tomcat.sh ]; then
+            mkdir -p "$$CATALINA_BASE/conf/Catalina/localhost"
+            {
+              echo 'RewriteCond %{HTTP:X-Forwarded-User} !^$$'
+              echo "RewriteCond %{REMOTE_ADDR} !^$${TRAEFIK_IP_RE}\$$"
+              echo 'RewriteRule .* - [F]'
+            } > "$$CATALINA_BASE/conf/Catalina/localhost/rewrite.config"
+            xmlstarlet edit --inplace \
+              --subnode /Server/Service/Engine/Host --type elem -n PortcullisValve \
+              --insert //PortcullisValve --type attr -n className -v org.apache.catalina.valves.rewrite.RewriteValve \
+              --rename //PortcullisValve -v Valve \
+              "$$CATALINA_BASE/conf/server.xml"
+          fi
+          source "$$SCRIPT"
+        done
     depends_on:
       guacd:
         condition: service_started
@@ -35,11 +66,37 @@ services:
   guacamole-init:
     image: guacamole/guacamole:latest
     entrypoint: ["/bin/sh", "-c"]
+    # Builds the MySQL init script (only executed by MySQL on first boot of
+    # an empty data volume). The upstream schema creates guacadmin with the
+    # well-known password "guacadmin"; the appended SQL replaces it with
+    # GUACAMOLE_ADMIN_PASSWORD and, if GUACAMOLE_ADMIN_USER is set, renames
+    # the account so that SSO user (via header auth) is the administrator.
     command:
       - |
-        echo "Extracting Guacamole schema..."
-        cat /opt/guacamole/extensions/guacamole-auth-jdbc/mysql/schema/001-create-schema.sql /opt/guacamole/extensions/guacamole-auth-jdbc/mysql/schema/002-create-admin-user.sql > /initdb/001-init.sql
+        set -eu
+        SCHEMA=/opt/guacamole/extensions/guacamole-auth-jdbc/mysql/schema
+        case "$${GUACAMOLE_ADMIN_USER}" in
+          *[!A-Za-z0-9._@-]*) echo "GUACAMOLE_ADMIN_USER contains invalid characters" >&2; exit 1 ;;
+        esac
+        case "$${GUACAMOLE_ADMIN_PASSWORD}" in
+          ""|*[!A-Za-z0-9]*) echo "GUACAMOLE_ADMIN_PASSWORD must be non-empty alphanumeric" >&2; exit 1 ;;
+        esac
+        {
+          cat "$$SCHEMA/001-create-schema.sql" "$$SCHEMA/002-create-admin-user.sql"
+          echo "SET @salt = UNHEX(SHA2(UUID(), 256));"
+          echo "UPDATE guacamole_user u JOIN guacamole_entity e ON u.entity_id = e.entity_id"
+          echo "  SET u.password_salt = @salt,"
+          echo "      u.password_hash = UNHEX(SHA2(CONCAT('$${GUACAMOLE_ADMIN_PASSWORD}', HEX(@salt)), 256)),"
+          echo "      u.password_date = NOW()"
+          echo "  WHERE e.name = 'guacadmin' AND e.type = 'USER';"
+          if [ -n "$${GUACAMOLE_ADMIN_USER}" ]; then
+            echo "UPDATE guacamole_entity SET name = '$${GUACAMOLE_ADMIN_USER}' WHERE name = 'guacadmin' AND type = 'USER';"
+          fi
+        } > /initdb/001-init.sql
         echo "Schema files ready."
+    environment:
+      GUACAMOLE_ADMIN_PASSWORD: ${GUACAMOLE_ADMIN_PASSWORD:?GUACAMOLE_ADMIN_PASSWORD must be set}
+      GUACAMOLE_ADMIN_USER: ${GUACAMOLE_ADMIN_USER:-}
     volumes:
       - guacamole-initdb:/initdb
 
@@ -49,12 +106,12 @@ services:
   guacamole-db:
     image: mysql:8
     environment:
-      MYSQL_ROOT_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-changeme}
+      MYSQL_ROOT_PASSWORD: ${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}
       MYSQL_DATABASE: guacamole
       MYSQL_USER: guacamole
-      MYSQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-changeme}
+      MYSQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uguacamole", "-p${GUACAMOLE_DB_PASSWORD:-changeme}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uguacamole", "-p${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}"]
       interval: 10s
       timeout: 5s
       retries: 10

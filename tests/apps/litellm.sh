@@ -22,18 +22,12 @@ else
   fail "Traefik routing not configured"
 fi
 
-# Forward-auth middleware present
-if grep -q 'portcullis-auth@docker' "$COMPOSE"; then
-  pass "Forward-auth middleware configured"
+# Native OIDC — must NOT have forward-auth middleware (would block
+# API clients using the master key / virtual keys)
+if grep -qE 'portcullis-auth@docker|portcullis-groups@docker' "$COMPOSE"; then
+  fail "Forward-auth middleware present on a native-OIDC app"
 else
-  fail "Forward-auth middleware not found"
-fi
-
-# Group-gate middleware present
-if grep -q 'portcullis-groups@docker' "$COMPOSE"; then
-  pass "Group-gate middleware configured"
-else
-  fail "Group-gate middleware not found"
+  pass "No forward-auth middleware (native OIDC only)"
 fi
 
 # OIDC env vars configured

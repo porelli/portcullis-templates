@@ -11,7 +11,21 @@ auth:
   group_admin: false
   access_group: users_headscale
   admin_group: admin_headscale
-  notes: Headscale uses OIDC for node registration. Headplane admin UI has its own OIDC client. No group-based access restriction — all OIDC users can register nodes.
+  notes: >
+    Headscale uses OIDC for node registration. Headplane admin UI has its own
+    OIDC client. No group-based access restriction — all OIDC users can
+    register nodes. Post-start step for Headplane: create an API key with
+    `docker exec portcullis-headscale-headscale-1 headscale apikeys create --expiration 365d`,
+    paste it into the "Headscale API key" setting, then restart the app.
+    Renew it before it expires.
+
+settings:
+  - key: HEADSCALE_API_KEY
+    label: Headscale API key
+    description: >
+      API key Headplane uses to talk to Headscale. Create it after the first
+      start with `headscale apikeys create` inside the headscale container.
+    type: text
 
 env:
   - key: HEADSCALE_OIDC_CLIENT_SECRET
@@ -19,6 +33,9 @@ env:
     generate: random
   - key: HEADPLANE_OIDC_CLIENT_SECRET
     description: OIDC client secret for Headplane admin UI
+    generate: random
+  - key: HEADPLANE_COOKIE_SECRET
+    description: Headplane session cookie secret (must be exactly 32 characters)
     generate: random
 
 keycloak_clients:

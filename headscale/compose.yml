@@ -2,13 +2,15 @@ services:
   headscale-init:
     image: alpine:latest
     entrypoint: ["/bin/sh", "-c"]
+    # $$VAR: expanded by the container shell from the environment below,
+    # not interpolated by compose into the command string.
     command:
       - |
         if [ ! -f /etc/headscale/config.yaml ]; then
           echo "Generating headscale config..."
           sed \
-            -e "s|PORTCULLIS_DOMAIN_PLACEHOLDER|${PORTCULLIS_DOMAIN}|g" \
-            -e "s|HEADSCALE_OIDC_SECRET_PLACEHOLDER|${HEADSCALE_OIDC_CLIENT_SECRET}|g" \
+            -e "s|PORTCULLIS_DOMAIN_PLACEHOLDER|$${PORTCULLIS_DOMAIN}|g" \
+            -e "s|HEADSCALE_OIDC_SECRET_PLACEHOLDER|$${HEADSCALE_OIDC_CLIENT_SECRET}|g" \
             /tmp/config.yaml.tmpl > /etc/headscale/config.yaml
           echo "Config generated."
         else
@@ -16,7 +18,7 @@ services:
         fi
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
-      HEADSCALE_OIDC_CLIENT_SECRET: ${HEADSCALE_OIDC_CLIENT_SECRET:-}
+      HEADSCALE_OIDC_CLIENT_SECRET: ${HEADSCALE_OIDC_CLIENT_SECRET:?HEADSCALE_OIDC_CLIENT_SECRET must be set}
     volumes:
       - headscale-config:/etc/headscale
       - ./templates/headscale/config/config.yaml:/tmp/config.yaml.tmpl:ro
@@ -52,9 +54,11 @@ services:
       HEADPLANE_HEADSCALE__URL: http://headscale:8080
       HEADPLANE_OIDC__ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
       HEADPLANE_OIDC__CLIENT_ID: headplane
-      HEADPLANE_OIDC__CLIENT_SECRET: ${HEADPLANE_OIDC_CLIENT_SECRET:-}
+      HEADPLANE_OIDC__CLIENT_SECRET: ${HEADPLANE_OIDC_CLIENT_SECRET:?HEADPLANE_OIDC_CLIENT_SECRET must be set}
+      # Created inside headscale after first start; see manifest notes.
       HEADPLANE_OIDC__HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
-      HEADPLANE_SERVER__COOKIE_SECRET: ${HEADPLANE_COOKIE_SECRET:-changeme-cookie-secret}
+      # Must be exactly 32 characters (Hub generates 32 hex chars).
+      HEADPLANE_SERVER__COOKIE_SECRET: ${HEADPLANE_COOKIE_SECRET:?HEADPLANE_COOKIE_SECRET must be set}
       HEADPLANE_SERVER__BASE_URL: https://vpn-admin.${PORTCULLIS_DOMAIN:-portcullis.local}
       NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:

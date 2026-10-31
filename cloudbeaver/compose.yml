@@ -6,6 +6,60 @@ services:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
       - ./templates/cloudbeaver/cloudbeaver-runtime.conf:/opt/cloudbeaver/workspace/GlobalConfiguration/.cloudbeaver.runtime.conf:ro
       - ./templates/cloudbeaver/entrypoint.sh:/entrypoint.sh:ro
+    # Default network only: CloudBeaver's reverseProxy auth provider trusts
+    # X-Forwarded-User (and X-Team/X-Role/... team and role headers) from any
+    # peer and has no proxy allowlist, so it is not attached to the shared
+    # portcullis-proxy network. Traefik reaches it through cloudbeaver-gate.
+    networks:
+      - default
+    restart: unless-stopped
+
+  # Only service on portcullis-proxy. Answers 403 to any request carrying
+  # X-Forwarded-User that does not come from Traefik, and always drops the
+  # team/role/name headers CloudBeaver would otherwise accept from the client
+  # (oauth2-proxy never sets them, so Traefik passes client values through).
+  cloudbeaver-gate:
+    image: nginx:alpine
+    environment:
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$PORTCULLIS_TRAEFIK_IP" in
+          ""|*[!0-9.]*) echo "PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1 ;;
+        esac
+        cat > /etc/nginx/conf.d/default.conf <<EOF
+        map \$$http_upgrade \$$connection_upgrade { default upgrade; '' close; }
+        server {
+          listen 8978;
+          client_max_body_size 0;
+          set \$$portcullis_reject "";
+          if (\$$remote_addr != "$$PORTCULLIS_TRAEFIK_IP") { set \$$portcullis_reject 1; }
+          if (\$$http_x_forwarded_user = "") { set \$$portcullis_reject ""; }
+          if (\$$portcullis_reject) { return 403; }
+          location / {
+            proxy_pass http://cloudbeaver:8978;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$$http_host;
+            proxy_set_header Upgrade \$$http_upgrade;
+            proxy_set_header Connection \$$connection_upgrade;
+            proxy_set_header X-User "";
+            proxy_set_header X-Team "";
+            proxy_set_header X-Role "";
+            proxy_set_header X-Role-TE "";
+            proxy_set_header X-First-name "";
+            proxy_set_header X-Last-name "";
+            proxy_set_header X-Full-name "";
+            proxy_buffering off;
+            proxy_read_timeout 1h;
+            proxy_send_timeout 1h;
+          }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
+    depends_on:
+      - cloudbeaver
     networks:
       - default
       - portcullis-proxy

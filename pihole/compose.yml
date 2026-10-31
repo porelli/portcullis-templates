@@ -2,8 +2,8 @@ services:
   pihole:
     image: pihole/pihole:latest
     environment:
-      WEBPASSWORD: ${PIHOLE_WEBPASSWORD:-changeme}
-      VIRTUAL_HOST: pihole.${PORTCULLIS_DOMAIN:-portcullis.local}
+      # Pi-hole v6: WEBPASSWORD/VIRTUAL_HOST were removed in favour of FTLCONF_*.
+      FTLCONF_webserver_api_password: ${PIHOLE_WEBPASSWORD:?PIHOLE_WEBPASSWORD must be set}
     volumes:
       - pihole-data:/etc/pihole
       - pihole-dnsmasq:/etc/dnsmasq.d

@@ -4,7 +4,7 @@ services:
     environment:
       DB_HOSTNAME: immich-db
       DB_USERNAME: immich
-      DB_PASSWORD: ${IMMICH_DB_PASSWORD:-changeme}
+      DB_PASSWORD: ${IMMICH_DB_PASSWORD:?IMMICH_DB_PASSWORD must be set}
       DB_DATABASE_NAME: immich
       REDIS_HOSTNAME: immich-redis
       IMMICH_CONFIG_FILE: /etc/immich/config.json
@@ -35,18 +35,28 @@ services:
   immich-init:
     image: alpine:latest
     entrypoint: ["/bin/sh", "-c"]
+    # Regenerated on every start: the config is fully derived from the
+    # template + env (and Immich treats a config file as read-only anyway).
+    # $$VAR is expanded by the container shell, not by compose; the template
+    # placeholders are the literal text ${VAR}. Never print the result —
+    # it contains the OIDC client secret.
     command:
       - |
-        if [ ! -f /etc/immich/config.json ]; then
-          echo "Generating Immich config..."
-          sed \
-            -e "s|\$${PORTCULLIS_DOMAIN}|${PORTCULLIS_DOMAIN}|g" \
-            -e "s|\$${IMMICH_OIDC_SECRET}|${IMMICH_OIDC_SECRET}|g" \
-            /tmp/config.json.tmpl > /etc/immich/config.json
-          cat /etc/immich/config.json
+        set -eu
+        echo "Generating Immich config..."
+        if [ -n "$${IMMICH_OIDC_SECRET}" ]; then
+          PASSWORD_LOGIN=false
         else
-          echo "Config already exists."
+          echo "IMMICH_OIDC_SECRET empty: keeping password login enabled."
+          PASSWORD_LOGIN=true
         fi
+        sed \
+          -e "s|\$${PORTCULLIS_DOMAIN}|$${PORTCULLIS_DOMAIN}|g" \
+          -e "s|\$${IMMICH_OIDC_SECRET}|$${IMMICH_OIDC_SECRET}|g" \
+          -e "s|\$${IMMICH_PASSWORD_LOGIN}|$${PASSWORD_LOGIN}|g" \
+          /tmp/config.json.tmpl > /etc/immich/config.json.new
+        mv /etc/immich/config.json.new /etc/immich/config.json
+        echo "Config generated."
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       IMMICH_OIDC_SECRET: ${IMMICH_OIDC_SECRET:-}
@@ -58,7 +68,7 @@ services:
     image: alpine:latest
     entrypoint: ["/bin/sh", "/setup.sh"]
     environment:
-      IMMICH_ADMIN_PASSWORD: ${IMMICH_DB_PASSWORD:-changeme}
+      IMMICH_ADMIN_PASSWORD: ${IMMICH_ADMIN_PASSWORD:?IMMICH_ADMIN_PASSWORD must be set}
     volumes:
       - ./templates/immich/setup.sh:/setup.sh:ro
     depends_on:
@@ -74,11 +84,16 @@ services:
     image: redis:7-alpine
 
   immich-db:
-    image: tensorchord/pgvecto-rs:pg16-v0.2.0
+    # Immich's own Postgres image (VectorChord + pgvecto.rs for migration from
+    # the old tensorchord/pgvecto-rs image). Kept on PG 16 to match existing
+    # data volumes; tag/digest per upstream docker-compose.yml (v3.3.5).
+    image: ghcr.io/immich-app/postgres:16-vectorchord0.4.3-pgvectors0.2.0@sha256:1a078b237c1d9b420b0ee59147386b4aa60d3a07a8e6a402fc84a57e41b043a4
     environment:
       POSTGRES_USER: immich
-      POSTGRES_PASSWORD: ${IMMICH_DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${IMMICH_DB_PASSWORD:?IMMICH_DB_PASSWORD must be set}
       POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    shm_size: 128mb
     volumes:
       - immich-db-data:/var/lib/postgresql/data
 

@@ -9,6 +9,11 @@ services:
       GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Only Traefik (static IP on portcullis-proxy, set by core) may assert
+      # X-Forwarded-User; Grafana rejects the header from any other peer.
+      GF_AUTH_PROXY_WHITELIST: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+    volumes:
+      - grafana-data:/var/lib/grafana
     networks:
       - default
       - portcullis-proxy
@@ -20,6 +25,10 @@ services:
       traefik.http.routers.grafana.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.grafana.loadbalancer.server.port: "3000"
     restart: unless-stopped
+
+volumes:
+  grafana-data:
+    name: portcullis_grafana-data
 
 networks:
   portcullis-proxy:

@@ -5,24 +5,24 @@ category: productivity
 tags: [files, calendar, office, collaboration]
 
 auth:
-  method: native-oidc
-  sso: true
-  group_access: false
+  method: forward-auth
+  sso: false
+  group_access: true
   group_admin: false
   access_group: users_nextcloud
   admin_group: admin_nextcloud
-  notes: OIDC login via oidc_login app. Group mapping possible but not yet configured. Admin set manually in Nextcloud.
+  notes: >
+    Access gated by forward-auth + group-gate; Nextcloud then shows its own
+    login (admin account uses NEXTCLOUD_ADMIN_PASSWORD). No OIDC app is
+    installed yet. Desktop/mobile sync clients and WebDAV cannot pass the
+    forward-auth redirect.
 
 env:
   - key: NEXTCLOUD_ADMIN_PASSWORD
     description: Nextcloud admin password
     generate: random
 
-keycloak_clients:
-  - client_id: nextcloud
-    secret_env: NEXTCLOUD_OIDC_SECRET
-    redirect_uri: "https://cloud.{{DOMAIN}}/apps/oidc_login/oidc"
-    name: Nextcloud
+keycloak_clients: []
 
 config_files: []
 

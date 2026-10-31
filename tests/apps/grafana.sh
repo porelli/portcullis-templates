@@ -32,6 +32,11 @@ fi
 
 # Verify compose has forward-auth + group-gate middleware
 COMPOSE=$(_find_compose "$APP_ID")
+assert_traefik_only_trust "$COMPOSE" GF_AUTH_PROXY_WHITELIST
+
+# The CI host is not Traefik: a spoofed identity header must not log in
+assert_spoofed_identity_rejected "http://${IP}:3000/api/user" non-2xx
+
 if grep -q 'portcullis-auth@docker' "$COMPOSE" && grep -q 'portcullis-groups@docker' "$COMPOSE"; then
   pass "Forward-auth + group-gate middleware configured"
 else

@@ -37,6 +37,9 @@ else
   fail "Group-gate middleware not found"
 fi
 
+# X-Forwarded-For trusted from Traefik only
+assert_traefik_only_trust "$COMPOSE" TRUSTED_PROXIES
+
 # Service port matches Traefik label
 if grep -q 'loadbalancer.server.port.*80' "$COMPOSE"; then
   pass "Traefik loadbalancer port is 80"

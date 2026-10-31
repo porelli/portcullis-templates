@@ -28,7 +28,7 @@ See the [Manifest Reference](https://porelli.github.io/portcullis-docs/guides/ma
 
 | Method | Apps |
 |--------|------|
-| **Native OIDC** | Actual Budget, GitLab, Guacamole, Headscale, Immich, Jellyfin, LiteLLM, NetBird, Nextcloud, Vaultwarden |
-| **Forward Auth** | AdGuard, CloudBeaver, DokuWiki, Pi-hole, Scrutiny, Wiki.js |
-| **Header Auth** | Firefly III, Grafana, Kanboard |
-| **Custom/Public** | Plex (plex.tv accounts), Docs (public), Vault UI (mTLS) |
+| **Native OIDC** | Actual Budget, GitLab, Headscale, Immich, Jellyfin, LiteLLM, NetBird, Vaultwarden |
+| **Forward Auth** | AdGuard, DokuWiki, Nextcloud, Pi-hole, Scrutiny, Wiki.js |
+| **Header Auth** | CloudBeaver, Firefly III, Grafana, Guacamole, Kanboard |
+| **Custom/Public** | Plex (plex.tv accounts), Docs (public), Vault UI (mTLS, placeholder) |

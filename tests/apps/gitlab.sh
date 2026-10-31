@@ -23,10 +23,10 @@ else
   fail "Traefik routing not configured"
 fi
 
-# Native OIDC — should NOT have forward-auth middleware
-if grep -q 'portcullis-auth@docker' "$COMPOSE"; then
-  # GitLab has forward-auth in its compose (it uses both OIDC + forward-auth)
-  pass "Forward-auth middleware present (hybrid auth)"
+# Native OIDC — must NOT have forward-auth middleware (would break
+# git-over-HTTPS, the API and CI runners)
+if grep -qE 'portcullis-auth@docker|portcullis-groups@docker' "$COMPOSE"; then
+  fail "Forward-auth middleware present on a native-OIDC app"
 else
   pass "No forward-auth middleware (native OIDC only)"
 fi

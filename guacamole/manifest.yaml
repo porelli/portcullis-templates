@@ -5,24 +5,41 @@ category: remote-access
 tags: [rdp, ssh, vnc, remote-desktop, browser]
 
 auth:
-  method: native-oidc
+  method: header-auth
   sso: true
-  group_access: false
+  group_access: true
   group_admin: false
   access_group: users_guacamole
   admin_group: admin_guacamole
-  notes: OpenID Connect with Keycloak plus HTTP header auth fallback. No native group-based access control — connection permissions managed in Guacamole UI.
+  notes: >
+    Forward-auth + group-gate, then Guacamole's header extension trusts
+    X-Forwarded-User from oauth2-proxy (accounts auto-created with no
+    permissions). The extension has no proxy allowlist, so a Tomcat
+    RewriteValve rejects (403) any request carrying X-Forwarded-User that
+    does not come from Traefik (PORTCULLIS_TRAEFIK_IP). The built-in guacadmin account gets a random password
+    (GUACAMOLE_ADMIN_PASSWORD) on first boot; set GUACAMOLE_ADMIN_USER before
+    first enable to make that SSO user the administrator instead. Connection
+    permissions are managed in the Guacamole UI. Changing either value after
+    the database is initialized has no effect.
+
+settings:
+  - key: GUACAMOLE_ADMIN_USER
+    label: Administrator SSO username
+    description: >
+      SSO username (as sent in X-Forwarded-User) that becomes the Guacamole
+      administrator. Applied only on first database initialization. Leave empty
+      to keep a local guacadmin account with a random password.
+    type: text
 
 env:
   - key: GUACAMOLE_DB_PASSWORD
     description: Guacamole database password
     generate: random
+  - key: GUACAMOLE_ADMIN_PASSWORD
+    description: Password for the built-in Guacamole administrator (replaces the default guacadmin/guacadmin)
+    generate: random
 
-keycloak_clients:
-  - client_id: guacamole
-    secret_env: GUACAMOLE_OIDC_SECRET
-    redirect_uri: "https://remote.{{DOMAIN}}/*"
-    name: Guacamole
+keycloak_clients: []
 
 config_files: []
 

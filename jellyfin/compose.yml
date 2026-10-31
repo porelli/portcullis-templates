@@ -2,7 +2,7 @@ services:
   jellyfin:
     image: jellyfin/jellyfin:latest
     environment:
-      JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:-changeme}
+      JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
     volumes:
       - jellyfin-config:/config
@@ -27,7 +27,7 @@ services:
       - |
         pip install --quiet requests && python3 /setup.py
     environment:
-      JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:-changeme}
+      JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       JELLYFIN_OIDC_SECRET: ${JELLYFIN_OIDC_SECRET:-}
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
     volumes:

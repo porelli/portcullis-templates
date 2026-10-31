@@ -11,7 +11,7 @@ auth:
   group_admin: false
   access_group: users_litellm
   admin_group: admin_litellm
-  notes: OIDC login for the admin UI. API access uses master key, not SSO. No group-based restriction on UI access.
+  notes: OIDC login for the admin UI. No forward-auth in front of LiteLLM so the OpenAI-compatible API is reachable with the master key or virtual API keys. No group-based restriction on UI access.
 
 env:
   - key: LITELLM_MASTER_KEY
@@ -19,6 +19,9 @@ env:
     generate: random
   - key: LITELLM_OIDC_SECRET
     description: LiteLLM OIDC client secret
+    generate: random
+  - key: LITELLM_DB_PASSWORD
+    description: LiteLLM PostgreSQL password
     generate: random
 
 keycloak_clients:

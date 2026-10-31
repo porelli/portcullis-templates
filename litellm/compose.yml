@@ -1,11 +1,11 @@
 services:
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: ghcr.io/berriai/litellm:main-stable
     environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-changeme}
-      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:-changeme}@litellm-db:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY must be set}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD must be set}@litellm-db:5432/litellm
       GENERIC_CLIENT_ID: litellm
-      GENERIC_CLIENT_SECRET: ${LITELLM_OIDC_SECRET:-litellm-oidc-secret}
+      GENERIC_CLIENT_SECRET: ${LITELLM_OIDC_SECRET:?LITELLM_OIDC_SECRET must be set}
       GENERIC_AUTHORIZATION_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/auth
       GENERIC_TOKEN_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/token
       GENERIC_USERINFO_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/userinfo
@@ -24,7 +24,7 @@ services:
       traefik.http.routers.litellm.rule: Host(`llm.${PORTCULLIS_DOMAIN:-portcullis.local}`)
       traefik.http.routers.litellm.entrypoints: websecure
       traefik.http.routers.litellm.tls.options: authaware@file
-      traefik.http.routers.litellm.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.litellm.middlewares: client-headers@file,security-headers@file
       traefik.http.services.litellm.loadbalancer.server.port: "4000"
     restart: unless-stopped
 
@@ -33,7 +33,7 @@ services:
     environment:
       POSTGRES_DB: litellm
       POSTGRES_USER: litellm
-      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD must be set}
     volumes:
       - litellm-db-data:/var/lib/postgresql/data
 

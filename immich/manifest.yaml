@@ -11,7 +11,11 @@ auth:
   group_admin: false
   access_group: users_immich
   admin_group: admin_immich
-  notes: Full OIDC with auto-register and auto-launch. Admin must be promoted via API or admin UI. roleClaim available but not yet mapped to groups.
+  notes: >
+    Full OIDC with auto-register and auto-launch; password login is disabled
+    while OIDC is configured. Promote an SSO user to admin with
+    `docker exec <immich-server container> immich-admin grant-admin`.
+    roleClaim available but not yet mapped to groups.
 
 settings:
   - key: IMMICH_EXTERNAL_PATH
@@ -28,6 +32,9 @@ env:
     generate: random
   - key: IMMICH_OIDC_SECRET
     description: Immich OIDC client secret
+    generate: random
+  - key: IMMICH_ADMIN_PASSWORD
+    description: Password for the initial Immich admin (admin@portcullis.local)
     generate: random
 
 keycloak_clients:

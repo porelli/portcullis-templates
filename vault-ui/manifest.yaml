@@ -1,5 +1,5 @@
 name: Vault UI
-description: Vault web interface — mTLS only (high security)
+description: "PLACEHOLDER / EXPERIMENTAL: mTLS-only (protected tier) demo route; currently runs SFTPGo, not a Vault UI"
 icon: "\U0001F512"
 category: security
 tags: [vault, secrets, pki]

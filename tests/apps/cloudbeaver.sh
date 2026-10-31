@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: CloudBeaver (forward-auth + group-gate)
+# Test: CloudBeaver (header-auth behind nginx gate + forward-auth + group-gate)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
@@ -29,5 +29,20 @@ if grep -q 'portcullis-auth@docker' "$COMPOSE" && grep -q 'portcullis-groups@doc
 else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
+
+# Static: CloudBeaver itself stays off portcullis-proxy; only the gate is
+# routed by Traefik and it trusts X-Forwarded-User from Traefik alone
+assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
+CB_NETS=$(docker compose -f "$COMPOSE" --project-directory "$PROJECT_DIR" config --format json 2>/dev/null \
+  | jq -r '.services.cloudbeaver.networks // {} | keys | join(",")' 2>/dev/null || echo "")
+if [ "$CB_NETS" = "default" ]; then
+  pass "cloudbeaver is on the default network only"
+else
+  fail "cloudbeaver networks: expected 'default', got '$CB_NETS'"
+fi
+
+GATE_IP=$(app_container_ip "$APP_ID" cloudbeaver-gate)
+assert_http_code "http://${GATE_IP}:8978/" 200
+assert_spoofed_identity_rejected "http://${GATE_IP}:8978/" 403
 
 compose_down "$APP_ID"

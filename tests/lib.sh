@@ -72,6 +72,13 @@
 #    these apps use static manifest checks, not container boots, because
 #    the runner's systemd-resolved would fight over 53.
 #
+# 11. PER-APP GENERATED ENV
+#     The Hub writes every manifest env var with "generate: random" into a
+#     per-app .env (32 hex chars). Compose files may therefore require them
+#     with ${VAR:?...}. CI only has the core .env, so compose_up/down/logs
+#     call _export_manifest_env to export a random value for each such var
+#     that is not already set (shell env wins over --env-file).
+#
 # 10. STATIC vs CONTAINER TESTS
 #     Two test patterns exist:
 #     - Static: grep compose.yml for labels/env/ports (no Docker needed)
@@ -126,7 +133,7 @@ trap report EXIT
 wait_for_url() {
   local url="$1" timeout="${2:-60}" label="${3:-$1}"
   info "Waiting for $label..."
-  for i in $(seq 1 "$timeout"); do
+  for _ in $(seq 1 "$timeout"); do
     if curl -sf -o /dev/null "$url" 2>/dev/null; then
       return 0
     fi
@@ -141,7 +148,7 @@ wait_for_url() {
 wait_for_container() {
   local name="$1" timeout="${2:-60}"
   info "Waiting for container $name..."
-  for i in $(seq 1 "$timeout"); do
+  for _ in $(seq 1 "$timeout"); do
     if docker inspect "$name" --format '{{.State.Running}}' 2>/dev/null | grep -q true; then
       return 0
     fi
@@ -326,6 +333,43 @@ assert_body_contains() {
   fi
 }
 
+# Header-auth apps must accept identity headers only from Traefik, whose
+# static IP on portcullis-proxy is PORTCULLIS_TRAEFIK_IP (core .env).
+# Static check: the given setting line references PORTCULLIS_TRAEFIK_IP and
+# the compose file has no catch-all trust ("**", 0.0.0.0/0, ::/0).
+assert_traefik_only_trust() {
+  local compose="$1" setting="$2"
+  if grep -Eq "^[[:space:]]*${setting}:[[:space:]]*\\\$\\{PORTCULLIS_TRAEFIK_IP:-" "$compose"; then
+    pass "$setting restricted to \${PORTCULLIS_TRAEFIK_IP}"
+  else
+    fail "$setting is not restricted to \${PORTCULLIS_TRAEFIK_IP}"
+  fi
+  if grep -Eq '"\*\*"|0\.0\.0\.0/0|::/0' "$compose"; then
+    fail "compose trusts every peer (\"**\", 0.0.0.0/0 or ::/0)"
+  else
+    pass "No catch-all proxy trust in compose"
+  fi
+}
+
+# Runtime check: a request carrying X-Forwarded-User straight from the CI
+# host (not Traefik) must not be answered with 2xx.
+assert_spoofed_identity_rejected() {
+  local url="$1" expected="${2:-403}"
+  shift 2 || shift $#
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Forwarded-User: admin" "$@" "$url" 2>/dev/null || true)
+  if [ "$expected" = "non-2xx" ]; then
+    case "$code" in
+      2??|000|"") fail "$url with spoofed X-Forwarded-User → HTTP ${code:-none} (expected rejection)" ;;
+      *) pass "$url with spoofed X-Forwarded-User → HTTP $code (rejected)" ;;
+    esac
+  elif [ "$code" = "$expected" ]; then
+    pass "$url with spoofed X-Forwarded-User → HTTP $code"
+  else
+    fail "$url with spoofed X-Forwarded-User → expected HTTP $expected, got ${code:-none}"
+  fi
+}
+
 assert_container_can_reach() {
   # QUIRK #5: App containers are on isolated networks and CANNOT reach
   # core services (keycloak, lldap) by DNS. Don't use this to test
@@ -358,11 +402,42 @@ _find_compose() {
   return 1
 }
 
+# QUIRK #11: print the env keys a manifest marks "generate: random".
+# Minimal line-based parser (no yq dependency) for the flat env: list format
+# used by every manifest in this repo.
+_manifest_random_env_keys() {
+  awk '
+    /^[^[:space:]#]/ { in_env = ($0 ~ /^env:/); key = ""; next }
+    in_env && /^[[:space:]]*-[[:space:]]*key:/ {
+      sub(/^[[:space:]]*-[[:space:]]*key:[[:space:]]*/, "")
+      sub(/[[:space:]]*(#.*)?$/, "")
+      gsub(/["\047]/, "")
+      key = $0; next
+    }
+    in_env && /^[[:space:]]*-/ { key = ""; next }
+    in_env && /^[[:space:]]*generate:[[:space:]]*["\047]?random/ { if (key != "") print key; key = "" }
+  ' "$1"
+}
+
+# QUIRK #11: mirror the Hub's generateAppEnv for CI.
+_export_manifest_env() {
+  local compose_path="$1" manifest key
+  manifest="$(dirname "$compose_path")/manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if [ -z "${!key:-}" ]; then
+      export "$key=$(openssl rand -hex 16)"
+    fi
+  done < <(_manifest_random_env_keys "$manifest")
+}
+
 compose_up() {
   local app_id="$1"
   local compose_path
   # QUIRK #3: Guard _find_compose with || to prevent set -e exit.
   compose_path=$(_find_compose "$app_id") || { fail "compose.yml not found for $app_id"; return 1; }
+  _export_manifest_env "$compose_path"
   info "Starting $app_id..."
   # QUIRK #7: -p portcullis means containers are named portcullis-<service>-1.
   # QUIRK #6: --project-directory is PROJECT_DIR (core repo) so ./certs/
@@ -379,6 +454,7 @@ compose_down() {
   local app_id="$1"
   local compose_path
   compose_path=$(_find_compose "$app_id") || return 0
+  _export_manifest_env "$compose_path"
   COMPOSE_IGNORE_ORPHANS=true docker compose \
     -p portcullis \
     -f "$compose_path" \
@@ -400,6 +476,7 @@ app_logs() {
   local app_id="$1" lines="${2:-20}"
   local compose_path
   compose_path=$(_find_compose "$app_id") || return 0
+  _export_manifest_env "$compose_path"
   COMPOSE_IGNORE_ORPHANS=true docker compose \
     -p portcullis \
     -f "$compose_path" \

@@ -9,6 +9,16 @@ section "Vaultwarden"
 APP_ID=vaultwarden
 SUBDOMAIN=passwords
 
+COMPOSE=$(_find_compose "$APP_ID" || true)
+
+# Static: /admin has its own higher-priority router behind forward-auth
+if grep -q 'routers.vaultwarden-admin.rule:.*PathPrefix(`/admin`)' "$COMPOSE" \
+  && grep -q 'routers.vaultwarden-admin.middlewares:.*portcullis-auth@docker,portcullis-groups@docker' "$COMPOSE"; then
+  pass "/admin router protected by forward-auth + group-gate"
+else
+  fail "/admin router missing or not behind forward-auth + group-gate"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")

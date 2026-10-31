@@ -43,3 +43,6 @@ if grep -q 'REVERSE_PROXY_AUTH.*true' "$COMPOSE"; then
 else
   fail "REVERSE_PROXY_AUTH not set to true"
 fi
+
+# REVERSE_PROXY_USER_HEADER is honoured only from TRUSTED_PROXY_NETWORKS
+assert_traefik_only_trust "$COMPOSE" TRUSTED_PROXY_NETWORKS

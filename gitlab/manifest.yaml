@@ -9,9 +9,9 @@ auth:
   sso: true
   group_access: false
   group_admin: false
-  access_group: users_gitea
-  admin_group: admin_gitea
-  notes: Full OIDC with Keycloak. User provisioning and role mapping possible via OIDC claims but not yet configured.
+  access_group: users_gitlab
+  admin_group: admin_gitlab
+  notes: Full OIDC with Keycloak. No forward-auth in front of GitLab so git-over-HTTPS, the API and CI runners work with personal access tokens. Any realm user can sign in (accounts auto-created); group restriction and role mapping via OIDC claims not yet configured.
 
 env:
   - key: GITLAB_ROOT_PASSWORD

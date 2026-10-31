@@ -8,12 +8,12 @@ services:
         nginx['listen_port'] = 80
         nginx['listen_https'] = false
         nginx['proxy_set_headers'] = { "X-Forwarded-Proto" => "https", "X-Forwarded-Ssl" => "on" }
-        gitlab_rails['initial_root_password'] = '${GITLAB_ROOT_PASSWORD:-changeme}'
+        gitlab_rails['initial_root_password'] = '${GITLAB_ROOT_PASSWORD:?GITLAB_ROOT_PASSWORD must be set}'
         letsencrypt['enable'] = false
         gitlab_rails['omniauth_enabled'] = true
         gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
         gitlab_rails['omniauth_block_auto_created_users'] = false
-        gitlab_rails['omniauth_providers'] = [{ name: 'openid_connect', label: 'Portcullis SSO', args: { name: 'openid_connect', scope: ['openid', 'profile', 'email'], response_type: 'code', issuer: 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis', discovery: true, client_auth_method: 'query', uid_field: 'preferred_username', client_options: { identifier: 'gitlab', secret: '${GITLAB_OIDC_SECRET:-gitlab-oidc-secret}', redirect_uri: 'https://git.${PORTCULLIS_DOMAIN:-portcullis.local}/users/auth/openid_connect/callback' }}}]
+        gitlab_rails['omniauth_providers'] = [{ name: 'openid_connect', label: 'Portcullis SSO', args: { name: 'openid_connect', scope: ['openid', 'profile', 'email'], response_type: 'code', issuer: 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis', discovery: true, client_auth_method: 'query', uid_field: 'preferred_username', client_options: { identifier: 'gitlab', secret: '${GITLAB_OIDC_SECRET:?GITLAB_OIDC_SECRET must be set}', redirect_uri: 'https://git.${PORTCULLIS_DOMAIN:-portcullis.local}/users/auth/openid_connect/callback' }}}]
     volumes:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
@@ -26,7 +26,7 @@ services:
       traefik.http.routers.gitlab.rule: Host(`git.${PORTCULLIS_DOMAIN:-portcullis.local}`)
       traefik.http.routers.gitlab.entrypoints: websecure
       traefik.http.routers.gitlab.tls.options: authaware@file
-      traefik.http.routers.gitlab.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.gitlab.middlewares: client-headers@file,security-headers@file
       traefik.http.services.gitlab.loadbalancer.server.port: "80"
     restart: unless-stopped
 
