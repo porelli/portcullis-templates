@@ -14,10 +14,16 @@ services:
       # email, so matching would hand over someone else's vault.
       SSO_SIGNUPS_MATCH_EMAIL: "false"
       # Keycloak marks LLDAP email unverified. Vaultwarden refuses new SSO
-      # signups when email_verified is false; "unknown" (claim absent) is
-      # accepted with this flag, which is safe only because email matching
-      # is off above.
+      # signups when email_verified is false, so the manifest sets
+      # email_verified_claim: false: the client gets Keycloak's
+      # email-unverified scope (email, no email_verified) instead of email.
+      # "Unknown" (claim absent) is accepted with this flag, which is safe
+      # only because email matching is off above.
       SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION: "true"
+      # Default "email profile": the client has no email scope, and Keycloak
+      # rejects a requested scope the client lacks (invalid_scope).
+      # email-unverified is a default scope, so the email claim still comes.
+      SSO_SCOPES: "profile"
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
     volumes:
       - vaultwarden-data:/data

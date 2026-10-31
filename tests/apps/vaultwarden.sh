@@ -28,6 +28,14 @@ fi
 
 # Identity: never link an SSO login to an existing account by email
 assert_compose_setting "$COMPOSE" SSO_SIGNUPS_MATCH_EMAIL false
+# email-unverified scope (no email_verified) instead of email, which the
+# client then must not request
+if grep -qE '^    email_verified_claim: false' "$MANIFEST"; then
+  pass "keycloak client: email_verified_claim: false"
+else
+  fail "vaultwarden keycloak client must set email_verified_claim: false"
+fi
+assert_compose_setting "$COMPOSE" SSO_SCOPES profile
 
 compose_up "$APP_ID"
 
