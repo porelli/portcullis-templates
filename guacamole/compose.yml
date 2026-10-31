@@ -66,6 +66,13 @@ services:
 
   guacamole-init:
     image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
+    # The image runs as uid 1001, but the fresh named volume's mountpoint is
+    # root-owned, so this one-shot init (it only writes a SQL file) runs as
+    # root. The long-running guacamole service stays non-root.
+    user: "0:0"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     entrypoint: ["/bin/sh", "-c"]
     # Builds the MySQL init script (only executed by MySQL on first boot of
     # an empty data volume). The upstream schema creates guacadmin with the
