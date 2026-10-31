@@ -11,7 +11,13 @@ auth:
   group_admin: false
   access_group: users_vaultwarden
   admin_group: admin_vaultwarden
-  notes: Native SSO via OpenID Connect. Users still need a master password for vault encryption. The admin panel (/admin) sits behind forward-auth + group-gate, but group-gate policy is per-subdomain, so that only requires an authenticated Portcullis user (admin_vaultwarden is not enforced) — the ADMIN_TOKEN (VAULTWARDEN_ADMIN_TOKEN) remains the real protection for /admin; keep it secret. No group-based access restriction on the vault itself.
+  admin_paths: ["/admin"]
+  notes: >
+    Native SSO via OpenID Connect. Users still need a master password for vault
+    encryption. The admin panel (/admin) sits behind forward-auth + group-gate
+    and, through auth.admin_paths, requires membership of admin_vaultwarden;
+    Vaultwarden's ADMIN_TOKEN (VAULTWARDEN_ADMIN_TOKEN) is still required on
+    top, keep it secret. No group-based access restriction on the vault itself.
 
 env:
   - key: VAULTWARDEN_ADMIN_TOKEN

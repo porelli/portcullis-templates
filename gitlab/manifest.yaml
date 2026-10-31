@@ -7,15 +7,20 @@ tags: [git, ci-cd, devops, registry, issues]
 auth:
   method: native-oidc
   sso: true
-  group_access: false
+  group_access: true
   group_admin: false
   access_group: users_gitlab
   admin_group: admin_gitlab
   notes: >
-    Full OIDC with Keycloak. No forward-auth in front of GitLab so
-    git-over-HTTPS, the API and CI runners work with personal access tokens.
-    Any realm user can sign in (accounts auto-created); group restriction and
-    role mapping via OIDC claims not yet configured.
+    Full OIDC with Keycloak. git-over-HTTPS, the API, the registry and CI
+    runners are not behind forward-auth and work with personal access tokens.
+    The sign-in, sign-up and OIDC paths (/users/...) are behind forward-auth +
+    group-gate, so only members of users_gitlab can log in or have an account
+    auto-created (GitLab CE has no OIDC group restriction; required_groups and
+    admin_groups are Premium/Ultimate only). Existing GitLab sessions survive
+    removal from the group until they expire; block the user in GitLab to cut
+    access immediately. Admin rights are granted in GitLab (root account uses
+    GITLAB_ROOT_PASSWORD); admin_gitlab is not mapped.
     Upgrades: the image is pinned; GitLab must be upgraded along its documented
     upgrade path (required stops between versions), never by jumping straight
     to the newest release.

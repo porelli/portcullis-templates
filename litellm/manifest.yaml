@@ -7,11 +7,23 @@ tags: [llm, ai, openai, proxy, api]
 auth:
   method: native-oidc
   sso: true
-  group_access: false
+  group_access: true
   group_admin: false
   access_group: users_litellm
   admin_group: admin_litellm
-  notes: OIDC login for the admin UI. No forward-auth in front of LiteLLM so the OpenAI-compatible API is reachable with the master key or virtual API keys. No group-based restriction on UI access.
+  notes: >
+    OIDC login for the admin UI. The OpenAI-compatible API (and the management
+    API the UI calls) has no forward-auth, so it is reachable with the master
+    key or virtual API keys. The admin UI and all interactive login paths
+    (/ui, /sso, /login, /v2/login, /fallback/login, /onboarding) sit behind
+    forward-auth + group-gate: only members of users_litellm can sign in.
+    SSO users default to the read-only internal_user_viewer role; LLDAP groups
+    are mapped to roles (admin_litellm -> proxy_admin, users_litellm ->
+    internal_user), but that mapping needs the Keycloak
+    "groups" claim in the LiteLLM client's tokens; until the client has the
+    groups scope, SSO users get internal_user_viewer and an admin (logged in
+    with the master key) promotes them in the UI. Users created before this
+    change keep their existing role; review them under Internal Users.
 
 env:
   - key: LITELLM_MASTER_KEY

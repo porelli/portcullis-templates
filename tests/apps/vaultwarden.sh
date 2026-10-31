@@ -19,6 +19,14 @@ else
   fail "/admin router missing or not behind forward-auth + group-gate"
 fi
 
+# Static: group-gate requires admin_vaultwarden on /admin (path_groups)
+MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
+if grep -qE '^  admin_paths: \["/admin"\]' "$MANIFEST" && grep -q '^  admin_group: admin_vaultwarden' "$MANIFEST"; then
+  pass "auth.admin_paths [/admin] requires admin_vaultwarden"
+else
+  fail "auth.admin_paths [/admin] / admin_group missing in manifest"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")

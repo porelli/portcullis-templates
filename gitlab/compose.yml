@@ -27,6 +27,19 @@ services:
       traefik.http.routers.gitlab.entrypoints: websecure
       traefik.http.routers.gitlab.tls.options: authaware@file
       traefik.http.routers.gitlab.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.gitlab.service: gitlab
+      # Interactive sign-in (/users/sign_in, the OIDC start and callback under
+      # /users/auth/, sign-up and password reset) behind forward-auth +
+      # group-gate, so only members of users_gitlab can log in or get an
+      # account. GitLab CE cannot restrict OIDC logins by group itself
+      # (required_groups is Premium/Ultimate). The API, git-over-HTTPS and the
+      # registry stay on the router above, authenticated by GitLab tokens.
+      traefik.http.routers.gitlab-login.rule: Host(`git.${PORTCULLIS_DOMAIN:-portcullis.local}`) && PathPrefix(`/users`)
+      traefik.http.routers.gitlab-login.priority: "100"
+      traefik.http.routers.gitlab-login.entrypoints: websecure
+      traefik.http.routers.gitlab-login.tls.options: authaware@file
+      traefik.http.routers.gitlab-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.gitlab-login.service: gitlab
       traefik.http.services.gitlab.loadbalancer.server.port: "80"
     restart: unless-stopped
 

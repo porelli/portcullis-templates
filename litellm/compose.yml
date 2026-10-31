@@ -12,6 +12,12 @@ services:
       GENERIC_SCOPE: "openid profile email"
       PROXY_BASE_URL: https://llm.${PORTCULLIS_DOMAIN:-portcullis.local}
       AUTO_REDIRECT_UI_LOGIN_TO_SSO: "true"
+      # Least privilege for SSO users: map LLDAP groups (Keycloak "groups"
+      # claim) to LiteLLM roles; everyone else gets the read-only
+      # internal_user_viewer role. Users who signed in before keep their role.
+      GENERIC_ROLE_MAPPINGS_GROUP_CLAIM: groups
+      GENERIC_ROLE_MAPPINGS_DEFAULT_ROLE: internal_user_viewer
+      GENERIC_ROLE_MAPPINGS_ROLES: "{'proxy_admin': ['admin_litellm'], 'internal_user': ['users_litellm']}"
     volumes:
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
@@ -21,10 +27,23 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
+      # OpenAI-compatible API and management endpoints: no forward-auth, so
+      # clients authenticate with the master key or virtual API keys.
       traefik.http.routers.litellm.rule: Host(`llm.${PORTCULLIS_DOMAIN:-portcullis.local}`)
       traefik.http.routers.litellm.entrypoints: websecure
       traefik.http.routers.litellm.tls.options: authaware@file
       traefik.http.routers.litellm.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.litellm.service: litellm
+      # Admin UI and every interactive login path (SSO, username/password,
+      # invitation links) behind forward-auth + group-gate, so only members of
+      # users_litellm can sign in. Without this any Keycloak realm user could
+      # create a LiteLLM account via SSO.
+      traefik.http.routers.litellm-ui.rule: Host(`llm.${PORTCULLIS_DOMAIN:-portcullis.local}`) && (PathPrefix(`/ui`) || PathPrefix(`/sso`) || PathPrefix(`/login`) || PathPrefix(`/v2/login`) || PathPrefix(`/fallback/login`) || PathPrefix(`/onboarding`))
+      traefik.http.routers.litellm-ui.priority: "100"
+      traefik.http.routers.litellm-ui.entrypoints: websecure
+      traefik.http.routers.litellm-ui.tls.options: authaware@file
+      traefik.http.routers.litellm-ui.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.litellm-ui.service: litellm
       traefik.http.services.litellm.loadbalancer.server.port: "4000"
     restart: unless-stopped
 

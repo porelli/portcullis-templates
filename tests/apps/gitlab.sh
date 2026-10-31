@@ -23,12 +23,28 @@ else
   fail "Traefik routing not configured"
 fi
 
-# Native OIDC — must NOT have forward-auth middleware (would break
+# Native OIDC — the host-wide router must NOT have forward-auth (would break
 # git-over-HTTPS, the API and CI runners)
-if grep -qE 'portcullis-auth@docker|portcullis-groups@docker' "$COMPOSE"; then
-  fail "Forward-auth middleware present on a native-OIDC app"
+if grep -qE 'routers\.gitlab\.middlewares:.*portcullis-(auth|groups)@docker' "$COMPOSE"; then
+  fail "Forward-auth middleware on the host-wide GitLab router"
 else
-  pass "No forward-auth middleware (native OIDC only)"
+  pass "Host-wide router has no forward-auth (API / git / runners use tokens)"
+fi
+
+# Security: interactive sign-in (/users/...) gated by forward-auth + group-gate
+# so only users_gitlab members can log in or get an auto-created account
+# (GitLab CE cannot restrict OIDC logins by group).
+if grep -q 'routers.gitlab-login.rule:.*PathPrefix(`/users`)' "$COMPOSE" \
+  && grep -q 'routers.gitlab-login.middlewares:.*portcullis-auth@docker,portcullis-groups@docker' "$COMPOSE"; then
+  pass "/users/* (sign-in, OIDC, sign-up) behind forward-auth + group-gate"
+else
+  fail "/users/* login paths are not behind forward-auth + group-gate"
+fi
+MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
+if grep -q '^  group_access: true' "$MANIFEST" && grep -q '^  access_group: users_gitlab' "$MANIFEST"; then
+  pass "Manifest enables group_access with users_gitlab"
+else
+  fail "Manifest must set group_access: true and access_group: users_gitlab"
 fi
 
 # OIDC configuration present
