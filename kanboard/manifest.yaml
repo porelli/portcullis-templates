@@ -12,6 +12,9 @@ auth:
   access_group: users_kanboard
   admin_group: admin_kanboard
   notes: >
+    No public exceptions: Kanboard's router reads ?controller=&action= before
+    the path (app/Core/Http/Router.php), so any public prefix would reach
+    every APP_PUBLIC action, local password login included.
     Reverse proxy auth: users are matched on X-Forwarded-User, the immutable
     LLDAP username, honoured only from Traefik (TRUSTED_PROXY_NETWORKS =
     PORTCULLIS_TRAEFIK_IP). X-Forwarded-Email (user-editable) only fills the

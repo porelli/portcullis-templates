@@ -13,6 +13,10 @@ auth:
   admin_group: admin_vaultwarden
   admin_paths: ["/admin"]
   notes: >
+    No public exceptions: Bitwarden Send (1.37.4, web vault v2026.7.0) needs
+    the web vault at / with root-level hashed assets and the password-login
+    token endpoint /identity/connect/token (grant_type=send_access), which
+    no narrow path list can express.
     Native SSO via OpenID Connect. Users still need a master password for vault
     encryption. The SSO start and callback paths (/identity/connect/authorize,
     /identity/connect/oidc-signin) sit behind forward-auth + group-gate, so
