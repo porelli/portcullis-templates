@@ -11,6 +11,77 @@ auth:
   group_admin: false
   access_group: users_nextcloud
   admin_group: admin_nextcloud
+  # Public share links (Nextcloud 34.0.5, pretty URLs on in the apache
+  # image). Listed mode by default: nothing is public until an admin lists
+  # a share in the Hub. Paths researched in nextcloud/server v34.0.5
+  # (apps/files_sharing/appinfo/routes.php, apps/dav/appinfo/v2/publicremote.php,
+  # apps/dav/lib/Connector/Sabre/PublicAuth.php, core/Listener/
+  # BeforeTemplateRenderedListener.php); see the app page in the docs.
+  public_access:
+    enabled_by_default: true
+    default_mode: listed
+    description: >-
+      Public share links (/s/<token>) for people without a Portcullis
+      account. Nextcloud's share password, expiry and download limits still
+      apply; the gateway (forward-auth, group-gate, YubiKey) does not.
+    # Share tokens: 6-32 chars of Nextcloud's human-readable alphabet, or
+    # custom tokens of letters, digits and '-' (ShareAPIController.php).
+    token_pattern: '^[A-Za-z0-9-]{1,32}$'
+    paths:
+      - prefix: "/s/{token}"
+        description: Share page, password form, download and direct preview
+      - prefix: "/index.php/s/{token}"
+        description: Same share routes for links created without pretty URLs
+      - prefix: "/public.php/dav/files/{token}"
+        description: Public WebDAV of the share (listing, downloads, zip, uploads to editable shares)
+      - prefix: "/public.php/dav/uploads/{token}"
+        description: Chunked uploads to file-drop / editable shares
+      - prefix: "/apps/files_sharing/publicpreview/{token}"
+        description: Thumbnails of the shared files
+      - prefix: /dist
+        description: Compiled JS/CSS of core, files, files_sharing and systemtags (static)
+        supporting: true
+      - prefix: /core/css
+        description: Core stylesheets (static)
+        supporting: true
+      - prefix: /core/img
+        description: Core images (static)
+        supporting: true
+      - prefix: /core/js
+        description: mimetypelist.js and the oc.js config (same data the page inlines)
+        supporting: true
+      - prefix: /core/l10n
+        description: Core translations (static)
+        supporting: true
+      - prefix: /core/mimeicon
+        description: File-type icon redirect for files without a preview
+        supporting: true
+      - prefix: /apps/theming
+        description: Theme CSS, favicon, manifest and icons (its admin routes still need a Nextcloud login)
+        supporting: true
+      - prefix: /apps/viewer
+        description: In-browser image/video/audio viewer (static, no routes)
+        supporting: true
+      - prefix: /apps/files_pdfviewer
+        description: PDF viewer (pdf.js and its viewer page; settings API needs a login)
+        supporting: true
+      - prefix: /apps/files/l10n
+        description: Files UI translations (static)
+        supporting: true
+      - prefix: /apps/systemtags/l10n
+        description: System tags translations (static)
+        supporting: true
+      - prefix: /apps/files_sharing/css
+        description: Share page styles (static)
+        supporting: true
+      - prefix: /apps/files_sharing/img
+        description: Share page images (static)
+        supporting: true
+      - prefix: /apps/files_sharing/l10n
+        description: Share page translations (static)
+        supporting: true
+      - prefix: /apps/text
+        description: Markdown / README viewer (token in the request body, so only in mode all)
   notes: >
     Access gated by forward-auth + group-gate; Nextcloud then shows its own
     login (admin account uses NEXTCLOUD_ADMIN_PASSWORD). No OIDC app is
@@ -18,6 +89,12 @@ auth:
     forward-auth redirect. Nextcloud does not read the Portcullis identity
     headers (no user_oidc / header login), so the user-editable LLDAP email
     plays no part in which Nextcloud account is used.
+    Public exceptions (Hub, off for every share until listed): only the
+    listed share links and the static assets their page needs bypass the
+    gateway. Share-password brute force then faces the internet, limited by
+    Nextcloud's own brute-force protection (it sees the client IP via
+    TRUSTED_PROXIES = Traefik). Apps installed under /custom_apps that hook
+    the share page are not covered.
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
 

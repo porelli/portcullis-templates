@@ -46,3 +46,28 @@ if grep -q 'loadbalancer.server.port.*80' "$COMPOSE"; then
 else
   fail "Traefik loadbalancer port mismatch"
 fi
+
+# Public exceptions (auth.public_access; the Hub generates the router).
+MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
+if [ -z "$(public_routed_prefixes "$MANIFEST" listed)" ]; then
+  pass "listed mode without listed shares opens nothing"
+else
+  fail "listed mode without listed shares opens paths"
+fi
+TOK=AbCdEfGh2345678
+ROUTED=$(public_routed_prefixes "$MANIFEST" listed "$TOK")
+if echo "$ROUTED" | grep -qx "/s/$TOK" && echo "$ROUTED" | grep -qx "/public.php/dav/files/$TOK" && ! echo "$ROUTED" | grep -qx '/s'; then
+  pass "listed share expands /s/{token} and public WebDAV per token only"
+else
+  fail "listed share expansion wrong: $ROUTED"
+fi
+if echo "$ROUTED" | grep -q '^/apps/text'; then
+  fail "share-wide /apps/text opened in listed mode"
+else
+  pass "share-wide /apps/text only in mode all"
+fi
+if public_routed_prefixes "$MANIFEST" all | grep -qxE '/index\.php|/ocs(/.*)?|/remote\.php(/.*)?|/apps|/core|/public\.php'; then
+  fail "mode all opens a broad Nextcloud prefix"
+else
+  pass "mode all stays off /index.php, /ocs, /remote.php, /apps, /core"
+fi
