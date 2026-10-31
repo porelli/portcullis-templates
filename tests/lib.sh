@@ -618,13 +618,31 @@ _public_cookie_regexp() {
     for ((i = 0; i < ${#n}; i++)); do
       c="${n:i:1}"
       case "$c" in
-        _|.) alt+='(?:[_. \\[]|%[0-9a-f]{2})' ;;
+        _|.) alt+='(?:[_. +\\[]|%[0-9a-f]{2})' ;;
         *) alt+="(?:$c|%[0-9a-f]{2})" ;;
       esac
     done
     alts="${alts:+$alts|}$alt"
   done
   echo "(?i)(?:^|[;,])\\\\s*(?:$alts)\\\\s*="
+}
+
+# _public_query_variants <name>: the Hub's queryKeyVariants (every "_" / "."
+# as "_", ".", " " or "[", the key spellings PHP reads as <name>).
+_public_query_variants() {
+  local name="$1" variants=("") next c i o a
+  for ((i = 0; i < ${#name}; i++)); do
+    c="${name:i:1}"
+    next=()
+    for o in "${variants[@]}"; do
+      case "$c" in
+        _|.) for a in "_" "." " " "["; do next+=("$o$a"); done ;;
+        *) next+=("$o$c") ;;
+      esac
+    done
+    variants=("${next[@]}")
+  done
+  printf '%s\n' "${variants[@]}"
 }
 
 # write_public_override <app> <service> <host-arg> <tier> <out> <entry...>
@@ -648,7 +666,7 @@ write_public_override() {
   fi
   while read -r q; do
     rule+=" && !QueryRegexp(\`$q\`, \`.*\`)"
-  done < <(_manifest_public_list "$manifest" credential_query)
+  done < <(_manifest_public_list "$manifest" credential_query | while read -r q; do _public_query_variants "$q" | LC_ALL=C sort; done)
   {
     echo "services:"
     echo "  $svc:"
