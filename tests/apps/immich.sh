@@ -7,7 +7,6 @@ TEST_NAME="immich"
 section "Immich"
 
 APP_ID=immich
-SUBDOMAIN=photos
 SERVICE=immich-server
 
 compose_up "$APP_ID"

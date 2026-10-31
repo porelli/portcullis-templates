@@ -10,7 +10,7 @@ ADMIN_PASSWORD="${IMMICH_ADMIN_PASSWORD:-changeme}"
 ADMIN_NAME="${ADMIN_NAME:-Admin}"
 
 echo "setup: Waiting for Immich..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   if wget -qO- "$IMMICH_URL/api/server/config" 2>/dev/null | grep -q '"isInitialized"'; then
     break
   fi

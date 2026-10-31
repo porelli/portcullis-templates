@@ -7,7 +7,6 @@ TEST_NAME="plex"
 section "Plex"
 
 APP_ID=plex
-SUBDOMAIN=plex
 
 compose_up "$APP_ID"
 

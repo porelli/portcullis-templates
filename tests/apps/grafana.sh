@@ -7,7 +7,6 @@ TEST_NAME="grafana"
 section "Grafana"
 
 APP_ID=grafana
-SUBDOMAIN=grafana
 
 compose_up "$APP_ID"
 

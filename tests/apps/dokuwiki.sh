@@ -7,7 +7,6 @@ TEST_NAME="dokuwiki"
 section "DokuWiki"
 
 APP_ID=dokuwiki
-SUBDOMAIN=dokuwiki
 
 compose_up "$APP_ID"
 

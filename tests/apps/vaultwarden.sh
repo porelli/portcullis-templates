@@ -7,7 +7,6 @@ TEST_NAME="vaultwarden"
 section "Vaultwarden"
 
 APP_ID=vaultwarden
-SUBDOMAIN=passwords
 
 COMPOSE=$(_find_compose "$APP_ID" || true)
 

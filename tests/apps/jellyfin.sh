@@ -7,7 +7,6 @@ TEST_NAME="jellyfin"
 section "Jellyfin"
 
 APP_ID=jellyfin
-SUBDOMAIN=media
 
 compose_up "$APP_ID"
 

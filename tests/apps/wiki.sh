@@ -7,7 +7,6 @@ TEST_NAME="wiki"
 section "Wiki.js"
 
 APP_ID=wiki
-SUBDOMAIN=wiki
 SERVICE=wiki
 
 compose_up "$APP_ID"

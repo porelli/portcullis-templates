@@ -7,7 +7,6 @@ TEST_NAME="cloudbeaver"
 section "CloudBeaver"
 
 APP_ID=cloudbeaver
-SUBDOMAIN=db
 
 compose_up "$APP_ID"
 

@@ -7,7 +7,6 @@ TEST_NAME="netbird"
 section "NetBird"
 
 APP_ID=netbird
-SUBDOMAIN=netbird
 SERVICE=netbird-dashboard
 
 compose_up "$APP_ID"

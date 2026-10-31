@@ -7,7 +7,6 @@ TEST_NAME="firefly-iii"
 section "Firefly III"
 
 APP_ID=firefly-iii
-SUBDOMAIN=finance
 
 compose_up "$APP_ID"
 

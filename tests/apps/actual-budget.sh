@@ -6,8 +6,7 @@ source tests/lib.sh
 TEST_NAME="actual-budget"
 section "Actual Budget"
 
-APP_ID=actual-budget
-SUBDOMAIN=budget
+APP_ID="actual-budget"
 
 compose_up "$APP_ID"
 

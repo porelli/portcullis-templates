@@ -7,7 +7,6 @@ TEST_NAME="guacamole"
 section "Guacamole"
 
 APP_ID=guacamole
-SUBDOMAIN=remote
 
 COMPOSE=$(_find_compose "$APP_ID" || true)
 
