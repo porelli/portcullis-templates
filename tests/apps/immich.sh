@@ -53,7 +53,7 @@ compose_down "$APP_ID"
 # router). /api as a whole must never be public.
 MANIFEST="$(dirname "$(_find_compose immich)")/manifest.yaml"
 ROUTED=$(public_routed_prefixes "$MANIFEST" all)
-if echo "$ROUTED" | grep -qx /share && echo "$ROUTED" | grep -qx /api/shared-links/me && ! echo "$ROUTED" | grep -qx /api; then
+if echo "$ROUTED" | grep -qx /share && echo "$ROUTED" | grep -qx =/api/shared-links/me && ! echo "$ROUTED" | grep -qx /api; then
   pass "shared-link paths declared, /api not public"
 else
   fail "immich public paths: $ROUTED"

@@ -23,33 +23,55 @@ auth:
     description: >-
       Shared links (/share/<key>, /s/<slug>) for visitors without a client
       certificate. Immich's shared-link key, password and expiry still apply.
+    # Logins are not honoured on public paths: Authorization and these
+    # API-key / session headers are stripped, and requests carrying the
+    # session cookie or an apiKey / sessionKey parameter don't match the
+    # public router (server/src/enum.ts ImmichCookie, ImmichHeader,
+    # ImmichQuery).
+    credential_headers: [x-api-key, x-immich-user-token, x-immich-session-token]
+    credential_cookies: [immich_access_token, immich_maintenance_token]
+    credential_query: [apiKey, sessionKey]
     paths:
       - prefix: /share
         description: Shared-link page by key (server-rendered OpenGraph, SPA)
       - prefix: /s
         description: Shared-link page by custom slug
       - prefix: /_app
-        description: SvelteKit JS, CSS and fonts (static)
+        description: SvelteKit JS, CSS and fonts
         supporting: true
       - prefix: /custom.css
         description: Admin custom CSS loaded by every page
         supporting: true
+        exact: true
+        justification: Single public route serving the admin's custom CSS (server/src/app.common.ts)
       - prefix: /favicon.ico
         description: Favicon
         supporting: true
+        exact: true
+        justification: Single static file
       - prefix: /api/server/config
         description: Server config fetched at web app boot
         supporting: true
+        exact: true
+        justification: Public route (no auth) with the login/branding config the web app needs to start
       - prefix: /api/server/features
         description: Feature flags fetched at web app boot
         supporting: true
+        exact: true
+        justification: Public route (no auth) with the feature flags the web app needs to start
       - prefix: /api/server/media-types
         description: Accepted media types (upload into a shared album)
         supporting: true
+        exact: true
+        justification: Public route (no auth), list of accepted file types
       - prefix: /api/shared-links/me
         description: Resolves the shared link of the key / slug
+        exact: true
+        justification: Shared-link route (sharedLink auth)
       - prefix: /api/shared-links/login
         description: Password check of protected shared links
+        exact: true
+        justification: Shared-link route (sharedLink auth)
       - prefix: /api/assets
         description: Asset info, thumbnails, originals, video playback and upload (Immich checks the shared-link key)
       - prefix: /api/albums
@@ -58,8 +80,12 @@ auth:
         description: Album timeline buckets
       - prefix: /api/download/info
         description: Download size / archive plan
+        exact: true
+        justification: Shared-link route (sharedLink auth)
       - prefix: /api/download/archive
         description: Zip download
+        exact: true
+        justification: Shared-link route (sharedLink auth)
   notes: >
     Full OIDC with auto-register and auto-launch; password login is disabled
     while OIDC is configured. Promote an SSO user to admin with
