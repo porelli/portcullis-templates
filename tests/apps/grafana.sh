@@ -42,4 +42,12 @@ else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
 
+# Identity is the username only; never map an email header (account linking).
+if grep -q 'GF_AUTH_PROXY_HEADER_PROPERTY: username' "$COMPOSE" && ! grep -q 'GF_AUTH_PROXY_HEADERS' "$COMPOSE"; then
+  pass "Grafana header login keyed on username, no email mapping"
+else
+  fail "Grafana must use HEADER_PROPERTY username and no GF_AUTH_PROXY_HEADERS"
+fi
+
 compose_down "$APP_ID"
+

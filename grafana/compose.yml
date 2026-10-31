@@ -4,10 +4,10 @@ services:
     environment:
       GF_AUTH_PROXY_ENABLED: "true"
       GF_AUTH_PROXY_HEADER_NAME: X-Forwarded-User
-      # X-Forwarded-User is the immutable LLDAP username (core group-gate);
-      # the email comes separately and is only profile data.
+      # X-Forwarded-User is the immutable LLDAP username (core group-gate).
+      # No email header is mapped on purpose: Grafana's user sync can match
+      # accounts by email, and email is not an identity anchor here.
       GF_AUTH_PROXY_HEADER_PROPERTY: username
-      GF_AUTH_PROXY_HEADERS: "Email:X-Forwarded-Email"
       GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
       GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
