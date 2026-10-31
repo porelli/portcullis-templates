@@ -44,16 +44,12 @@ concurrency:
   group: test-apps-${{ github.event.pull_request.number || inputs.pr || github.ref }}
   cancel-in-progress: true
 
+# Core secrets are NOT set here: the shell environment wins over core's .env
+# (in the CLI and in docker compose), so fixed values would override what
+# `portcullis init --env-only` generates. The test job exports the generated
+# credentials tests/lib.sh needs.
 env:
   PORTCULLIS_DOMAIN: portcullis.local
-  KEYCLOAK_ADMIN: admin
-  KEYCLOAK_ADMIN_PASSWORD: ci-admin-pass
-  POSTGRES_PASSWORD: ci-pg-pass
-  LLDAP_ADMIN_PASSWORD: ci-lldap-pass
-  LLDAP_JWT_SECRET: ci-jwt-secret-value
-  LLDAP_BASE_DN: dc=portcullis,dc=local
-  FORWARD_AUTH_CLIENT_SECRET: ci-forward-auth-secret
-  FORWARD_AUTH_COOKIE_SECRET: Y2ktY29va2llLXNlY3JldC0zMi1ieXRlcw==
 
 jobs:
   # ── Decide whether this run may use secrets, and what to test ──
@@ -510,40 +506,26 @@ jobs:
             esac
           done < <(cat infra-images.txt "$APP_IMAGES" | LC_ALL=C sort -u)
 
+      # Same boot as core's own CI (ci.yml, job e2e): every secret generated
+      # by `portcullis init --env-only`, Keycloak with its production command,
+      # setup through the core CLI. Only the services the app tests need run
+      # (no Hub, no enroll); the override only publishes health ports.
       - name: Create .env and CI override
         working-directory: core
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          cat > .env << 'ENVEOF'
-          PORTCULLIS_DOMAIN=portcullis.local
-          ACME_EMAIL=ci@portcullis.local
-          KEYCLOAK_ADMIN=admin
-          KEYCLOAK_ADMIN_PASSWORD=ci-admin-pass
-          POSTGRES_PASSWORD=ci-pg-pass
-          LLDAP_ADMIN_PASSWORD=ci-lldap-pass
-          LLDAP_JWT_SECRET=ci-jwt-secret-value
-          LLDAP_BASE_DN=dc=portcullis,dc=local
-          FORWARD_AUTH_CLIENT_SECRET=ci-forward-auth-secret
-          FORWARD_AUTH_COOKIE_SECRET=Y2ktY29va2llLXNlY3JldC0zMi1ieXRlcw==
-          CLOUDFLARE_API_TOKEN=
-          PORTCULLIS_PROXY_SUBNET=172.31.250.0/24
-          PORTCULLIS_PROXY_IP_RANGE=172.31.250.128/25
-          PORTCULLIS_TRAEFIK_IP=172.31.250.2
-          ENVEOF
-          sed -i 's/^[[:space:]]*//' .env
-          # Fixed CI credentials above are what tests/lib.sh uses; init keeps
-          # existing values and only generates what's missing (e.g.
-          # HUB_PROXY_SECRET), so the .env matches core's own CI.
-          ./portcullis init --env-only --non-interactive --domain portcullis.local \
-            --email ci@portcullis.local --dns-provider none
-
-          # Bind-mount sources must exist before compose runs, or Docker
-          # creates them root-owned and core's scripts can't write into them
-          # (same layout as core's bootstrap.sh / CI).
-          mkdir -p certs/revocation
-          : > certs/revocation/revoked-serials.txt
-          (umask 077 && mkdir -p secrets/vault-unseal secrets/enroll)
+          set -euo pipefail
+          ./portcullis init --env-only --non-interactive --domain "$PORTCULLIS_DOMAIN" \
+            --email "ci@$PORTCULLIS_DOMAIN" --dns-provider none
+          # Credentials tests/lib.sh uses (Keycloak admin API, LLDAP, direct
+          # grant on the forward-auth client).
+          for v in KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD LLDAP_ADMIN_PASSWORD FORWARD_AUTH_CLIENT_SECRET; do
+            val="$(grep "^$v=" .env | cut -d= -f2-)"
+            [ -n "$val" ] || { echo "::error::$v not generated"; exit 1; }
+            [ "$v" = KEYCLOAK_ADMIN ] || echo "::add-mask::$val"
+            echo "$v=$val" >> "$GITHUB_ENV"
+          done
           # ./templates is the Hub's template overlay; in CI it is this repo,
           # so `./templates/<app>/...` mounts resolve (tests/lib.sh quirk #6).
           ln -sfn "$WORKSPACE" templates
@@ -551,9 +533,7 @@ jobs:
           cat > docker-compose.ci.yml << 'YML'
           services:
             keycloak:
-              command: ["start-dev", "--import-realm", "--http-enabled=true", "--http-port=8080", "--hostname=https://auth.portcullis.local", "--health-enabled=true"]
               ports:
-                - "127.0.0.1:8080:8080"
                 - "127.0.0.1:9000:9000"
             lldap:
               ports:
@@ -565,45 +545,56 @@ jobs:
       - name: Boot infrastructure
         working-directory: core
         run: |
+          set -euo pipefail
           # Compose creates portcullis-proxy from core's definition (fixed
           # IPAM subnet + Traefik's static IP) — never `docker network create`.
-          docker compose up -d postgres lldap traefik
+          docker compose up -d postgres lldap
+          # Vault in server mode (initialised, unsealed, secrets/ written;
+          # also creates every bind-mount source), PKI + wildcard server
+          # cert, CA bundle.
+          ./portcullis vault init
+          ./portcullis pki setup --with-server-cert
+          ./portcullis config apply --bundle-only
+          # No ACME in CI: serve the Vault-issued wildcard cert.
+          printf 'tls:\n  certificates:\n    - certFile: /certs/server.crt\n      keyFile: /certs/server.key\n' > traefik/dynamic/ci-certs.yml
 
+          docker compose up -d traefik keycloak group-gate
           TRAEFIK_IP=$(grep '^PORTCULLIS_TRAEFIK_IP=' .env | cut -d= -f2)
           GOT_IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "portcullis-proxy").IPAddress}}' "$(docker compose ps -q traefik)")
           test "$GOT_IP" = "$TRAEFIK_IP" || { echo "Traefik IP on portcullis-proxy is $GOT_IP, want $TRAEFIK_IP"; exit 1; }
 
-          # Vault in server mode: core's CLI starts, initialises and unseals
-          # it and writes secrets/ (root token in vault-init.json).
-          ./portcullis vault init
-
-          for _ in $(seq 1 30); do docker compose exec -T postgres pg_isready -U keycloak > /dev/null 2>&1 && break; sleep 2; done
-          for _ in $(seq 1 30); do docker compose exec -T lldap /app/lldap healthcheck --config-file /data/lldap_config.toml > /dev/null 2>&1 && break; sleep 2; done
-
-          # Vault PKI (admin token from secrets/vault-init.json; with no host
-          # vault CLI it runs the CLI inside the vault container).
-          ./portcullis pki setup --with-server-cert
-
-          cat > traefik/dynamic/ci-certs.yml << 'EOF'
-          tls:
-            certificates:
-              - certFile: /certs/server.crt
-                keyFile: /certs/server.key
-          EOF
-          cp certs/ca-chain.crt certs/ca-bundle.crt
-
-          # Keycloak
-          docker compose up -d keycloak
-          for _ in $(seq 1 90); do curl -sf http://localhost:9000/health/ready > /dev/null 2>&1 && break; sleep 3; done
-
+          for i in $(seq 1 100); do
+            curl -sf http://127.0.0.1:9000/health/ready > /dev/null && break
+            [ "$i" -eq 100 ] && { echo "::error::Keycloak not ready"; docker compose logs --tail=80 keycloak; exit 1; }
+            sleep 3
+          done
           # LDAP bind credentials and the forward-auth secret are pushed
           # through the admin API (the realm export only has placeholders).
           ./portcullis keycloak configure
           ./portcullis oidc register
 
-          # Auth services
-          docker compose up -d forward-auth group-gate
-          sleep 5
+          # oauth2-proxy exits while Keycloak is down; (re)start it now.
+          docker compose up -d forward-auth
+          docker compose restart forward-auth
+          for svc in traefik keycloak group-gate forward-auth; do
+            for i in $(seq 1 40); do
+              cid="$(docker compose ps -q "$svc")"
+              state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")"
+              case "$state" in "running healthy"|"running ") break ;; esac
+              [ "$i" -eq 40 ] && { echo "::error::$svc not healthy ($state)"; docker compose logs --tail=40 "$svc"; exit 1; }
+              sleep 3
+            done
+          done
+          # Forward-auth works end to end: an unauthenticated request to a
+          # core router behind portcullis-auth is redirected to Keycloak.
+          for i in $(seq 1 30); do
+            loc=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --cacert certs/ca-chain.crt \
+                    --resolve "traefik.$PORTCULLIS_DOMAIN:443:127.0.0.1" "https://traefik.$PORTCULLIS_DOMAIN/" || true)
+            case "$loc" in *"//auth.$PORTCULLIS_DOMAIN/"*) break ;; esac
+            [ "$i" -eq 30 ] && { echo "::error::forward-auth does not redirect to auth.$PORTCULLIS_DOMAIN (got: $loc)"; docker compose logs --tail=40 forward-auth traefik; exit 1; }
+            sleep 2
+          done
+          docker compose ps
           echo "Infrastructure ready"
 
       - name: "Test: ${{ matrix.app }}"
@@ -624,7 +615,7 @@ jobs:
           echo "=== Logs ==="
           for svc in traefik vault keycloak forward-auth group-gate lldap; do
             echo "--- $svc ---"
-            docker compose logs --tail=10 "$svc" 2>/dev/null || true
+            docker compose logs --tail=40 "$svc" 2>/dev/null || true
           done
 
       - name: Cleanup
