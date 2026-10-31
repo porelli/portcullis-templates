@@ -92,6 +92,10 @@ assert_gated_path "$HOST" "/public/build/"
 # stolen session past the gateway's hardware-key check).
 assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: grafana_session=stolen"
 assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: a=1; grafana%5Fsession=stolen"
+assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: grafana+session=stolen"
+assert_gated_path "$HOST" "/public-dashboards/$TOKEN" -H "Cookie: renderKey=stolen"
+assert_gated_path "$HOST" "/public-dashboards/$TOKEN?auth_token=stolen"
+assert_gated_path "$HOST" "/public-dashboards/$TOKEN?auth.token=stolen"
 
 compose_down "$APP_ID"
 rm -f "$COMPOSE_OVERRIDE"

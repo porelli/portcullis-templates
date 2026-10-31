@@ -27,11 +27,15 @@ auth:
     # Generated: 32 lowercase hex (uuid without dashes); API-created tokens
     # may also use the dashed uuid form.
     token_pattern: '^([0-9a-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$'
-    # Logins are not honoured on public paths: Authorization (API keys,
-    # service account tokens, basic auth) is stripped, and requests with the
-    # session cookie (grafana_session, [auth] login_cookie_name) don't match
-    # the public router.
-    credential_cookies: [grafana_session]
+    # Logins are not honoured on public paths (pkg/services/authn/clients):
+    # Authorization (API keys, service account tokens, basic auth) and the
+    # extended-JWT headers are stripped; requests with the session cookie
+    # (grafana_session = [auth] login_cookie_name, not overridden here), the
+    # image-renderer cookie renderKey, or a JWT URL login (auth_token; JWT
+    # auth is off here, excluded defensively) don't match the public router.
+    credential_headers: [X-Access-Token, X-Grafana-Id]
+    credential_cookies: [grafana_session, renderKey]
+    credential_query: [auth_token]
     paths:
       - prefix: "/public-dashboards/{token}"
         description: Shared dashboard viewer page
