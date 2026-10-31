@@ -98,6 +98,7 @@ CATCH_ALL_TRUST = [
 LOGIN_GATES = {
     "gitlab": ["/users"],
     "litellm": ["/ui", "/sso", "/login", "/v2/login", "/fallback/login", "/onboarding"],
+    "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
 }
 
 
@@ -122,6 +123,10 @@ IDENTITY_ENV_FORBIDDEN = [
 IDENTITY_ENV_REQUIRED = [
     ("SSO_ENABLED", r"(?i)^true$", "SSO_SIGNUPS_MATCH_EMAIL", r"(?i)^false$",
      "Vaultwarden SSO must set SSO_SIGNUPS_MATCH_EMAIL: \"false\" (the default true links accounts by email)"),
+    ("SSO_ENABLED", r"(?i)^true$", "INVITATIONS_ALLOWED", r"(?i)^false$",
+     "Vaultwarden SSO must set INVITATIONS_ALLOWED: \"false\" (an email invitation creates a placeholder account the first SSO user with that email takes over)"),
+    ("SSO_ENABLED", r"(?i)^true$", "SIGNUPS_ALLOWED", r"(?i)^false$",
+     "Vaultwarden SSO must set SIGNUPS_ALLOWED: \"false\" (accounts only via the group-gated SSO login)"),
     ("AUTHENTICATION_GUARD", r"^remote_user_guard$", "AUTHENTICATION_GUARD_HEADER", r"^HTTP_X_FORWARDED_USER$",
      "Firefly III remote_user_guard must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
     ("REVERSE_PROXY_AUTH", r"(?i)^true$", "REVERSE_PROXY_USER_HEADER", r"^HTTP_X_FORWARDED_USER$",

@@ -36,6 +36,21 @@ else
   fail "vaultwarden keycloak client must set email_verified_claim: false"
 fi
 assert_compose_setting "$COMPOSE" SSO_SCOPES profile
+# No email invitations (claimable placeholder accounts), no non-SSO signups
+assert_compose_setting "$COMPOSE" INVITATIONS_ALLOWED false
+assert_compose_setting "$COMPOSE" SIGNUPS_ALLOWED false
+# SSO start + callback behind forward-auth + group-gate (users_vaultwarden)
+if grep -q 'routers.vaultwarden-sso.rule:.*PathPrefix(`/identity/connect/authorize`).*PathPrefix(`/identity/connect/oidc-signin`)' "$COMPOSE" \
+  && grep -q 'routers.vaultwarden-sso.middlewares:.*portcullis-auth@docker,portcullis-groups@docker' "$COMPOSE"; then
+  pass "SSO authorize + oidc-signin behind forward-auth + group-gate"
+else
+  fail "SSO login paths are not behind forward-auth + group-gate"
+fi
+if grep -q '^  group_access: true' "$MANIFEST" && grep -q '^  access_group: users_vaultwarden' "$MANIFEST"; then
+  pass "Manifest enables group_access with users_vaultwarden"
+else
+  fail "Manifest must set group_access: true and access_group: users_vaultwarden"
+fi
 
 compose_up "$APP_ID"
 

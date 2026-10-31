@@ -4,7 +4,13 @@ services:
     environment:
       DOMAIN: https://passwords.${PORTCULLIS_DOMAIN:-portcullis.local}
       ADMIN_TOKEN: ${VAULTWARDEN_ADMIN_TOKEN:?VAULTWARDEN_ADMIN_TOKEN must be set}
+      # Accounts only via SSO (the login paths below are gated by
+      # users_vaultwarden).
       SIGNUPS_ALLOWED: "false"
+      # Org invitations by email would create a placeholder account that the
+      # first SSO user presenting that (user-editable) email takes over.
+      # false: orgs can only add users who already have an account.
+      INVITATIONS_ALLOWED: "false"
       SSO_ENABLED: "true"
       SSO_AUTHORITY: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
       SSO_CLIENT_ID: vaultwarden
@@ -48,6 +54,16 @@ services:
       traefik.http.routers.vaultwarden-admin.tls.options: authaware@file
       traefik.http.routers.vaultwarden-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.vaultwarden-admin.service: vaultwarden
+      # SSO start and callback: behind forward-auth + group-gate, so only
+      # users_vaultwarden members can sign in or get an account by SSO
+      # (Vaultwarden has no OIDC group restriction). The API, the
+      # /identity/connect/token exchange and the clients stay ungated.
+      traefik.http.routers.vaultwarden-sso.rule: Host(`passwords.${PORTCULLIS_DOMAIN:-portcullis.local}`) && (PathPrefix(`/identity/connect/authorize`) || PathPrefix(`/identity/connect/oidc-signin`))
+      traefik.http.routers.vaultwarden-sso.priority: "100"
+      traefik.http.routers.vaultwarden-sso.entrypoints: websecure
+      traefik.http.routers.vaultwarden-sso.tls.options: authaware@file
+      traefik.http.routers.vaultwarden-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.vaultwarden-sso.service: vaultwarden
     restart: unless-stopped
 
 volumes:
