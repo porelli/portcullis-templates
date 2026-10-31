@@ -7,6 +7,13 @@ name: Test Apps
 # and then runs this workflow by hand (Actions -> Test Apps -> Run workflow,
 # pr = <number>). Static checks for everyone live in lint.yml.
 #
+# Trust boundary: template / PR code only runs in the `test` job, which
+# references no secret. Core is cloned with the PAT in `fetch-core` (which
+# checks out nothing from the PR; for dispatched PR runs .core-ref is read
+# from the PR's base commit) and handed over as an artifact verified by
+# digest. The image cache is written only by `fetch-core`; `test` re-verifies
+# every image it loads from it against the registry.
+#
 # Never switch this to pull_request_target: it would run fork code with
 # secrets and a write token.
 on:
@@ -60,6 +67,7 @@ jobs:
       checkout_ref: ${{ steps.gate.outputs.checkout_ref }}
       expect_sha: ${{ steps.gate.outputs.expect_sha }}
       base: ${{ steps.gate.outputs.base }}
+      trusted_ref: ${{ steps.gate.outputs.trusted_ref }}
     steps:
       - name: Check secrets availability and resolve target
         id: gate
@@ -67,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -89,10 +98,12 @@ jobs:
             skip "PORTCULLIS_PAT is not available to this run (for Dependabot PRs add it as a Dependabot secret, or run the workflow by hand with pr=<number>)."
           fi
 
-          checkout_ref="" expect_sha="" base=""
+          # checkout_ref: code under test. trusted_ref: where .core-ref is
+          # read from ("" = the event's default ref).
+          checkout_ref="" expect_sha="" base="" trusted_ref=""
           case "$EVENT" in
-            pull_request) base="$PR_BASE_SHA" ;;
-            push) base="$BEFORE" ;;
+            pull_request) base="$PR_BASE_SHA" ;;   # same-repo PR (writers only)
+            push) base="$BEFORE"; trusted_ref="$SHA" ;;
             workflow_dispatch)
               if [ -n "$INPUT_PR" ]; then
                 [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a number"; exit 1; }
@@ -101,10 +112,12 @@ jobs:
                 checkout_ref="refs/pull/$INPUT_PR/head"
                 expect_sha=$(jq -r .head.sha <<< "$pr_json")
                 base=$(jq -r .base.sha <<< "$pr_json")
-                echo "Testing PR #$INPUT_PR at $expect_sha (from $(jq -r .head.repo.full_name <<< "$pr_json"))" | tee -a "$GITHUB_STEP_SUMMARY"
+                trusted_ref="$base"   # never take .core-ref from the PR itself
+                echo "Testing PR #$INPUT_PR at $expect_sha (from $(jq -r .head.repo.full_name <<< "$pr_json")); core ref from base $base" | tee -a "$GITHUB_STEP_SUMMARY"
               elif [ -n "$INPUT_REF" ]; then
                 [[ "$INPUT_REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$INPUT_REF" != *..* ]] || { echo "::error::invalid ref"; exit 1; }
                 checkout_ref="$INPUT_REF"
+                trusted_ref="$INPUT_REF"
               fi
               ;;
           esac
@@ -113,17 +126,19 @@ jobs:
             echo "checkout_ref=$checkout_ref"
             echo "expect_sha=$expect_sha"
             echo "base=$base"
+            echo "trusted_ref=$trusted_ref"
           } >> "$GITHUB_OUTPUT"
 
-  # ── Detect which templates changed; read .core-ref ──────
+  # ── Detect which templates changed (no code executed, no secrets) ──
   changes:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       apps: ${{ steps.filter.outputs.apps }}
-      core_ref: ${{ steps.core.outputs.ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,15 +153,6 @@ jobs:
         run: |
           got=$(git rev-parse HEAD)
           [ "$got" = "$EXPECT" ] || { echo "::error::PR head moved ($got != $EXPECT); re-run after reviewing the new commits"; exit 1; }
-
-      # Core version the templates are tested against (contracts §1).
-      - name: Read .core-ref
-        id: core
-        run: |
-          ref=$(grep -v '^[[:space:]]*#' .core-ref | tr -d '[:space:]')
-          [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$ref" != *..* ]] || { echo "::error file=.core-ref::invalid core ref '$ref'"; exit 1; }
-          echo "Core ref: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Detect changed apps
         id: filter
@@ -194,29 +200,52 @@ jobs:
             if [ -f "$dir/compose.yml" ]; then echo "$dir"; fi
           done | sort -u | emit
 
-  # ── Cache infra Docker images ───────────────────────────
-  cache-infra:
-    runs-on: ubuntu-latest
-    needs: changes
+  # ── Clone core + warm the infra image cache (trusted code only) ──
+  # The only job that sees PORTCULLIS_PAT and the only one that writes the
+  # cache. It checks out nothing but .core-ref from a trusted commit.
+  fetch-core:
+    needs: [gate, changes]
     if: needs.changes.outputs.apps != '[]'
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     outputs:
-      key: ${{ steps.images.outputs.key }}
+      core_ref: ${{ steps.core.outputs.ref }}
+      cache_key: ${{ steps.images.outputs.key }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
-      # Derive the infra image list from core's compose file so the cache
-      # can never drift from what the stack actually runs. The cache key is
-      # a hash of that list: bumping any image tag in core invalidates it.
-      # Only trusted core code runs in this job (it is the one that saves
-      # the cache).
-      - name: Clone core repo (for image list)
+      - name: Check out .core-ref (trusted commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.trusted_ref }}
+          path: trusted
+          sparse-checkout: .core-ref
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Core version the templates are tested against (contracts §1).
+      - name: Read .core-ref
+        id: core
+        run: |
+          ref=$(grep -v '^[[:space:]]*#' trusted/.core-ref | tr -d '[:space:]')
+          [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$ref" != *..* ]] || { echo "::error file=.core-ref::invalid core ref '$ref'"; exit 1; }
+          echo "Core ref: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Clone core repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: porelli/portcullis
-          ref: ${{ needs.changes.outputs.core_ref }}
+          ref: ${{ steps.core.outputs.ref }}
           token: ${{ secrets.PORTCULLIS_PAT }}
           path: core
           persist-credentials: false
 
+      # Derive the infra image list from core's compose file so the cache
+      # can never drift from what the stack actually runs. The cache key is
+      # a hash of that list: bumping any image tag in core invalidates it.
       - name: Resolve infra images
         id: images
         working-directory: core
@@ -224,30 +253,53 @@ jobs:
           # Skip locally built images and the hub (pulled by core as needed).
           docker compose config --images \
             | grep -v -e '^portcullis-enroll$' -e 'portcullis-hub' \
-            | sort -u > /tmp/infra-images.txt
-          cat /tmp/infra-images.txt
-          echo "key=infra-images-$(sha256sum /tmp/infra-images.txt | cut -c1-16)" >> "$GITHUB_OUTPUT"
+            | sort -u > ../infra-images.txt
+          cat ../infra-images.txt
+          echo "key=infra-images-$(sha256sum ../infra-images.txt | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache Docker images
+      # tar keeps the executable bits core's scripts need.
+      - name: Package core
+        run: tar -czf core.tgz --exclude=core/.git core infra-images.txt
+
+      - name: Upload core
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: core.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Look up image cache
         id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/docker-images
+          key: ${{ steps.images.outputs.key }}
+          lookup-only: true
+
+      - name: Pull images
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/docker-images
+          xargs -n1 docker pull < infra-images.txt
+          xargs docker save -o /tmp/docker-images/infra.tar < infra-images.txt
+
+      - name: Save image cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/docker-images
           key: ${{ steps.images.outputs.key }}
 
-      - name: Pull and cache images
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p /tmp/docker-images
-          xargs -n1 docker pull < /tmp/infra-images.txt
-          xargs docker save -o /tmp/docker-images/infra.tar < /tmp/infra-images.txt
-
-  # ── Per-app tests (parallel) ────────────────────────────
+  # ── Per-app tests (parallel) — runs template code, no secrets ──
   test:
-    needs: [gate, changes, cache-infra]
+    needs: [gate, changes, fetch-core]
     if: needs.changes.outputs.apps != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -273,32 +325,55 @@ jobs:
           got=$(git rev-parse HEAD)
           [ "$got" = "$EXPECT" ] || { echo "::error::PR head moved ($got != $EXPECT)"; exit 1; }
 
-      # The PAT is used by this step only and not persisted to core/.git,
-      # so later steps (which run the template's code) cannot read it.
-      - name: Clone core repo (for infra compose + scripts)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Downloaded by id and checked against the digest fetch-core recorded,
+      # so a concurrently running job cannot swap it.
+      - name: Download core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          repository: porelli/portcullis
-          ref: ${{ needs.changes.outputs.core_ref }}
-          token: ${{ secrets.PORTCULLIS_PAT }}
-          path: core
-          persist-credentials: false
+          artifact-ids: ${{ needs.fetch-core.outputs.artifact_id }}
+          path: /tmp/core-artifact
+          digest-mismatch: error
 
-      # Restore only: template code runs in this job, so it must not be able
-      # to write the shared cache.
+      - name: Unpack core
+        run: |
+          tgz=$(find /tmp/core-artifact -name core.tgz -print -quit)
+          [ -n "$tgz" ] || { echo "::error::core artifact missing"; exit 1; }
+          tar -xzf "$tgz" -C "$GITHUB_WORKSPACE"
+          test -f core/docker-compose.yml
+
       - name: Restore Docker image cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/docker-images
-          key: ${{ needs.cache-infra.outputs.key }}
+          key: ${{ needs.fetch-core.outputs.cache_key }}
 
-      - name: Load cached images
+      # The cache is not a trust boundary (any job of a run can reach the
+      # cache service), so every infra image is re-checked against the
+      # registry: digest-pinned refs must carry that digest, everything else
+      # is re-pulled by tag (layers are already local, so this is cheap and
+      # re-points the tag at the registry's image if the cache was tampered).
+      - name: Load and verify infra images
         run: |
           if [ -f /tmp/docker-images/infra.tar ]; then
             docker load -i /tmp/docker-images/infra.tar
           else
-            cd core && docker compose -f docker-compose.yml pull postgres vault lldap keycloak traefik forward-auth group-gate
+            echo "No image cache; pulling"
           fi
+          while read -r img; do
+            [ -n "$img" ] || continue
+            case "$img" in
+              *@sha256:*)
+                want="${img##*@}"
+                if docker image inspect --format '{{join .RepoDigests "\n"}}' "$img" 2>/dev/null | grep -qF "@$want"; then
+                  echo "verified $img"
+                else
+                  echo "::warning::$img missing or digest mismatch after cache load; pulling"
+                  docker pull -q "$img"
+                fi
+                ;;
+              *) docker pull -q "$img" ;;
+            esac
+          done < infra-images.txt
 
       - name: Create .env and CI override
         working-directory: core
