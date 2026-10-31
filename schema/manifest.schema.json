@@ -245,7 +245,11 @@
         "secret_env": {"$ref": "#/$defs/envKey"},
         "redirect_uri": {"$ref": "#/$defs/redirectUri"},
         "redirect_uris": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/redirectUri"}},
-        "name": {"$ref": "#/$defs/singleLine", "minLength": 1}
+        "name": {"$ref": "#/$defs/singleLine", "minLength": 1},
+        "email_verified_claim": {
+          "description": "Default true. false: the Hub attaches the realm's email-unverified client scope (email claim, no email_verified) instead of email, for apps that refuse email_verified=false but accept it absent. The app must then not request the email scope.",
+          "type": "boolean"
+        }
       },
       "oneOf": [
         {"required": ["redirect_uri"], "not": {"required": ["redirect_uris"]}},

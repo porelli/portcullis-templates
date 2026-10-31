@@ -183,7 +183,12 @@ list it in `auth.admin_paths`; group-gate then additionally requires
   accounts by email match (look for settings like "match/link by email",
   "auto link user"; if the app cannot turn it off, see `immich/`). A gate that
   rejects a foreign `X-Forwarded-User` must reject `X-Forwarded-Email` too.
-  `tests/validate.py` flags known email-linking settings.
+  `tests/validate.py` flags known email-linking settings. An OIDC app that
+  refuses `email_verified=false` but accepts the claim being absent sets
+  `email_verified_claim: false` on its `keycloak_clients` entry (the client
+  then gets the `email-unverified` scope instead of `email`) and must stop
+  requesting the `email` scope, or Keycloak answers `invalid_scope`
+  (see `vaultwarden/`).
 - **No published HTTP ports.** HTTP(S) goes through Traefik only. Non-HTTP
   host ports (DNS, TURN, ...) are declared under `ports:` in the manifest; the
   Hub detects collisions and writes the bindings.

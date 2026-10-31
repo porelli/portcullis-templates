@@ -578,6 +578,20 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
         for rx, msg in IDENTITY_TEXT_FORBIDDEN:
             if re.search(rx, text):
                 r.error(where, msg, EMAIL_HINT)
+    # email_verified_claim: false swaps the client's email scope for
+    # email-unverified; Keycloak answers invalid_scope to a request for a
+    # scope the client doesn't have, so the app must not ask for "email".
+    no_ev = [c.get("client_id") for c in (t.manifest or {}).get("keycloak_clients") or []
+             if isinstance(c, dict) and c.get("email_verified_claim") is False]
+    if no_ev:
+        for sname, svc in services.items():
+            if not isinstance(svc, dict):
+                continue
+            for k, v in env_of(svc).items():
+                if "SCOPE" in k.upper() and re.search(r"(?<![\w-])email(?![\w-])", v):
+                    r.error(f"{t.c_where}: services.{sname}", f"{k}={v} requests the email scope, but client(s) "
+                            f"{', '.join(map(str, no_ev))} set email_verified_claim: false (no email scope)",
+                            "drop email from the requested scopes; the email-unverified default scope still sends the email claim")
     if "omniauth_providers" in t.compose_values and \
             not re.search(r"omniauth_auto_link_user'\]\s*=\s*false", t.compose_values):
         r.error(t.c_where, "GitLab OIDC needs gitlab_rails['omniauth_auto_link_user'] = false", EMAIL_HINT)
