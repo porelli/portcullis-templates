@@ -101,6 +101,46 @@ LOGIN_GATES = {
 }
 
 
+# Identity must never be keyed on (or linked by) the email: LLDAP lets every
+# user change their own email, Keycloak marks it unverified and group-gate
+# forwards it separately in X-Forwarded-Email (display / notifications only).
+# X-Forwarded-User / preferred_username / sub are the identity.
+EMAIL_HINT = ("key accounts on the LLDAP username (X-Forwarded-User / preferred_username) or the OIDC sub; "
+              "LLDAP emails are user-editable, so email matching allows account takeover")
+
+# (env key regex, forbidden value regex, message)
+IDENTITY_ENV_FORBIDDEN = [
+    (r"^(AUTHENTICATION_GUARD_HEADER|REVERSE_PROXY_USER_HEADER|HTTP_AUTH_HEADER|GF_AUTH_PROXY_HEADER_NAME|REMOTE_USER_HEADER)$",
+     r"(?i)email", "identity header is the email header"),
+    (r"^GF_AUTH_PROXY_HEADER_PROPERTY$", r"(?i)^email$", "Grafana auth proxy keys users on email"),
+    (r"^SSO_SIGNUPS_MATCH_EMAIL$", r"(?i)^(true|1|yes)$", "Vaultwarden links SSO logins to existing accounts by email"),
+    (r"^GENERIC_USER_ID_ATTRIBUTE$", r"(?i)email", "LiteLLM SSO user id is the email"),
+    (r"^(OAUTH2_PROXY_USER_ID_CLAIM|OIDC_USERNAME_CLAIM|OIDC_USER_CLAIM)$", r"(?i)email", "user id claim is the email"),
+]
+
+# (env key that enables the feature, its value regex, required env key, required value regex, message)
+IDENTITY_ENV_REQUIRED = [
+    ("SSO_ENABLED", r"(?i)^true$", "SSO_SIGNUPS_MATCH_EMAIL", r"(?i)^false$",
+     "Vaultwarden SSO must set SSO_SIGNUPS_MATCH_EMAIL: \"false\" (the default true links accounts by email)"),
+    ("AUTHENTICATION_GUARD", r"^remote_user_guard$", "AUTHENTICATION_GUARD_HEADER", r"^HTTP_X_FORWARDED_USER$",
+     "Firefly III remote_user_guard must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
+    ("REVERSE_PROXY_AUTH", r"(?i)^true$", "REVERSE_PROXY_USER_HEADER", r"^HTTP_X_FORWARDED_USER$",
+     "Kanboard reverse proxy auth must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
+    ("GENERIC_CLIENT_ID", r".", "GENERIC_USER_EMAIL_ATTRIBUTE", r"^(?!email$).+",
+     "LiteLLM matches SSO logins to existing users by email; map GENERIC_USER_EMAIL_ATTRIBUTE to a claim that is never sent"),
+]
+
+# (regex over every scalar of compose.yml and every text file in the template, message)
+IDENTITY_TEXT_FORBIDDEN = [
+    (r"omniauth_auto_link_user'\]\s*=\s*(true|\[)", "GitLab omniauth_auto_link_user links OIDC logins to accounts by email"),
+    (r"(?m)^\s*auto_link_user:\s*(true|\[)", "GitLab auto_link_user links OIDC logins to accounts by email"),
+    (r"(?m)^\s*email_verified_required:\s*false", "Headscale would sync the unverified, user-editable email"),
+    (r"\"DefaultUsernameClaim\"\s*:\s*\"email\"", "Jellyfin SSO plugin keys users on email"),
+    (r"\"AuthUserIDClaim\"\s*:\s*\"email\"", "NetBird keys users on email"),
+    (r"uid_field:\s*'email'", "GitLab OIDC uid_field is the email"),
+]
+
+
 class Report:
     def __init__(self) -> None:
         self.errors: List[str] = []
@@ -486,6 +526,61 @@ def check_compose(t: Template, r: Report) -> None:
             r.error(where, "has traefik.http.* labels but not traefik.enable: \"true\"")
 
     check_routers(t, routers, r)
+    check_identity(t, services, r)
+
+
+def env_of(svc: Dict[str, Any]) -> Dict[str, str]:
+    raw = svc.get("environment") or {}
+    if isinstance(raw, dict):
+        return {str(k): "" if v is None else str(v) for k, v in raw.items()}
+    out: Dict[str, str] = {}
+    for item in raw:
+        k, _, v = str(item).partition("=")
+        out[k] = v
+    return out
+
+
+def _template_texts(t: Template) -> List[Tuple[str, str]]:
+    """(where, text) for compose scalars and the template's support files."""
+    out = [(t.c_where, t.compose_values)]
+    for dirpath, _, files in os.walk(t.dir):
+        for fn in sorted(files):
+            if fn in ("compose.yml", "manifest.yaml"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    out.append((f"{t.id}/{os.path.relpath(path, t.dir)}", f.read()))
+            except (UnicodeDecodeError, OSError):
+                continue
+    return out
+
+
+def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
+    for sname, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        where = f"{t.c_where}: services.{sname}"
+        env = env_of(svc)
+        for kre, vre, msg in IDENTITY_ENV_FORBIDDEN:
+            for k, v in env.items():
+                if re.match(kre, k) and re.search(vre, v):
+                    r.error(where, f"{k}={v}: {msg}", EMAIL_HINT)
+        for on_key, on_re, req_key, req_re, msg in IDENTITY_ENV_REQUIRED:
+            if on_key in env and re.search(on_re, env[on_key]):
+                if not re.search(req_re, env.get(req_key, "")):
+                    r.error(where, msg, EMAIL_HINT)
+        if str(svc.get("image", "")).startswith("ghcr.io/immich-app/immich-server:") \
+                and "immich-lock-local-users" not in services:
+            r.error(where, "Immich links OAuth logins to existing users by email and cannot be told not to; "
+                    "keep the immich-lock-local-users job", EMAIL_HINT)
+    for where, text in _template_texts(t):
+        for rx, msg in IDENTITY_TEXT_FORBIDDEN:
+            if re.search(rx, text):
+                r.error(where, msg, EMAIL_HINT)
+    if "omniauth_providers" in t.compose_values and \
+            not re.search(r"omniauth_auto_link_user'\]\s*=\s*false", t.compose_values):
+        r.error(t.c_where, "GitLab OIDC needs gitlab_rails['omniauth_auto_link_user'] = false", EMAIL_HINT)
 
 
 def check_service(t: Template, sname: str, svc: Dict[str, Any], where: str, r: Report) -> None:
