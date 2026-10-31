@@ -11,6 +11,55 @@ auth:
   group_admin: false
   access_group: users_immich
   admin_group: admin_immich
+  # Shared links (Immich v3.3.5): the share pages plus the API routes the
+  # server allows for shared-link sessions (SHARED_LINK_ROUTES in
+  # server/src/controllers/index.spec.ts; ?key= / ?slug= query auth), so
+  # only mode all exists. Immich is native-OIDC: its main router has no
+  # forward-auth, so the exception matters for the TLS tier only. Off by
+  # default: with an mTLS-only policy, turning it on drops the handshake
+  # client-cert requirement for the whole host.
+  public_access:
+    enabled_by_default: false
+    description: >-
+      Shared links (/share/<key>, /s/<slug>) for visitors without a client
+      certificate. Immich's shared-link key, password and expiry still apply.
+    paths:
+      - prefix: /share
+        description: Shared-link page by key (server-rendered OpenGraph, SPA)
+      - prefix: /s
+        description: Shared-link page by custom slug
+      - prefix: /_app
+        description: SvelteKit JS, CSS and fonts (static)
+        supporting: true
+      - prefix: /custom.css
+        description: Admin custom CSS loaded by every page
+        supporting: true
+      - prefix: /favicon.ico
+        description: Favicon
+        supporting: true
+      - prefix: /api/server/config
+        description: Server config fetched at web app boot
+        supporting: true
+      - prefix: /api/server/features
+        description: Feature flags fetched at web app boot
+        supporting: true
+      - prefix: /api/server/media-types
+        description: Accepted media types (upload into a shared album)
+        supporting: true
+      - prefix: /api/shared-links/me
+        description: Resolves the shared link of the key / slug
+      - prefix: /api/shared-links/login
+        description: Password check of protected shared links
+      - prefix: /api/assets
+        description: Asset info, thumbnails, originals, video playback and upload (Immich checks the shared-link key)
+      - prefix: /api/albums
+        description: Shared album and its map markers
+      - prefix: /api/timeline
+        description: Album timeline buckets
+      - prefix: /api/download/info
+        description: Download size / archive plan
+      - prefix: /api/download/archive
+        description: Zip download
   notes: >
     Full OIDC with auto-register and auto-launch; password login is disabled
     while OIDC is configured. Promote an SSO user to admin with
@@ -25,6 +74,11 @@ auth:
     locked at the next restart); let users sign in with SSO instead. A user
     who unlinks OAuth in their settings is locked out of SSO until an admin
     clears the placeholder.
+    Public exceptions (Hub, off by default): shared links still work for
+    signed-in users; turning them on only matters when the policy requires a
+    client certificate at the TLS handshake, which it then no longer does for
+    any path of photos.<domain> (mTLS stays enforced at login via the
+    Keycloak acr).
     Upgrades: immich-server and immich-machine-learning are pinned to the same
     release and must always move together; read the upstream release notes for
     breaking changes and keep immich-db on the image upstream specifies.

@@ -48,3 +48,18 @@ else
 fi
 
 compose_down "$APP_ID"
+
+# Public exceptions: shared links only (mode all; the Hub generates the
+# router). /api as a whole must never be public.
+MANIFEST="$(dirname "$(_find_compose immich)")/manifest.yaml"
+ROUTED=$(public_routed_prefixes "$MANIFEST" all)
+if echo "$ROUTED" | grep -qx /share && echo "$ROUTED" | grep -qx /api/shared-links/me && ! echo "$ROUTED" | grep -qx /api; then
+  pass "shared-link paths declared, /api not public"
+else
+  fail "immich public paths: $ROUTED"
+fi
+if grep -q 'enabled_by_default: false' "$MANIFEST"; then
+  pass "public exceptions off by default (would drop handshake mTLS for the host)"
+else
+  fail "immich public exceptions must be off by default"
+fi
