@@ -1,0 +1,85 @@
+# Dependabot keeps image tags + digests, GitHub Actions SHAs and the
+# validator's Python deps current. Every template directory must be listed
+# under the docker-compose entry (tests/validate.py checks this).
+#
+# Upgrade constraints (see each manifest's auth.notes):
+#   - database majors (postgres, mysql, redis) are never bumped automatically;
+#   - GitLab and Nextcloud majors must follow the upstream upgrade path, so
+#     only minor/patch updates are proposed;
+#   - multi-image apps are grouped so they move in lockstep.
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directories:
+      - "/actual-budget"
+      - "/adguard"
+      - "/cloudbeaver"
+      - "/docs"
+      - "/dokuwiki"
+      - "/firefly-iii"
+      - "/gitlab"
+      - "/grafana"
+      - "/guacamole"
+      - "/headscale"
+      - "/immich"
+      - "/jellyfin"
+      - "/kanboard"
+      - "/litellm"
+      - "/netbird"
+      - "/nextcloud"
+      - "/pihole"
+      - "/plex"
+      - "/scrutiny"
+      - "/vault-ui"
+      - "/vaultwarden"
+      - "/wiki"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "templates"
+    groups:
+      netbird:
+        patterns: ["netbirdio/*"]
+      immich:
+        patterns: ["*immich-app/immich-*"]
+      guacamole:
+        patterns: ["guacamole/*"]
+      headscale:
+        patterns: ["headscale/headscale", "*tale/headplane"]
+    ignore:
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mysql"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]
+      # Immich's database image follows upstream's docker-compose.yml.
+      - dependency-name: "*immich-app/postgres"
+      - dependency-name: "gitlab/gitlab-ce"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "nextcloud"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: "/tests"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "tests"
+    groups:
+      validator:
+        patterns: ["*"]

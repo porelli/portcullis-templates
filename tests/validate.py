@@ -691,6 +691,24 @@ def check_core_ref(r: Report) -> None:
         r.error(".core-ref", f"must contain exactly one git ref (tag like v1.4.0, or main), got {lines!r}")
 
 
+def check_dependabot(app_ids: List[str], r: Report) -> None:
+    """Every template directory must be covered by Dependabot's docker-compose entry."""
+    path = os.path.join(ROOT, ".github", "dependabot.yml")
+    try:
+        data = load_yaml(path) or {}
+    except (OSError, yaml.YAMLError) as e:
+        r.error(".github/dependabot.yml", f"cannot read: {e}")
+        return
+    dirs: Set[str] = set()
+    for u in data.get("updates") or []:
+        if isinstance(u, dict) and u.get("package-ecosystem") == "docker-compose":
+            dirs.update(str(d).strip("/") for d in as_list(u.get("directories")) + as_list(u.get("directory")))
+    for app in app_ids:
+        if app not in dirs:
+            r.error(".github/dependabot.yml", f"template {app} is missing from the docker-compose directories list",
+                    f'add  - "/{app}"  under directories: so Dependabot keeps its images up to date')
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def discover() -> List[str]:
@@ -738,6 +756,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             r.errors += sub.errors
             r.warnings += sub.warnings
     check_core_ref(r)
+    check_dependabot(all_ids, r)
     cross = Report()
     check_cross(list(templates.values()), cross)
     r.errors += [e for e in cross.errors if e.split("/", 1)[0] in ids]
