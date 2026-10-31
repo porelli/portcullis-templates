@@ -1,0 +1,54 @@
+name: Lint
+
+# Static checks only: no secrets, no core checkout, read-only token. Safe for
+# pull requests from forks, so every contributor gets this feedback.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install validator dependencies
+        run: python -m pip install --disable-pip-version-check -r tests/requirements.txt
+
+      # Manifest JSON Schema + repo rules (networks, volumes, middlewares,
+      # required vars, mounts, image pinning, header trust, ...).
+      - name: Validate templates
+        run: python tests/validate.py
+
+      - name: docker compose config
+        run: bash tests/compose-config.sh
+
+      - name: shellcheck
+        run: |
+          shopt -s nullglob
+          shellcheck --version
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh
+
+      # The actionlint image bundles shellcheck for run: blocks.
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color

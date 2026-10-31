@@ -1,0 +1,38 @@
+name: Notify docs
+
+# Contracts §7: on push to main, ask porelli/portcullis-docs to regenerate the
+# app pages (repository_dispatch, event type templates-updated). Needs the
+# DOCS_DISPATCH_TOKEN secret (fine-grained PAT on portcullis-docs with
+# "Contents: read and write"); without it the step is skipped with a notice
+# and the docs repo's daily rebuild picks the change up.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docs-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send templates-updated to portcullis-docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=Docs dispatch skipped::DOCS_DISPATCH_TOKEN is not set; the docs site will pick up this change on its daily rebuild."
+            exit 0
+          fi
+          gh api --method POST repos/porelli/portcullis-docs/dispatches \
+            -f event_type=templates-updated \
+            -f "client_payload[sha]=$SHA" \
+            -f "client_payload[repository]=$REPO"
+          echo "Dispatched templates-updated for $SHA"

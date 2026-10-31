@@ -1,14 +1,42 @@
 name: Test Apps
 
+# Integration tests: boot core infra (Keycloak, LLDAP, Traefik, Vault, ...)
+# and each changed template. Needs the PORTCULLIS_PAT secret to clone the
+# private core repo, which GitHub withholds from pull requests opened from
+# forks. Those runs are skipped with a notice; a maintainer reviews the PR
+# and then runs this workflow by hand (Actions -> Test Apps -> Run workflow,
+# pr = <number>). Static checks for everyone live in lint.yml.
+#
+# Never switch this to pull_request_target: it would run fork code with
+# secrets and a write token.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to test (fork PRs: review the diff first, it runs with core access)"
+        required: false
+        type: string
+      ref:
+        description: "Branch, tag or commit of this repo to test (ignored when pr is set; default: the selected branch)"
+        required: false
+        type: string
+      apps:
+        description: "Space-separated app ids to test (default: apps changed by the PR, or all apps)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-apps-${{ github.event.pull_request.number || inputs.pr || github.ref }}
+  cancel-in-progress: true
 
 env:
-  # Core version the templates are tested against (branch or tag).
-  CORE_REF: main
   PORTCULLIS_DOMAIN: portcullis.local
   KEYCLOAK_ADMIN: admin
   KEYCLOAK_ADMIN_PASSWORD: ci-admin-pass
@@ -20,57 +48,151 @@ env:
   FORWARD_AUTH_COOKIE_SECRET: Y2ktY29va2llLXNlY3JldC0zMi1ieXRlcw==
 
 jobs:
-  # ── Detect which templates changed ──────────────────────
-  changes:
+  # ── Decide whether this run may use secrets, and what to test ──
+  gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      checkout_ref: ${{ steps.gate.outputs.checkout_ref }}
+      expect_sha: ${{ steps.gate.outputs.expect_sha }}
+      base: ${{ steps.gate.outputs.base }}
+    steps:
+      - name: Check secrets availability and resolve target
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_PR: ${{ inputs.pr }}
+          INPUT_REF: ${{ inputs.ref }}
+          HAS_PAT: ${{ secrets.PORTCULLIS_PAT != '' }}
+        run: |
+          skip() {
+            echo "::notice title=Integration tests skipped::$1"
+            { echo "### Integration tests skipped"; echo; echo "$1"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            skip "PR #$PR_NUMBER comes from a fork, so GitHub withholds the secrets the integration tests need. Lint ran. A maintainer will review the change and run Actions -> Test Apps -> Run workflow with pr=$PR_NUMBER."
+          fi
+          if [ "$HAS_PAT" != true ]; then
+            skip "PORTCULLIS_PAT is not available to this run (for Dependabot PRs add it as a Dependabot secret, or run the workflow by hand with pr=<number>)."
+          fi
+
+          checkout_ref="" expect_sha="" base=""
+          case "$EVENT" in
+            pull_request) base="$PR_BASE_SHA" ;;
+            push) base="$BEFORE" ;;
+            workflow_dispatch)
+              if [ -n "$INPUT_PR" ]; then
+                [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a number"; exit 1; }
+                pr_json=$(gh api "repos/$REPO/pulls/$INPUT_PR")
+                [ "$(jq -r .base.repo.full_name <<< "$pr_json")" = "$REPO" ] || { echo "::error::PR #$INPUT_PR does not target $REPO"; exit 1; }
+                checkout_ref="refs/pull/$INPUT_PR/head"
+                expect_sha=$(jq -r .head.sha <<< "$pr_json")
+                base=$(jq -r .base.sha <<< "$pr_json")
+                echo "Testing PR #$INPUT_PR at $expect_sha (from $(jq -r .head.repo.full_name <<< "$pr_json"))" | tee -a "$GITHUB_STEP_SUMMARY"
+              elif [ -n "$INPUT_REF" ]; then
+                [[ "$INPUT_REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$INPUT_REF" != *..* ]] || { echo "::error::invalid ref"; exit 1; }
+                checkout_ref="$INPUT_REF"
+              fi
+              ;;
+          esac
+          {
+            echo "run=true"
+            echo "checkout_ref=$checkout_ref"
+            echo "expect_sha=$expect_sha"
+            echo "base=$base"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── Detect which templates changed; read .core-ref ──────
+  changes:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       apps: ${{ steps.filter.outputs.apps }}
+      core_ref: ${{ steps.core.outputs.ref }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.gate.outputs.checkout_ref }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tested commit
+        if: needs.gate.outputs.expect_sha != ''
+        env:
+          EXPECT: ${{ needs.gate.outputs.expect_sha }}
+        run: |
+          got=$(git rev-parse HEAD)
+          [ "$got" = "$EXPECT" ] || { echo "::error::PR head moved ($got != $EXPECT); re-run after reviewing the new commits"; exit 1; }
+
+      # Core version the templates are tested against (contracts §1).
+      - name: Read .core-ref
+        id: core
+        run: |
+          ref=$(grep -v '^[[:space:]]*#' .core-ref | tr -d '[:space:]')
+          [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$ref" != *..* ]] || { echo "::error file=.core-ref::invalid core ref '$ref'"; exit 1; }
+          echo "Core ref: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Detect changed apps
         id: filter
+        env:
+          BASE: ${{ needs.gate.outputs.base }}
+          INPUT_APPS: ${{ inputs.apps }}
         run: |
-          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          all_apps() { for f in */compose.yml; do echo "${f%/compose.yml}"; done; }
+          emit() { APPS=$(jq -R . | jq -sc 'map(select(length > 0))'); echo "apps=$APPS"; echo "apps=$APPS" >> "$GITHUB_OUTPUT"; }
 
-          # First push or missing base — test all apps
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "First push or missing base — testing all apps"
-            APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
-            echo "apps=$APPS" >> "$GITHUB_OUTPUT"
-            echo "apps=$APPS"
+          if [ -n "$INPUT_APPS" ]; then
+            for a in $INPUT_APPS; do
+              [[ "$a" =~ ^[a-z0-9][a-z0-9_-]*$ ]] && [ -f "$a/compose.yml" ] || { echo "::error::unknown app '$a'"; exit 1; }
+              echo "$a"
+            done | sort -u | emit
+            exit 0
+          fi
+
+          # No usable base (first push, force push, manual run) — test all apps
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "No usable base — testing all apps"
+            all_apps | emit
             exit 0
           fi
 
           echo "Base: $BASE"
           echo "Changed files:"
-          git diff --name-only "$BASE" HEAD || true
+          git diff --name-only "$BASE...HEAD"
 
-          # If tests/lib.sh or workflow changed, test all apps
-          if git diff --name-only "$BASE" HEAD 2>/dev/null | grep -qE '^tests/lib\.sh$|^\.github/'; then
-            echo "Test infra changed — testing all apps"
-            APPS=$(ls -d */compose.yml 2>/dev/null | sed 's|/compose.yml||' | jq -R . | jq -sc .)
-            echo "apps=$APPS" >> "$GITHUB_OUTPUT"
-            echo "apps=$APPS"
+          # Test infra, workflows or the core pin changed — test all apps
+          if git diff --name-only "$BASE...HEAD" | grep -qE '^tests/lib\.sh$|^\.github/|^\.core-ref$'; then
+            echo "Test infra or core ref changed — testing all apps"
+            all_apps | emit
             exit 0
           fi
 
           # Changed app directories (those with compose.yml), plus apps whose
           # test script tests/apps/<app>.sh changed.
-          APPS=$(git diff --name-only "$BASE" HEAD | while read -r f; do
+          git diff --name-only "$BASE...HEAD" | while read -r f; do
             case "$f" in
               tests/apps/*.sh) dir="${f#tests/apps/}"; dir="${dir%.sh}" ;;
               */*) dir="${f%%/*}" ;;
               *) continue ;;
             esac
-            [ -f "$dir/compose.yml" ] && echo "$dir"
-          done | sort -u | jq -R . | jq -sc .)
-
-          [ "$APPS" = "null" ] && APPS='[]'
-          echo "apps=$APPS"
-          echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+            if [ -f "$dir/compose.yml" ]; then echo "$dir"; fi
+          done | sort -u | emit
 
   # ── Cache infra Docker images ───────────────────────────
   cache-infra:
@@ -84,19 +206,22 @@ jobs:
       # Derive the infra image list from core's compose file so the cache
       # can never drift from what the stack actually runs. The cache key is
       # a hash of that list: bumping any image tag in core invalidates it.
+      # Only trusted core code runs in this job (it is the one that saves
+      # the cache).
       - name: Clone core repo (for image list)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: porelli/portcullis
-          ref: ${{ env.CORE_REF }}
+          ref: ${{ needs.changes.outputs.core_ref }}
           token: ${{ secrets.PORTCULLIS_PAT }}
           path: core
+          persist-credentials: false
 
       - name: Resolve infra images
         id: images
         working-directory: core
         run: |
-          # Skip locally built images and the hub (floating :latest, pulled fresh).
+          # Skip locally built images and the hub (pulled by core as needed).
           docker compose config --images \
             | grep -v -e '^portcullis-enroll$' -e 'portcullis-hub' \
             | sort -u > /tmp/infra-images.txt
@@ -105,7 +230,7 @@ jobs:
 
       - name: Cache Docker images
         id: cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/docker-images
           key: ${{ steps.images.outputs.key }}
@@ -119,7 +244,7 @@ jobs:
 
   # ── Per-app tests (parallel) ────────────────────────────
   test:
-    needs: [changes, cache-infra]
+    needs: [gate, changes, cache-infra]
     if: needs.changes.outputs.apps != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -135,18 +260,34 @@ jobs:
       VAULT_ADDR: http://127.0.0.1:8200
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.checkout_ref }}
+          persist-credentials: false
 
+      - name: Verify tested commit
+        if: needs.gate.outputs.expect_sha != ''
+        env:
+          EXPECT: ${{ needs.gate.outputs.expect_sha }}
+        run: |
+          got=$(git rev-parse HEAD)
+          [ "$got" = "$EXPECT" ] || { echo "::error::PR head moved ($got != $EXPECT)"; exit 1; }
+
+      # The PAT is used by this step only and not persisted to core/.git,
+      # so later steps (which run the template's code) cannot read it.
       - name: Clone core repo (for infra compose + scripts)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: porelli/portcullis
-          ref: ${{ env.CORE_REF }}
+          ref: ${{ needs.changes.outputs.core_ref }}
           token: ${{ secrets.PORTCULLIS_PAT }}
           path: core
+          persist-credentials: false
 
+      # Restore only: template code runs in this job, so it must not be able
+      # to write the shared cache.
       - name: Restore Docker image cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/docker-images
           key: ${{ needs.cache-infra.outputs.key }}
@@ -161,6 +302,8 @@ jobs:
 
       - name: Create .env and CI override
         working-directory: core
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
           cat > .env << 'ENVEOF'
           PORTCULLIS_DOMAIN=portcullis.local
@@ -188,7 +331,7 @@ jobs:
           (umask 077 && mkdir -p secrets/vault-unseal secrets/enroll)
           # ./templates is the Hub's template overlay; in CI it is this repo,
           # so `./templates/<app>/...` mounts resolve (tests/lib.sh quirk #6).
-          ln -sfn "${{ github.workspace }}" templates
+          ln -sfn "$WORKSPACE" templates
 
           cat > docker-compose.ci.yml << 'YML'
           services:
@@ -254,13 +397,12 @@ jobs:
 
       - name: "Test: ${{ matrix.app }}"
         env:
+          # lib.sh: PROJECT_DIR = core project (PROJECT_DIR/templates -> this
+          # repo was linked during setup), TEMPLATES_DIR = this repo.
           PROJECT_DIR: ${{ github.workspace }}/core
           TEMPLATES_DIR: ${{ github.workspace }}
-        run: |
-          # Point lib.sh at the core project for compose commands
-          # (PROJECT_DIR/templates -> this repo was linked during setup)
-          export PROJECT_DIR="${{ github.workspace }}/core"
-          bash tests/apps/${{ matrix.app }}.sh
+          APP: ${{ matrix.app }}
+        run: bash "tests/apps/$APP.sh"
 
       - name: Collect logs on failure
         if: failure()

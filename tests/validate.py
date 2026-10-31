@@ -675,6 +675,22 @@ def check_cross(templates: List[Template], r: Report) -> None:
             vol_owner.setdefault(vn, t.id)
 
 
+CORE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+
+
+def check_core_ref(r: Report) -> None:
+    """.core-ref: the core tag (or main) CI tests against (contracts §1)."""
+    path = os.path.join(ROOT, ".core-ref")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    except FileNotFoundError:
+        r.error(".core-ref", "missing; it must contain the core ref CI tests against (a tag like v1.4.0, or main)")
+        return
+    if len(lines) != 1 or not CORE_REF_RE.match(lines[0]) or ".." in lines[0]:
+        r.error(".core-ref", f"must contain exactly one git ref (tag like v1.4.0, or main), got {lines!r}")
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def discover() -> List[str]:
@@ -721,6 +737,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if i in ids:
             r.errors += sub.errors
             r.warnings += sub.warnings
+    check_core_ref(r)
     cross = Report()
     check_cross(list(templates.values()), cross)
     r.errors += [e for e in cross.errors if e.split("/", 1)[0] in ids]
