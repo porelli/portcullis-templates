@@ -16,6 +16,15 @@ auth:
     while OIDC is configured. Promote an SSO user to admin with
     `docker exec <immich-server container> immich-admin grant-admin`.
     roleClaim available but not yet mapped to groups.
+    Identity: OAuth users are keyed on the OIDC sub. Immich also links a login
+    to an existing user with the same email and cannot be told not to, while
+    LLDAP emails are user-editable; so on every start a one-shot job
+    (immich-lock-local-users) gives local, unlinked users (such as the initial
+    admin@portcullis.local) a placeholder OAuth id, and Immich then refuses
+    the email link. Do not create local users in the Immich UI (they are only
+    locked at the next restart); let users sign in with SSO instead. A user
+    who unlinks OAuth in their settings is locked out of SSO until an admin
+    clears the placeholder.
     Upgrades: immich-server and immich-machine-learning are pinned to the same
     release and must always move together; read the upstream release notes for
     breaking changes and keep immich-db on the image upstream specifies.

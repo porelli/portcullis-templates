@@ -24,6 +24,12 @@ auth:
     groups scope, SSO users get internal_user_viewer and an admin (logged in
     with the master key) promotes them in the UI. Users created before this
     change keep their existing role; review them under Internal Users.
+    Identity: SSO users are keyed on preferred_username (the immutable LLDAP
+    username). LiteLLM would otherwise attach an SSO login to any existing
+    user with the same email, and LLDAP emails are user-editable, so the
+    template maps the email attribute to a claim that is never sent: SSO users
+    have no email in LiteLLM. Users created before this change that were keyed
+    on their email need their user_id changed to the LLDAP username.
 
 env:
   - key: LITELLM_MASTER_KEY

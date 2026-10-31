@@ -10,6 +10,13 @@ services:
       GENERIC_TOKEN_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/token
       GENERIC_USERINFO_ENDPOINT: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/protocol/openid-connect/userinfo
       GENERIC_SCOPE: "openid profile email"
+      # Identity = preferred_username (immutable LLDAP username). LiteLLM
+      # falls back to matching an existing user by email when the id is
+      # unknown (auth_checks._get_fuzzy_user_object), and LLDAP emails are
+      # user-editable, so the email attribute points at a claim Keycloak never
+      # sends: SSO users get no email and can never be matched by one.
+      GENERIC_USER_ID_ATTRIBUTE: preferred_username
+      GENERIC_USER_EMAIL_ATTRIBUTE: portcullis_no_email_linking
       PROXY_BASE_URL: https://llm.${PORTCULLIS_DOMAIN:-portcullis.local}
       AUTO_REDIRECT_UI_LOGIN_TO_SSO: "true"
       # Least privilege for SSO users: map LLDAP groups (Keycloak "groups"

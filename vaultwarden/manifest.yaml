@@ -18,6 +18,15 @@ auth:
     and, through auth.admin_paths, requires membership of admin_vaultwarden;
     Vaultwarden's ADMIN_TOKEN (VAULTWARDEN_ADMIN_TOKEN) is still required on
     top, keep it secret. No group-based access restriction on the vault itself.
+    Identity: SSO accounts are keyed on the OIDC subject (issuer + sub);
+    SSO_SIGNUPS_MATCH_EMAIL is false, so an SSO login is never attached to an
+    existing account by email (LLDAP emails are user-editable). Already linked
+    SSO users sign in normally. New SSO signups are refused while Keycloak
+    sends email_verified=false (Vaultwarden only accepts true or an absent
+    claim, see SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION); until the Vaultwarden
+    client stops receiving that claim, invite new users from /admin and have
+    them register with a master password. A user whose email collides with an
+    existing account is refused, never merged.
 
 env:
   - key: VAULTWARDEN_ADMIN_TOKEN

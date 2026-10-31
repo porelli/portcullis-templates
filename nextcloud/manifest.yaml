@@ -15,7 +15,9 @@ auth:
     Access gated by forward-auth + group-gate; Nextcloud then shows its own
     login (admin account uses NEXTCLOUD_ADMIN_PASSWORD). No OIDC app is
     installed yet. Desktop/mobile sync clients and WebDAV cannot pass the
-    forward-auth redirect.
+    forward-auth redirect. Nextcloud does not read the Portcullis identity
+    headers (no user_oidc / header login), so the user-editable LLDAP email
+    plays no part in which Nextcloud account is used.
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
 

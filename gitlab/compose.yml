@@ -13,6 +13,11 @@ services:
         gitlab_rails['omniauth_enabled'] = true
         gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
         gitlab_rails['omniauth_block_auto_created_users'] = false
+        # Identity = uid_field preferred_username (immutable LLDAP username).
+        # Never auto-link an OIDC login to an existing account by email: LLDAP
+        # emails are user-editable. With this off, GitLab's guided linking
+        # makes the user prove the existing account's password first.
+        gitlab_rails['omniauth_auto_link_user'] = false
         gitlab_rails['omniauth_providers'] = [{ name: 'openid_connect', label: 'Portcullis SSO', args: { name: 'openid_connect', scope: ['openid', 'profile', 'email'], response_type: 'code', issuer: 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis', discovery: true, client_auth_method: 'query', uid_field: 'preferred_username', client_options: { identifier: 'gitlab', secret: '${GITLAB_OIDC_SECRET:?GITLAB_OIDC_SECRET must be set}', redirect_uri: 'https://git.${PORTCULLIS_DOMAIN:-portcullis.local}/users/auth/openid_connect/callback' }}}]
     volumes:
       - gitlab-config:/etc/gitlab

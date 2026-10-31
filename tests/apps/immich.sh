@@ -9,6 +9,15 @@ section "Immich"
 APP_ID=immich
 SERVICE=immich-server
 
+COMPOSE=$(_find_compose "$APP_ID")
+# Static: Immich links OAuth logins to existing users by email (no setting
+# to disable it); the lock job pins local users to a placeholder oauthId.
+if grep -q 'immich-lock-local-users:' "$COMPOSE" && grep -q "SET \"oauthId\" = 'portcullis-local:'" "$COMPOSE"; then
+  pass "local users locked against OAuth email linking"
+else
+  fail "immich-lock-local-users job missing"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
@@ -28,6 +37,14 @@ if [ -n "$OIDC_CONFIG" ]; then
   pass "IMMICH_CONFIG_FILE is set ($OIDC_CONFIG)"
 else
   fail "IMMICH_CONFIG_FILE not set"
+fi
+
+# Runtime: the lock job ran after setup and succeeded
+if LOCK_RC=$(timeout 240 docker wait "portcullis-immich-lock-local-users-1" 2>/dev/null) && [ "$LOCK_RC" = "0" ]; then
+  pass "immich-lock-local-users exited 0"
+else
+  fail "immich-lock-local-users did not finish successfully (rc=${LOCK_RC:-none})"
+  docker logs "portcullis-immich-lock-local-users-1" 2>&1 | tail -5 || true
 fi
 
 compose_down "$APP_ID"

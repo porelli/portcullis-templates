@@ -8,6 +8,14 @@ section "Jellyfin"
 
 APP_ID=jellyfin
 
+# Static: SSO plugin keys users on the LLDAP username, requests no email
+SETUP="$(dirname "$(_find_compose "$APP_ID")")/setup.py"
+if grep -q '"DefaultUsernameClaim": "preferred_username"' "$SETUP" && ! grep -q '"email"' "$SETUP"; then
+  pass "SSO plugin DefaultUsernameClaim=preferred_username, no email scope"
+else
+  fail "SSO plugin must use DefaultUsernameClaim preferred_username and no email scope"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")

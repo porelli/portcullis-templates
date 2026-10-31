@@ -76,6 +76,29 @@ services:
       - immich-server
     restart: "no"
 
+  # Immich links an OAuth login to an existing user with the same email
+  # (AuthService.callback: "link by email") and has no setting to turn that
+  # off. LLDAP emails are user-editable, so anyone could claim a local
+  # account (e.g. the initial admin) by setting its email. This one-shot job
+  # gives every local, unlinked user a placeholder oauthId after setup, which
+  # makes Immich refuse the email link ("email already linked") instead.
+  immich-lock-local-users:
+    image: ghcr.io/immich-app/postgres:16-vectorchord0.4.3-pgvectors0.2.0@sha256:1a078b237c1d9b420b0ee59147386b4aa60d3a07a8e6a402fc84a57e41b043a4
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        psql -h immich-db -U immich -d immich -v ON_ERROR_STOP=1 -q <<'SQL'
+        UPDATE "user" SET "oauthId" = 'portcullis-local:' || id
+          WHERE "oauthId" IS NULL OR "oauthId" = '';
+        SQL
+        echo "Local Immich users locked against OAuth email linking."
+    environment:
+      PGPASSWORD: ${IMMICH_DB_PASSWORD:?IMMICH_DB_PASSWORD must be set}
+    depends_on:
+      immich-setup:
+        condition: service_completed_successfully
+    restart: "no"
+
   immich-machine-learning:
     image: ghcr.io/immich-app/immich-machine-learning:v3.3.5@sha256:5b28c9352c8374b8a1ed96fbdd8d6755fea6e43510ec43fdf6538aa02ea40f56
     volumes:

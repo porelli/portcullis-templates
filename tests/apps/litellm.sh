@@ -51,6 +51,15 @@ else
   fail "SSO default role is not internal_user_viewer"
 fi
 
+# Identity: keyed on preferred_username; email never usable for matching
+assert_compose_setting "$COMPOSE" GENERIC_USER_ID_ATTRIBUTE preferred_username
+if grep -Eq '^[[:space:]]*GENERIC_USER_EMAIL_ATTRIBUTE:[[:space:]]*["'"'"']?email' "$COMPOSE" \
+  || ! grep -q 'GENERIC_USER_EMAIL_ATTRIBUTE:' "$COMPOSE"; then
+  fail "GENERIC_USER_EMAIL_ATTRIBUTE must point at a claim that is never sent (no email matching)"
+else
+  pass "GENERIC_USER_EMAIL_ATTRIBUTE disables email matching"
+fi
+
 # OIDC env vars configured
 if grep -q 'GENERIC_CLIENT_ID' "$COMPOSE"; then
   pass "OIDC client config present"

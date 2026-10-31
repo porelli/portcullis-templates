@@ -54,6 +54,15 @@ else
   fail "OIDC omniauth_providers not found in compose"
 fi
 
+# Identity: keyed on preferred_username, no auto-link by email
+if grep -q "uid_field: 'preferred_username'" "$COMPOSE" \
+  && grep -q "gitlab_rails\['omniauth_auto_link_user'\] = false" "$COMPOSE" \
+  && ! grep -q "omniauth_sync_email_from_provider" "$COMPOSE"; then
+  pass "OIDC uid_field preferred_username, auto_link_user false"
+else
+  fail "GitLab OIDC must use uid_field preferred_username and omniauth_auto_link_user = false"
+fi
+
 # Service port matches Traefik label
 if grep -q 'loadbalancer.server.port.*80' "$COMPOSE"; then
   pass "Traefik loadbalancer port is 80"

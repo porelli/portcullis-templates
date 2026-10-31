@@ -12,8 +12,15 @@ auth:
   access_group: users_headscale
   admin_group: admin_headscale
   notes: >
-    Headscale uses OIDC for node registration. Headplane admin UI has its own
-    OIDC client. No group-based access restriction — all OIDC users can
+    Headscale uses OIDC for node registration. Users are keyed on the OIDC
+    subject (iss + sub) and named after preferred_username (the immutable
+    LLDAP username); email_verified_required stays true, so the user-editable,
+    unverified LLDAP email is never synced. Write ACL policy users as
+    "<username>@", never by email. Headplane admin UI has its own OIDC client;
+    it keys its users on sub and links them to the Headscale user with the same
+    sub (its email fallback finds nothing because Headscale stores no
+    unverified email). The first Headplane user becomes owner, later ones get
+    the member role. No group-based access restriction — all OIDC users can
     register nodes. Post-start step for Headplane: create an API key with
     `docker exec portcullis-headscale-headscale-1 headscale apikeys create --expiration 365d`,
     paste it into the "Headscale API key" setting, then restart the app.

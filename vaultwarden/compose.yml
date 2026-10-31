@@ -9,7 +9,15 @@ services:
       SSO_AUTHORITY: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
       SSO_CLIENT_ID: vaultwarden
       SSO_CLIENT_SECRET: ${VAULTWARDEN_OIDC_SECRET:?VAULTWARDEN_OIDC_SECRET must be set}
-      SSO_SIGNUPS_MATCH_EMAIL: "true"
+      # SSO users are keyed on the OIDC issuer + sub. Never associate an SSO
+      # login with an existing account by email: LLDAP lets users edit their
+      # email, so matching would hand over someone else's vault.
+      SSO_SIGNUPS_MATCH_EMAIL: "false"
+      # Keycloak marks LLDAP email unverified. Vaultwarden refuses new SSO
+      # signups when email_verified is false; "unknown" (claim absent) is
+      # accepted with this flag, which is safe only because email matching
+      # is off above.
+      SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION: "true"
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
     volumes:
       - vaultwarden-data:/data

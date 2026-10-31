@@ -16,6 +16,14 @@ oidc:
   client_id: headscale
   client_secret: HEADSCALE_OIDC_SECRET_PLACEHOLDER
   scope: [openid, profile, email]
+  # Users are keyed on the provider identifier (iss + sub); the username comes
+  # from preferred_username (immutable LLDAP username). Keycloak marks LLDAP
+  # email unverified (users can edit it), so it is never synced to Headscale
+  # users. That also stops Headplane's email fallback from linking an admin
+  # UI login to someone else's Headscale user. Do not set this to false, and
+  # do not use allowed_users (email based); refer to users in the ACL policy
+  # as "<username>@".
+  email_verified_required: true
 
 prefixes:
   v4: 100.64.0.0/10

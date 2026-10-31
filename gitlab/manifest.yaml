@@ -21,6 +21,11 @@ auth:
     removal from the group until they expire; block the user in GitLab to cut
     access immediately. Admin rights are granted in GitLab (root account uses
     GITLAB_ROOT_PASSWORD); admin_gitlab is not mapped.
+    Identity: OIDC identities are keyed on preferred_username (uid_field, the
+    immutable LLDAP username) and omniauth_auto_link_user is false, so an
+    email match never attaches an OIDC login to an existing GitLab account
+    (GitLab instead asks for that account's password). The email is not
+    synced from Keycloak after the account is created.
     Upgrades: the image is pinned; GitLab must be upgraded along its documented
     upgrade path (required stops between versions), never by jumping straight
     to the newest release.

@@ -208,6 +208,10 @@ def configure_sso(token):
                 "EnableFolderRoles": False,
                 "OidScopes": ["openid", "profile", "groups"],
                 "RoleClaim": "groups",
+                # Accounts are created / matched by this claim: the immutable
+                # LLDAP username, never the user-editable email (no email
+                # scope is requested at all).
+                "DefaultUsernameClaim": "preferred_username",
                 "DisableHttps": False,
                 "DisablePushedAuthorization": True,
                 "DoNotValidateEndpoints": False

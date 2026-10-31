@@ -56,3 +56,12 @@ if grep -q 'traefik.http.services.headplane.loadbalancer.server.port.*3000' "$CO
 else
   fail "Headplane Traefik loadbalancer port mismatch (expected 3000)"
 fi
+
+# Identity: unverified (user-editable) email is never synced into Headscale
+HS_CONFIG="$(dirname "$COMPOSE")/config/config.yaml"
+if grep -Eq '^[[:space:]]+email_verified_required:[[:space:]]*true' "$HS_CONFIG" \
+  && ! grep -Eq '^[[:space:]]+allowed_users:' "$HS_CONFIG"; then
+  pass "oidc.email_verified_required: true, no email-based allowed_users"
+else
+  fail "headscale oidc must keep email_verified_required: true and not use allowed_users"
+fi

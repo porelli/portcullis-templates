@@ -26,6 +26,9 @@ else
   fail "auth.admin_paths [/admin] / admin_group missing in manifest"
 fi
 
+# Identity: never link an SSO login to an existing account by email
+assert_compose_setting "$COMPOSE" SSO_SIGNUPS_MATCH_EMAIL false
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")
