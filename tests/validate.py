@@ -276,6 +276,9 @@ def check_layout(t: Template, r: Report) -> bool:
             ok = False
     if os.path.exists(os.path.join(t.dir, "compose.yaml")) or os.path.exists(os.path.join(t.dir, "docker-compose.yml")):
         r.error(t.id + "/", "compose file must be named compose.yml (the Hub ignores other names)")
+    if not os.path.isfile(os.path.join(ROOT, "tests", "apps", f"{t.id}.sh")):
+        r.error(t.id + "/", f"missing test script tests/apps/{t.id}.sh",
+                "the integration job runs it for every changed template; see CONTRIBUTING.md for a minimal static test")
     if os.path.exists(os.path.join(t.dir, "manifest.yml")):
         r.error(t.id + "/", "manifest must be named manifest.yaml (not .yml)")
     return ok
