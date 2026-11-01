@@ -121,7 +121,6 @@ LLDAP_PASS="$(_core_env LLDAP_ADMIN_PASSWORD)"
 KC_ADMIN="$(_core_env KEYCLOAK_ADMIN)"
 KC_ADMIN="${KC_ADMIN:-admin}"
 KC_PASS="$(_core_env KEYCLOAK_ADMIN_PASSWORD)"
-FORWARD_AUTH_CLIENT_SECRET="$(_core_env FORWARD_AUTH_CLIENT_SECRET)"
 
 # QUIRK #4: Wildcard in --resolve doesn't actually work in curl.
 # Kept for reference; tests should use container IPs directly.
@@ -183,98 +182,56 @@ wait_for_container() {
 }
 
 # ── Keycloak helpers ───────────────────────────────────────
+# Sign-in to the portcullis realm is passkey-only (core): no user has a
+# password and no client allows the direct (password) grant, so a test
+# cannot obtain a user token or session. Core's own browser e2e redeems a
+# setup link (`./portcullis invite`) with a virtual WebAuthn authenticator.
+# App tests therefore assert the unauthenticated side (redirect to
+# auth.<domain>, public guard refusals) and header trust
+# (assert_traefik_only_trust, assert_spoofed_identity_rejected).
+#
+# Admin API token (master realm, admin-cli), as core's CI gets it. Secrets
+# go on stdin, never on argv.
 keycloak_admin_token() {
-  curl -sf "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-    -d "client_id=admin-cli" \
-    -d "username=$KC_ADMIN" \
-    -d "password=$KC_PASS" \
-    -d "grant_type=password" | jq -r '.access_token'
-}
-
-keycloak_user_token() {
-  local user="$1" password="$2" client_id="${3:-portcullis-forward-auth}" client_secret="${4:-$FORWARD_AUTH_CLIENT_SECRET}"
-  curl -sf "$KEYCLOAK_URL/realms/portcullis/protocol/openid-connect/token" \
-    -d "client_id=$client_id" \
-    -d "client_secret=$client_secret" \
-    -d "username=$user" \
-    -d "password=$password" \
-    -d "grant_type=password" \
-    -d "scope=openid email profile groups" | jq -r '.access_token'
-}
-
-keycloak_enable_direct_grant() {
-  local client_id="$1"
-  local token
-  token=$(keycloak_admin_token)
-  local uuid
-  uuid=$(curl -sf "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=$client_id" \
-    -H "Authorization: Bearer $token" | jq -r '.[0].id')
-  curl -sf -o /dev/null -X PUT "$KEYCLOAK_URL/admin/realms/portcullis/clients/$uuid" \
-    -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" \
-    -d "{\"clientId\":\"$client_id\",\"directAccessGrantsEnabled\":true}"
-}
-
-keycloak_register_client() {
-  local client_id="$1" secret="$2" redirect_uri="$3"
-  local token
-  token=$(keycloak_admin_token)
-  curl -sf -o /dev/null -w "%{http_code}" \
-    "$KEYCLOAK_URL/admin/realms/portcullis/clients" \
-    -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"clientId\":\"$client_id\",
-      \"enabled\":true,
-      \"protocol\":\"openid-connect\",
-      \"publicClient\":false,
-      \"secret\":\"$secret\",
-      \"redirectUris\":[\"$redirect_uri\"],
-      \"standardFlowEnabled\":true,
-      \"directAccessGrantsEnabled\":true
-    }"
+  printf '%s' "$KC_PASS" | curl -sf "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+    --data-urlencode "client_id=admin-cli" \
+    --data-urlencode "username=$KC_ADMIN" \
+    --data-urlencode "grant_type=password" \
+    --data-urlencode "password@-" | jq -r '.access_token'
 }
 
 # ── LLDAP helpers ──────────────────────────────────────────
 lldap_token() {
-  curl -sf "$LLDAP_URL/auth/simple/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"admin\",\"password\":\"$LLDAP_PASS\"}" | jq -r '.token'
+  LLDAP_PASS="$LLDAP_PASS" jq -nc '{username: "admin", password: env.LLDAP_PASS}' \
+    | curl -sf "$LLDAP_URL/auth/simple/login" -H "Content-Type: application/json" -d @- | jq -r '.token'
 }
 
 lldap_graphql() {
   local query="$1"
   local token
   token=$(lldap_token)
-  curl -sf "$LLDAP_URL/api/graphql" \
-    -H "Authorization: Bearer $token" \
+  jq -nc --arg q "$query" '{query: $q}' | curl -sf "$LLDAP_URL/api/graphql" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$token") \
     -H "Content-Type: application/json" \
-    -d "{\"query\":\"$query\"}"
+    -d @-
 }
 
+# Users get no password (passkey-only sign-in).
 lldap_create_user() {
-  local username="$1" email="$2" password="${3:-}"
-  lldap_graphql "mutation { createUser(user: {id: \\\"$username\\\", email: \\\"$email\\\"}) { id } }" > /dev/null 2>&1 || true
-  if [ -n "$password" ]; then
-    local token
-    token=$(lldap_token)
-    curl -sf -o /dev/null "$LLDAP_URL/api/graphql" \
-      -H "Authorization: Bearer $token" \
-      -H "Content-Type: application/json" \
-      -d "{\"query\":\"mutation { updateUser(user: {id: \\\"$username\\\"}) { ok } }\"}" 2>/dev/null || true
-  fi
+  local username="$1" email="$2"
+  lldap_graphql "mutation { createUser(user: {id: \"$username\", email: \"$email\"}) { id } }" > /dev/null 2>&1 || true
 }
 
 lldap_create_group() {
   local name="$1"
   local result
-  result=$(lldap_graphql "mutation { createGroup(name: \\\"$name\\\") { id } }" 2>/dev/null || true)
+  result=$(lldap_graphql "mutation { createGroup(name: \"$name\") { id } }" 2>/dev/null || true)
   echo "$result" | jq -r '.data.createGroup.id // empty' 2>/dev/null
 }
 
 lldap_add_to_group() {
   local user="$1" group_id="$2"
-  lldap_graphql "mutation { addUserToGroup(userId: \\\"$user\\\", groupId: $group_id) { ok } }" > /dev/null 2>&1 || true
+  lldap_graphql "mutation { addUserToGroup(userId: \"$user\", groupId: $group_id) { ok } }" > /dev/null 2>&1 || true
 }
 
 lldap_sync_keycloak() {
@@ -282,19 +239,19 @@ lldap_sync_keycloak() {
   token=$(keycloak_admin_token)
   local ldap_id
   ldap_id=$(curl -sf "$KEYCLOAK_URL/admin/realms/portcullis/components" \
-    -H "Authorization: Bearer $token" | jq -r '.[] | select(.providerId=="ldap") | .id')
+    -H @<(printf 'Authorization: Bearer %s\n' "$token") | jq -r '.[] | select(.providerId=="ldap") | .id')
   if [ -n "$ldap_id" ]; then
     local mapper_id
     mapper_id=$(curl -sf "$KEYCLOAK_URL/admin/realms/portcullis/components?parent=$ldap_id" \
-      -H "Authorization: Bearer $token" | jq -r '.[] | select(.providerId=="group-ldap-mapper") | .id')
+      -H @<(printf 'Authorization: Bearer %s\n' "$token") | jq -r '.[] | select(.providerId=="group-ldap-mapper") | .id')
     if [ -n "$mapper_id" ]; then
       curl -sf -o /dev/null -X POST \
         "$KEYCLOAK_URL/admin/realms/portcullis/user-storage/$ldap_id/mappers/$mapper_id/sync?direction=fedToKeycloak" \
-        -H "Authorization: Bearer $token"
+        -H @<(printf 'Authorization: Bearer %s\n' "$token")
     fi
     curl -sf -o /dev/null -X POST \
       "$KEYCLOAK_URL/admin/realms/portcullis/user-storage/$ldap_id/sync?action=triggerFullSync" \
-      -H "Authorization: Bearer $token"
+      -H @<(printf 'Authorization: Bearer %s\n' "$token")
   fi
 }
 

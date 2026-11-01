@@ -68,8 +68,8 @@ ERROR my-app/compose.yml: services.web: image tag 'latest' is floating
 ```
 
 The integration tests (`tests/apps/*.sh` against a real Keycloak/LLDAP/Traefik
-stack) need the private core repo, so you normally cannot run them locally;
-CI runs them for you once a maintainer approves (see below).
+stack) boot the whole core stack the way core's own CI does, so you normally
+let CI run them for you (see below).
 
 ## What CI runs
 
