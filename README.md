@@ -2,6 +2,8 @@
 
 Default app marketplace for [Portcullis](https://github.com/porelli/portcullis) — the self-hosted YubiKey authentication gateway.
 
+**Documentation: <https://porelli.github.io/portcullis-docs/>** — every template has a page in the [App Catalog](https://porelli.github.io/portcullis-docs/apps/); to write one, start with [CONTRIBUTING.md](CONTRIBUTING.md) and [Adding an App](https://porelli.github.io/portcullis-docs/guides/adding-an-app/).
+
 ## Apps
 
 This repo contains 22 pre-configured app templates, each with:
