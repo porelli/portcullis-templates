@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Test: Plex (public, no auth)
+# Test: Plex (custom: its own plex.tv login; the compose file has no gateway,
+# the Hub adds Portcullis sign-in through its override unless the admin picks
+# "App's own login only")
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh

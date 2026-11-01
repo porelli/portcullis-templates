@@ -445,6 +445,21 @@ def check_manifest_rules(t: Template, r: Report) -> None:
             r.warn(t.m_where, f"url {u['url']} does not use {{{{DOMAIN}}}}",
                    "links should be https://<sub>.{{DOMAIN}}/...")
 
+    # auth.native_login: Portcullis sign-in in front of an app's own login,
+    # or (allow_without_gateway) the app's own login only. Only for apps
+    # without SSO: an SSO app must never get a way around the gateway.
+    nl = auth.get("native_login")
+    if nl is not None:
+        if auth.get("method") != "custom":
+            r.error(t.m_where, f"auth.native_login is only allowed with auth.method custom (got {auth.get('method')!r})",
+                    "SSO / gateway methods already sign users in through Portcullis; native_login is for apps with nothing but their own login")
+        if auth.get("sso") is not False:
+            r.error(t.m_where, "auth.native_login requires auth.sso: false",
+                    "an app with SSO must not offer its own login without Portcullis")
+    if auth.get("method") == "custom" and auth.get("group_access") and not (isinstance(nl, dict) and nl.get("supported") is True):
+        r.error(t.m_where, "auth.method custom with group_access: true needs auth.native_login.supported: true",
+                "group-gate only runs when the Hub puts Portcullis sign-in in front of the app (native_login)")
+
     if auth.get("method") in ("forward-auth", "header-auth") and auth.get("group_access") is False:
         r.warn(t.m_where, f"auth.method {auth['method']} with group_access: false lets every Portcullis user in",
                "set group_access: true and access_group: users_<app> unless that is intended")
@@ -822,8 +837,10 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                         "the app's own OIDC login, API and mobile clients break behind forward-auth; "
                         "gate only specific paths (PathPrefix) such as an admin panel or the login pages")
         elif method in ("public", "custom", "mtls"):
-            if has_auth:
-                r.error(where, f"auth.method {method} must not use {AUTH_MW} (use forward-auth/header-auth instead)")
+            if has_auth or has_groups:
+                hint = ("the Hub adds them for Portcullis sign-in (auth.native_login) through its override; "
+                        "the template keeps the app's own chain") if method == "custom" else ""
+                r.error(where, f"auth.method {method} must not use {AUTH_MW}/{GROUPS_MW} (use forward-auth/header-auth instead)", hint)
 
         if has_auth and has_groups:
             gated.append((name, ["/"] if host_wide else paths))

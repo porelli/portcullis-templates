@@ -7,9 +7,22 @@ tags: [media, movies, tv, music, streaming]
 auth:
   method: custom
   sso: false
-  group_access: false
+  # Enforced only while Portcullis sign-in is in front of Plex (the Hub's
+  # Sign-in setting, default); with "App's own login only" anyone reaches
+  # Plex's login.
+  group_access: true
+  access_group: users_plex
   group_admin: false
-  notes: Plex uses its own plex.tv account system. No SSO or group integration possible. Claim token required for initial setup.
+  native_login:
+    supported: true
+    allow_without_gateway: true
+    note: >-
+      Plex signs users in with plex.tv accounts. Behind Portcullis sign-in only the web app in a browser works;
+      Plex's TV, mobile and desktop apps can't pass forward-auth and need "App's own login only".
+  notes: >-
+    Plex uses its own plex.tv account system; no SSO is possible. By default the Hub puts Portcullis sign-in
+    (users_plex) in front of Plex's own login; the Hub's Sign-in setting can switch to Plex's own login only
+    (no Portcullis, TLS tier public), which Plex's native apps need. Claim token required for initial setup.
 
 settings:
   - key: PLEX_MOVIES_PATH

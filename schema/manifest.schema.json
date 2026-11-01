@@ -107,7 +107,7 @@
       "required": ["method", "sso", "group_access", "group_admin"],
       "properties": {
         "method": {
-          "description": "native-oidc: app talks OIDC to Keycloak itself. forward-auth: oauth2-proxy + group-gate in front, app has its own (or no) login. header-auth: forward-auth plus the app trusts X-Forwarded-User from Traefik. mtls: client certificate at the TLS layer. custom: app-specific (e.g. plex.tv). public: no authentication.",
+          "description": "native-oidc: app talks OIDC to Keycloak itself. forward-auth: oauth2-proxy + group-gate in front, app has its own (or no) login. header-auth: forward-auth plus the app trusts X-Forwarded-User from Traefik. mtls: client certificate at the TLS layer. custom: the app handles its own sign-in (e.g. plex.tv); with native_login the Hub can put Portcullis sign-in in front of it. public: no authentication.",
           "enum": ["native-oidc", "forward-auth", "header-auth", "mtls", "custom", "public"]
         },
         "sso": {
@@ -115,7 +115,7 @@
           "oneOf": [{"type": "boolean"}, {"const": "partial"}]
         },
         "group_access": {
-          "description": "group-gate restricts the app's subdomain to access_group.",
+          "description": "group-gate restricts the app's subdomain to access_group. For custom apps (native_login) only while the Hub puts Portcullis sign-in in front of the app.",
           "type": "boolean"
         },
         "group_admin": {
@@ -126,6 +126,7 @@
         "admin_group": {"$ref": "#/$defs/group"},
         "notes": {"type": "string"},
         "public_access": {"$ref": "#/$defs/publicAccess"},
+        "native_login": {"$ref": "#/$defs/nativeLogin"},
         "identity_headers": {
           "description": "Request headers a header-auth app reads the user from (e.g. X-Forwarded-User). Required for header-auth apps with public_access: the Hub strips them, their underscore forms and the core identity headers on public paths.",
           "type": "array",
@@ -170,6 +171,10 @@
           "then": {"not": {"required": ["public_access"]}}
         },
         {
+          "if": {"required": ["native_login"]},
+          "then": {"properties": {"method": {"const": "custom"}, "sso": {"const": false}}}
+        },
+        {
           "if": {"properties": {"method": {"const": "public"}}, "required": ["method"]},
           "then": {
             "properties": {
@@ -179,6 +184,17 @@
           }
         }
       ]
+    },
+    "nativeLogin": {
+      "description": "The app has its own login and no SSO (auth.method custom, sso false). The Hub's per-app Sign-in setting then offers \"Portcullis sign-in, then the app's own login\" (the default: the Hub's override adds portcullis-auth@docker,portcullis-groups@docker to every router, group = access_group if group_access) and, with allow_without_gateway, \"App's own login only\" (no Portcullis middlewares, TLS tier public@file). The template's compose.yml never uses the Portcullis middlewares itself.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported"],
+      "properties": {
+        "supported": {"description": "The app has its own login that protects it on its own.", "const": true},
+        "allow_without_gateway": {"description": "Admins may remove Portcullis from in front of the app (its own login only, reachable from the internet). Default false.", "type": "boolean"},
+        "note": {"description": "Shown next to the Sign-in setting: what the app's own login is (e.g. plex.tv accounts) and what breaks behind Portcullis.", "type": "string", "maxLength": 500}
+      }
     },
     "publicAccess": {
       "description": "Public path exceptions (contracts §3): when on, the Hub adds a Traefik router for these paths WITHOUT forward-auth/group-gate, so anonymous visitors can use the app's share links. The app's own auth still applies. Only for forward-auth, header-auth and native-oidc apps. More rules (one {token}, broad prefixes, overlaps, token_pattern probes) live in tests/validate.py and the Hub.",

@@ -118,8 +118,33 @@ template. (For PRs the base branch's `.core-ref` is used.)
 | can create/log in users from a trusted header (`X-Forwarded-User`) | `header-auth` | `portcullis-auth@docker,portcullis-groups@docker` |
 | has its own login (or none) and no SSO | `forward-auth` | `portcullis-auth@docker,portcullis-groups@docker` |
 | is protected by client certificates only | `mtls` | `tls.options: protected@file`, no forward-auth |
-| uses a vendor account system (e.g. plex.tv) | `custom` | none |
+| uses a vendor account system (e.g. plex.tv) | `custom` (+ `auth.native_login`) | none: the Hub adds the gateway pair itself |
 | is meant to be public | `public` | none |
+
+A `custom` app with its own login declares it, so admins choose its sign-in in
+the Hub (per-app Settings → Sign-in) instead of editing the template:
+
+```yaml
+auth:
+  method: custom
+  sso: false            # required: an app with SSO never gets native_login
+  group_access: true    # enforced only behind Portcullis sign-in
+  access_group: users_<app-id>
+  native_login:
+    supported: true
+    allow_without_gateway: true   # offer "App's own login only (no Portcullis)"
+    note: What the app's own login is and what breaks behind forward-auth.
+```
+
+- **Portcullis sign-in, then the app's own login** (the default): the Hub's
+  override puts `portcullis-auth@docker,portcullis-groups@docker` in front of
+  every router's own middlewares; group-gate requires `access_group`.
+- **App's own login only** (only with `allow_without_gateway: true`): the
+  template's middlewares as written, TLS tier `public@file`, no group.
+
+The compose file itself never uses the Portcullis middlewares (validate.py
+rejects them for `custom`), and `group_access: true` on a `custom` app needs
+`native_login`.
 
 Prefer `native-oidc` when the app supports it well: mobile apps, API tokens and
 CLI clients keep working. Then check **who can log in**:
