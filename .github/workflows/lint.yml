@@ -37,6 +37,10 @@ jobs:
       - name: Validate templates
         run: python tests/validate.py
 
+      # validate.py's own rules (contract v2: hostname variables, instances).
+      - name: Validator unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py'
+
       - name: docker compose config
         run: bash tests/compose-config.sh
 

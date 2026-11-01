@@ -55,7 +55,23 @@ CORE_VARS = {
 }
 
 # Subdomains owned by core (group-gate-map.conf); templates must not route them.
-CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics"}  # contracts §4
+CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "people"}  # contracts §4, §5.1
+
+# Contract v2 (contracts §3.1): instance-scoped variables the Hub writes into
+# every instance's .env. Templates use them in the default form with the
+# default instance's value and never declare them in the manifest.
+INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP"}
+INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
+V2_HINT = f"see {DOCS_URL}/integration-contracts/#31-template-contract-v2-instances-and-hostname-variables-new-contract-v2"
+# Default subdomain: a single DNS label.
+LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_PATH_MATCHER = r"(?:PathPrefix|Path)\(`[^`]*`\)"
+PATH_PART_RE = re.compile(rf"^(?:{_PATH_MATCHER}|\(\s*{_PATH_MATCHER}(?:\s*\|\|\s*{_PATH_MATCHER})*\s*\))$")
+# Host(`${PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}`) [&& <path matchers>]
+V2_RULE_RE = re.compile(r"^Host\(`\$\{(PORTCULLIS_HOST_[A-Z0-9_]+):-([^`{}$]*)\.portcullis\.local\}`\)(?:\s*&&\s*(.+))?$", re.S)
+# Conversion period, instances: single only: Host(`<sub>.${PORTCULLIS_DOMAIN:-portcullis.local}`) [&& ...]
+V1_RULE_RE = re.compile(r"^Host\(`([^`{}$]*)\.\$\{PORTCULLIS_DOMAIN:-portcullis\.local\}`\)(?:\s*&&\s*(.+))?$", re.S)
+HOST_PLACEHOLDER_RE = re.compile(r"\{\{HOST_([A-Za-z0-9_]*)\}\}")
 
 PROXY_NET = "portcullis-proxy"
 AUTH_MW = "portcullis-auth@docker"
@@ -310,7 +326,32 @@ def split_middlewares(value: str) -> List[str]:
     return [m.strip() for m in value.split(",") if m.strip()]
 
 
-HOST_RE = re.compile(r"Host\(`([A-Za-z0-9-]+)\.\$\{PORTCULLIS_DOMAIN")
+def is_instance_var(name: str) -> bool:
+    return name in INSTANCE_VARS or name.startswith(INSTANCE_VAR_PREFIXES)
+
+
+def var_key(name: str) -> str:
+    """Router name / client id -> variable suffix (upper-case, '-' and '.' -> '_')."""
+    return re.sub(r"[-.]", "_", name.upper())
+
+
+def parse_rule(rule: str) -> Optional[Tuple[str, Optional[str], str, Optional[str]]]:
+    """(form 'v2'|'v1', host variable or None, default subdomain, path part or None)."""
+    rule = rule.strip()
+    m = V2_RULE_RE.match(rule)
+    if m:
+        return "v2", m.group(1), m.group(2), m.group(3)
+    m = V1_RULE_RE.match(rule)
+    if m:
+        return "v1", None, m.group(1), m.group(2)
+    return None
+
+
+def rule_hosts(rule: str) -> Set[str]:
+    p = parse_rule(rule)
+    return {p[2].lower()} if p else set()
+
+
 PATH_RE = re.compile(r"(?:PathPrefix|Path)\(`([^`]*)`\)")
 
 
@@ -336,6 +377,14 @@ class Template:
         self.compose_values = ""
         self.subdomains: Set[str] = set()
         self.volume_names: Dict[str, str] = {}
+        # Contract v2: rule form of the routers ('v2', 'v1' or None) and
+        # host variable -> default subdomain of each host router.
+        self.form: Optional[str] = None
+        self.host_vars: Dict[str, str] = {}
+
+    @property
+    def multi(self) -> bool:
+        return (self.manifest or {}).get("instances") == "multi"
 
     @property
     def m_where(self) -> str:
@@ -418,6 +467,10 @@ def check_manifest_rules(t: Template, r: Report) -> None:
             seen[k] = section
             if k in CORE_VARS:
                 r.error(t.m_where, f"{section} key {k} shadows a core variable")
+            if is_instance_var(k):
+                r.error(t.m_where, f"{section} key {k} is reserved for the Hub's instance variables",
+                        "the Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_*, PORTCULLIS_OIDC_CLIENT_ID*, "
+                        "PORTCULLIS_ACCESS_GROUP and PORTCULLIS_ADMIN_GROUP itself; " + V2_HINT)
 
     for c in m.get("keycloak_clients") or []:
         if isinstance(c, dict) and c.get("secret_env") and c["secret_env"] not in random_keys:
@@ -441,9 +494,17 @@ def check_manifest_rules(t: Template, r: Report) -> None:
                 r.error(t.m_where, f"config_files src {cf['src']} does not exist in {t.id}/")
 
     for u in m.get("urls") or []:
-        if isinstance(u, dict) and isinstance(u.get("url"), str) and "{{DOMAIN}}" not in u["url"]:
-            r.warn(t.m_where, f"url {u['url']} does not use {{{{DOMAIN}}}}",
-                   "links should be https://<sub>.{{DOMAIN}}/...")
+        if isinstance(u, dict) and isinstance(u.get("url"), str) and "{{DOMAIN}}" not in u["url"] \
+                and not HOST_PLACEHOLDER_RE.search(u["url"]):
+            r.warn(t.m_where, f"url {u['url']} uses neither {{{{HOST_<ROUTER>}}}} nor {{{{DOMAIN}}}}",
+                   "links to the app should be https://{{HOST_<ROUTER>}}/...")
+
+    if "instances" not in m:
+        r.warn(t.m_where, "instances is not set (default single)",
+               "set instances: multi, or instances: single with the reason in auth.notes; " + V2_HINT)
+    elif m.get("instances") == "single" and not re.search(r"(?i)instance", str(auth.get("notes") or "")):
+        r.warn(t.m_where, "instances: single without a reason in auth.notes",
+               "a template stays single only for host-level uniqueness (e.g. fixed host devices); say why in auth.notes")
 
     # auth.native_login: Portcullis sign-in in front of an app's own login,
     # or (allow_without_gateway) the app's own login only. Only for apps
@@ -500,18 +561,28 @@ def check_compose(t: Template, r: Report) -> None:
         elif name != "default":
             r.error(t.c_where, f"networks.{name}: templates may only use 'default' and '{PROXY_NET}'")
 
-    # Volumes
+    # Volumes. single: explicit name portcullis_<key>. multi: no name; the
+    # Hub's override sets portcullis_<key> for the default instance (today's
+    # names) and portcullis_<instance-id>-<key> for the others (§11.2).
     top_vols = data.get("volumes") or {}
     for vname, spec in top_vols.items():
+        if isinstance(spec, dict) and spec.get("external"):
+            r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
         vol_name = spec.get("name") if isinstance(spec, dict) else None
+        if t.multi:
+            if vol_name is not None:
+                r.error(t.c_where, f"volumes.{vname}: an instances: multi template must not declare name:",
+                        f"the Hub names it portcullis_{vname} for the default instance and "
+                        f"portcullis_<instance-id>-{vname} for the others; " + V2_HINT)
+            t.volume_names[f"portcullis_{vname}"] = vname
+            continue
         if not vol_name:
             r.error(t.c_where, f"volumes.{vname} needs an explicit 'name: portcullis_{vname}'",
                     "without it the name depends on the compose project and data is lost on rename")
             continue
-        if not str(vol_name).startswith("portcullis_"):
-            r.error(t.c_where, f"volumes.{vname}: name {vol_name!r} must start with 'portcullis_'")
-        if isinstance(spec, dict) and spec.get("external"):
-            r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
+        if str(vol_name) != f"portcullis_{vname}":
+            r.error(t.c_where, f"volumes.{vname}: name {vol_name!r} must be exactly 'portcullis_{vname}'",
+                    "the default instance's volumes are portcullis_<volume key> (contracts §11.2)")
         t.volume_names[str(vol_name)] = vname
 
     if top_nets.get(PROXY_NET) is None and any(PROXY_NET in networks_of(s or {}) for s in services.values()):
@@ -526,6 +597,8 @@ def check_compose(t: Template, r: Report) -> None:
 
     # Variable interpolation
     for name, op, rest in iter_var_refs(t.compose_values):
+        if is_instance_var(name):
+            continue  # check_instance_vars
         if name in CORE_VARS:
             if op != ":-":
                 r.error(t.c_where, f"${{{name}}} must use the default form ${{{name}:-{CORE_VARS[name]}}}",
@@ -578,12 +651,127 @@ def check_compose(t: Template, r: Report) -> None:
             mm = re.match(r"^traefik\.http\.routers\.([^.]+)\.(.+)$", k)
             if mm:
                 routers.setdefault(mm.group(1), {"_service": sname})[mm.group(2)] = v
+        check_traefik_names(t, labels, where, r)
         if not enabled and any(k.startswith("traefik.http.") for k in labels):
             r.error(where, "has traefik.http.* labels but not traefik.enable: \"true\"")
 
     check_routers(t, routers, r)
+    check_instance_vars(t, r)
+    check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
     check_identity(t, services, r)
+
+
+_NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
+
+
+def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Report) -> None:
+    """Contract v2: the Hub renames <name> to <instance-id>_<name> per instance."""
+    seen: Set[Tuple[str, str]] = set()
+    for k in labels:
+        mm = _NAME_LABEL_RE.match(k)
+        if not mm or (mm.group(1), mm.group(2)) in seen:
+            continue
+        seen.add((mm.group(1), mm.group(2)))
+        kind, name = mm.group(1)[:-1], mm.group(2)
+        if "_" in name:
+            r.error(where, f"{kind} name {name} contains '_'",
+                    "use '-': the Hub prefixes names with <instance-id>_ for every instance but the default; " + V2_HINT)
+        if t.multi and name.startswith("portcullis-") and not name.startswith(PUBLIC_RESERVED):
+            r.error(where, f"{kind} name {name} starts with 'portcullis-'", "that prefix is reserved for core and the Hub")
+
+
+def check_instance_vars(t: Template, r: Report) -> None:
+    """Instance variables: default form, the default instance's value, the same default everywhere."""
+    m = t.manifest or {}
+    auth = m.get("auth") or {}
+    expected: Dict[str, str] = {"PORTCULLIS_INSTANCE": t.id}
+    clients = [c.get("client_id") for c in m.get("keycloak_clients") or []
+               if isinstance(c, dict) and isinstance(c.get("client_id"), str)]
+    if clients:
+        expected["PORTCULLIS_OIDC_CLIENT_ID"] = clients[0]
+    for cid in clients:
+        key = "PORTCULLIS_OIDC_CLIENT_ID_" + var_key(cid)
+        if key in expected:
+            r.error(t.m_where, f"keycloak clients {expected[key]} and {cid} both map to {key}", V2_HINT)
+        expected[key] = cid
+    for field, var in (("access_group", "PORTCULLIS_ACCESS_GROUP"), ("admin_group", "PORTCULLIS_ADMIN_GROUP")):
+        if isinstance(auth.get(field), str) and auth[field]:
+            expected[var] = auth[field]
+    for var, sub in t.host_vars.items():
+        expected[var] = f"{sub}.portcullis.local"
+    reported: Set[Tuple[str, str]] = set()
+    for where, text in [(t.c_where, t.compose_values)]:
+        for name, op, rest in iter_var_refs(text):
+            if not is_instance_var(name):
+                continue
+            want = expected.get(name)
+            if want is None:
+                msg = (f"${{{name}}} is not set for this template",
+                       "PORTCULLIS_HOST_<ROUTER> needs a host router <router>, PORTCULLIS_OIDC_CLIENT_ID* a keycloak_clients entry, "
+                       "PORTCULLIS_ACCESS_GROUP / PORTCULLIS_ADMIN_GROUP auth.access_group / admin_group")
+            elif op != ":-":
+                msg = (f"${{{name}}} must use the default form ${{{name}:-{want}}}",
+                       "instance variables carry the default instance's value as their default; " + V2_HINT)
+            elif rest != want:
+                msg = (f"${{{name}}} default must be {want} (got {rest!r})",
+                       "the default is the default instance's value, the same at every use; " + V2_HINT)
+            else:
+                continue
+            if (name, msg[0]) not in reported:
+                reported.add((name, msg[0]))
+                r.error(where, *msg)
+
+
+_OWN_HOST_SUFFIX = r"\.(?:\$+\{?PORTCULLIS_DOMAIN\b|PORTCULLIS_DOMAIN_PLACEHOLDER)"
+
+
+def check_own_hosts(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """Contract v2: own hostnames only as PORTCULLIS_HOST_<ROUTER> / {{HOST_<ROUTER>}}."""
+    m = t.manifest or {}
+    uris: List[str] = [u["url"] for u in m.get("urls") or [] if isinstance(u, dict) and isinstance(u.get("url"), str)]
+    for c in m.get("keycloak_clients") or []:
+        if isinstance(c, dict):
+            uris += [x for x in as_list(c.get("redirect_uri")) + as_list(c.get("redirect_uris")) if isinstance(x, str)]
+    placeholders = {"HOST_" + k[len("PORTCULLIS_HOST_"):] for k in t.host_vars}
+    for u in uris:
+        for p in HOST_PLACEHOLDER_RE.findall(u):
+            if "HOST_" + p not in placeholders:
+                r.error(t.m_where, f"{u}: {{{{HOST_{p}}}}} names no host router",
+                        f"host routers of this template: {', '.join(sorted(placeholders)) or 'none'}")
+    if t.form != "v2":
+        return
+    by_sub = {sub: var for var, sub in t.host_vars.items()}
+    for u in uris:
+        for sub in re.findall(r"(?<![A-Za-z0-9.-])([a-z0-9-]+)\.\{\{DOMAIN\}\}", u):
+            if sub in by_sub:
+                r.error(t.m_where, f"{u}: use {{{{HOST_{by_sub[sub][len('PORTCULLIS_HOST_'):]}}}}} for its own host",
+                        "{{DOMAIN}} is the main domain; the instance's hostname can be anywhere; " + V2_HINT)
+    for where, text in _template_texts(t):
+        for sub, var in sorted(by_sub.items()):
+            if re.search(rf"(?<![A-Za-z0-9.-]){re.escape(sub)}{_OWN_HOST_SUFFIX}", text):
+                r.error(where, f"names its own host {sub}.${{PORTCULLIS_DOMAIN}}",
+                        f"use ${{{var}:-{sub}.portcullis.local}} (env URLs, hostname:, middleware values); " + V2_HINT)
+    if not t.multi:
+        return
+    auth = m.get("auth") or {}
+    groups = [g for g in (auth.get("access_group"), auth.get("admin_group")) if isinstance(g, str) and g]
+    clients = [c.get("client_id") for c in m.get("keycloak_clients") or []
+               if isinstance(c, dict) and isinstance(c.get("client_id"), str)]
+    hint = "use ${PORTCULLIS_OIDC_CLIENT_ID*}, ${PORTCULLIS_ACCESS_GROUP} or ${PORTCULLIS_ADMIN_GROUP}: every other instance has its own; " + V2_HINT
+    for where, text in _template_texts(t):
+        for g in groups:
+            if re.search(rf"(?<![\w.-]){re.escape(g)}(?![\w.-])", text):
+                r.error(where, f"hard-codes group {g}", hint)
+        for cid in clients:
+            if re.search(rf"(?i)(?:client[_-]?id|identifier|audience)['\"]?\s*(?:=>|[:=])\s*['\"]?{re.escape(cid)}(?![\w.-])", text):
+                r.error(where, f"hard-codes Keycloak client id {cid}", hint)
+    for sname, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        for k, val in env_of(svc).items():
+            if re.search(r"(?i)client_?id|audience|identifier", k) and val.strip().strip("'\"") in clients:
+                r.error(f"{t.c_where}: services.{sname}", f"{k} hard-codes Keycloak client id {val}", hint)
 
 
 def env_of(svc: Dict[str, Any]) -> Dict[str, str]:
@@ -766,6 +954,9 @@ def check_mount(t: Template, vol: Any, where: str, r: Report) -> None:
         rel = norm[len(prefix):]
         if not os.path.exists(os.path.join(t.dir, rel)):
             r.error(where, f"bind mount {src!r}: {t.id}/{rel} does not exist in this template")
+        if t.multi and not read_only:
+            r.error(where, f"bind mount {src!r} is shared by every instance and must be read-only (:ro)",
+                    "copy it into a volume in an init container if the app writes to it")
         return
     if norm in CORE_MOUNTS:
         need_ro, why = CORE_MOUNTS[norm]
@@ -792,21 +983,12 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     admin_paths = auth.get("admin_paths") or []
     gated: List[Tuple[str, List[str]]] = []  # (router, path prefixes or ["/"])
 
+    check_rule_forms(t, routers, r)
     for name, rt in sorted(routers.items()):
         where = f"{t.c_where}: router {name}"
         rule = rt.get("rule", "")
         if not rule:
-            r.error(where, "has no rule")
             continue
-        hosts = HOST_RE.findall(rule)
-        if not hosts:
-            r.error(where, "rule must use Host(`<sub>.${PORTCULLIS_DOMAIN:-portcullis.local}`)",
-                    "the Hub derives auth policies and group-gate entries from this exact form")
-        for h in hosts:
-            h = h.lower()
-            if h in CORE_SUBDOMAINS:
-                r.error(where, f"subdomain {h!r} belongs to core")
-            t.subdomains.add(h)
         if rt.get("entrypoints") != "websecure":
             r.error(where, "entrypoints must be 'websecure'")
         tls = rt.get("tls.options")
@@ -860,6 +1042,77 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                     "without it any Keycloak realm user can sign in; see the auth notes in manifest.yaml")
     if t.id in LOGIN_GATES and not auth.get("group_access"):
         r.error(t.m_where, "security regression: login is gated by group-gate, so group_access must be true")
+
+
+def check_rule_forms(t: Template, routers: Dict[str, Dict[str, str]], r: Report) -> None:
+    """Contract v2 rule form, host routers and hostname variables (§3.1)."""
+    parsed: Dict[str, Tuple[str, Optional[str], str, Optional[str]]] = {}
+    for name, rt in sorted(routers.items()):
+        where = f"{t.c_where}: router {name}"
+        rule = rt.get("rule", "")
+        if not rule:
+            r.error(where, "has no rule")
+            continue
+        p = parse_rule(rule)
+        if p is None or not LABEL_RE.match(p[2]) or (p[3] is not None and not PATH_PART_RE.match(p[3].strip())):
+            r.error(where, "rule must be Host(`${PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}`), "
+                    "optionally followed by && PathPrefix(`...`) / Path(`...`) or a parenthesised || of them",
+                    "<sub> is one DNS label (the default subdomain); <ROUTER> is the host router's name upper-cased "
+                    "with - and . as _; " + V2_HINT)
+            continue
+        parsed[name] = p
+        if p[2] in CORE_SUBDOMAINS:
+            r.error(where, f"subdomain {p[2]!r} belongs to core")
+        if p[0] == "v1" and t.multi:
+            r.error(t.c_where, f"instances: multi template uses ${{PORTCULLIS_DOMAIN}} in router {name}",
+                    "use Host(`${PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}`); " + V2_HINT)
+        t.subdomains.add(p[2])
+        if t.multi and p[3]:
+            for kind, v in re.findall(r"(PathPrefix|Path)\(`([^`]*)`\)", p[3]):
+                if v != "/" and rule_path_overlaps(kind, v, "/oauth2"):
+                    r.error(where, f"serves {v}; /oauth2/ belongs to Portcullis on extra-domain hosts",
+                            "the Hub routes /oauth2/ to the sign-in proxy there; " + V2_HINT)
+    forms = {p[0] for p in parsed.values()}
+    if len(forms) > 1:
+        r.error(t.c_where, "mixes the PORTCULLIS_HOST_<ROUTER> and ${PORTCULLIS_DOMAIN} rule forms",
+                "a template uses one rule form for all its routers; " + V2_HINT)
+    t.form = forms.pop() if len(forms) == 1 else None
+    # Host routers (Host() alone): one per hostname, one variable each.
+    host_by_sub: Dict[str, str] = {}
+    var_owner: Dict[str, str] = {}
+    for name, (form, var, sub, path) in sorted(parsed.items()):
+        if path is not None:
+            continue
+        where = f"{t.c_where}: router {name}"
+        if sub in host_by_sub:
+            r.error(where, f"hostname {sub} has more than one host router ({host_by_sub[sub]}, {name})",
+                    "each hostname has exactly one router with Host() alone; the others add path matchers")
+            continue
+        host_by_sub[sub] = name
+        want = "PORTCULLIS_HOST_" + var_key(name)
+        if form == "v2" and var != want:
+            r.error(where, f"host router {name} must use {want} (got {var})", V2_HINT)
+            continue
+        if want in var_owner:
+            r.error(where, f"host routers {var_owner[want]} and {name} map to the same variable {want}",
+                    "rename one of them; " + V2_HINT)
+            continue
+        var_owner[want] = name
+        t.host_vars[want] = sub
+    for name, (form, var, sub, path) in sorted(parsed.items()):
+        if path is None:
+            continue
+        where = f"{t.c_where}: router {name}"
+        if form == "v1":
+            if sub not in host_by_sub:
+                r.error(where, f"hostname {sub} has no host router (a router with Host() alone)", V2_HINT)
+            continue
+        if var not in t.host_vars:
+            r.error(where, f"no host router uses {var}",
+                    "path-scoped routers reuse their hostname's host router variable; " + V2_HINT)
+        elif t.host_vars[var] != sub:
+            r.error(where, f"{var} default must be {t.host_vars[var]}.portcullis.local (got {sub}.portcullis.local)",
+                    "each variable has the same default everywhere it appears")
 
 
 def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
@@ -976,10 +1229,10 @@ def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str
     if svc not in by_service:
         r.error(w, f"auth.public_access.service {svc!r} has no HTTP router")
         return
-    hosts = {h.lower() for n in by_service[svc] for h in HOST_RE.findall(routers[n].get("rule", ""))}
+    hosts = {h for n in by_service[svc] for h in rule_hosts(routers[n].get("rule", ""))}
     for name, rt in sorted(routers.items()):
         rule = rt.get("rule", "")
-        if not hosts & {h.lower() for h in HOST_RE.findall(rule)}:
+        if not hosts & rule_hosts(rule):
             continue
         opaque = sorted({m for m in re.findall(r"([A-Za-z]+)\(", rule) if m.lower() not in PUBLIC_NARROW_MATCHERS})
         if opaque or "!" in rule:

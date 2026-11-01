@@ -62,9 +62,14 @@
       "items": {"$ref": "#/$defs/configFile"}
     },
     "urls": {
-      "description": "Links shown in the Hub. {{DOMAIN}} is replaced with PORTCULLIS_DOMAIN.",
+      "description": "Links shown in the Hub. {{DOMAIN}} is replaced with PORTCULLIS_DOMAIN (the main domain), {{HOST_<ROUTER>}} with the instance's hostname for host router <router>. A multi template names its own hosts only as {{HOST_<ROUTER>}}.",
       "type": "array",
       "items": {"$ref": "#/$defs/url"}
+    },
+    "instances": {
+      "description": "Contract v2: multi lets the Hub run several separate instances of the template; single (the default) only the default instance (id = template id). Stay single only for host-level uniqueness (e.g. fixed host devices), justified in auth.notes.",
+      "enum": ["multi", "single"],
+      "default": "single"
     }
   },
   "allOf": [
