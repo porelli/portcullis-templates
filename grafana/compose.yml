@@ -12,6 +12,11 @@ services:
       GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # No password logins at all (header auth only), and the built-in admin
+      # never keeps Grafana's well-known default password: otherwise any
+      # container on portcullis-proxy could call grafana:3000 as admin:admin.
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       # Only Traefik (static IP on portcullis-proxy, set by core) may assert
       # X-Forwarded-User; Grafana rejects the header from any other peer.
       GF_AUTH_PROXY_WHITELIST: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}

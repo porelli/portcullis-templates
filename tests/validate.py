@@ -656,6 +656,7 @@ def check_service(t: Template, sname: str, svc: Dict[str, Any], where: str, r: R
         r.error(where, "needs an image:")
     else:
         check_image(image, where, r)
+        check_default_credentials(image, svc, where, r)
 
     for vol in as_list(svc.get("volumes")):
         check_mount(t, vol, where, r)
@@ -665,6 +666,35 @@ def check_service(t: Template, sname: str, svc: Dict[str, Any], where: str, r: R
                    for p in t.manifest.get("ports") or []):
             r.warn(where, "uses network_mode: host but the manifest declares no ports with network_mode_host: true",
                    "declare its ports so the Hub can detect collisions")
+
+
+# Images that ship a well-known default admin login unless told otherwise.
+# Behind header auth a password login is never needed, so it must be off and
+# the built-in account must get a generated password (no `admin:admin` for
+# whatever else sits on portcullis-proxy).
+DEFAULT_CREDENTIAL_RULES = {
+    "grafana/grafana": [
+        ("GF_AUTH_BASIC_ENABLED", lambda v: str(v).lower() == "false", 'must be "false" (no password logins)'),
+        ("GF_SECURITY_ADMIN_PASSWORD", lambda v: isinstance(v, str) and ":?" in v, "must come from a generated secret (${VAR:?...}), not Grafana's default admin password"),
+    ],
+}
+
+
+def check_default_credentials(image: str, svc: Dict[str, Any], where: str, r: Report) -> None:
+    repo = image.split("@", 1)[0].rsplit(":", 1)[0]
+    rules = DEFAULT_CREDENTIAL_RULES.get(repo)
+    if not rules:
+        return
+    env = svc.get("environment") or {}
+    if isinstance(env, list):
+        env = dict(e.split("=", 1) if "=" in e else (e, None) for e in env)
+    for key, ok, why in rules:
+        file_key = key + "__FILE"
+        if key in env and ok(env[key]):
+            continue
+        if key.endswith("PASSWORD") and file_key in env:
+            continue
+        r.error(where, f"{key} {why}")
 
 
 def check_image(image: str, where: str, r: Report) -> None:

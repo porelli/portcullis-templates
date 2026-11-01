@@ -52,7 +52,10 @@ auth:
         supporting: true
   notes: Proxy auth with X-Forwarded-User header, accepted only from Traefik (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP). Auto-creates users as Viewer role. Admin role requires manual promotion in Grafana. Access gated by group-gate.
 
-env: []
+env:
+  - key: GRAFANA_ADMIN_PASSWORD
+    description: Password of Grafana's built-in admin (never used for sign-in; basic auth and the login form are off)
+    generate: random
 keycloak_clients: []
 config_files: []
 
