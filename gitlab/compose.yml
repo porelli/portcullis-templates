@@ -1,10 +1,10 @@
 services:
   gitlab:
     image: gitlab/gitlab-ce:19.5.3-ce.0@sha256:6863d156a1a477bd6f69fc674b671d0163cd8b06bf63bb17cc4a4a803b78b27c
-    hostname: git.${PORTCULLIS_DOMAIN:-portcullis.local}
+    hostname: ${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}
     environment:
       GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://git.${PORTCULLIS_DOMAIN:-portcullis.local}'
+        external_url 'https://${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}'
         nginx['listen_port'] = 80
         nginx['listen_https'] = false
         nginx['proxy_set_headers'] = { "X-Forwarded-Proto" => "https", "X-Forwarded-Ssl" => "on" }
@@ -18,7 +18,7 @@ services:
         # emails are user-editable. With this off, GitLab's guided linking
         # makes the user prove the existing account's password first.
         gitlab_rails['omniauth_auto_link_user'] = false
-        gitlab_rails['omniauth_providers'] = [{ name: 'openid_connect', label: 'Portcullis SSO', args: { name: 'openid_connect', scope: ['openid', 'profile', 'email'], response_type: 'code', issuer: 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis', discovery: true, client_auth_method: 'query', uid_field: 'preferred_username', client_options: { identifier: 'gitlab', secret: '${GITLAB_OIDC_SECRET:?GITLAB_OIDC_SECRET must be set}', redirect_uri: 'https://git.${PORTCULLIS_DOMAIN:-portcullis.local}/users/auth/openid_connect/callback' }}}]
+        gitlab_rails['omniauth_providers'] = [{ name: 'openid_connect', label: 'Portcullis SSO', args: { name: 'openid_connect', scope: ['openid', 'profile', 'email'], response_type: 'code', issuer: 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis', discovery: true, client_auth_method: 'query', uid_field: 'preferred_username', client_options: { identifier: '${PORTCULLIS_OIDC_CLIENT_ID:-gitlab}', secret: '${GITLAB_OIDC_SECRET:?GITLAB_OIDC_SECRET must be set}', redirect_uri: 'https://${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}/users/auth/openid_connect/callback' }}}]
     volumes:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
@@ -28,7 +28,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.gitlab.rule: Host(`git.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.gitlab.rule: Host(`${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}`)
       traefik.http.routers.gitlab.entrypoints: websecure
       traefik.http.routers.gitlab.tls.options: authaware@file
       traefik.http.routers.gitlab.middlewares: client-headers@file,security-headers@file
@@ -39,7 +39,7 @@ services:
       # account. GitLab CE cannot restrict OIDC logins by group itself
       # (required_groups is Premium/Ultimate). The API, git-over-HTTPS and the
       # registry stay on the router above, authenticated by GitLab tokens.
-      traefik.http.routers.gitlab-login.rule: Host(`git.${PORTCULLIS_DOMAIN:-portcullis.local}`) && PathPrefix(`/users`)
+      traefik.http.routers.gitlab-login.rule: Host(`${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}`) && PathPrefix(`/users`)
       traefik.http.routers.gitlab-login.priority: "100"
       traefik.http.routers.gitlab-login.entrypoints: websecure
       traefik.http.routers.gitlab-login.tls.options: authaware@file
@@ -49,12 +49,9 @@ services:
     restart: unless-stopped
 
 volumes:
-  gitlab-config:
-    name: portcullis_gitlab-config
-  gitlab-logs:
-    name: portcullis_gitlab-logs
-  gitlab-data:
-    name: portcullis_gitlab-data
+  gitlab-config: {}
+  gitlab-logs: {}
+  gitlab-data: {}
 
 networks:
   portcullis-proxy:

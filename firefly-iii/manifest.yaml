@@ -3,6 +3,7 @@ description: Self-hosted personal finance manager with double-entry bookkeeping
 icon: "\U0001F4B8"
 category: finance
 tags: [finance, accounting, budget, bookkeeping]
+instances: multi
 
 auth:
   method: header-auth
@@ -38,4 +39,4 @@ config_files: []
 
 urls:
   - label: Firefly III
-    url: "https://finance.{{DOMAIN}}"
+    url: "https://{{HOST_FIREFLY}}"

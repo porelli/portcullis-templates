@@ -4,9 +4,9 @@ services:
     environment:
       ACTUAL_LOGIN_METHOD: openid
       ACTUAL_OPENID_DISCOVERY_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration
-      ACTUAL_OPENID_CLIENT_ID: actual-budget
+      ACTUAL_OPENID_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-actual-budget}
       ACTUAL_OPENID_CLIENT_SECRET: ${ACTUAL_OIDC_SECRET:-}
-      ACTUAL_OPENID_SERVER_HOSTNAME: https://budget.${PORTCULLIS_DOMAIN:-portcullis.local}
+      ACTUAL_OPENID_SERVER_HOSTNAME: https://${PORTCULLIS_HOST_ACTUAL:-budget.portcullis.local}
       ACTUAL_OPENID_ENFORCE: "true"
       NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
@@ -17,7 +17,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.actual.rule: Host(`budget.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.actual.rule: Host(`${PORTCULLIS_HOST_ACTUAL:-budget.portcullis.local}`)
       traefik.http.routers.actual.entrypoints: websecure
       traefik.http.routers.actual.tls.options: authaware@file
       traefik.http.routers.actual.middlewares: client-headers@file,security-headers@file
@@ -25,8 +25,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  actual-data:
-    name: portcullis_actual-data
+  actual-data: {}
 
 networks:
   portcullis-proxy:

@@ -3,6 +3,7 @@ description: "PLACEHOLDER / EXPERIMENTAL: mTLS-only (protected tier) demo route;
 icon: "\U0001F512"
 category: security
 tags: [vault, secrets, pki]
+instances: multi
 
 auth:
   method: mtls
@@ -17,4 +18,4 @@ config_files: []
 
 urls:
   - label: Vault UI
-    url: "https://vault.{{DOMAIN}}"
+    url: "https://{{HOST_VAULT_UI}}"

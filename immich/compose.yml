@@ -26,7 +26,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.immich.rule: Host(`photos.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.immich.rule: Host(`${PORTCULLIS_HOST_IMMICH:-photos.portcullis.local}`)
       traefik.http.routers.immich.entrypoints: websecure
       traefik.http.routers.immich.tls.options: authaware@file
       traefik.http.routers.immich.middlewares: client-headers@file,security-headers@file
@@ -53,6 +53,7 @@ services:
         fi
         sed \
           -e "s|\$${PORTCULLIS_DOMAIN}|$${PORTCULLIS_DOMAIN}|g" \
+          -e "s|\$${IMMICH_OIDC_CLIENT_ID}|$${IMMICH_OIDC_CLIENT_ID}|g" \
           -e "s|\$${IMMICH_OIDC_SECRET}|$${IMMICH_OIDC_SECRET}|g" \
           -e "s|\$${IMMICH_PASSWORD_LOGIN}|$${PASSWORD_LOGIN}|g" \
           /tmp/config.json.tmpl > /etc/immich/config.json.new
@@ -60,6 +61,7 @@ services:
         echo "Config generated."
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      IMMICH_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-immich}
       IMMICH_OIDC_SECRET: ${IMMICH_OIDC_SECRET:-}
     volumes:
       - immich-config:/etc/immich
@@ -122,14 +124,10 @@ services:
       - immich-db-data:/var/lib/postgresql/data
 
 volumes:
-  immich-upload:
-    name: portcullis_immich-upload
-  immich-ml-cache:
-    name: portcullis_immich-ml-cache
-  immich-db-data:
-    name: portcullis_immich-db-data
-  immich-config:
-    name: portcullis_immich-config
+  immich-upload: {}
+  immich-ml-cache: {}
+  immich-db-data: {}
+  immich-config: {}
 
 networks:
   portcullis-proxy:

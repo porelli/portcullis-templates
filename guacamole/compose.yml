@@ -56,7 +56,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.guacamole.rule: Host(`remote.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.guacamole.rule: Host(`${PORTCULLIS_HOST_GUACAMOLE:-remote.portcullis.local}`)
       traefik.http.routers.guacamole.entrypoints: websecure
       traefik.http.routers.guacamole.tls.options: authaware@file
       traefik.http.routers.guacamole.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,guacamole-prefix@docker,security-headers@file
@@ -132,10 +132,8 @@ services:
         condition: service_completed_successfully
 
 volumes:
-  guacamole-db-data:
-    name: portcullis_guacamole-db-data
-  guacamole-initdb:
-    name: portcullis_guacamole-initdb
+  guacamole-db-data: {}
+  guacamole-initdb: {}
 
 networks:
   portcullis-proxy:

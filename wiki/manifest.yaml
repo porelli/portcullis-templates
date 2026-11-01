@@ -3,6 +3,7 @@ description: Modern wiki — mTLS if cert present, WebAuthn fallback
 icon: "\U0001F4D6"
 category: productivity
 tags: [wiki, docs, knowledge-base]
+instances: multi
 
 auth:
   method: forward-auth
@@ -23,4 +24,4 @@ config_files: []
 
 urls:
   - label: Wiki
-    url: "https://wiki.{{DOMAIN}}"
+    url: "https://{{HOST_WIKI}}"

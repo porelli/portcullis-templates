@@ -3,6 +3,7 @@ description: Network-wide ad blocking via DNS sinkhole
 icon: "\U0001F6AB"
 category: networking
 tags: [dns, adblock, privacy, filtering]
+instances: multi
 
 auth:
   method: forward-auth
@@ -41,4 +42,4 @@ config_files: []
 
 urls:
   - label: Dashboard
-    url: "https://pihole.{{DOMAIN}}/admin"
+    url: "https://{{HOST_PIHOLE}}/admin"

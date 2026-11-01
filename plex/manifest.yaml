@@ -3,6 +3,7 @@ description: Media server for movies, TV, music with transcoding and client apps
 icon: "\U0001F3AC"
 category: media
 tags: [media, movies, tv, music, streaming]
+instances: multi
 
 auth:
   method: custom
@@ -58,4 +59,4 @@ config_files: []
 
 urls:
   - label: Plex
-    url: "https://plex.{{DOMAIN}}"
+    url: "https://{{HOST_PLEX}}"

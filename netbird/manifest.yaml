@@ -3,6 +3,7 @@ description: Mesh VPN + zero-trust networking with TURN relay
 icon: "\U0001F426"
 category: vpn
 tags: [vpn, wireguard, mesh, zero-trust]
+instances: single
 
 auth:
   method: native-oidc
@@ -19,6 +20,10 @@ auth:
     Upgrades: netbird-management and netbird-signal are pinned to the same
     release and must move together (the dashboard has its own version line);
     follow the upstream upgrade notes and do not skip releases with migrations.
+    Single instance (instances: single): coturn runs with host networking and
+    binds its listening ports and the whole UDP relay range 49152-65535 on the
+    host itself (not through the Hub's port mappings), so a second instance
+    could never start its TURN relay.
 
 ports:
   - key: COTURN_STUN_PORT
@@ -63,11 +68,11 @@ env:
 keycloak_clients:
   - client_id: netbird-dashboard
     secret_env: NETBIRD_OIDC_CLIENT_SECRET
-    redirect_uri: "https://netbird.{{DOMAIN}}/*"
+    redirect_uri: "https://{{HOST_NETBIRD_DASH}}/*"
     name: NetBird Dashboard
 
 config_files: []
 
 urls:
   - label: Dashboard
-    url: "https://netbird.{{DOMAIN}}"
+    url: "https://{{HOST_NETBIRD_DASH}}"

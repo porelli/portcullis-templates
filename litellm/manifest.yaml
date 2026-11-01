@@ -3,6 +3,7 @@ description: Unified LLM proxy — OpenAI-compatible API for 100+ models with au
 icon: "\U0001F916"
 category: ai
 tags: [llm, ai, openai, proxy, api]
+instances: multi
 
 auth:
   method: native-oidc
@@ -45,12 +46,12 @@ env:
 keycloak_clients:
   - client_id: litellm
     secret_env: LITELLM_OIDC_SECRET
-    redirect_uri: "https://llm.{{DOMAIN}}/sso/callback"
+    redirect_uri: "https://{{HOST_LITELLM}}/sso/callback"
     name: LiteLLM
 config_files: []
 
 urls:
   - label: LiteLLM Proxy
-    url: "https://llm.{{DOMAIN}}"
+    url: "https://{{HOST_LITELLM}}"
   - label: Admin UI
-    url: "https://llm.{{DOMAIN}}/ui"
+    url: "https://{{HOST_LITELLM}}/ui"

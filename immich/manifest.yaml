@@ -3,6 +3,7 @@ description: Self-hosted photo and video backup with AI-powered search
 icon: "\U0001F4F7"
 category: media
 tags: [photos, videos, backup, ai, gallery]
+instances: multi
 
 auth:
   method: native-oidc
@@ -132,8 +133,8 @@ keycloak_clients:
   - client_id: immich
     secret_env: IMMICH_OIDC_SECRET
     redirect_uris:
-      - "https://photos.{{DOMAIN}}/auth/login"
-      - "https://photos.{{DOMAIN}}/user-settings"
+      - "https://{{HOST_IMMICH}}/auth/login"
+      - "https://{{HOST_IMMICH}}/user-settings"
       - "app.immich:///oauth-callback"
     name: Immich
 
@@ -141,4 +142,4 @@ config_files: []
 
 urls:
   - label: Photos
-    url: "https://photos.{{DOMAIN}}"
+    url: "https://{{HOST_IMMICH}}"

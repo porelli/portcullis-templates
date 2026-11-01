@@ -82,6 +82,16 @@
 #     call _export_manifest_env to export a random value for each such var
 #     that is not already set (shell env wins over --env-file).
 #
+# 13. INSTANCE VARIABLES (contract v2)
+#     The Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_<ROUTER>,
+#     PORTCULLIS_OIDC_CLIENT_ID(_<KEY>), PORTCULLIS_ACCESS_GROUP and
+#     PORTCULLIS_ADMIN_GROUP into every instance's .env. CI runs the default
+#     instance: compose_up/down/logs call _export_instance_env, which exports
+#     the default instance's values (<sub>.$DOMAIN for each host router, the
+#     manifest's first client_id and groups). Volumes of multi templates have
+#     no name: in compose.yml; the Hub names them portcullis_<key> for the
+#     default instance, which is what "-p portcullis" (QUIRK #7) gives too.
+#
 # 12. PUBLIC EXCEPTIONS (auth.public_access)
 #     compose.yml never carries the public router: the Hub generates it in
 #     the per-app override when the exception is on (see the Hub's
@@ -437,12 +447,37 @@ _export_manifest_env() {
   done < <(_manifest_random_env_keys "$manifest")
 }
 
+# QUIRK #13: mirror the Hub's instance variables for the default instance.
+_export_instance_env() {
+  local compose_path="$1" manifest var sub key cid first="" group
+  manifest="$(dirname "$compose_path")/manifest.yaml"
+  PORTCULLIS_INSTANCE="$(basename "$(dirname "$compose_path")")"
+  export PORTCULLIS_INSTANCE
+  while read -r var sub; do
+    [ -n "$var" ] && export "$var=$sub.$DOMAIN"
+  done < <(grep -oE '\$\{PORTCULLIS_HOST_[A-Z0-9_]+:-[a-z0-9-]+\.portcullis\.local\}' "$compose_path" \
+    | sed -E 's/^\$\{(PORTCULLIS_HOST_[A-Z0-9_]+):-([a-z0-9-]+)\.portcullis\.local\}$/\1 \2/' | sort -u)
+  [ -f "$manifest" ] || return 0
+  while read -r cid; do
+    [ -n "$cid" ] || continue
+    [ -n "$first" ] || first="$cid"
+    key=$(printf '%s' "$cid" | tr '[:lower:].-' '[:upper:]__')
+    export "PORTCULLIS_OIDC_CLIENT_ID_$key=$cid"
+  done < <(sed -n 's/^[[:space:]]*-[[:space:]]*client_id:[[:space:]]*["\047]\{0,1\}\([A-Za-z0-9_.-]*\).*/\1/p' "$manifest")
+  export PORTCULLIS_OIDC_CLIENT_ID="$first"
+  group=$(sed -n 's/^  access_group:[[:space:]]*["\047]\{0,1\}\([A-Za-z0-9_.-]*\).*/\1/p' "$manifest")
+  export PORTCULLIS_ACCESS_GROUP="$group"
+  group=$(sed -n 's/^  admin_group:[[:space:]]*["\047]\{0,1\}\([A-Za-z0-9_.-]*\).*/\1/p' "$manifest")
+  export PORTCULLIS_ADMIN_GROUP="$group"
+}
+
 compose_up() {
   local app_id="$1"
   local compose_path
   # QUIRK #3: Guard _find_compose with || to prevent set -e exit.
   compose_path=$(_find_compose "$app_id") || { fail "compose.yml not found for $app_id"; return 1; }
   _export_manifest_env "$compose_path"
+  _export_instance_env "$compose_path"
   info "Starting $app_id..."
   # QUIRK #12: extra -f for an emulated Hub override (COMPOSE_OVERRIDE).
   local extra=()
@@ -463,6 +498,7 @@ compose_down() {
   local compose_path
   compose_path=$(_find_compose "$app_id") || return 0
   _export_manifest_env "$compose_path"
+  _export_instance_env "$compose_path"
   # QUIRK #12: extra -f for an emulated Hub override (COMPOSE_OVERRIDE).
   local extra=()
   if [ -n "${COMPOSE_OVERRIDE:-}" ]; then extra=(-f "$COMPOSE_OVERRIDE"); fi
@@ -488,6 +524,7 @@ app_logs() {
   local compose_path
   compose_path=$(_find_compose "$app_id") || return 0
   _export_manifest_env "$compose_path"
+  _export_instance_env "$compose_path"
   COMPOSE_IGNORE_ORPHANS=true docker compose \
     -p portcullis \
     -f "$compose_path" \

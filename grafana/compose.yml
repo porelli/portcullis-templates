@@ -27,7 +27,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.grafana.rule: Host(`grafana.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.grafana.rule: Host(`${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}`)
       traefik.http.routers.grafana.entrypoints: websecure
       traefik.http.routers.grafana.tls.options: public@file
       traefik.http.routers.grafana.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -35,8 +35,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  grafana-data:
-    name: portcullis_grafana-data
+  grafana-data: {}
 
 networks:
   portcullis-proxy:

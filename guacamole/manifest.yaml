@@ -3,6 +3,7 @@ description: Clientless remote desktop gateway — RDP, SSH, VNC in the browser
 icon: "\U0001F5A5"
 category: remote-access
 tags: [rdp, ssh, vnc, remote-desktop, browser]
+instances: multi
 
 auth:
   method: header-auth
@@ -50,4 +51,4 @@ config_files: []
 
 urls:
   - label: Remote Desktop
-    url: "https://remote.{{DOMAIN}}"
+    url: "https://{{HOST_GUACAMOLE}}"

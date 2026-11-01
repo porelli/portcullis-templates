@@ -6,7 +6,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.vault-ui.rule: Host(`vault.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.vault-ui.rule: Host(`${PORTCULLIS_HOST_VAULT_UI:-vault.portcullis.local}`)
       traefik.http.routers.vault-ui.entrypoints: websecure
       traefik.http.routers.vault-ui.tls.options: protected@file
       traefik.http.routers.vault-ui.middlewares: client-headers@file,security-headers@file

@@ -1,4 +1,4 @@
-server_url: https://vpn.PORTCULLIS_DOMAIN_PLACEHOLDER
+server_url: https://HEADSCALE_HOST_PLACEHOLDER
 listen_addr: 0.0.0.0:8080
 metrics_listen_addr: 0.0.0.0:9090
 
@@ -13,7 +13,7 @@ database:
 oidc:
   only_start_if_oidc_is_available: true
   issuer: https://auth.PORTCULLIS_DOMAIN_PLACEHOLDER/realms/portcullis
-  client_id: headscale
+  client_id: HEADSCALE_OIDC_CLIENT_ID_PLACEHOLDER
   client_secret: HEADSCALE_OIDC_SECRET_PLACEHOLDER
   scope: [openid, profile, email]
   # Users are keyed on the provider identifier (iss + sub); the username comes

@@ -27,7 +27,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.kanboard.rule: Host(`kanboard.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.kanboard.rule: Host(`${PORTCULLIS_HOST_KANBOARD:-kanboard.portcullis.local}`)
       traefik.http.routers.kanboard.entrypoints: websecure
       traefik.http.routers.kanboard.tls.options: authaware@file
       traefik.http.routers.kanboard.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -35,10 +35,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  kanboard-data:
-    name: portcullis_kanboard-data
-  kanboard-plugins:
-    name: portcullis_kanboard-plugins
+  kanboard-data: {}
+  kanboard-plugins: {}
 
 networks:
   portcullis-proxy:

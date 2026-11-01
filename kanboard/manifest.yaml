@@ -3,6 +3,7 @@ description: Minimalist Kanban project management with header-based auth
 icon: "\U0001F4CB"
 category: productivity
 tags: [kanban, projects, tasks, boards]
+instances: multi
 
 auth:
   method: header-auth
@@ -40,4 +41,4 @@ config_files: []
 
 urls:
   - label: Kanboard
-    url: "https://kanboard.{{DOMAIN}}"
+    url: "https://{{HOST_KANBOARD}}"

@@ -5,21 +5,26 @@ services:
     image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     entrypoint: ["/bin/sh", "-c"]
     # $$VAR: expanded by the container shell from the environment below,
-    # not interpolated by compose into the command string.
+    # not interpolated by compose into the command string. Regenerated on
+    # every start: the config is fully derived from the template + env, so a
+    # hostname change applies on the next start. Never print the result (it
+    # contains the OIDC client secret).
     command:
       - |
-        if [ ! -f /etc/headscale/config.yaml ]; then
-          echo "Generating headscale config..."
-          sed \
-            -e "s|PORTCULLIS_DOMAIN_PLACEHOLDER|$${PORTCULLIS_DOMAIN}|g" \
-            -e "s|HEADSCALE_OIDC_SECRET_PLACEHOLDER|$${HEADSCALE_OIDC_CLIENT_SECRET}|g" \
-            /tmp/config.yaml.tmpl > /etc/headscale/config.yaml
-          echo "Config generated."
-        else
-          echo "Config already exists."
-        fi
+        set -eu
+        echo "Generating headscale config..."
+        sed \
+          -e "s|PORTCULLIS_DOMAIN_PLACEHOLDER|$${PORTCULLIS_DOMAIN}|g" \
+          -e "s|HEADSCALE_HOST_PLACEHOLDER|$${HEADSCALE_HOST}|g" \
+          -e "s|HEADSCALE_OIDC_CLIENT_ID_PLACEHOLDER|$${HEADSCALE_OIDC_CLIENT_ID}|g" \
+          -e "s|HEADSCALE_OIDC_SECRET_PLACEHOLDER|$${HEADSCALE_OIDC_CLIENT_SECRET}|g" \
+          /tmp/config.yaml.tmpl > /etc/headscale/config.yaml.new
+        mv /etc/headscale/config.yaml.new /etc/headscale/config.yaml
+        echo "Config generated."
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      HEADSCALE_HOST: ${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
+      HEADSCALE_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID_HEADSCALE:-headscale}
       HEADSCALE_OIDC_CLIENT_SECRET: ${HEADSCALE_OIDC_CLIENT_SECRET:?HEADSCALE_OIDC_CLIENT_SECRET must be set}
     volumes:
       - headscale-config:/etc/headscale
@@ -38,11 +43,15 @@ services:
       headscale-init:
         condition: service_completed_successfully
     networks:
-      - default
-      - portcullis-proxy
+      # headplane reaches headscale by this alias, which exists only on the
+      # instance's own default network: the service name is also an alias on
+      # portcullis-proxy, shared by every instance (contracts §3).
+      default:
+        aliases: [headscale-internal]
+      portcullis-proxy: {}
     labels:
       traefik.enable: "true"
-      traefik.http.routers.headscale.rule: Host(`vpn.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.headscale.rule: Host(`${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}`)
       traefik.http.routers.headscale.entrypoints: websecure
       traefik.http.routers.headscale.tls.options: public@file
       traefik.http.routers.headscale.middlewares: security-headers@file
@@ -53,15 +62,15 @@ services:
     image: ghcr.io/tale/headplane:0.8.2@sha256:b053a0a6699d0a67be3f0d9bae8e7dbe35ed67ae8448412adcbad7ea49866faa
     environment:
       HEADPLANE_LOAD_ENV_OVERRIDES: "true"
-      HEADPLANE_HEADSCALE__URL: http://headscale:8080
+      HEADPLANE_HEADSCALE__URL: http://headscale-internal:8080
       HEADPLANE_OIDC__ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
-      HEADPLANE_OIDC__CLIENT_ID: headplane
+      HEADPLANE_OIDC__CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID_HEADPLANE:-headplane}
       HEADPLANE_OIDC__CLIENT_SECRET: ${HEADPLANE_OIDC_CLIENT_SECRET:?HEADPLANE_OIDC_CLIENT_SECRET must be set}
       # Created inside headscale after first start; see manifest notes.
       HEADPLANE_OIDC__HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
       # Must be exactly 32 characters (Hub generates 32 hex chars).
       HEADPLANE_SERVER__COOKIE_SECRET: ${HEADPLANE_COOKIE_SECRET:?HEADPLANE_COOKIE_SECRET must be set}
-      HEADPLANE_SERVER__BASE_URL: https://vpn-admin.${PORTCULLIS_DOMAIN:-portcullis.local}
+      HEADPLANE_SERVER__BASE_URL: https://${PORTCULLIS_HOST_HEADPLANE:-vpn-admin.portcullis.local}
       NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
       - headplane-data:/var/lib/headplane
@@ -73,23 +82,20 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.headplane.rule: Host(`vpn-admin.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.headplane.rule: Host(`${PORTCULLIS_HOST_HEADPLANE:-vpn-admin.portcullis.local}`)
       traefik.http.routers.headplane.entrypoints: websecure
       traefik.http.routers.headplane.tls.options: authaware@file
       traefik.http.routers.headplane.middlewares: client-headers@file,headplane-root-redirect@docker,security-headers@file
-      traefik.http.middlewares.headplane-root-redirect.redirectregex.regex: ^https://vpn-admin\.[^/]+/?$$
-      traefik.http.middlewares.headplane-root-redirect.redirectregex.replacement: https://vpn-admin.${PORTCULLIS_DOMAIN:-portcullis.local}/admin
+      traefik.http.middlewares.headplane-root-redirect.redirectregex.regex: ^https://[^/]+/?$$
+      traefik.http.middlewares.headplane-root-redirect.redirectregex.replacement: https://${PORTCULLIS_HOST_HEADPLANE:-vpn-admin.portcullis.local}/admin
       traefik.http.middlewares.headplane-root-redirect.redirectregex.permanent: "false"
       traefik.http.services.headplane.loadbalancer.server.port: "3000"
     restart: unless-stopped
 
 volumes:
-  headscale-data:
-    name: portcullis_headscale-data
-  headscale-config:
-    name: portcullis_headscale-config
-  headplane-data:
-    name: portcullis_headplane-data
+  headscale-data: {}
+  headscale-config: {}
+  headplane-data: {}
 
 networks:
   portcullis-proxy:

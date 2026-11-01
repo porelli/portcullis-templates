@@ -3,6 +3,7 @@ description: Public documentation — no authentication
 icon: "\U0001F4C4"
 category: public
 tags: [docs, static, nginx]
+instances: multi
 
 auth:
   method: public
@@ -17,5 +18,5 @@ config_files: []
 
 urls:
   - label: Docs
-    url: "https://docs.{{DOMAIN}}"
+    url: "https://{{HOST_DOCS}}"
 

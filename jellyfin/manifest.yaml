@@ -3,6 +3,7 @@ description: Free and open-source media server — movies, TV, music, live TV
 icon: "\U0001F4FA"
 category: media
 tags: [media, movies, tv, music, streaming, opensource]
+instances: multi
 
 auth:
   method: native-oidc
@@ -55,12 +56,12 @@ keycloak_clients:
   - client_id: jellyfin
     secret_env: JELLYFIN_OIDC_SECRET
     redirect_uris:
-      - "https://media.{{DOMAIN}}/sso/OID/redirect/keycloak"
-      - "http://media.{{DOMAIN}}/sso/OID/redirect/keycloak"
+      - "https://{{HOST_JELLYFIN}}/sso/OID/redirect/keycloak"
+      - "http://{{HOST_JELLYFIN}}/sso/OID/redirect/keycloak"
     name: Jellyfin
 
 config_files: []
 
 urls:
   - label: Jellyfin
-    url: "https://media.{{DOMAIN}}"
+    url: "https://{{HOST_JELLYFIN}}"

@@ -3,6 +3,7 @@ description: Monitoring dashboards — protected by WebAuthn
 icon: "\U0001F4CA"
 category: monitoring
 tags: [monitoring, dashboards, metrics]
+instances: multi
 
 auth:
   method: header-auth
@@ -61,4 +62,4 @@ config_files: []
 
 urls:
   - label: Dashboard
-    url: "https://grafana.{{DOMAIN}}"
+    url: "https://{{HOST_GRAFANA}}"

@@ -3,7 +3,7 @@ services:
     image: plexinc/pms-docker:1.43.5.11079-b3b13e506@sha256:6d778d41daae68f89115aa87a44ae14a96b23e71a2093da173b5a9aac4091336
     environment:
       PLEX_CLAIM: ${PLEX_CLAIM:-}
-      ADVERTISE_IP: https://plex.${PORTCULLIS_DOMAIN:-portcullis.local}:443
+      ADVERTISE_IP: https://${PORTCULLIS_HOST_PLEX:-plex.portcullis.local}:443
     volumes:
       - plex-config:/config
       - plex-transcode:/transcode
@@ -16,7 +16,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.plex.rule: Host(`plex.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.plex.rule: Host(`${PORTCULLIS_HOST_PLEX:-plex.portcullis.local}`)
       traefik.http.routers.plex.entrypoints: websecure
       traefik.http.routers.plex.tls.options: public@file
       traefik.http.routers.plex.middlewares: security-headers@file
@@ -24,10 +24,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  plex-config:
-    name: portcullis_plex-config
-  plex-transcode:
-    name: portcullis_plex-transcode
+  plex-config: {}
+  plex-transcode: {}
 
 networks:
   portcullis-proxy:

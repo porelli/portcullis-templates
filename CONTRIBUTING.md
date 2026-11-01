@@ -55,6 +55,7 @@ Reference docs:
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
 .venv/bin/python tests/validate.py            # schema + repo rules, all templates
 .venv/bin/python tests/validate.py my-app     # just yours (cross-template checks still run)
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'   # only if you touched tests/validate.py
 PATH=.venv/bin:$PATH bash tests/compose-config.sh my-app   # docker compose config -q (no daemon needed)
 shellcheck -S warning tests/apps/*.sh ./*/*.sh
 actionlint                                    # only if you touched .github/workflows
@@ -208,16 +209,47 @@ stripped). Rules, all checked by `tests/validate.py`:
 - **Networks.** Services with `traefik.enable: "true"` use
   `networks: [default, portcullis-proxy]`; databases, caches and sidecars stay
   on `default` only. Declare `portcullis-proxy` as `external: true`. No other
-  networks.
-- **Routers.** `rule: Host(\`<sub>.${PORTCULLIS_DOMAIN:-portcullis.local}\`)`
-  (the Hub derives policies from this exact form), `entrypoints: websecure`,
-  `tls.options` one of `authaware@file`, `public@file`, `protected@file`, and
-  `security-headers@file` in the middlewares. Core subdomains (`auth`,
-  `traefik`, `hub`, `directory`, `enroll`) are off limits.
-- **Volumes** declare `name: portcullis_<volume>`, unique across templates.
-- **Files** shipped with the template are mounted as
-  `./templates/<app-id>/<file>` (never `./<file>`) and must exist in the
-  directory. From core, only `./certs/ca-bundle.crt:<path>:ro` may be mounted;
+  networks. Services address each other only over `default`: a service name
+  is also an alias on `portcullis-proxy`, shared by every instance, so give a
+  proxy-attached service a `default`-only alias when another proxy-attached
+  service calls it (see `headscale/`).
+- **Instances** (contract v2). Set `instances: multi` in the manifest: the Hub
+  can then run several independent instances of the template, each with its
+  own project, volumes, secrets, Keycloak clients, groups and hostnames. Use
+  `instances: single` only when the app needs host-level uniqueness (fixed
+  host devices, host networking with fixed ports) and say why in
+  `auth.notes`. Host ports are no reason: they are per-instance settings.
+- **Routers.** Every rule is exactly
+  ``Host(`${PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}`)``, optionally
+  followed by `` && PathPrefix(`/x`) ``, `` && Path(`/x`) `` or a parenthesised
+  `||` of them. Each hostname has one *host router* (`Host()` alone);
+  `<ROUTER>` is its name upper-cased with `-` as `_` (`litellm-ui` →
+  `PORTCULLIS_HOST_LITELLM_UI`), path-scoped routers on the same host reuse
+  its variable, and `<sub>` is the default subdomain (one DNS label). Then
+  `entrypoints: websecure`, `tls.options` one of `authaware@file`,
+  `public@file`, `protected@file`, and `security-headers@file` in the
+  middlewares. Core subdomains (`auth`, `traefik`, `hub`, `directory`,
+  `enroll`, `metrics`, `people`) are off limits. Router, service and
+  middleware names contain no `_` (the Hub prefixes them per instance), and
+  `/oauth2/` belongs to Portcullis.
+- **Own hostnames** use the same variable and default everywhere (env URLs,
+  `hostname:`, middleware values), e.g.
+  `APP_URL: https://${PORTCULLIS_HOST_FIREFLY:-finance.portcullis.local}`;
+  manifest `urls` and redirect URIs use `{{HOST_<ROUTER>}}`. Core hosts keep
+  `https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/...`.
+- **Instance variables.** Use `${PORTCULLIS_OIDC_CLIENT_ID:-<client_id>}`
+  (`PORTCULLIS_OIDC_CLIENT_ID_<KEY>` per client when there are several),
+  `${PORTCULLIS_ACCESS_GROUP:-users_<app>}`, `${PORTCULLIS_ADMIN_GROUP:-admin_<app>}`
+  and `${PORTCULLIS_INSTANCE:-<app-id>}` instead of hard-coding them, also in
+  support files (pass them through `environment:`). The default is always the
+  default instance's value. Never declare these names in the manifest.
+- **Volumes.** `multi` templates declare no `name:` (`grafana-data: {}`): the
+  Hub names the default instance's volume `portcullis_<key>` and other
+  instances' `portcullis_<instance-id>-<key>`. `single` templates declare
+  `name: portcullis_<key>`. Volume keys are unique across templates.
+- **Files** shipped with the template are mounted read-only as
+  `./templates/<app-id>/<file>:<path>:ro` (never `./<file>`; every instance
+  shares them) and must exist in the directory. From core, only `./certs/ca-bundle.crt:<path>:ro` may be mounted;
   never `./scripts/` or anything else under `./certs/`.
 - **Variables.** Core variables (`PORTCULLIS_DOMAIN`, `PORTCULLIS_PROXY_SUBNET`,
   `PORTCULLIS_PROXY_IP_RANGE`, `PORTCULLIS_TRAEFIK_IP`) always use their

@@ -3,6 +3,7 @@ description: Simple, file-based wiki — no database required, easy backups
 icon: "\U0001F4DD"
 category: productivity
 tags: [wiki, docs, knowledge-base, file-based]
+instances: multi
 
 auth:
   method: forward-auth
@@ -19,4 +20,4 @@ config_files: []
 
 urls:
   - label: Wiki
-    url: "https://dokuwiki.{{DOMAIN}}"
+    url: "https://{{HOST_DOKUWIKI}}"

@@ -3,6 +3,7 @@ description: Network-wide ad and tracker blocking with DNS-over-HTTPS
 icon: "\U0001F6E1"
 category: networking
 tags: [dns, adblock, privacy, filtering]
+instances: multi
 
 auth:
   method: forward-auth
@@ -37,4 +38,4 @@ config_files: []
 
 urls:
   - label: Dashboard
-    url: "https://adguard.{{DOMAIN}}"
+    url: "https://{{HOST_ADGUARD}}"

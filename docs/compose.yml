@@ -9,7 +9,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.docs.rule: Host(`docs.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.docs.rule: Host(`${PORTCULLIS_HOST_DOCS:-docs.portcullis.local}`)
       traefik.http.routers.docs.entrypoints: websecure
       traefik.http.routers.docs.tls.options: public@file
       traefik.http.routers.docs.middlewares: security-headers@file

@@ -9,7 +9,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.adguard.rule: Host(`adguard.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.adguard.rule: Host(`${PORTCULLIS_HOST_ADGUARD:-adguard.portcullis.local}`)
       traefik.http.routers.adguard.entrypoints: websecure
       traefik.http.routers.adguard.tls.options: authaware@file
       traefik.http.routers.adguard.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -17,10 +17,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  adguard-work:
-    name: portcullis_adguard-work
-  adguard-conf:
-    name: portcullis_adguard-conf
+  adguard-work: {}
+  adguard-conf: {}
 
 networks:
   portcullis-proxy:

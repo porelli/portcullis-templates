@@ -12,7 +12,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.pihole.rule: Host(`pihole.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.pihole.rule: Host(`${PORTCULLIS_HOST_PIHOLE:-pihole.portcullis.local}`)
       traefik.http.routers.pihole.entrypoints: websecure
       traefik.http.routers.pihole.tls.options: authaware@file
       traefik.http.routers.pihole.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -20,10 +20,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  pihole-data:
-    name: portcullis_pihole-data
-  pihole-dnsmasq:
-    name: portcullis_pihole-dnsmasq
+  pihole-data: {}
+  pihole-dnsmasq: {}
 
 networks:
   portcullis-proxy:

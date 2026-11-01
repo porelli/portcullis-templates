@@ -15,7 +15,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.wiki.rule: Host(`wiki.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.wiki.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`)
       traefik.http.routers.wiki.entrypoints: websecure
       traefik.http.routers.wiki.tls.options: authaware@file
       traefik.http.routers.wiki.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -32,8 +32,7 @@ services:
       - wiki-db-data:/var/lib/postgresql/data
 
 volumes:
-  wiki-db-data:
-    name: portcullis_wiki-db-data
+  wiki-db-data: {}
 
 networks:
   portcullis-proxy:

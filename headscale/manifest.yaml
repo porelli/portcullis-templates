@@ -3,6 +3,7 @@ description: Self-hosted Tailscale control server with Headplane admin UI
 icon: "\U0001F310"
 category: vpn
 tags: [vpn, wireguard, mesh, tailscale]
+instances: multi
 
 auth:
   method: native-oidc
@@ -22,7 +23,8 @@ auth:
     unverified email). The first Headplane user becomes owner, later ones get
     the member role. No group-based access restriction — all OIDC users can
     register nodes. Post-start step for Headplane: create an API key with
-    `docker exec portcullis-headscale-headscale-1 headscale apikeys create --expiration 365d`,
+    `docker exec portcullis-<instance>-headscale-1 headscale apikeys create --expiration 365d`
+    (`portcullis-headscale-headscale-1` for the default instance),
     paste it into the "Headscale API key" setting, then restart the app.
     Renew it before it expires.
     Upgrades: Headscale is pinned; upgrade one minor release at a time (its
@@ -51,11 +53,11 @@ env:
 keycloak_clients:
   - client_id: headscale
     secret_env: HEADSCALE_OIDC_CLIENT_SECRET
-    redirect_uri: "https://vpn.{{DOMAIN}}/oidc/callback"
+    redirect_uri: "https://{{HOST_HEADSCALE}}/oidc/callback"
     name: Headscale VPN
   - client_id: headplane
     secret_env: HEADPLANE_OIDC_CLIENT_SECRET
-    redirect_uri: "https://vpn-admin.{{DOMAIN}}/*"
+    redirect_uri: "https://{{HOST_HEADPLANE}}/*"
     name: Headplane Admin UI
 
 config_files:
@@ -64,6 +66,6 @@ config_files:
 
 urls:
   - label: VPN Control Server
-    url: "https://vpn.{{DOMAIN}}"
+    url: "https://{{HOST_HEADSCALE}}"
   - label: Admin UI
-    url: "https://vpn-admin.{{DOMAIN}}"
+    url: "https://{{HOST_HEADPLANE}}"

@@ -26,7 +26,7 @@
   },
   "HttpConfig": {
     "AuthIssuer": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis",
-    "AuthAudience": "netbird-dashboard",
+    "AuthAudience": "${NETBIRD_CLIENT_ID}",
     "AuthUserIDClaim": "sub",
     "OIDCConfigEndpoint": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/.well-known/openid-configuration"
   },
@@ -36,8 +36,8 @@
   "DeviceAuthorizationFlow": {
     "Provider": "none",
     "ProviderConfig": {
-      "Audience": "netbird-dashboard",
-      "ClientID": "netbird-dashboard",
+      "Audience": "${NETBIRD_CLIENT_ID}",
+      "ClientID": "${NETBIRD_CLIENT_ID}",
       "TokenEndpoint": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/token",
       "DeviceAuthEndpoint": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/auth/device",
       "Scope": "openid profile email"
@@ -45,8 +45,8 @@
   },
   "PKCEAuthorizationFlow": {
     "ProviderConfig": {
-      "Audience": "netbird-dashboard",
-      "ClientID": "netbird-dashboard",
+      "Audience": "${NETBIRD_CLIENT_ID}",
+      "ClientID": "${NETBIRD_CLIENT_ID}",
       "ClientSecret": "${NETBIRD_OIDC_CLIENT_SECRET}",
       "AuthorizationEndpoint": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/auth",
       "TokenEndpoint": "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/token",

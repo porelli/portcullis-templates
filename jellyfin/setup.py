@@ -10,6 +10,11 @@ JF = "http://jellyfin:8096"
 ADMIN_PASS = os.environ.get("JELLYFIN_ADMIN_PASSWORD", "changeme")
 OIDC_SECRET = os.environ.get("JELLYFIN_OIDC_SECRET", "")
 DOMAIN = os.environ.get("PORTCULLIS_DOMAIN", "portcullis.local")
+# Instance-scoped (contracts §3.1): every instance has its own client and groups.
+# compose.yml sets them (with the default instance's values as defaults).
+CLIENT_ID = os.environ["JELLYFIN_OIDC_CLIENT_ID"]
+ACCESS_GROUP = os.environ["JELLYFIN_ACCESS_GROUP"]
+ADMIN_GROUP = os.environ["JELLYFIN_ADMIN_GROUP"]
 
 
 def wait_for(url, label="Jellyfin", timeout=120):
@@ -197,14 +202,14 @@ def configure_sso(token):
         "OidConfigs": {
             "keycloak": {
                 "OidEndpoint": f"https://auth.{DOMAIN}/realms/portcullis/.well-known/openid-configuration",
-                "OidClientId": "jellyfin",
+                "OidClientId": CLIENT_ID,
                 "OidSecret": OIDC_SECRET,
                 "Enabled": True,
                 "EnableAuthorization": True,
                 "EnableAllFolders": True,
                 "EnabledFolders": [],
-                "AdminRoles": ["admin_jellyfin"],
-                "Roles": ["users_jellyfin", "admin_jellyfin"],
+                "AdminRoles": [ADMIN_GROUP],
+                "Roles": [ACCESS_GROUP, ADMIN_GROUP],
                 "EnableFolderRoles": False,
                 "OidScopes": ["openid", "profile", "groups"],
                 "RoleClaim": "groups",

@@ -32,7 +32,7 @@ services:
       DB_DATABASE: firefly
       DB_USERNAME: firefly
       DB_PASSWORD: ${FIREFLY_DB_PASSWORD:?FIREFLY_DB_PASSWORD must be set}
-      APP_URL: https://finance.${PORTCULLIS_DOMAIN:-portcullis.local}
+      APP_URL: https://${PORTCULLIS_HOST_FIREFLY:-finance.portcullis.local}
       # Laravel trusts X-Forwarded-* only from Traefik.
       TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
       AUTHENTICATION_GUARD: remote_user_guard
@@ -52,7 +52,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.firefly.rule: Host(`finance.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.firefly.rule: Host(`${PORTCULLIS_HOST_FIREFLY:-finance.portcullis.local}`)
       traefik.http.routers.firefly.entrypoints: websecure
       traefik.http.routers.firefly.tls.options: authaware@file
       traefik.http.routers.firefly.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
@@ -69,10 +69,8 @@ services:
       - firefly-db-data:/var/lib/postgresql/data
 
 volumes:
-  firefly-upload:
-    name: portcullis_firefly-upload
-  firefly-db-data:
-    name: portcullis_firefly-db-data
+  firefly-upload: {}
+  firefly-db-data: {}
 
 networks:
   portcullis-proxy:

@@ -3,6 +3,7 @@ description: Lightweight Bitwarden-compatible password manager
 icon: "\U0001F510"
 category: security
 tags: [passwords, bitwarden, vault, secrets]
+instances: multi
 
 auth:
   method: native-oidc
@@ -56,7 +57,7 @@ env:
 keycloak_clients:
   - client_id: vaultwarden
     secret_env: VAULTWARDEN_OIDC_SECRET
-    redirect_uri: "https://passwords.{{DOMAIN}}/identity/connect/oidc-signin"
+    redirect_uri: "https://{{HOST_VAULTWARDEN}}/identity/connect/oidc-signin"
     name: Vaultwarden
     # New SSO signups need email_verified absent, not false (see notes).
     email_verified_claim: false
@@ -64,4 +65,4 @@ config_files: []
 
 urls:
   - label: Vault
-    url: "https://passwords.{{DOMAIN}}"
+    url: "https://{{HOST_VAULTWARDEN}}"

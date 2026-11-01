@@ -21,8 +21,8 @@ export COMPOSE_OVERRIDE
 # Core's real public guard checks paths and credentials: give it the
 # policy-file entry the Hub would publish (version 3).
 write_public_policy grafana "$MANIFEST" listed
-# shellcheck disable=SC2016 # ${PORTCULLIS_DOMAIN} is for compose to expand
-write_public_override "$APP_ID" grafana 'grafana.${PORTCULLIS_DOMAIN:-portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
+# shellcheck disable=SC2016 # ${PORTCULLIS_HOST_GRAFANA} is for compose to expand
+write_public_override "$APP_ID" grafana '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
 
 compose_up "$APP_ID"
 

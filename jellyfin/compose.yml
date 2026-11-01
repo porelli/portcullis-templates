@@ -13,7 +13,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.jellyfin.rule: Host(`media.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.jellyfin.rule: Host(`${PORTCULLIS_HOST_JELLYFIN:-media.portcullis.local}`)
       traefik.http.routers.jellyfin.entrypoints: websecure
       traefik.http.routers.jellyfin.tls.options: authaware@file
       traefik.http.routers.jellyfin.middlewares: client-headers@file,security-headers@file
@@ -30,6 +30,9 @@ services:
       JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       JELLYFIN_OIDC_SECRET: ${JELLYFIN_OIDC_SECRET:-}
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      JELLYFIN_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-jellyfin}
+      JELLYFIN_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_jellyfin}
+      JELLYFIN_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_jellyfin}
     volumes:
       - ./templates/jellyfin/setup.py:/setup.py:ro
     depends_on:
@@ -37,10 +40,8 @@ services:
     restart: "no"
 
 volumes:
-  jellyfin-config:
-    name: portcullis_jellyfin-config
-  jellyfin-cache:
-    name: portcullis_jellyfin-cache
+  jellyfin-config: {}
+  jellyfin-cache: {}
 
 networks:
   portcullis-proxy:

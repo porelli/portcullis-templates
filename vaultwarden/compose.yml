@@ -2,7 +2,7 @@ services:
   vaultwarden:
     image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
     environment:
-      DOMAIN: https://passwords.${PORTCULLIS_DOMAIN:-portcullis.local}
+      DOMAIN: https://${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}
       ADMIN_TOKEN: ${VAULTWARDEN_ADMIN_TOKEN:?VAULTWARDEN_ADMIN_TOKEN must be set}
       # Accounts only via SSO (the login paths below are gated by
       # users_vaultwarden).
@@ -13,7 +13,7 @@ services:
       INVITATIONS_ALLOWED: "false"
       SSO_ENABLED: "true"
       SSO_AUTHORITY: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
-      SSO_CLIENT_ID: vaultwarden
+      SSO_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-vaultwarden}
       SSO_CLIENT_SECRET: ${VAULTWARDEN_OIDC_SECRET:?VAULTWARDEN_OIDC_SECRET must be set}
       # SSO users are keyed on the OIDC issuer + sub. Never associate an SSO
       # login with an existing account by email: LLDAP lets users edit their
@@ -39,7 +39,7 @@ services:
       - portcullis-proxy
     labels:
       traefik.enable: "true"
-      traefik.http.routers.vaultwarden.rule: Host(`passwords.${PORTCULLIS_DOMAIN:-portcullis.local}`)
+      traefik.http.routers.vaultwarden.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`)
       traefik.http.routers.vaultwarden.entrypoints: websecure
       traefik.http.routers.vaultwarden.tls.options: authaware@file
       traefik.http.routers.vaultwarden.middlewares: client-headers@file,security-headers@file
@@ -48,7 +48,7 @@ services:
       # /admin: additionally behind forward-auth + group-gate, which requires
       # admin_vaultwarden there via the manifest's auth.admin_paths
       # (ADMIN_TOKEN is still required by Vaultwarden itself).
-      traefik.http.routers.vaultwarden-admin.rule: Host(`passwords.${PORTCULLIS_DOMAIN:-portcullis.local}`) && PathPrefix(`/admin`)
+      traefik.http.routers.vaultwarden-admin.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`) && PathPrefix(`/admin`)
       traefik.http.routers.vaultwarden-admin.priority: "100"
       traefik.http.routers.vaultwarden-admin.entrypoints: websecure
       traefik.http.routers.vaultwarden-admin.tls.options: authaware@file
@@ -58,7 +58,7 @@ services:
       # users_vaultwarden members can sign in or get an account by SSO
       # (Vaultwarden has no OIDC group restriction). The API, the
       # /identity/connect/token exchange and the clients stay ungated.
-      traefik.http.routers.vaultwarden-sso.rule: Host(`passwords.${PORTCULLIS_DOMAIN:-portcullis.local}`) && (PathPrefix(`/identity/connect/authorize`) || PathPrefix(`/identity/connect/oidc-signin`))
+      traefik.http.routers.vaultwarden-sso.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`) && (PathPrefix(`/identity/connect/authorize`) || PathPrefix(`/identity/connect/oidc-signin`))
       traefik.http.routers.vaultwarden-sso.priority: "100"
       traefik.http.routers.vaultwarden-sso.entrypoints: websecure
       traefik.http.routers.vaultwarden-sso.tls.options: authaware@file
@@ -67,8 +67,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  vaultwarden-data:
-    name: portcullis_vaultwarden-data
+  vaultwarden-data: {}
 
 networks:
   portcullis-proxy:
