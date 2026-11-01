@@ -323,6 +323,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # Runners are shared by all four repos: a full all-apps run must not
+      # starve core/hub/docs CI. Single-app pushes run one job anyway.
+      max-parallel: 8
       matrix:
         app: ${{ fromJson(needs.changes.outputs.cache_apps) }}
     steps:
@@ -386,6 +389,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # Runners are shared by all four repos: a full all-apps run must not
+      # starve core/hub/docs CI. Single-app pushes run one job anyway.
+      max-parallel: 8
       matrix:
         app: ${{ fromJson(needs.changes.outputs.apps) }}
     env:
