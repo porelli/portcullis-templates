@@ -252,10 +252,16 @@ jobs:
           # from the CLI lets `config --images` resolve. It's not shipped.
           ./portcullis init --env-only --non-interactive --domain portcullis.local \
             --email ci@portcullis.local --dns-provider none >/dev/null
-          # Skip locally built images and the hub (pulled by core as needed).
-          docker compose config --images \
-            | { grep -v -e '^portcullis-enroll$' -e 'portcullis-hub' || true; } \
-            | sort -u > ../infra-images.txt
+          # Compose services minus the locally built enroll and the unpinned
+          # edge Hub (never started here), plus the base images enroll is
+          # built from and the CLI's pinned helper (alpine), as core's e2e
+          # job lists them.
+          {
+            docker compose config --images | { grep -vxE 'portcullis-enroll|ghcr\.io/porelli/portcullis-hub:.*' || true; }
+            sed -nE 's/^FROM[[:space:]]+([^[:space:]]+).*/\1/p' enroll/Dockerfile
+            grep -ohE '[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' scripts/lib/common.sh | { grep -E '^alpine:' || true; }
+          } | LC_ALL=C sort -u > ../infra-images.txt
+          if grep -v '@sha256:' ../infra-images.txt; then echo "::error::unpinned infra image (above)"; exit 1; fi
           rm -f .env
           [ -s ../infra-images.txt ] || { echo "::error::no infra images resolved from core compose"; exit 1; }
           cat ../infra-images.txt
@@ -375,7 +381,7 @@ jobs:
     needs: [gate, changes, fetch-core]
     if: needs.changes.outputs.apps != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:
@@ -508,8 +514,9 @@ jobs:
 
       # Same boot as core's own CI (ci.yml, job e2e): every secret generated
       # by `portcullis init --env-only`, Keycloak with its production command,
-      # setup through the core CLI. Only the services the app tests need run
-      # (no Hub, no enroll); the override only publishes health ports.
+      # setup through the core CLI, every core service except the Hub
+      # (incl. enroll, built from core). The override only publishes health
+      # ports.
       - name: Create .env and CI override
         working-directory: core
         env:
@@ -518,9 +525,9 @@ jobs:
           set -euo pipefail
           ./portcullis init --env-only --non-interactive --domain "$PORTCULLIS_DOMAIN" \
             --email "ci@$PORTCULLIS_DOMAIN" --dns-provider none
-          # Credentials tests/lib.sh uses (Keycloak admin API, LLDAP, direct
-          # grant on the forward-auth client).
-          for v in KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD LLDAP_ADMIN_PASSWORD FORWARD_AUTH_CLIENT_SECRET; do
+          # Credentials tests/lib.sh uses (Keycloak admin API, LLDAP admin).
+          # Sign-in is passkey-only: no user password or direct grant exists.
+          for v in KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD LLDAP_ADMIN_PASSWORD; do
             val="$(grep "^$v=" .env | cut -d= -f2-)"
             [ -n "$val" ] || { echo "::error::$v not generated"; exit 1; }
             [ "$v" = KEYCLOAK_ADMIN ] || echo "::add-mask::$val"
@@ -546,6 +553,11 @@ jobs:
           sed -i 's/^          //' docker-compose.ci.yml
           docker compose config -q
 
+      # Its base images were loaded and verified above (infra-images.txt).
+      - name: Build enroll (core)
+        working-directory: core
+        run: docker compose build enroll
+
       - name: Boot infrastructure
         working-directory: core
         run: |
@@ -553,16 +565,19 @@ jobs:
           # Compose creates portcullis-proxy from core's definition (fixed
           # IPAM subnet + Traefik's static IP) — never `docker network create`.
           docker compose up -d postgres lldap
-          # Vault in server mode (initialised, unsealed, secrets/ written;
-          # also creates every bind-mount source), PKI + wildcard server
-          # cert, CA bundle.
+          # Vault in server mode (initialised, unsealed, secrets/ written:
+          # enroll AppRole, invite and service-account secrets; also creates
+          # every bind-mount source), PKI + wildcard server cert, CA bundle.
           ./portcullis vault init
           ./portcullis pki setup --with-server-cert
           ./portcullis config apply --bundle-only
           # No ACME in CI: serve the Vault-issued wildcard cert.
           printf 'tls:\n  certificates:\n    - certFile: /certs/server.crt\n      keyFile: /certs/server.key\n' > traefik/dynamic/ci-certs.yml
 
-          docker compose up -d traefik keycloak group-gate
+          # Everything but the Hub (unpinned edge image; the tests write its
+          # group-gate policy file themselves).
+          # shellcheck disable=SC2046
+          docker compose up -d $(docker compose config --services | grep -vx hub)
           TRAEFIK_IP=$(grep '^PORTCULLIS_TRAEFIK_IP=' .env | cut -d= -f2)
           GOT_IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "portcullis-proxy").IPAddress}}' "$(docker compose ps -q traefik)")
           test "$GOT_IP" = "$TRAEFIK_IP" || { echo "Traefik IP on portcullis-proxy is $GOT_IP, want $TRAEFIK_IP"; exit 1; }
@@ -572,15 +587,17 @@ jobs:
             [ "$i" -eq 100 ] && { echo "::error::Keycloak not ready"; docker compose logs --tail=80 keycloak; exit 1; }
             sleep 3
           done
-          # LDAP bind credentials and the forward-auth secret are pushed
-          # through the admin API (the realm export only has placeholders).
+          # After enroll runs: configure pushes the LDAP bind credentials and
+          # client secrets, and creates the hidden invite identity provider
+          # (keycloak/invite-idp.json), whose http back-channel Keycloak
+          # accepts only while `enroll` resolves.
           ./portcullis keycloak configure
           ./portcullis oidc register
 
           # oauth2-proxy exits while Keycloak is down; (re)start it now.
           docker compose up -d forward-auth
           docker compose restart forward-auth
-          for svc in traefik keycloak group-gate forward-auth; do
+          for svc in traefik keycloak group-gate enroll forward-auth; do
             for i in $(seq 1 40); do
               cid="$(docker compose ps -q "$svc")"
               state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")"
@@ -589,6 +606,13 @@ jobs:
               sleep 3
             done
           done
+          # The invite identity provider exists (configure only warns).
+          KC_TOKEN=$(printf '%s' "$KEYCLOAK_ADMIN_PASSWORD" | curl -sf http://127.0.0.1:8080/realms/master/protocol/openid-connect/token \
+            --data-urlencode client_id=admin-cli --data-urlencode "username=$KEYCLOAK_ADMIN" \
+            --data-urlencode grant_type=password --data-urlencode password@- | jq -r .access_token)
+          curl -sf -o /dev/null -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") \
+            http://127.0.0.1:8080/admin/realms/portcullis/identity-provider/instances/portcullis-invite \
+            || { echo "::error::invite identity provider portcullis-invite missing after keycloak configure"; docker compose logs --tail=40 keycloak enroll; exit 1; }
           # Forward-auth works end to end: an unauthenticated request to a
           # core router behind portcullis-auth is redirected to Keycloak.
           for i in $(seq 1 30); do
@@ -603,8 +627,8 @@ jobs:
 
       - name: "Test: ${{ matrix.app }}"
         env:
-          # lib.sh: PROJECT_DIR = core project (PROJECT_DIR/templates -> this
-          # repo was linked during setup), TEMPLATES_DIR = this repo.
+          # lib.sh: PROJECT_DIR = core project (PROJECT_DIR/templates is a
+          # copy of this repo made during setup), TEMPLATES_DIR = this repo.
           PROJECT_DIR: ${{ github.workspace }}/core
           TEMPLATES_DIR: ${{ github.workspace }}
           APP: ${{ matrix.app }}
@@ -617,7 +641,7 @@ jobs:
           echo "=== Docker Status ==="
           docker compose ps
           echo "=== Logs ==="
-          for svc in traefik vault keycloak forward-auth group-gate lldap; do
+          for svc in traefik vault keycloak enroll forward-auth group-gate lldap; do
             echo "--- $svc ---"
             docker compose logs --tail=40 "$svc" 2>/dev/null || true
           done
