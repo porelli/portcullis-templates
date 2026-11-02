@@ -19,8 +19,8 @@ services:
       MM_GITLABSETTINGS_ENABLE: "false"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
       # Plugins: only the pinned bundles mattermost-plugins verifies, signs
-      # with a fresh per-start key and writes into the file store before
-      # every start (Mattermost installs from there). Signatures required;
+      # with a fresh key and writes into the file store before every
+      # compose-managed start (Mattermost installs from there). Signatures required;
       # the public key comes from a volume mounted read-only here. No
       # uploads (server-side code from any admin session), no marketplace.
       MM_PLUGINSETTINGS_ENABLE: "true"
@@ -33,6 +33,10 @@ services:
       # can't point it elsewhere).
       MM_FILESETTINGS_DRIVERNAME: local
       MM_FILESETTINGS_DIRECTORY: /mattermost/data/
+      # Server and webapp plugin directories pinned to the image's paths
+      # (no System Console change can move them).
+      MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins
+      MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins
       MM_SERVICESETTINGS_ENABLETUTORIAL: "false"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       # Local mode (mmctl --local): the socket lives in the data volume so
@@ -99,7 +103,8 @@ services:
         condition: service_started
     restart: "no"
 
-  # One-shot, before every Mattermost start: the pinned plugin bundles
+  # One-shot, before every compose-managed Mattermost start (a plain Docker
+  # restart reuses the last signatures): the pinned plugin bundles
   # (plugins.py: GitHub release asset + SHA-256) into the file store, each
   # signed with a fresh OpenPGP key generated in tmpfs (the private key
   # never touches a volume and is gone when the job exits); only the public

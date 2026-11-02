@@ -244,6 +244,21 @@ IMAGE_ENV_REQUIRED = [
     ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE", r"(?i)^true$",
      "Mattermost must set MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: \"true\" (otherwise any bundle in the file store "
      "is installed unsigned)"),
+    ("mattermost/mattermost-team-edition:", "MM_FILESETTINGS_DRIVERNAME", r"^local$",
+     "Mattermost must set MM_FILESETTINGS_DRIVERNAME: local (the file store, which plugins install from, stays on the data volume)"),
+    ("mattermost/mattermost-team-edition:", "MM_FILESETTINGS_DIRECTORY", r"^/mattermost/data/?$",
+     "Mattermost must set MM_FILESETTINGS_DIRECTORY: /mattermost/data/ (locks the file store to the data volume)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_DIRECTORY", r"^/mattermost/plugins/?$",
+     "Mattermost must set MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins (locks the server plugin directory)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_CLIENTDIRECTORY", r"^/mattermost/client/plugins/?$",
+     "Mattermost must set MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins (locks the webapp plugin directory)"),
+]
+
+# image prefix -> (dotted manifest key, required value, message)
+IMAGE_MANIFEST_REQUIRED = [
+    ("ghcr.io/home-assistant/home-assistant:", "auth.keycloak_access_role", True,
+     "Home Assistant needs auth.keycloak_access_role: true (auth_oidc admits admin_group members without "
+     "access_group; Keycloak must restrict the client to access_group)"),
 ]
 
 # image prefix -> (one-shot service that must exist in the same compose file, message)
@@ -963,6 +978,13 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
         for prefix, key, req_re, msg in IMAGE_ENV_REQUIRED:
             if image.startswith(prefix) and not re.search(req_re, env.get(key, "")):
                 r.error(where, msg, EMAIL_HINT)
+        for prefix, mkey, want, msg in IMAGE_MANIFEST_REQUIRED:
+            if image.startswith(prefix):
+                val: Any = t.manifest or {}
+                for part in mkey.split("."):
+                    val = val.get(part) if isinstance(val, dict) else None
+                if val != want:
+                    r.error(t.m_where, msg)
         for prefix, job, msg in REQUIRED_INIT_JOBS:
             if image.startswith(prefix) and job not in services:
                 r.error(where, msg, EMAIL_HINT)

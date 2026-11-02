@@ -56,8 +56,9 @@ auth:
     each a GitHub release asset checked against its SHA-256): freemium
     2.0.0 (dy0gu/mattermost-plugin-freemium, hides Team Edition's upsell
     UI) and Matterpoll 1.9.2 (/poll). Mattermost requires plugin
-    signatures, and upstream doesn't sign these, so before every start the
-    mattermost-plugins one-shot checks a private copy of each bundle (in
+    signatures, and upstream doesn't sign these, so before every
+    compose-managed start (what the Hub runs; a plain Docker restart reuses
+    the last signatures, which is safe) the mattermost-plugins one-shot checks a private copy of each bundle (in
     its root-only tmpfs; file-store copies are opened without following
     symlinks, regular files only) against its SHA-256 (a mismatch or a
     swapped file fails it before anything is signed, and Mattermost
@@ -67,8 +68,14 @@ auth:
     file store (locked to the data volume) and only the public key to a
     volume Mattermost mounts read-only (SignaturePublicKeyFiles).
     Mattermost installs from the file store at startup, so any other
-    bundle, unsigned or signed by another key, is refused; Mattermost-signed
-    bundles still verify with its built-in key. mattermost-init enables the
+    bundle, unsigned or signed by another key, is refused. The public key
+    is placed before the signatures, so an interrupted job leaves only
+    signatures the new key doesn't verify (those plugins are refused until
+    the next run). Mattermost's built-in key still accepts any
+    Mattermost-signed bundle, old versions included, if something writes
+    one into the file store's plugins/ directory; that needs filesystem
+    access to the data volume or local-mode access (both already full
+    admin). mattermost-init enables the
     pinned plugins. Bump a plugin by editing its version, URL and SHA-256 in
     plugins.py (Dependabot doesn't see them). SSO, re-checked: the free
     GitLab provider can't use Keycloak today. Team Edition switches to the

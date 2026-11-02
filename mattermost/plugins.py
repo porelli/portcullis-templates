@@ -3,8 +3,10 @@
 
 Plugin uploads stay off and Mattermost requires plugin signatures
 (MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE true). The pinned bundles below
-are GitHub release assets that upstream doesn't sign, so this one-shot, at
-every start:
+are GitHub release assets that upstream doesn't sign, so this one-shot runs
+before every compose-managed start of Mattermost (`docker compose up`,
+which is what the Hub runs; a plain Docker restart of the Mattermost
+container reuses the last signatures and key, which is safe):
 
 1. puts a private copy of each bundle in its own root-only tmpfs directory:
    copied from Mattermost's file store (opened without following symlinks,
@@ -14,13 +16,17 @@ every start:
    a signature. Any mismatch, symlink or non-regular file fails the job
    (Mattermost depends on it and doesn't start), before anything is signed;
 2. generates a fresh OpenPGP signing key in the same tmpfs (never on a
-   volume; gone when the job exits), signs each private copy, and places
-   bundle + signature into the file store (Mattermost installs plugins from
+   volume; gone when the job exits) and signs each private copy, all in
+   tmpfs; then the PUBLIC key is placed first (step 3), and only then
+   bundle + signature go into the file store (Mattermost installs plugins from
    there at startup, app/plugin.go syncPlugins) with an exclusive temp file
    in the plugins directory, opened by descriptor without following
    symlinks, and a rename; a destination that is a symlink is refused;
-3. writes only the PUBLIC key to the plugin-keys volume, which Mattermost
-   mounts read-only (MM_PLUGINSETTINGS_SIGNATUREPUBLICKEYFILES).
+3. only the public key leaves the tmpfs, to the plugin-keys volume, which
+   Mattermost mounts read-only (MM_PLUGINSETTINGS_SIGNATUREPUBLICKEYFILES).
+   Key first, signatures after: an interrupted job leaves old signatures
+   that the new key doesn't verify, so Mattermost refuses those plugins
+   (fail closed) until the next run completes.
 
 Every start makes a new key, so any other bundle or a signature from an
 earlier key doesn't verify and Mattermost refuses it. Mattermost-signed
@@ -34,6 +40,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 DATA_DIR = "/mattermost/data"
@@ -42,6 +49,7 @@ KEY_DIR = "/portcullis/keys"
 PUBLIC_KEY_NAME = "portcullis-plugins.gpg"
 MM_UID = MM_GID = 2000   # the mattermost image's user
 CHUNK = 1 << 20
+DOWNLOAD_DEADLINE = 600   # seconds for each whole download, not just per read
 
 # (plugin id, version, release asset, sha256)
 PLUGINS = [
@@ -81,11 +89,13 @@ def lexists(dir_fd: int, name: str):
         return None
 
 
-def copy_stream(src, dst_fd: int) -> str:
+def copy_stream(src, dst_fd: int, deadline: float = 0.0) -> str:
     """Copy src into dst_fd, returning the SHA-256 of what was written."""
     h = hashlib.sha256()
     with os.fdopen(os.dup(dst_fd), "wb") as out:
         for chunk in iter(lambda: src.read(CHUNK), b""):
+            if deadline and time.monotonic() > deadline:
+                raise TimeoutError(f"no complete download within {DOWNLOAD_DEADLINE} s")
             h.update(chunk)
             out.write(chunk)
         out.flush()
@@ -118,9 +128,10 @@ def private_copy(store_fd: int, work: str, pid: str, version: str, url: str, sha
         os.unlink(path)
     dfd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with urllib.request.urlopen(url, timeout=120) as resp:
-            got = copy_stream(resp, dfd)
-    except OSError as e:
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            got = copy_stream(resp, dfd, deadline)
+    except (OSError, TimeoutError) as e:
         die(f"download of {url} failed: {e}")
     finally:
         os.close(dfd)
@@ -187,15 +198,15 @@ def main() -> None:
         gpg(home, "--passphrase", "", "--pinentry-mode", "loopback", "--quick-gen-key",
             f"Portcullis plugin signing ({instance}) <plugins@{instance}.invalid>", "rsa3072", "sign", "never")
         for pid, path in bundles:
-            sig = path + ".sig"
             gpg(home, "--passphrase", "", "--pinentry-mode", "loopback", "--digest-algo", "SHA256",
-                "--output", sig, "--detach-sign", path)
-            place(store_fd, f"{pid}.tar.gz", path, 0o640, MM_UID, MM_GID)
-            place(store_fd, f"{pid}.tar.gz.sig", sig, 0o640, MM_UID, MM_GID)
-        # 3. only the public key leaves the tmpfs
+                "--output", path + ".sig", "--detach-sign", path)
         pub = os.path.join(work, PUBLIC_KEY_NAME)
         gpg(home, "--output", pub, "--export")
+        # 3. the public key first, then bundles + signatures
         place(key_fd, PUBLIC_KEY_NAME, pub, 0o644, 0, 0)
+        for pid, path in bundles:
+            place(store_fd, f"{pid}.tar.gz", path, 0o640, MM_UID, MM_GID)
+            place(store_fd, f"{pid}.tar.gz.sig", path + ".sig", 0o640, MM_UID, MM_GID)
     finally:
         subprocess.run(["gpgconf", "--homedir", os.path.join(work, "gnupg"), "--kill", "all"],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)

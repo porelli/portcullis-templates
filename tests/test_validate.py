@@ -465,14 +465,34 @@ class TestIdentityRules(Case):
         self.assertError(self.recheck(), "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL")
         self.assertError(self.recheck(), "MM_PLUGINSETTINGS_ENABLEUPLOADS")
         self.assertError(self.recheck(), "MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE")
+        self.assertError(self.recheck(), "MM_FILESETTINGS_DRIVERNAME")
+        self.assertError(self.recheck(), "MM_FILESETTINGS_DIRECTORY")
+        self.assertError(self.recheck(), "MM_PLUGINSETTINGS_DIRECTORY")
+        self.assertError(self.recheck(), "MM_PLUGINSETTINGS_CLIENTDIRECTORY")
         self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'
-                              '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n')
+                              '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n      MM_FILESETTINGS_DRIVERNAME: local\n'
+                              '      MM_FILESETTINGS_DIRECTORY: /mattermost/data\n      MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins\n'
+                              '      MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins\n')
         self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
         self.rewrite_compose("services:\n", job.replace('restart: "no"\n', 'restart: "no"\n    environment:\n'
                                                          '      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n'
                                                          '      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'
-                                                         '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n'))
-        self.assertFalse([e for e in self.recheck() if "MM_EMAILSETTINGS" in e or "MM_PLUGINSETTINGS" in e])
+                                                         '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n'
+                                                         '      MM_FILESETTINGS_DRIVERNAME: local\n'
+                                                         '      MM_FILESETTINGS_DIRECTORY: /mattermost/data/\n'
+                                                         '      MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins\n'
+                                                         '      MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins\n'))
+        self.assertFalse([e for e in self.recheck() if "MM_" in e])
+        self.rewrite_compose("MM_FILESETTINGS_DIRECTORY: /mattermost/data/", "MM_FILESETTINGS_DIRECTORY: /srv/elsewhere")
+        self.assertError(self.recheck(), "MM_FILESETTINGS_DIRECTORY")
+
+    def test_home_assistant_needs_keycloak_access_role(self) -> None:
+        image = "ghcr.io/home-assistant/home-assistant:2026.10.4"
+        self.run_template()
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.assertError(self.recheck(), "keycloak_access_role")
+        self.rewrite_manifest("auth:\n", "auth:\n  keycloak_access_role: true\n")
+        self.assertFalse([e for e in self.recheck() if "keycloak_access_role: true (auth_oidc" in e])
 
     def test_auth_oidc_never_links_users(self) -> None:
         errors, _ = self.run_template(extra_files=(("configuration.yaml", "auth_oidc:\n  features:\n    automatic_user_linking: true\n"),))
@@ -494,14 +514,16 @@ class TestIdentityRules(Case):
                            ("ghcr.io/mealie-recipes/mealie:v3.30.0", "mealie-init"),
                            ("ghcr.io/immich-app/immich-server:v2.0.0", "immich-lock-local-users"),
                            ("diocrafts/oxicloud:0.10.0", "oxicloud-init"),
-                           ("ghcr.io/home-assistant/home-assistant:2026.10.4", "homeassistant-init")):
+                           ("ghcr.io/home-assistant/home-assistant:2026.10.4", "homeassistant-init"),
+                           ("mattermost/mattermost-team-edition:12.0.1", "mattermost-init")):
             with self.subTest(job=job):
                 self.run_template()
                 self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
                 self.assertError(self.recheck(), job)
                 self.rewrite_compose("services:\n", f"services:\n  {job}:\n"
                                      f"    image: {image}@sha256:{'0' * 64}\n    restart: \"no\"\n")
-                self.assertFalse([e for e in self.recheck() if job in e])
+                # (the job service has the app image, so image rules apply to it too: not this check)
+                self.assertFalse([e for e in self.recheck() if job in e and " must set " not in e])
 
 
 class TestGatedClientRouters(unittest.TestCase):
