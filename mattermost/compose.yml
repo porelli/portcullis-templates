@@ -18,14 +18,21 @@ services:
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
       MM_GITLABSETTINGS_ENABLE: "false"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
-      # Plugins: only the pinned bundles mattermost-plugins writes into the
-      # file store before every start (Mattermost installs from there); no
+      # Plugins: only the pinned bundles mattermost-plugins verifies, signs
+      # with a fresh per-start key and writes into the file store before
+      # every start (Mattermost installs from there). Signatures required;
+      # the public key comes from a volume mounted read-only here. No
       # uploads (server-side code from any admin session), no marketplace.
       MM_PLUGINSETTINGS_ENABLE: "true"
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
       MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
       MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
-      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "false"
+      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"
+      MM_PLUGINSETTINGS_SIGNATUREPUBLICKEYFILES: /portcullis/keys/portcullis-plugins.gpg
+      # The file store is locked to the data volume (the System Console
+      # can't point it elsewhere).
+      MM_FILESETTINGS_DRIVERNAME: local
+      MM_FILESETTINGS_DIRECTORY: /mattermost/data/
       MM_SERVICESETTINGS_ENABLETUTORIAL: "false"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       # Local mode (mmctl --local): the socket lives in the data volume so
@@ -43,6 +50,7 @@ services:
     volumes:
       - mattermost-data:/mattermost/data
       - mattermost-config:/mattermost/config
+      - mattermost-plugin-keys:/portcullis/keys:ro
     depends_on:
       mattermost-db:
         condition: service_healthy
@@ -92,25 +100,31 @@ services:
     restart: "no"
 
   # One-shot, before every Mattermost start: the pinned plugin bundles
-  # (plugins.py: GitHub release asset + SHA-256) into the file store, where
-  # Mattermost installs plugins from at startup. A digest mismatch fails it
+  # (plugins.py: GitHub release asset + SHA-256) into the file store, each
+  # signed with a fresh OpenPGP key generated in tmpfs (the private key
+  # never touches a volume and is gone when the job exits); only the public
+  # key is written, to the plugin-keys volume. A digest mismatch fails it
   # and Mattermost doesn't start. Default network only (downloads from
-  # GitHub).
+  # GitHub). This image ships gpg.
   mattermost-plugins:
-    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    image: python:3.15.2-trixie@sha256:b9dc13dd9e9c69543a3a8ae44ecae5f6a17ddd45f52ac335315de0ff1d9a67ae
     # root only to hand a fresh data volume (and the bundles) to uid 2000.
     user: "0:0"
     read_only: true
+    tmpfs:
+      - /tmp:mode=1777
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
-    mem_limit: 64m
-    pids_limit: 16
+    mem_limit: 256m
+    pids_limit: 32
     entrypoint: ["python3", "/portcullis/plugins.py"]
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-mattermost}
     volumes:
       - mattermost-data:/mattermost/data
+      - mattermost-plugin-keys:/portcullis/keys
       - ./templates/mattermost/plugins.py:/portcullis/plugins.py:ro
     restart: "no"
 
@@ -139,6 +153,7 @@ services:
 volumes:
   mattermost-data: {}
   mattermost-config: {}
+  mattermost-plugin-keys: {}
   mattermost-db-data: {}
 
 networks:

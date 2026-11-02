@@ -464,11 +464,14 @@ class TestIdentityRules(Case):
         self.rewrite_compose("services:\n", job)
         self.assertError(self.recheck(), "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL")
         self.assertError(self.recheck(), "MM_PLUGINSETTINGS_ENABLEUPLOADS")
-        self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n')
+        self.assertError(self.recheck(), "MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE")
+        self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'
+                              '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n')
         self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
         self.rewrite_compose("services:\n", job.replace('restart: "no"\n', 'restart: "no"\n    environment:\n'
                                                          '      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n'
-                                                         '      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'))
+                                                         '      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'
+                                                         '      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"\n'))
         self.assertFalse([e for e in self.recheck() if "MM_EMAILSETTINGS" in e or "MM_PLUGINSETTINGS" in e])
 
     def test_auth_oidc_never_links_users(self) -> None:

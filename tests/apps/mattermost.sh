@@ -226,6 +226,73 @@ else
 fi
 rm -f /tmp/mm-login.json
 
+# Plugin signatures are required: an unsigned bundle and one signed by a
+# foreign key, dropped into the file store, are refused at the next start;
+# the pinned bundles (signed by mattermost-plugins' key) still load.
+WORK=$(mktemp -d)
+for id in e2e.unsigned e2e.foreign; do
+  mkdir -p "$WORK/$id"
+  printf '{"id":"%s","name":"%s","version":"0.0.1","min_server_version":"6.0.0","webapp":{"bundle_path":"main.js"}}' "$id" "$id" > "$WORK/$id/plugin.json"
+  echo 'console.log(1)' > "$WORK/$id/main.js"
+  tar -C "$WORK" -czf "$WORK/$id.tar.gz" "$id"
+done
+GNUPGHOME="$WORK/gnupg"; mkdir -m 700 "$GNUPGHOME"; export GNUPGHOME
+gpg --batch --quiet --passphrase '' --pinentry-mode loopback --quick-gen-key 'e2e foreign <e2e@x.invalid>' rsa3072 sign never
+gpg --batch --quiet --output "$WORK/e2e.foreign.tar.gz.sig" --detach-sign "$WORK/e2e.foreign.tar.gz"
+unset GNUPGHOME
+for f in e2e.unsigned.tar.gz e2e.foreign.tar.gz e2e.foreign.tar.gz.sig; do
+  docker cp "$WORK/$f" "portcullis-${SERVICE}-1:/mattermost/data/plugins/$f" >/dev/null
+done
+rm -rf "$WORK"
+docker restart "portcullis-${SERVICE}-1" >/dev/null
+sleep 5
+for _ in $(seq 1 120); do
+  curl -sf -o /dev/null "http://${IP}:8065/api/v4/system/ping" 2>/dev/null && break
+  sleep 2
+done
+sleep 10
+AFTER=$(docker run --rm -i --user 2000:2000 -v "portcullis_mattermost-data:/mattermost/data" --entrypoint python3 \
+  python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 - 2>&1 <<'PY' || true
+import http.client, json, socket
+class C(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX); self.sock.connect("/mattermost/data/mattermost_local.socket")
+c = C("localhost"); c.request("GET", "/api/v4/plugins"); d = json.loads(c.getresponse().read())
+print(" ".join(sorted(f"{m['id']}={m['version']}" for m in (d.get("active") or []) + (d.get("inactive") or []))))
+PY
+)
+info "plugins after restart: $AFTER"
+if echo " $AFTER " | grep -q ' e2e\.'; then
+  fail "an unsigned or foreign-signed bundle was installed: $AFTER"
+else
+  pass "unsigned and foreign-signed bundles refused"
+fi
+if echo " $AFTER " | grep -q ' freemium=2.0.0 ' && echo " $AFTER " | grep -q ' com.github.matterpoll.matterpoll=1.9.2 '; then
+  pass "pinned, signed bundles still installed after a restart"
+else
+  fail "pinned bundles after restart: $AFTER"
+fi
+if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -q 'Failed to validate plugin signature'; then
+  pass "Mattermost logged the signature refusal"
+else
+  info "no 'Failed to validate plugin signature' log line"
+fi
+if docker logs "portcullis-mattermost-plugins-1" 2>&1 | grep -q 'private key discarded'; then
+  pass "mattermost-plugins signed the bundles and discarded its key"
+else
+  fail "mattermost-plugins: $(docker logs portcullis-mattermost-plugins-1 2>&1 | tail -3)"
+fi
+KEYS=$(docker run --rm -v "portcullis_mattermost-plugin-keys:/k:ro" -v "portcullis_mattermost-data:/d:ro" --entrypoint sh \
+  python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 \
+  -c 'ls -A /k; grep -rlI "PRIVATE KEY" /k /d 2>/dev/null; true' 2>&1 || true)
+if [ "$KEYS" = "portcullis-plugins.gpg" ]; then
+  pass "only the public key is on a volume"
+else
+  fail "key volume / data volume content: $KEYS"
+fi
+assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE true
+assert_compose_setting "$COMPOSE" MM_FILESETTINGS_DRIVERNAME local
+
 # Through Traefik (routed once healthy): forward-auth on every path
 for _ in $(seq 1 60); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ] && break
