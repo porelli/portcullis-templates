@@ -1,2 +1,4 @@
 .env
 *.override.yml
+__pycache__/
+*.pyc

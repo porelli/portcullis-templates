@@ -139,6 +139,12 @@ auth:
     not in the list, so on such hosts PDFs on a share download instead of
     opening inline; Markdown renders only in mode all. Apps installed under
     /custom_apps that hook the share page are not covered.
+    Keycloak must be reachable at a public name and address: Nextcloud's HTTP
+    client refuses hosts with a local TLD (.local, .lan, ...) or a private
+    address (allow_local_remote_servers stays off; user_oidc has no switch
+    scoped to the provider), so with split DNS or a LAN-only domain user_oidc
+    answers "Could not reach the OpenID Connect provider". Never set
+    user_oidc's httpclient.allowselfsigned (it turns TLS verification off).
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
     Keep nextcloud and nextcloud-cron on the same image.
@@ -168,9 +174,16 @@ urls:
 tests:
   signin:
     path: /login
+    # Nextcloud logs the refused OIDC requests here (not to stdout).
+    log_files:
+      - {service: nextcloud, path: /var/www/html/data/nextcloud.log}
     expected_fail:
-      member: "Nextcloud's HTTP client refuses private addresses (allow_local_remote_servers off), and in CI auth.<domain> resolves to Traefik's private address on portcullis-proxy, so user_oidc answers 'Could not reach the OpenID Connect provider'; the same happens wherever auth.<domain> resolves to a private address (split DNS / LAN-only). Not relaxed here (SSRF trade-off): template decision needed"
-      admin: "Nextcloud's HTTP client refuses private addresses (allow_local_remote_servers off), and in CI auth.<domain> resolves to Traefik's private address on portcullis-proxy, so user_oidc answers 'Could not reach the OpenID Connect provider'; the same happens wherever auth.<domain> resolves to a private address (split DNS / LAN-only). Not relaxed here (SSRF trade-off): template decision needed"
+      member:
+        reason: "Nextcloud's HTTP client refuses hosts with a local TLD (.local/.lan/…) or a private address (allow_local_remote_servers stays off, and user_oidc has no scoped switch); in CI auth.<domain> is auth.portcullis.local on Traefik's private address, so user_oidc can't reach Keycloak (see auth.notes)"
+        match: "violates local access rules"
+      admin:
+        reason: "Nextcloud's HTTP client refuses hosts with a local TLD (.local/.lan/…) or a private address (allow_local_remote_servers stays off, and user_oidc has no scoped switch); in CI auth.<domain> is auth.portcullis.local on Traefik's private address, so user_oidc can't reach Keycloak (see auth.notes)"
+        match: "violates local access rules"
     signed_in:
       json: {url: "/ocs/v2.php/cloud/user?format=json", field: ocs.data.id, headers: {OCS-APIRequest: "true"}}
     admin:

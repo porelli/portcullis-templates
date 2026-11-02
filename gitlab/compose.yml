@@ -23,9 +23,12 @@ services:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
       - gitlab-data:/var/opt/gitlab
-      # System CAs + Portcullis' internal CA (Hub-provided bundle) as the CA
-      # list of GitLab's embedded OpenSSL: the OIDC discovery and token calls
-      # to auth.<domain> must verify its certificate, ACME or internal.
+      # Replaces GitLab's bundled cacert.pem with the Hub-provided bundle,
+      # which is the host's system CAs + Portcullis' internal CA (so public
+      # CAs keep working): the OIDC discovery and token calls to
+      # auth.<domain> must verify its certificate, ACME or internal.
+      # /etc/gitlab/trusted-certs can't take it: reconfigure links only the
+      # first certificate of each file there.
       - ./certs/ca-bundle.crt:/opt/gitlab/embedded/ssl/certs/cacert.pem:ro
     networks:
       - default

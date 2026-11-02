@@ -31,7 +31,9 @@ wait_for_url "http://${IP}:3000" 60 "$APP_ID"
 
 # Grafana login page should return HTML
 BODY=$(curl -sf "http://${IP}:3000/login" 2>/dev/null || echo "")
-if echo "$BODY" | grep -qi "grafana"; then
+# Here-string, not echo | grep -q: grep exits at the first match and the
+# echo's broken pipe would fail the test under pipefail.
+if grep -qi "grafana" <<< "$BODY"; then
   pass "/login -> Grafana login page returned"
 else
   fail "/login -> Grafana login page not found"

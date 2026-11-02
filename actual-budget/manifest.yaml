@@ -40,7 +40,11 @@ urls:
 tests:
   signin:
     path: /
-    login: ["button:has-text('Sign in with OpenID')", "button:has-text('OpenID')"]
+    # A fresh server first offers "Start using OpenID" (the first OpenID
+    # user becomes the owner), then "Sign in with OpenID".
+    login: ["button:has-text('Start using OpenID')", "button:has-text('Sign in with OpenID')"]
+    # Actual rate-limits /account/login: two SSO starts per button are enough.
+    max_clicks: 2
     signed_in:
       text: "{username}"
       wait: 20
@@ -48,4 +52,9 @@ tests:
     # users the owner added in its user directory (user creation mode
     # manual), so the outsider is refused by Actual itself.
     expected_fail:
-      member: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would let every Portcullis user in until the Hub's per-app Keycloak client access (Task 4b)"
+      member:
+        reason: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would let every Portcullis user in until the Hub's per-app Keycloak client access (Task 4b)"
+        # Actual answers the refused grant with 400 {"reason":"openid-grant-failed"}
+        # (the page is sometimes replaced by its rate limiter's 429, so its
+        # access log line counts too).
+        match: "openid-grant-failed|GET 400 /openid/callback"

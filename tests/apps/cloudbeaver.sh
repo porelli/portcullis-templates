@@ -67,6 +67,14 @@ else
   fail "gate does not refuse X-Forwarded-User cbadmin*"
 fi
 
+# Fail closed: no anonymous CloudBeaver sessions (shipped config and the
+# runtime-config patch both say so).
+if grep -q 'anonymousAccessEnabled: false' "$CONF" && grep -q 'app\["anonymousAccessEnabled"\] = False' "$(dirname "$COMPOSE")/patch-runtime-conf.py"; then
+  pass "anonymous access off (GlobalConfiguration + cloudbeaver-config)"
+else
+  fail "CloudBeaver anonymous access must be off in cloudbeaver-runtime.conf and patch-runtime-conf.py"
+fi
+
 GATE_IP=$(app_container_ip "$APP_ID" cloudbeaver-gate)
 assert_http_code "http://${GATE_IP}:8978/" 200
 assert_spoofed_identity_rejected "http://${GATE_IP}:8978/" 403

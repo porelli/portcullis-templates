@@ -605,18 +605,30 @@
               "additionalProperties": false,
               "minProperties": 1,
               "properties": {
-                "member": {
-                  "type": "string",
-                  "minLength": 10
-                },
-                "admin": {
-                  "type": "string",
-                  "minLength": 10
-                },
-                "outsider": {
-                  "type": "string",
-                  "minLength": 10
-                }
+                "member": {"$ref": "#/$defs/signinExpectedFail"},
+                "admin": {"$ref": "#/$defs/signinExpectedFail"},
+                "outsider": {"$ref": "#/$defs/signinExpectedFail"}
+              }
+            },
+            "max_clicks": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "How often each login selector may be clicked per user (default 5; lower for apps that rate-limit login attempts)"
+            },
+            "refused_users": {
+              "type": "array",
+              "description": "Extra users, in access_group and admin_group, that must be refused with HTTP 403 (e.g. names a header-auth app reserves)",
+              "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"}
+            },
+            "log_files": {
+              "type": "array",
+              "description": "Files inside the app's containers kept as artifacts and searched by expected_fail.match (besides the container logs)",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["service", "path"],
+                "properties": {"service": {"type": "string", "minLength": 1}, "path": {"type": "string", "pattern": "^/"}}
               }
             },
             "timeout": {
@@ -663,6 +675,16 @@
             ]
           }
         }
+      }
+    },
+    "signinExpectedFail": {
+      "description": "A known failure: the check may fail only the way match describes",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "match"],
+      "properties": {
+        "reason": {"type": "string", "minLength": 10},
+        "match": {"type": "string", "minLength": 3, "description": "Regex (case-insensitive) that must be found in the check's evidence, the page or the app's logs"}
       }
     }
   }

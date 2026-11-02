@@ -937,6 +937,17 @@ def check_signin_test(t: Template, r: Report) -> None:
     if xfail.get("outsider") and not open_oidc and method not in SIGNIN_GATED_METHODS:
         r.warn(t.m_where, "tests.signin.expected_fail.outsider on an app that restricts sign-in by group",
                "remove it once the outsider check passes")
+    for name, xf in xfail.items():
+        if isinstance(xf, dict) and isinstance(xf.get("match"), str):
+            try:
+                re.compile(xf["match"])
+            except re.error as e:
+                r.error(t.m_where, f"tests.signin.expected_fail.{name}.match is not a valid regex: {e}",
+                        "match is searched (case-insensitive) in the check's evidence, the page and the app's logs")
+    services = (t.compose or {}).get("services") or {}
+    for lf in si.get("log_files") or []:
+        if isinstance(lf, dict) and lf.get("service") not in services:
+            r.error(t.m_where, f"tests.signin.log_files service {lf.get('service')!r} is not a compose service")
     host = si.get("host")
     if isinstance(host, str):
         var = "PORTCULLIS_HOST_" + host[len("{{HOST_"):-2]
