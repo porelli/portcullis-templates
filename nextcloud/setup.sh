@@ -18,9 +18,11 @@ for g in "$PORTCULLIS_ACCESS_GROUP" "$PORTCULLIS_ADMIN_GROUP"; do
   esac
 done
 
+# Fail closed: a non-zero exit stops the image's entrypoint before Apache
+# starts, so an uninstalled Nextcloud never serves its web installer.
 if ! occ status --output=json | grep -q '"installed":true'; then
-  echo "portcullis: Nextcloud is not installed yet, skipping configuration"
-  exit 0
+  echo "portcullis: Nextcloud is not installed (the automatic install failed?); not starting the web server" >&2
+  exit 1
 fi
 
 # ── Hostname (contract v2: whatever the instance's hostname is now) ──

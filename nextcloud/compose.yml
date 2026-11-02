@@ -19,6 +19,10 @@ services:
       # every other local account) at every start: there is no password
       # login; break-glass is occ on the server (manifest notes).
       NEXTCLOUD_ADMIN_USER: nc-breakglass
+      # The image installs on first start only with a database selected;
+      # without it Apache would serve the web installer. SQLite (in the
+      # data volume), as installs of earlier template versions use.
+      SQLITE_DATABASE: nextcloud
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?NEXTCLOUD_ADMIN_PASSWORD must be set}
       NEXTCLOUD_TRUSTED_DOMAINS: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
       OVERWRITEPROTOCOL: https

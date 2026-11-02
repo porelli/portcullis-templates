@@ -101,20 +101,28 @@ fi
 # install.php gone
 assert_http_code "http://${IP}:80/install.php" 404
 
-# Login goes straight to Keycloak with this instance's client
+# Login goes straight to Keycloak with this instance's client (the oauth
+# plugin first redirects to its own ?oauthlogin=generic step)
 LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "http://${IP}:80/doku.php?do=login" 2>/dev/null || true)
+if echo "$LOC" | grep -q 'oauthlogin=generic'; then
+  LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "http://${IP}:80/doku.php?${LOC#*\?}" 2>/dev/null || true)
+fi
 if echo "$LOC" | grep -q "/realms/portcullis/protocol/openid-connect/auth" && echo "$LOC" | grep -q "client_id=${PORTCULLIS_OIDC_CLIENT_ID}"; then
-  pass "?do=login redirects to Keycloak (client ${PORTCULLIS_OIDC_CLIENT_ID})"
+  pass "?do=login leads to Keycloak (client ${PORTCULLIS_OIDC_CLIENT_ID})"
 else
-  fail "?do=login does not redirect to Keycloak: '$LOC'"
+  fail "?do=login does not lead to Keycloak: '$LOC'"
 fi
 
-# Anonymous visitors can't read
-BODY=$(curl -s "http://${IP}:80/doku.php?id=start" 2>/dev/null || true)
-if echo "$BODY" | grep -qi 'permission denied\|login'; then
-  pass "anonymous read refused"
+# Anonymous visitors can't read: the page is denied (singleService turns
+# the denial into a redirect to the Portcullis login), never shown
+T=$(mktemp)
+OUT=$(curl -s -o "$T.body" -w '%{http_code} %{redirect_url}' "http://${IP}:80/doku.php?id=start" 2>/dev/null || true)
+if { [ "${OUT%% *}" = 302 ] && echo "$OUT" | grep -q 'oauthlogin\|do=login'; } \
+    || { [ "${OUT%% *}" = 200 ] && grep -qi 'permission denied' "$T.body"; } || [ "${OUT%% *}" = 403 ]; then
+  pass "anonymous read refused ($OUT)"
 else
-  fail "anonymous visitors can read pages"
+  fail "anonymous visitors can read pages ($OUT)"
 fi
+rm -f "$T" "$T.body"
 
 compose_down "$APP_ID"

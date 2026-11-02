@@ -64,8 +64,16 @@ else
   fail "API does not answer on loopback without a password"
 fi
 
-# Any peer but Traefik (here: the CI host) is refused by the web server ACL
-assert_http_code "http://${IP}/api/info/version" 403
-assert_http_code "http://${IP}/admin/" 403
+# Any peer but Traefik (here: the CI host) is refused by the web server ACL:
+# civetweb accepts the connection and drops it (curl: empty reply / reset)
+# or answers 403; never a page.
+for path in /api/info/version /admin/; do
+  rc=0
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://${IP}${path}" 2>/dev/null) || rc=$?
+  case "$code:$rc" in
+    403:*|000:52|000:56) pass "$path from a non-Traefik peer refused (HTTP $code, curl $rc)" ;;
+    *) fail "$path from a non-Traefik peer: HTTP $code, curl $rc (expected refusal)" ;;
+  esac
+done
 
 compose_down "$APP_ID"
