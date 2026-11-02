@@ -57,8 +57,11 @@ auth:
     2.0.0 (dy0gu/mattermost-plugin-freemium, hides Team Edition's upsell
     UI) and Matterpoll 1.9.2 (/poll). Mattermost requires plugin
     signatures, and upstream doesn't sign these, so before every start the
-    mattermost-plugins one-shot checks each bundle against its SHA-256 (a
-    mismatch fails it and Mattermost doesn't start), signs it with an
+    mattermost-plugins one-shot checks a private copy of each bundle (in
+    its root-only tmpfs; file-store copies are opened without following
+    symlinks, regular files only) against its SHA-256 (a mismatch or a
+    swapped file fails it before anything is signed, and Mattermost
+    doesn't start), signs that private copy with an
     OpenPGP key it generates in tmpfs for that start only (the private key
     never reaches a volume), writes bundle + signature into Mattermost's
     file store (locked to the data volume) and only the public key to a

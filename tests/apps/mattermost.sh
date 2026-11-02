@@ -290,6 +290,30 @@ if [ "$KEYS" = "portcullis-plugins.gpg" ]; then
 else
   fail "key volume / data volume content: $KEYS"
 fi
+# Swap attack on the signer: the file-store bundle replaced by a symlink
+# (the Mattermost side can write there). mattermost-plugins must refuse
+# before signing anything.
+vol_py() {  # run python (stdin) as uid 2000 with the data volume at /d
+  docker run --rm -i --user 2000:2000 -v "portcullis_mattermost-data:/d" --entrypoint python3 \
+    python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 - 2>&1
+}
+SIGS_BEFORE=$(printf 'import hashlib,glob\nfor f in sorted(glob.glob("/d/plugins/*.sig")): print(f, hashlib.sha256(open(f,"rb").read()).hexdigest())\n' | vol_py)
+printf 'import os\nos.rename("/d/plugins/freemium.tar.gz", "/d/plugins/.e2e-freemium")\nos.symlink("/etc/passwd", "/d/plugins/freemium.tar.gz")\n' | vol_py
+RC=0; docker start -a "portcullis-mattermost-plugins-1" >/tmp/mm-plugins.log 2>&1 || RC=$?
+SIGS_AFTER=$(printf 'import hashlib,glob\nfor f in sorted(glob.glob("/d/plugins/*.sig")): print(f, hashlib.sha256(open(f,"rb").read()).hexdigest())\n' | vol_py)
+if [ "$RC" != 0 ] && grep -q 'not a regular file' /tmp/mm-plugins.log && [ "$SIGS_BEFORE" = "$SIGS_AFTER" ]; then
+  pass "symlinked bundle refused by mattermost-plugins, nothing signed"
+else
+  fail "symlink swap: rc=$RC $(tail -2 /tmp/mm-plugins.log) sigs-changed=$([ "$SIGS_BEFORE" = "$SIGS_AFTER" ] && echo no || echo yes)"
+fi
+printf 'import os\nos.unlink("/d/plugins/freemium.tar.gz")\nos.rename("/d/plugins/.e2e-freemium", "/d/plugins/freemium.tar.gz")\n' | vol_py
+RC=0; docker start -a "portcullis-mattermost-plugins-1" >/tmp/mm-plugins.log 2>&1 || RC=$?
+if [ "$RC" = 0 ]; then
+  pass "mattermost-plugins re-run after restoring the bundle -> exit 0"
+else
+  fail "mattermost-plugins re-run: rc=$RC $(tail -2 /tmp/mm-plugins.log)"
+fi
+rm -f /tmp/mm-plugins.log
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE true
 assert_compose_setting "$COMPOSE" MM_FILESETTINGS_DRIVERNAME local
 

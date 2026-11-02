@@ -6,14 +6,20 @@ Plugin uploads stay off and Mattermost requires plugin signatures
 are GitHub release assets that upstream doesn't sign, so this one-shot, at
 every start:
 
-1. downloads each bundle (or reuses the file-store copy) and checks it
-   against its pinned SHA-256; a mismatch fails the job (Mattermost depends
-   on it and doesn't start);
-2. generates a fresh OpenPGP signing key in a tmpfs GNUPGHOME (never on a
-   volume; gone when the job exits), signs each verified bundle
-   (<id>.tar.gz.sig next to it in Mattermost's file store, from which
-   Mattermost installs plugins at startup, app/plugin.go syncPlugins), and
-   writes only the PUBLIC key to the plugin-keys volume, which Mattermost
+1. puts a private copy of each bundle in its own root-only tmpfs directory:
+   copied from Mattermost's file store (opened without following symlinks,
+   regular files only) when that copy matches, downloaded otherwise; the
+   SHA-256 is checked on the private copy, and only that copy is signed,
+   so nothing another principal can write between check and sign ever gets
+   a signature. Any mismatch, symlink or non-regular file fails the job
+   (Mattermost depends on it and doesn't start), before anything is signed;
+2. generates a fresh OpenPGP signing key in the same tmpfs (never on a
+   volume; gone when the job exits), signs each private copy, and places
+   bundle + signature into the file store (Mattermost installs plugins from
+   there at startup, app/plugin.go syncPlugins) with an exclusive temp file
+   in the plugins directory, opened by descriptor without following
+   symlinks, and a rename; a destination that is a symlink is refused;
+3. writes only the PUBLIC key to the plugin-keys volume, which Mattermost
    mounts read-only (MM_PLUGINSETTINGS_SIGNATUREPUBLICKEYFILES).
 
 Every start makes a new key, so any other bundle or a signature from an
@@ -24,16 +30,18 @@ bundles still verify with Mattermost's built-in key.
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import urllib.request
 
 DATA_DIR = "/mattermost/data"
-PLUGIN_DIR = os.path.join(DATA_DIR, "plugins")
+PLUGIN_DIR_NAME = "plugins"
 KEY_DIR = "/portcullis/keys"
-PUBLIC_KEY = os.path.join(KEY_DIR, "portcullis-plugins.gpg")
+PUBLIC_KEY_NAME = "portcullis-plugins.gpg"
 MM_UID = MM_GID = 2000   # the mattermost image's user
+CHUNK = 1 << 20
 
 # (plugin id, version, release asset, sha256)
 PLUGINS = [
@@ -57,42 +65,91 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def sha256_of(path: str) -> str:
+def open_dir(parent_fd, name: str) -> int:
+    """A directory under parent_fd (None = absolute name), never through a symlink."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError as e:
+        die(f"{name}: not a plain directory ({e.strerror})")
+    return fd
+
+
+def lexists(dir_fd: int, name: str):
+    try:
+        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def copy_stream(src, dst_fd: int) -> str:
+    """Copy src into dst_fd, returning the SHA-256 of what was written."""
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+    with os.fdopen(os.dup(dst_fd), "wb") as out:
+        for chunk in iter(lambda: src.read(CHUNK), b""):
             h.update(chunk)
+            out.write(chunk)
+        out.flush()
+        os.fsync(out.fileno())
     return h.hexdigest()
 
 
-def own(path: str, mode: int) -> None:
-    os.chown(path, MM_UID, MM_GID)
-    os.chmod(path, mode)
-
-
-def fetch(pid: str, version: str, url: str, sha256: str) -> str:
-    dest = os.path.join(PLUGIN_DIR, f"{pid}.tar.gz")
-    if os.path.exists(dest) and sha256_of(dest) == sha256:
-        log(f"{pid} {version} present (sha256 verified)")
-        return dest
-    fd, tmp = tempfile.mkstemp(dir=PLUGIN_DIR, prefix=".portcullis-")
-    h = hashlib.sha256()
+def private_copy(store_fd: int, work: str, pid: str, version: str, url: str, sha256: str) -> str:
+    path = os.path.join(work, f"{pid}.tar.gz")
+    name = f"{pid}.tar.gz"
+    st = lexists(store_fd, name)
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        die(f"{PLUGIN_DIR_NAME}/{name} is not a regular file (symlink or special file): refusing")
+    if st is not None:
+        try:
+            sfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=store_fd)
+        except OSError as e:
+            die(f"{PLUGIN_DIR_NAME}/{name}: {e.strerror}: refusing")
+        with os.fdopen(sfd, "rb") as src:
+            if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                die(f"{PLUGIN_DIR_NAME}/{name} is not a regular file: refusing")
+            dfd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                got = copy_stream(src, dfd)
+            finally:
+                os.close(dfd)
+        if got == sha256:
+            log(f"{pid} {version}: file-store copy matches (sha256 verified on the private copy)")
+            return path
+        os.unlink(path)
+    dfd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=120) as resp:
-            for chunk in iter(lambda: resp.read(1 << 20), b""):
-                h.update(chunk)
-                out.write(chunk)
-        if h.hexdigest() != sha256:
-            die(f"{pid}: sha256 {h.hexdigest()} != pinned {sha256}")
-        own(tmp, 0o640)
-        os.replace(tmp, dest)
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            got = copy_stream(resp, dfd)
     except OSError as e:
         die(f"download of {url} failed: {e}")
     finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-    log(f"{pid} {version} written to the file store (sha256 verified)")
-    return dest
+        os.close(dfd)
+    if got != sha256:
+        die(f"{pid}: sha256 {got} != pinned {sha256}")
+    log(f"{pid} {version}: downloaded (sha256 verified on the private copy)")
+    return path
+
+
+def place(dir_fd: int, name: str, src_path: str, mode: int, uid: int, gid: int) -> None:
+    """Atomically put src_path's content at dir_fd/name (exclusive temp + rename)."""
+    st = lexists(dir_fd, name)
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        die(f"destination {name} is not a regular file (symlink?): refusing")
+    tmp = f".portcullis-{os.getpid()}-{name}"
+    if lexists(dir_fd, tmp) is not None:
+        os.unlink(tmp, dir_fd=dir_fd)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+    try:
+        with open(src_path, "rb") as src:
+            copy_stream(src, fd)
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+    except BaseException:
+        os.close(fd)
+        os.unlink(tmp, dir_fd=dir_fd)
+        raise
+    os.close(fd)
+    os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
 def gpg(home: str, *args: str) -> None:
@@ -103,40 +160,47 @@ def gpg(home: str, *args: str) -> None:
 
 
 def main() -> None:
+    os.umask(0o077)
+    data_fd = open_dir(None, DATA_DIR)
     # Runs as root only for ownership: on a fresh volume this job is the
-    # first writer, so the data directory (and what it writes) is handed to
-    # Mattermost's uid.
-    if os.stat(DATA_DIR).st_uid != MM_UID:
-        os.chown(DATA_DIR, MM_UID, MM_GID)
-    os.makedirs(PLUGIN_DIR, exist_ok=True)
-    os.chown(PLUGIN_DIR, MM_UID, MM_GID)
+    # first writer, so the data directory and the plugins directory are
+    # handed to Mattermost's uid (by descriptor, never through a symlink).
+    if os.fstat(data_fd).st_uid != MM_UID:
+        os.fchown(data_fd, MM_UID, MM_GID)
+    if lexists(data_fd, PLUGIN_DIR_NAME) is None:
+        os.mkdir(PLUGIN_DIR_NAME, 0o750, dir_fd=data_fd)
+    store_fd = open_dir(data_fd, PLUGIN_DIR_NAME)
+    os.fchown(store_fd, MM_UID, MM_GID)
+    key_fd = open_dir(None, KEY_DIR)
 
-    bundles = [(pid, fetch(pid, version, url, sha256)) for pid, version, url, sha256 in PLUGINS]
-    # Re-check right before signing: only the pinned bytes get a signature.
-    for (pid, path), (_, _, _, sha256) in zip(bundles, PLUGINS):
-        if sha256_of(path) != sha256:
-            die(f"{pid}: file-store copy changed before signing")
-
-    home = tempfile.mkdtemp(dir="/tmp", prefix="gnupg-")
+    work = tempfile.mkdtemp(dir="/tmp", prefix="portcullis-plugins-")   # 0700, root, tmpfs
     try:
-        os.chmod(home, 0o700)
+        home = os.path.join(work, "gnupg")
+        os.mkdir(home, 0o700)
+        with open(os.path.join(home, "gpg-agent.conf"), "w", encoding="utf-8") as f:
+            f.write("disable-scdaemon\n")
+        # 1. every bundle verified (private copies) before anything is signed
+        bundles = [(pid, private_copy(store_fd, work, pid, version, url, sha256))
+                   for pid, version, url, sha256 in PLUGINS]
+        # 2. a fresh key; sign the private copies; place bundle + signature
         instance = os.environ.get("PORTCULLIS_INSTANCE", "mattermost")
         gpg(home, "--passphrase", "", "--pinentry-mode", "loopback", "--quick-gen-key",
             f"Portcullis plugin signing ({instance}) <plugins@{instance}.invalid>", "rsa3072", "sign", "never")
         for pid, path in bundles:
             sig = path + ".sig"
-            tmp = sig + ".portcullis-tmp"
-            gpg(home, "--yes", "--digest-algo", "SHA256", "--output", tmp, "--detach-sign", path)
-            own(tmp, 0o640)
-            os.replace(tmp, sig)
-        os.makedirs(KEY_DIR, exist_ok=True)
-        tmp = PUBLIC_KEY + ".portcullis-tmp"
-        gpg(home, "--yes", "--output", tmp, "--export")
-        own(tmp, 0o644)
-        os.replace(tmp, PUBLIC_KEY)
+            gpg(home, "--passphrase", "", "--pinentry-mode", "loopback", "--digest-algo", "SHA256",
+                "--output", sig, "--detach-sign", path)
+            place(store_fd, f"{pid}.tar.gz", path, 0o640, MM_UID, MM_GID)
+            place(store_fd, f"{pid}.tar.gz.sig", sig, 0o640, MM_UID, MM_GID)
+        # 3. only the public key leaves the tmpfs
+        pub = os.path.join(work, PUBLIC_KEY_NAME)
+        gpg(home, "--output", pub, "--export")
+        place(key_fd, PUBLIC_KEY_NAME, pub, 0o644, 0, 0)
     finally:
-        shutil.rmtree(home, ignore_errors=True)
-    log(f"{len(bundles)} bundles signed with a fresh key; public key {PUBLIC_KEY}; private key discarded")
+        subprocess.run(["gpgconf", "--homedir", os.path.join(work, "gnupg"), "--kill", "all"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        shutil.rmtree(work, ignore_errors=True)
+    log(f"{len(bundles)} bundles signed with a fresh key; public key {KEY_DIR}/{PUBLIC_KEY_NAME}; private key discarded")
 
 
 if __name__ == "__main__":
