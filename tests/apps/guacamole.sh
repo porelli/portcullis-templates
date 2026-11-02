@@ -48,7 +48,7 @@ if grep -q 'GUACAMOLE_ADMIN_SUFFIX:?' "$COMPOSE" \
 else
   fail "the built-in administrator must be renamed guacadmin-\${GUACAMOLE_ADMIN_SUFFIX} (generated)"
 fi
-if grep -qF "echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin [NC]'" "$COMPOSE"; then
+if grep -qF "echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin.* [NC]'" "$COMPOSE"; then
   pass "valve refuses X-Forwarded-User starting with guacadmin (static)"
 else
   fail "valve does not refuse X-Forwarded-User guacadmin*"
