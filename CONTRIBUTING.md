@@ -118,6 +118,15 @@ the sign-in test of the app it touches. **Run workflow** with `apps = all`
 tests every template (shell test + sign-in test); `apps = <id> <id>` only
 those.
 
+Dependabot PRs merge themselves (`dependabot-automerge.yml`, logic in
+`.github/automerge/automerge.sh`): a patch, minor or digest-only update is
+squash-merged once Lint and Test Apps both passed on the PR's head commit.
+Majors are labelled `major-update` and wait for a maintainer; pre-releases are
+closed; a red update keeps its PR open and opens (or adds to) an
+`update-failed` issue for that app and version jump, with the failing jobs and
+run links. The issue closes when the update merges. Craft release PRs
+(`craft-releases.yml`) are not covered: merge them by hand.
+
 `.core-ref` holds the core version the templates are tested against: a tag
 such as `v1.4.0`, or `main` during development. Changing it re-tests every
 template. (For PRs the base branch's `.core-ref` is used.)

@@ -4,7 +4,7 @@
 # no .well-known on the apex is needed. It is permanent: see auth.notes.
 services:
   synapse:
-    image: ghcr.io/element-hq/synapse:v1.164.1@sha256:fa4aa980f279bcf26d4e7ecc2a2c9a701c73f2ebe8841da9bdcf3b2fdf693d75
+    image: ghcr.io/element-hq/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
     # synapse-start.py renders homeserver.yaml (into the tmpfs, never the
     # data volume) from the environment, refuses to start on any missing or
     # malformed value, creates the signing key once in /data, pins
@@ -77,7 +77,7 @@ services:
   # service never runs as root. Only the top directory: Synapse owns what it
   # creates inside.
   synapse-init:
-    image: ghcr.io/element-hq/synapse:v1.164.1@sha256:fa4aa980f279bcf26d4e7ecc2a2c9a701c73f2ebe8841da9bdcf3b2fdf693d75
+    image: ghcr.io/element-hq/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
     user: "0:0"
     # Only while /data is not 991's yet (first start): afterwards root has
     # no CAP_FOWNER here, so chmod on 991's directory would fail and keep
