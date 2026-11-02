@@ -336,6 +336,12 @@ stripped). Rules, all checked by `tests/validate.py`:
   `enroll`, `metrics`, `people`) are off limits. Router, service and
   middleware names contain no `_` (the Hub prefixes them per instance), and
   `/oauth2/` belongs to Portcullis.
+- **Immutable hostnames.** If the app bakes a hostname into its data at the
+  first start (Synapse's `server_name` is part of every user and room id),
+  list that host router under `hosts: {immutable: [<router>]}` in the
+  manifest: the Hub then refuses to change that hostname once the instance
+  has been enabled (see `matrix/`; validate.py `IMMUTABLE_HOSTS` keeps it
+  declared).
 - **Own hostnames** use the same variable and default everywhere (env URLs,
   `hostname:`, middleware values), e.g.
   `APP_URL: https://${PORTCULLIS_HOST_FIREFLY:-finance.portcullis.local}`;

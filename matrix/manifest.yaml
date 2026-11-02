@@ -46,7 +46,9 @@ auth:
     is needed (Synapse serves /.well-known/matrix/client itself). It is
     permanent: every user and room id contains it. Synapse refuses to start
     if the instance's homeserver hostname changes after the first start;
-    pick it before enabling the instance.
+    pick it before enabling the instance (hosts.immutable: the Hub refuses
+    to change it once the instance has been enabled; the Element host can
+    change any time).
     Admins: Synapse has no group-to-admin mapping, so admin_matrix grants
     nothing inside Synapse. Promote the first admin after their first SSO
     login with `UPDATE users SET admin = 1 WHERE name =
@@ -108,6 +110,10 @@ keycloak_clients:
     name: Matrix (Synapse)
 
 config_files: []
+
+# Synapse's server_name = the homeserver host: fixed after the first start.
+hosts:
+  immutable: [matrix]
 
 urls:
   - label: Element

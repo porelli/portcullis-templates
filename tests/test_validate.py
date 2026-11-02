@@ -14,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from typing import List, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -568,6 +569,29 @@ class SigninTest(Case):
         v.check_manifest_rules(t, r)
         v.check_compose(t, r)
         self.assertTrue(any("does not check the username" in w for w in r.warnings), r.warnings)
+
+
+
+class TestImmutableHosts(Case):
+    def test_immutable_host_router_is_accepted(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("urls:", "hosts:\n  immutable: [demo]\nurls:")
+        self.assertClean(self.recheck())
+
+    def test_immutable_must_name_a_host_router(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("urls:", "hosts:\n  immutable: [other]\nurls:")
+        self.assertError(self.recheck(), "hosts.immutable: other is not a host router")
+
+    def test_immutable_list_is_schema_checked(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("urls:", "hosts:\n  immutable: []\nurls:")
+        self.assertError(self.recheck(), "hosts")
+
+    def test_required_immutable_host(self) -> None:
+        with mock.patch.dict(v.IMMUTABLE_HOSTS, {"demo": {"demo": "baked into the data"}}):
+            errors, _ = self.run_template()
+        self.assertError(errors, "hosts.immutable must list demo")
 
 
 if __name__ == "__main__":

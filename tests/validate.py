@@ -126,6 +126,12 @@ LOGIN_GATES = {
 GATED_CLIENT_ROUTERS = {
     "matrix": {"element"},
 }
+# Host routers whose hostname is baked into the app's data at first start
+# (manifest hosts.immutable; the Hub refuses to change them afterwards).
+# Listed here so the declaration can't be dropped from these templates.
+IMMUTABLE_HOSTS = {
+    "matrix": {"matrix": "Synapse's server_name is the homeserver hostname and is part of every user and room id"},
+}
 # Never protect a password form or a setup wizard with these: Traefik's path
 # matching differs from the app's (case, repeated slashes, /index.php).
 # Nextcloud and Wiki.js have no password login at all instead (see their notes).
@@ -720,6 +726,7 @@ def check_compose(t: Template, r: Report) -> None:
             r.error(where, "has traefik.http.* labels but not traefik.enable: \"true\"")
 
     check_routers(t, routers, r)
+    check_immutable_hosts(t, r)
     check_instance_vars(t, r)
     check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
@@ -744,6 +751,23 @@ def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Repo
                     "use '-': the Hub prefixes names with <instance-id>_ for every instance but the default; " + V2_HINT)
         if t.multi and name.startswith("portcullis-") and not name.startswith(PUBLIC_RESERVED):
             r.error(where, f"{kind} name {name} starts with 'portcullis-'", "that prefix is reserved for core and the Hub")
+
+
+def check_immutable_hosts(t: Template, r: Report) -> None:
+    """hosts.immutable names host routers; required where IMMUTABLE_HOSTS says so."""
+    hosts = (t.manifest or {}).get("hosts")
+    listed = hosts.get("immutable") if isinstance(hosts, dict) else None
+    listed = [x for x in listed if isinstance(x, str)] if isinstance(listed, list) else []
+    routers = {"PORTCULLIS_HOST_" + var_key(n): n for n in listed}
+    for var, name in sorted(routers.items()):
+        if var not in t.host_vars:
+            r.error(t.m_where, f"hosts.immutable: {name} is not a host router of this template",
+                    "list the name of a router whose rule is Host() alone; host routers: "
+                    + (", ".join(sorted(v[len("PORTCULLIS_HOST_"):].lower().replace("_", "-") for v in t.host_vars)) or "none"))
+    for name, why in sorted(IMMUTABLE_HOSTS.get(t.id, {}).items()):
+        if name not in listed:
+            r.error(t.m_where, f"hosts.immutable must list {name}",
+                    f"{why}: the Hub must refuse to change that hostname once the instance has started")
 
 
 def check_instance_vars(t: Template, r: Report) -> None:
