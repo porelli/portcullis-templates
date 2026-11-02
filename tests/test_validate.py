@@ -477,9 +477,10 @@ class TestIdentityRules(Case):
                 errors, _ = self.run_template(env=ok.replace(line, ""))
                 self.assertError(errors, needle)
         for key in ("EMAILFALLBACK", "USERNAMEFALLBACK"):
-            with self.subTest(key=key):
-                errors, _ = self.run_template(env=ok + f'      VIKUNJA_AUTH_OPENID_PROVIDERS_MY_IDP_{key}: "true"\n')
-                self.assertError(errors, "Vikunja links OIDC logins")
+            for val in ("true", "TRUE", "1", "t", "T"):
+                with self.subTest(key=key, val=val):
+                    errors, _ = self.run_template(env=ok + f'      VIKUNJA_AUTH_OPENID_PROVIDERS_MY_IDP_{key}: "{val}"\n')
+                    self.assertError(errors, "Vikunja links OIDC logins")
 
     def test_firefox_sync_routed_service_waits_for_the_allowlist(self) -> None:
         image = "ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0"

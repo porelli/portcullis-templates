@@ -37,9 +37,10 @@ auth:
     on. Outgoing requests to URLs users enter (webhooks, imports,
     avatars) may not reach private addresses. Removing a user from the
     group blocks new sign-ins (and the Hub signs them out of Keycloak), not
-    Vikunja sessions (at most 24 h: VIKUNJA_SERVICE_JWTTTL, upstream 72 h /
-    30 days) or API / CalDAV tokens already issued; disable the user in
-    Vikunja for that (`vikunja user
+    Vikunja sessions or API / CalDAV tokens already issued: refresh
+    sessions end after 24 h without use (VIKUNJA_SERVICE_JWTTTL, upstream
+    72 h / 30 days), an active one keeps refreshing; disable the user in
+    Vikunja to end it, effective within 10 min (`vikunja user
     change-status`). Mobile and desktop apps sign in through Vikunja's own
     OAuth flow in the browser, i.e. through Portcullis. Upgrades: database
     migrations run when Vikunja starts; don't bump the PostgreSQL major.

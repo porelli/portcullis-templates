@@ -29,8 +29,8 @@ services:
       SYNC_TOKENSERVER__RUN_MIGRATIONS: "false"
       SYNC_TOKENSERVER__NODE_TYPE: postgres
       SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
-      # The storage node Firefox is sent to: this instance's own hostname.
-      SYNC_TOKENSERVER__INIT_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      # No SYNC_TOKENSERVER__INIT_NODE_URL here: firefox-sync-migrate creates
+      # the node row; this role may only update a node's load (guard.sql).
       # Mozilla accounts: Firefox signs in at accounts.firefox.com; the
       # tokenserver verifies its OAuth token there and knows the account
       # only as <uid>@api.accounts.firefox.com.

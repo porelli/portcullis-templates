@@ -182,12 +182,35 @@ CREATE ROLE firefoxsync_app;
 ALTER ROLE firefoxsync_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
     PASSWORD :'app_password';
 ALTER ROLE firefoxsync_app SET search_path = public;
+-- Exactly what the server's queries need (syncstorage-rs 0.24.0,
+-- tokenserver-postgres/src/db/db_impl.rs, syncstorage-postgres): users rows
+-- are read, added and updated (never deleted); of nodes only the load
+-- columns change (add_user_to_node, get_best_node); services, the migration
+-- record and the allowlist are read only. The node row itself is created by
+-- firefox-sync-migrate (INIT_NODE_URL is not set on the public server: its
+-- INSERT ... ON CONFLICT DO NOTHING needs INSERT on nodes). Sequences: USAGE
+-- only (nextval for new rows; no setval). Every other table of public is
+-- syncstorage's own (the encrypted records), read and written in full.
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM firefoxsync_app;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM firefoxsync_app;
 GRANT USAGE, CREATE ON SCHEMA public TO firefoxsync_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO firefoxsync_app;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO firefoxsync_app;
-REVOKE ALL ON public.sync_allowed_accounts FROM firefoxsync_app;
-GRANT SELECT ON public.sync_allowed_accounts TO firefoxsync_app;
+DO $$
+DECLARE
+    t TEXT;
+BEGIN
+    FOR t IN SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+               AND c.relname NOT IN ('users', 'nodes', 'services', '__diesel_schema_migrations',
+                                     'sync_allowed_accounts', 'config')
+    LOOP
+        EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO firefoxsync_app', t);
+    END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE ON public.users TO firefoxsync_app;
+GRANT SELECT ON public.nodes TO firefoxsync_app;
+GRANT UPDATE (current_load, available) ON public.nodes TO firefoxsync_app;
+GRANT SELECT ON public.services, public.__diesel_schema_migrations, public.sync_allowed_accounts TO firefoxsync_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO firefoxsync_app;
 
 SELECT 'portcullis-guard: ' || (SELECT count(*) FROM sync_allowed_accounts) || ' allowed account(s), '
        || (SELECT count(DISTINCT email) FROM users) || ' with Sync data on this server' AS status;

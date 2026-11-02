@@ -47,6 +47,11 @@ if [ "$(echo "$URLS" | grep -c '^postgres://firefoxsync_app:')" = 2 ]; then
 else
   fail "public server database URLs: $URLS"
 fi
+if [ "$(yq -r '.services["firefox-sync"].environment.SYNC_TOKENSERVER__INIT_NODE_URL // ""' "$COMPOSE")" = "" ]; then
+  pass "public server creates no node (no INIT_NODE_URL; firefox-sync-migrate does)"
+else
+  fail "public server sets SYNC_TOKENSERVER__INIT_NODE_URL (needs INSERT on nodes)"
+fi
 assert_compose_setting "$COMPOSE" FIREFOX_SYNC_ALLOWED_ACCOUNTS '\$\{FIREFOX_SYNC_ALLOWED_ACCOUNTS:-\}'
 if grep -q 'BEFORE INSERT OR UPDATE OF email ON users' "$GUARD"; then
   pass "guard.sql: allowlist trigger on users"
@@ -86,9 +91,13 @@ guard() {
     portcullis-firefox-sync-db-1 psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction \
     -U firefoxsync -d firefoxsync -f - < "$GUARD" 2>&1
 }
-# A users row as the tokenserver's post_user writes it.
+# As the public server connects (socket, role firefoxsync_app).
+app_sql() {
+  docker exec portcullis-firefox-sync-db-1 psql -X -U firefoxsync_app -d firefoxsync -tAc "$1" 2>&1
+}
+# A users row as the tokenserver's post_user writes it, as the server's role.
 insert_user() {
-  db "INSERT INTO users (service, email, generation, client_state, created_at, nodeid)
+  app_sql "INSERT INTO users (service, email, generation, client_state, created_at, nodeid)
       SELECT s.id, '$1@api.accounts.firefox.com', 1, 'aaaa', 1, n.id FROM services s JOIN nodes n ON n.service = s.id
       WHERE s.service = 'sync-1.5' AND n.node = 'https://$HOST' RETURNING uid"
 }
@@ -105,13 +114,18 @@ fi
 NODE=$(db "SELECT count(*) FROM nodes WHERE node = 'https://$HOST' AND downed = 0 AND capacity = 2147483647")
 [ "$NODE" = 1 ] && pass "sync node https://$HOST, capacity 2147483647" || fail "sync node missing or capacity not raised ($NODE)"
 
-# The server's role can't touch the guard (socket connection as firefoxsync_app).
-app_sql() {
-  docker exec portcullis-firefox-sync-db-1 psql -X -U firefoxsync_app -d firefoxsync -tAc "$1" 2>&1
-}
+# The server's role can't touch the guard or what it doesn't need.
 for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
             "ALTER TABLE users DISABLE TRIGGER ALL" \
             "SET session_replication_role = replica" \
+            "SET event_triggers = off" \
+            "UPDATE nodes SET node = 'https://evil.example'" \
+            "UPDATE nodes SET capacity = 0" \
+            "INSERT INTO nodes (service, node, available, current_load, capacity, downed, backoff) VALUES (1, 'https://evil.example', 1, 0, 1, 0, 0)" \
+            "DELETE FROM users" \
+            "DELETE FROM __diesel_schema_migrations" \
+            "INSERT INTO services (service, pattern) VALUES ('x', 'y')" \
+            "SELECT setval('users_uid_seq', 1)" \
             "INSERT INTO sync_allowed_accounts (uid, added_at, added_by) VALUES ('$OUTSIDER', 1, 'x')" \
             "DELETE FROM sync_allowed_accounts" \
             "DROP EVENT TRIGGER portcullis_app_no_ddl" \
@@ -124,6 +138,12 @@ for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
     fail "firefoxsync_app could: $stmt -> $OUT"
   fi
 done
+OUT=$(app_sql "UPDATE nodes SET current_load = current_load, available = available WHERE node = 'https://$HOST'" || true)
+if echo "$OUT" | grep -qi 'error'; then
+  fail "firefoxsync_app can't update a node's load: $OUT"
+else
+  pass "firefoxsync_app may update a node's load (add_user_to_node)"
+fi
 OUT=$(app_sql "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (version VARCHAR(50) PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)" || true)
 if echo "$OUT" | grep -qi 'error'; then
   fail "diesel's no-op migration check refused for firefoxsync_app: $OUT"

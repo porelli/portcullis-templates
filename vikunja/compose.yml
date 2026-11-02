@@ -22,8 +22,12 @@ services:
       # unless the admin turns the setting on.
       VIKUNJA_SERVICE_ENABLELINKSHARING: ${VIKUNJA_LINK_SHARING:-false}
       VIKUNJA_SERVICE_ENABLEREGISTRATION: "false"
-      # Sessions end after 24 h (upstream: 72 h, 30 days "remember me"):
-      # bounds how long a user removed from the group keeps a session.
+      # Idle timeout of the refresh sessions (upstream: 72 h, 30 days
+      # "remember me"): a session not used for 24 h ends; an active one keeps
+      # refreshing (RefreshSession rotates it, pkg/models/sessions.go
+      # last_active). To end an active one, disable the user in Vikunja
+      # (vikunja user change-status): effective within 10 min (JWT
+      # lifetime, service.jwtttlshort).
       VIKUNJA_SERVICE_JWTTTL: "86400"
       VIKUNJA_SERVICE_JWTTTLLONG: "86400"
       # URLs users enter (webhooks, migrations, avatars, backgrounds) never

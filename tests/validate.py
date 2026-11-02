@@ -192,7 +192,7 @@ IDENTITY_ENV_FORBIDDEN = [
      "Paperless auto-login / remote-user auth bypasses SSO"),
     (r"^GITEA__oauth2_client__ACCOUNT_LINKING$", r"(?i)^auto$", "Gitea links OAuth logins to existing accounts by name/email"),
     (r"^GITEA__oauth2_client__USERNAME$", r"(?i)^email$", "Gitea OAuth username is the email"),
-    (r"^VIKUNJA_AUTH_OPENID_PROVIDERS_[A-Z0-9_]+_(EMAILFALLBACK|USERNAMEFALLBACK)$", r"(?i)^(true|1)$",
+    (r"^VIKUNJA_AUTH_OPENID_PROVIDERS_[A-Z0-9_]+_(EMAILFALLBACK|USERNAMEFALLBACK)$", r"(?i)^(1|t|true)$",
      "Vikunja links OIDC logins to existing accounts by email / username"),
 ]
 
