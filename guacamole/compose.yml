@@ -42,7 +42,9 @@ services:
               echo 'RewriteCond %{HTTP:X-Forwarded-User} !^$$'
               echo "RewriteCond %{REMOTE_ADDR} !^$${TRAEFIK_IP_RE}\$$"
               echo 'RewriteRule .* - [F]'
-              echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin [NC]'
+              # Tomcat matches a RewriteCond pattern against the whole value
+              # (Matcher.matches(), unlike Apache), hence the trailing .*
+              echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin.* [NC]'
               echo 'RewriteRule .* - [F]'
             } > "$$CATALINA_BASE/conf/Catalina/localhost/rewrite.config"
             xmlstarlet edit --inplace \
