@@ -3,6 +3,9 @@ description: Minimalist Kanban project management with header-based auth
 icon: "\U0001F4CB"
 category: productivity
 tags: [kanban, projects, tasks, boards]
+links:
+  website: https://kanboard.org/
+  source: https://github.com/kanboard/kanboard
 instances: multi
 
 auth:

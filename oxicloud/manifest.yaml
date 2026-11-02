@@ -4,6 +4,9 @@ description: Lightweight self-hosted file storage and sync with WebDAV, CalDAV a
 icon: "\U0001F5C2"
 category: productivity
 tags: [files, storage, sync, webdav, caldav, carddav, rust]
+links:
+  website: https://atalayalabs.github.io/OxiCloud/
+  source: https://github.com/AtalayaLabs/OxiCloud
 instances: multi
 
 auth:

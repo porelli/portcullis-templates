@@ -4,6 +4,9 @@ description: Non-destructive photo editor and library by ArtCraft, running entir
 icon: "\U0001F305"
 category: creative
 tags: [artcraft, wasm, photo, raw, library]
+links:
+  website: https://getartcraft.com/apps/lightcraft
+  source: https://github.com/storytold/lightcraft
 instances: multi
 
 auth:

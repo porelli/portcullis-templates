@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
@@ -644,6 +645,65 @@ def check_manifest_rules(t: Template, r: Report) -> None:
     if auth.get("method") in ("forward-auth", "header-auth") and auth.get("group_access") is False:
         r.warn(t.m_where, f"auth.method {auth['method']} with group_access: false lets every Portcullis user in",
                "set group_access: true and access_group: users_<app> unless that is intended")
+
+
+LINKS_HINT = "see CONTRIBUTING.md, \"Adding an app\" (links): the project's own homepage and its canonical upstream repository"
+# links.source on a known code host must be the repository itself (no
+# tree/blob/release pages, no .git, no trailing slash), by URL path.
+SOURCE_HOSTS = {
+    "github.com": r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+    "codeberg.org": r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+    "gitea.com": r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+    "bitbucket.org": r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+    "gitlab.com": r"/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+",
+    "git.sr.ht": r"/~[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
+}
+# Registry and package pages are distribution channels, not the project.
+LINK_FORBIDDEN_HOSTS = {"hub.docker.com", "registry.hub.docker.com", "docker.io", "ghcr.io", "quay.io",
+                        "gcr.io", "lscr.io", "registry.gitlab.com", "artifacthub.io", "pypi.org", "www.npmjs.com"}
+SELF_REPO = "https://github.com/porelli/portcullis-templates"
+CRAFT_REPO_RE = re.compile(r"(?m)^\s*CRAFT_REPO:\s*['\"]?(storytold/[A-Za-z0-9_.-]+)['\"]?\s*$")
+
+
+def check_links(t: Template, r: Report) -> None:
+    """links: the app's official website and upstream source repository (schema: both required, https)."""
+    links = (t.manifest or {}).get("links")
+    if not isinstance(links, dict):
+        return  # the schema reports it
+    for field in ("website", "source"):
+        url = links.get(field)
+        if not isinstance(url, str):
+            continue
+        parts = urlsplit(url)
+        host, path = (parts.hostname or "").lower(), parts.path
+        if host in LINK_FORBIDDEN_HOSTS or (host == "github.com" and "/pkgs/" in path):
+            r.error(t.m_where, f"links.{field} {url} is a registry or package page, not the project",
+                    LINKS_HINT)
+        if url.rstrip("/").lower().startswith(SELF_REPO.lower()):
+            r.error(t.m_where, f"links.{field} {url} points at this templates repository", LINKS_HINT)
+    source = links.get("source")
+    if isinstance(source, str):
+        parts = urlsplit(source)
+        host, path = (parts.hostname or "").lower(), parts.path
+        pat = SOURCE_HOSTS.get(host)
+        if pat is None:
+            r.warn(t.m_where, f"links.source {source} is not on a known code host ({', '.join(sorted(SOURCE_HOSTS))})",
+                   "fine for a self-hosted forge, but make sure it is the canonical repository, not a mirror")
+        elif not re.fullmatch(pat, path) or path.endswith(".git") or "/-/" in path + "/" \
+                or parts.query or parts.fragment:
+            r.error(t.m_where, f"links.source {source} is not a repository URL on {host}",
+                    "use the repository's root, e.g. https://github.com/<owner>/<repo> (no /tree/..., /-/..., .git, "
+                    "trailing slash, query or fragment); " + LINKS_HINT)
+    # Craft templates download storytold/<app> releases: the source is that repo.
+    try:
+        with open(t.compose_path, encoding="utf-8") as f:
+            craft = CRAFT_REPO_RE.findall(f.read())
+    except OSError:
+        craft = []
+    for repo in set(craft):
+        want = f"https://github.com/{repo}"
+        if source != want:
+            r.error(t.m_where, f"links.source must be {want} (compose downloads CRAFT_REPO {repo})", LINKS_HINT)
 
 
 def check_compose(t: Template, r: Report) -> None:
@@ -2185,6 +2245,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             check_manifest_schema(t, validator, sub)
             if t.manifest is not None:
                 check_manifest_rules(t, sub)
+                check_links(t, sub)
                 check_compose(t, sub)
         if i in ids:
             r.errors += sub.errors

@@ -4,6 +4,9 @@ description: Self-hosted to-do lists, kanban boards and project planning
 icon: "✅"
 category: productivity
 tags: [tasks, todo, kanban, projects, caldav]
+links:
+  website: https://vikunja.io/
+  source: https://github.com/go-vikunja/vikunja
 instances: multi
 
 auth:

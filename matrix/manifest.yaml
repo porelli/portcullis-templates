@@ -4,6 +4,9 @@ description: Self-hosted Matrix chat server (Synapse) with the Element web clien
 icon: "\U0001F4AC"
 category: communication
 tags: [chat, matrix, synapse, element, messaging, e2ee]
+links:
+  website: https://element-hq.github.io/synapse/
+  source: https://github.com/element-hq/synapse
 instances: multi
 
 auth:

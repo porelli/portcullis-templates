@@ -4,6 +4,9 @@ description: 3D texture painting tool by ArtCraft, running entirely in the brows
 icon: "\U0001F9F1"
 category: creative
 tags: [artcraft, wasm, 3d, texture, painting]
+links:
+  website: https://getartcraft.com/apps/texturecraft
+  source: https://github.com/storytold/texturecraft
 instances: multi
 
 auth:

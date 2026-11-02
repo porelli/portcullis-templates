@@ -4,6 +4,9 @@ description: PDF reader and editor by ArtCraft, running entirely in the browser 
 icon: "\U0001F4C4"
 category: productivity
 tags: [artcraft, wasm, pdf, documents, editor]
+links:
+  website: https://getartcraft.com/apps/pdfcraft
+  source: https://github.com/storytold/pdfcraft
 instances: multi
 
 auth:

@@ -4,6 +4,9 @@ description: Zigbee to MQTT bridge with its web frontend and a bundled, password
 icon: "\U0001F41D"
 category: home-automation
 tags: [home-automation, zigbee, mqtt, iot, smart-home]
+links:
+  website: https://www.zigbee2mqtt.io/
+  source: https://github.com/Koenkk/zigbee2mqtt
 instances: multi
 
 auth:

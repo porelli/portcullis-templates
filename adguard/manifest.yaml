@@ -3,6 +3,9 @@ description: Network-wide ad and tracker blocking with DNS-over-HTTPS
 icon: "\U0001F6E1"
 category: networking
 tags: [dns, adblock, privacy, filtering]
+links:
+  website: https://adguard.com/en/adguard-home/overview.html
+  source: https://github.com/AdguardTeam/AdGuardHome
 instances: multi
 
 auth:

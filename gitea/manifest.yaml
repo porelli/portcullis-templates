@@ -4,6 +4,9 @@ description: Lightweight self-hosted Git forge — repositories, issues, pull re
 icon: "\U0001F375"
 category: devops
 tags: [git, forge, code-review, issues, packages]
+links:
+  website: https://about.gitea.com/
+  source: https://github.com/go-gitea/gitea
 instances: multi
 
 auth:

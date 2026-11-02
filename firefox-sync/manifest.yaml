@@ -4,6 +4,9 @@ description: Self-hosted Firefox Sync server (bookmarks, passwords, history, tab
 icon: "\U0001F98A"
 category: productivity
 tags: [firefox, sync, bookmarks, browser, mozilla]
+links:
+  website: https://mozilla-services.github.io/syncstorage-rs/
+  source: https://github.com/porelli/firefox-sync
 instances: multi
 
 auth:
@@ -14,8 +17,9 @@ auth:
   group_access: false
   group_admin: false
   notes: >
-    Mozilla's syncstorage-rs 0.24.0 (Sync storage + tokenserver), as built
-    by porelli/firefox-sync (PostgreSQL image). Firefox signs in with a
+    Mozilla's syncstorage-rs 0.24.0 (Sync storage + tokenserver; upstream
+    https://github.com/mozilla-services/syncstorage-rs), as built by
+    porelli/firefox-sync (PostgreSQL image; links.source). Firefox signs in with a
     Mozilla account at accounts.firefox.com, then calls this server's
     tokenserver with that account's OAuth token, which the tokenserver
     verifies with Mozilla and exchanges for a short-lived storage token

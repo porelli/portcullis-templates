@@ -3,6 +3,9 @@ description: Network-wide ad blocking via DNS sinkhole (every member of the acce
 icon: "\U0001F6AB"
 category: networking
 tags: [dns, adblock, privacy, filtering]
+links:
+  website: https://pi-hole.net/
+  source: https://github.com/pi-hole/pi-hole
 instances: multi
 
 auth:

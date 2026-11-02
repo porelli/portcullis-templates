@@ -5,7 +5,7 @@
   "description": "Schema for <app-id>/manifest.yaml. The Hub enforces the same rules and skips templates that fail (integration contracts §3). Rules that need the compose file or the filesystem live in tests/validate.py.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "description", "icon", "category", "tags", "auth"],
+  "required": ["name", "description", "icon", "category", "tags", "links", "auth"],
   "properties": {
     "name": {
       "description": "Display name shown in the Hub.",
@@ -36,6 +36,7 @@
       "uniqueItems": true,
       "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]{0,31}$"}
     },
+    "links": {"$ref": "#/$defs/links"},
     "auth": {"$ref": "#/$defs/auth"},
     "tests": {"$ref": "#/$defs/tests"},
     "settings": {
@@ -110,6 +111,38 @@
       "description": "No control characters (Hub hasControlChars): the value is spliced into .env files.",
       "type": "string",
       "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "httpsUrl": {
+      "description": "An absolute https:// URL with a host, no whitespace, no credentials and no template placeholders.",
+      "type": "string",
+      "format": "uri",
+      "maxLength": 512,
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+(?::[0-9]{1,5})?(?:[/?#][^\\s{}<>\"\\\\^`|]*)?$"
+    },
+    "links": {
+      "description": "Where the app itself comes from, shown on the app's docs page and in the catalog: the project's official website and its upstream source code repository (GitHub, GitLab, Codeberg, Gitea, SourceHut...). Both are required. A closed-source app sets source: null and says why in source_note.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["website", "source"],
+      "properties": {
+        "website": {
+          "description": "The project's own homepage (not a mirror, store page or Docker Hub). If the project has none, its repository or documentation site.",
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "source": {
+          "description": "The canonical upstream code repository, e.g. https://github.com/go-gitea/gitea, or the repository the template's image is built from when that differs (name the upstream in auth.notes). null only for closed-source apps, with source_note.",
+          "oneOf": [{"$ref": "#/$defs/httpsUrl"}, {"type": "null"}]
+        },
+        "source_note": {
+          "description": "Only with source: null: why there is no source repository (e.g. \"Plex Media Server is proprietary\").",
+          "$ref": "#/$defs/singleLine",
+          "minLength": 10,
+          "maxLength": 200
+        }
+      },
+      "if": {"properties": {"source": {"type": "null"}}, "required": ["source"]},
+      "then": {"required": ["source_note"]},
+      "else": {"not": {"required": ["source_note"]}}
     },
     "group": {
       "description": "LLDAP group name.",

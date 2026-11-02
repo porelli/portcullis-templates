@@ -10,6 +10,7 @@
 - [ ] `bash tests/compose-config.sh <app-id>` passes
 - [ ] `shellcheck -S warning` is clean for changed scripts
 - [ ] Images pinned to an explicit release tag **and** `@sha256:` digest; no database major bumps
+- [ ] `links.website` (official homepage) and `links.source` (canonical upstream repository) checked by hand
 - [ ] Auth method chosen per CONTRIBUTING.md; `auth.notes` explains how login, groups and admin work
 - [ ] Forward-/header-auth routers use `portcullis-auth@docker,portcullis-groups@docker`; a native-OIDC host-wide router does not
 - [ ] If any realm user could otherwise sign in: login paths gated by group, least-privileged default role

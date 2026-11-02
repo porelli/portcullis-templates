@@ -4,6 +4,9 @@ description: Photo and image editor by ArtCraft, running entirely in the browser
 icon: "\U0001F4F7"
 category: creative
 tags: [artcraft, wasm, photo, image, editor]
+links:
+  website: https://getartcraft.com/apps/photocraft
+  source: https://github.com/storytold/photocraft
 instances: multi
 
 auth:

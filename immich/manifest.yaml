@@ -3,6 +3,9 @@ description: Self-hosted photo and video backup with AI-powered search
 icon: "\U0001F4F7"
 category: media
 tags: [photos, videos, backup, ai, gallery]
+links:
+  website: https://immich.app/
+  source: https://github.com/immich-app/immich
 instances: multi
 
 auth:

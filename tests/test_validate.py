@@ -26,6 +26,9 @@ description: Demo app
 icon: "x"
 category: monitoring
 tags: [demo]
+links:
+  website: https://demo.example.org/
+  source: https://github.com/example/demo
 instances: {instances}
 auth:
   method: header-auth
@@ -125,6 +128,7 @@ class Case(unittest.TestCase):
         v.check_manifest_schema(t, self.validator, r)
         self.assertIsNotNone(t.manifest, r.errors)
         v.check_manifest_rules(t, r)
+        v.check_links(t, r)
         v.check_compose(t, r)
         self.template = t
         return r.errors, r.warnings
@@ -148,6 +152,7 @@ class Case(unittest.TestCase):
         r = v.Report()
         v.check_manifest_schema(t, self.validator, r)
         v.check_manifest_rules(t, r)
+        v.check_links(t, r)
         v.check_compose(t, r)
         return r.errors
 
@@ -344,6 +349,7 @@ class TestV2Refuses(Case):
         r = v.Report()
         v.check_manifest_schema(t, self.validator, r)
         v.check_manifest_rules(t, r)
+        v.check_links(t, r)
         v.check_compose(t, r)
         self.assertError(r.errors, "is shared by every instance and must be read-only (:ro)")
 
@@ -670,9 +676,102 @@ class SigninTest(Case):
         r = v.Report()
         v.check_manifest_schema(t, self.validator, r)
         v.check_manifest_rules(t, r)
+        v.check_links(t, r)
         v.check_compose(t, r)
         self.assertTrue(any("does not check the username" in w for w in r.warnings), r.warnings)
 
+
+
+LINKS = "links:\n  website: https://demo.example.org/\n  source: https://github.com/example/demo\n"
+
+
+class TestLinks(Case):
+    def links(self, block: str) -> Tuple[List[str], List[str]]:
+        self.run_template()
+        self.rewrite_manifest(LINKS, block)
+        t = v.Template("demo")
+        r = v.Report()
+        v.check_manifest_schema(t, self.validator, r)
+        v.check_links(t, r)
+        return r.errors, r.warnings
+
+    def test_links_are_required(self) -> None:
+        errors, _ = self.links("")
+        self.assertError(errors, "'links' is a required property")
+
+    def test_website_and_source_are_required(self) -> None:
+        errors, _ = self.links("links:\n  website: https://demo.example.org/\n")
+        self.assertError(errors, "'source' is a required property")
+        errors, _ = self.links("links:\n  source: https://github.com/example/demo\n")
+        self.assertError(errors, "'website' is a required property")
+
+    def test_https_only(self) -> None:
+        for url in ("http://demo.example.org/", "ftp://demo.example.org/", "https://localhost/",
+                    "https://{{HOST_DEMO}}/", "https://user@demo.example.org/", "https://demo.example.org/a b", ""):
+            with self.subTest(url=url):
+                errors, _ = self.links(f"links:\n  website: \"{url}\"\n  source: https://github.com/example/demo\n")
+                self.assertError(errors, "links.website")
+                errors, _ = self.links(f"links:\n  website: https://demo.example.org/\n  source: \"{url}\"\n")
+                self.assertError(errors, "links.source")
+
+    def test_closed_source_needs_a_note(self) -> None:
+        errors, _ = self.links("links:\n  website: https://demo.example.org/\n  source: null\n")
+        self.assertError(errors, "'source_note' is a required property")
+        errors, _ = self.links("links:\n  website: https://demo.example.org/\n  source: null\n"
+                               "  source_note: Demo Server is proprietary\n")
+        self.assertClean(errors)
+
+    def test_note_only_without_source(self) -> None:
+        errors, _ = self.links(LINKS + "  source_note: Demo Server is proprietary\n")
+        self.assertError(errors, "links")
+
+    def test_unknown_key(self) -> None:
+        errors, _ = self.links(LINKS + "  docs: https://demo.example.org/docs\n")
+        self.assertError(errors, "Additional properties are not allowed")
+
+    def test_source_must_be_the_repository_root(self) -> None:
+        for url in ("https://github.com/example", "https://github.com/example/demo/tree/main",
+                    "https://github.com/example/demo.git", "https://github.com/example/demo/",
+                    "https://github.com/example/demo?tab=readme", "https://gitlab.com/example/demo/-/tree/main",
+                    "https://git.sr.ht/example/demo"):
+            with self.subTest(url=url):
+                errors, _ = self.links(f"links:\n  website: https://demo.example.org/\n  source: {url}\n")
+                self.assertError(errors, "is not a repository URL")
+
+    def test_known_forges_are_accepted(self) -> None:
+        for url in ("https://gitlab.com/example/group/demo", "https://codeberg.org/example/demo",
+                    "https://gitea.com/example/demo", "https://git.sr.ht/~example/demo"):
+            with self.subTest(url=url):
+                errors, warnings = self.links(f"links:\n  website: https://demo.example.org/\n  source: {url}\n")
+                self.assertClean(errors)
+                self.assertEqual(warnings, [])
+
+    def test_self_hosted_forge_warns(self) -> None:
+        errors, warnings = self.links("links:\n  website: https://demo.example.org/\n"
+                                      "  source: https://git.example.org/demo/demo\n")
+        self.assertClean(errors)
+        self.assertTrue(any("not on a known code host" in w for w in warnings), warnings)
+
+    def test_registry_pages_are_refused(self) -> None:
+        for url in ("https://hub.docker.com/r/example/demo", "https://ghcr.io/example/demo",
+                    "https://github.com/example/demo/pkgs/container/demo"):
+            with self.subTest(url=url):
+                errors, _ = self.links(f"links:\n  website: {url}\n  source: https://github.com/example/demo\n")
+                self.assertError(errors, "registry or package page")
+
+    def test_craft_source_matches_the_downloaded_repo(self) -> None:
+        self.run_template(env="      CRAFT_REPO: storytold/democraft\n")
+        t = v.Template("demo")
+        r = v.Report()
+        v.check_manifest_schema(t, self.validator, r)
+        v.check_links(t, r)
+        self.assertError(r.errors, "links.source must be https://github.com/storytold/democraft")
+        self.rewrite_manifest("https://github.com/example/demo", "https://github.com/storytold/democraft")
+        t = v.Template("demo")
+        r = v.Report()
+        v.check_manifest_schema(t, self.validator, r)
+        v.check_links(t, r)
+        self.assertClean(r.errors)
 
 
 class TestImmutableHosts(Case):

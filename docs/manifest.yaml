@@ -3,6 +3,9 @@ description: Public documentation — no authentication
 icon: "\U0001F4C4"
 category: public
 tags: [docs, static, nginx]
+links:
+  website: https://squidfunk.github.io/mkdocs-material/
+  source: https://github.com/squidfunk/mkdocs-material
 instances: multi
 
 auth:

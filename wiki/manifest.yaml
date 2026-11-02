@@ -3,6 +3,9 @@ description: Modern wiki with Portcullis sign-in (OpenID Connect) and group-base
 icon: "\U0001F4D6"
 category: productivity
 tags: [wiki, docs, knowledge-base]
+links:
+  website: https://js.wiki/
+  source: https://github.com/requarks/wiki
 instances: multi
 
 auth:

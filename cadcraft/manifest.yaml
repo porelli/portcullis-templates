@@ -4,6 +4,9 @@ description: Computer-aided design and drafting by ArtCraft, running entirely in
 icon: "\U0001F4CF"
 category: creative
 tags: [artcraft, wasm, cad, drafting, engineering]
+links:
+  website: https://getartcraft.com/apps/cadcraft
+  source: https://github.com/storytold/cadcraft
 instances: multi
 
 auth:

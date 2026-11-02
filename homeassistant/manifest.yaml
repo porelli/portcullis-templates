@@ -4,6 +4,9 @@ description: Open-source home automation hub with dashboards, automations and in
 icon: "\U0001F3E0"
 category: home-automation
 tags: [home-automation, smart-home, iot, dashboards, automations]
+links:
+  website: https://www.home-assistant.io/
+  source: https://github.com/home-assistant/core
 instances: multi
 
 auth:

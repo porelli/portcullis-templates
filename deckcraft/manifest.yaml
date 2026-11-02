@@ -4,6 +4,9 @@ description: Presentations and slide shows by ArtCraft, running entirely in the 
 icon: "\U0001F4FD"
 category: productivity
 tags: [artcraft, wasm, presentations, slides, office]
+links:
+  website: https://getartcraft.com/apps/deckcraft
+  source: https://github.com/storytold/deckcraft
 instances: multi
 
 auth:

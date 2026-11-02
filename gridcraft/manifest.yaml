@@ -4,6 +4,9 @@ description: Spreadsheet by ArtCraft, running entirely in the browser (Rust/WebA
 icon: "\U0001F9EE"
 category: productivity
 tags: [artcraft, wasm, spreadsheet, office, data]
+links:
+  website: https://getartcraft.com/apps/gridcraft
+  source: https://github.com/storytold/gridcraft
 instances: multi
 
 auth:
