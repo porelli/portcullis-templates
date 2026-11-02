@@ -471,12 +471,10 @@ class SigninTest(Case):
         errs = self.recheck()
         self.assertTrue(any("expected_fail.outsider on a header-auth app" in e for e in errs), errs)
 
-    def test_open_native_oidc_needs_expected_fail(self) -> None:
+    def test_open_native_oidc_may_expect_outsider_failure(self) -> None:
         self.run_template()
         self.rewrite_manifest("  method: header-auth\n", "  method: native-oidc\n")
         self.rewrite_manifest("  group_access: true\n", "  group_access: false\n")
-        errs = self.recheck()
-        self.assertTrue(any("tests.signin.expected_fail.outsider is not set" in e for e in errs), errs)
         self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: \"no OIDC group restriction yet\"\n    admin:\n")
         errs = self.recheck()
         self.assertFalse(any("expected_fail" in e for e in errs), errs)

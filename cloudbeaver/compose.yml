@@ -2,15 +2,6 @@ services:
   cloudbeaver:
     image: dbeaver/cloudbeaver:26.2.3@sha256:0c875296f85ffd7c0ffaaaeff678cd2f383890050297585318d7cf8f49024d1f
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
-    # Automatic server configuration: without it CloudBeaver serves its
-    # initial-configuration wizard (server settings + an administrator
-    # password) to whoever opens it first. The local administrator is
-    # break-glass only; users sign in through the reverseProxy provider.
-    environment:
-      CB_SERVER_NAME: CloudBeaver
-      CB_SERVER_URL: https://${PORTCULLIS_HOST_CLOUDBEAVER:-db.portcullis.local}
-      CB_ADMIN_NAME: cbadmin
-      CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:?CLOUDBEAVER_ADMIN_PASSWORD must be set}
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
       - ./templates/cloudbeaver/cloudbeaver-runtime.conf:/opt/cloudbeaver/workspace/GlobalConfiguration/.cloudbeaver.runtime.conf:ro

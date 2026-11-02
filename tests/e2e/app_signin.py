@@ -347,23 +347,40 @@ def wait_containers(timeout: int) -> None:
     raise RuntimeError(f"containers not ready after {timeout}s: {state}")
 
 
+def fresh_start() -> None:
+    """Start from a fresh install: stop what the shell test left and drop
+    the app's volumes (the default instance's portcullis_<key>), so its
+    state (half-run setup sidecars, brute-force throttles from refused
+    password logins) can't decide the result."""
+    sh("compose_down", APP, check=False)
+    for key in (COMPOSE.get("volumes") or {}):
+        docker("volume", "rm", "-f", f"portcullis_{key}")
+
+
 def run_setup() -> None:
-    """tests.signin.setup: documented post-start steps (e.g. Headscale's API
-    key for Headplane): run a command in a service, save its output as an
-    app env value, then restart the app with it."""
+    """tests.signin.setup: post-start steps an admin would do (e.g.
+    Headscale's API key for Headplane): run a command in a service; with
+    save_env, save its last output line as that app env value and restart
+    the app with it."""
     steps = SIGNIN.get("setup") or []
     if not steps:
         return
+    restart = False
     for st in steps:
-        out = subprocess.run(["docker", "exec", f"portcullis-{st['service']}-1", *st["command"]],
+        user = ["-u", st["user"]] if st.get("user") else []
+        out = subprocess.run(["docker", "exec", *user, f"portcullis-{st['service']}-1", *st["command"]],
                              capture_output=True, text=True, timeout=120)
         if out.returncode != 0:
             raise RuntimeError(f"setup {st['command']}: {out.stderr[-500:]}")
         if st.get("save_env"):
             val = out.stdout.strip().splitlines()[-1].strip()
             os.environ[st["save_env"]] = val
+            restart = True
             log(f"setup: {st['save_env']} from `{' '.join(st['command'])}`")
-    sh("compose_up", APP)
+        else:
+            log(f"setup: ran `{' '.join(st['command'])}` in {st['service']}")
+    if restart:
+        sh("compose_up", APP)
 
 
 # ── Browser ────────────────────────────────────────────────────────
@@ -629,7 +646,13 @@ class Flow:
                 except PWError:
                     pass
                 continue
-            ok, last = self._check_once(SIGNIN["signed_in"], host)
+            spec = SIGNIN["signed_in"]
+            # A check that opens its own page waits while the app's sign-in
+            # steps are on screen (navigating away would cancel them).
+            busy = bool(spec.get("url")) and any(
+                visible(page, sel) for sel in list(SIGNIN.get("login") or []) +
+                [f["selector"] for f in SIGNIN.get("fill") or []])
+            ok, last = (False, f"sign-in steps on {page.url.split('?')[0]}") if busy else self._check_once(spec, host)
             if ok:
                 shot(page, f"{self.role}-signed-in")
                 return True, last
@@ -781,6 +804,7 @@ def main() -> int:
         lldap_setup()
         keycloak_setup()
         write_policy()
+        fresh_start()
         log(sh("compose_up", APP))
         wait_containers(int(SIGNIN.get("boot_timeout", 600)))
         run_setup()

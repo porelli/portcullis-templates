@@ -71,17 +71,18 @@ urls:
 tests:
   signin:
     path: /#/sso
-    login: ["button:has-text('Use single sign-on')", "button:has-text('Continue')"]
-    # Vaultwarden has no organisations behind SSO: its fixed SSO identifier.
+    login: ["button:has-text('Use single sign-on')", "button:has-text('Continue')", "button:has-text('Create account')"]
     fill:
+      # Vaultwarden has no organisations behind SSO: its fixed SSO identifier.
       - {selector: "input[formcontrolname=identifier]", value: "00000000-01DC-01DC-01DC-000000000000"}
-    # After the first SSO login Vaultwarden asks the new user to set a
-    # master password (vault encryption, not a login).
+      # A new SSO user then sets the master password that encrypts the vault.
+      - {selector: "input[type=password] >> nth=0", value: "E2e-master-password-{username}"}
+      - {selector: "input[type=password] >> nth=1", value: "E2e-master-password-{username}"}
+    password: "Vaultwarden's master password encrypts the vault; a new user sets it after the SSO login (auth.notes)"
     signed_in:
-      html: "{email}"
-      url_contains: set-initial-password
+      text: "{email}"
+      url: /#/settings/account
       wait: 20
-    password: "Vaultwarden's master password encrypts the vault; it is set after the SSO login (auth.notes)"
     admin:
       reach: /admin
       text: "Vaultwarden"

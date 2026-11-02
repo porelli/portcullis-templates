@@ -569,6 +569,11 @@
                   },
                   "save_env": {
                     "$ref": "#/$defs/envKey"
+                  },
+                  "user": {
+                    "type": "string",
+                    "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                    "description": "User to run the command as (docker exec -u)"
                   }
                 }
               }

@@ -44,5 +44,8 @@ tests:
     signed_in:
       text: "{username}"
       wait: 20
+    # e2eadmin signs in first and becomes the owner. Actual then admits only
+    # users the owner added in its user directory (user creation mode
+    # manual), so the outsider is refused by Actual itself.
     expected_fail:
-      outsider: "group_access: false: Actual has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"
+      member: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would let every Portcullis user in until the Hub's per-app Keycloak client access (Task 4b)"

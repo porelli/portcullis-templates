@@ -86,7 +86,8 @@ tests:
         save_env: HEADSCALE_API_KEY
     login: ["a:has-text('Single Sign-On')", "button:has-text('Single Sign-On')", "a:has-text('OpenID')"]
     signed_in:
-      text: "{username}"
+      # The signed-in user is in the page's loader data (avatar menu).
+      html: "{username}"
       wait: 20
     password: "Headplane's login page also takes a Headscale API key (a password-type field), its break-glass login"
     expected_fail:

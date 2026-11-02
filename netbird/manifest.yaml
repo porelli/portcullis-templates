@@ -87,8 +87,12 @@ urls:
 tests:
   signin:
     path: /
+    # e2eadmin signs in first and becomes the owner (onboarding first).
+    login: ["text=Skip to Dashboard"]
     signed_in:
       text: "{username}"
       wait: 30
+    # NetBird holds every later user in "pending approval" until the owner
+    # approves them, so the outsider is refused by NetBird itself.
     expected_fail:
-      outsider: "group_access: false: NetBird has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"
+      member: "NetBird puts every user after the owner in pending approval until the owner approves them in the dashboard; the test doesn't approve e2emember (outsiders get the same pending state, nothing restricts them by group until the Hub's per-app Keycloak client access, Task 4b)"

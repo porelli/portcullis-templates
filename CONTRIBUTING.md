@@ -134,7 +134,8 @@ generated secret, writes group-gate's policy file with `access_group` and
 `auth.admin_paths`), starts the app, and for each user opens a one-time setup
 link (`portcullis invite <user> --to https://<host><path>`) in Chromium with a
 virtual security key: passkey registration, then the app's own sign-in
-(native OIDC / SAML round trip, or forward-auth headers). It checks:
+(native OIDC / SAML round trip, or forward-auth headers). Every run starts the
+app from fresh volumes. It checks:
 
 | check | passes when |
 |-------|-------------|
@@ -159,12 +160,13 @@ tests:
       # json: {url: /api/user, field: login}          # an API answer (cookies of the session; default equals {username})
       # js: "fetch('/api/me').then(r => r.json()).then(j => j.name)"   # evaluated in the app's page
       wait: 20                   # seconds to poll (default 10)
+      absent: "Permission Denied"   # optional: the app's own denial must not be on the page
     admin:                       # required with auth.group_admin: true
       json: {url: /api/user, field: isGrafanaAdmin, equals: true}
       # reach: /admin            #   the path answers 2xx (members get 403 / the app's denial)
     password: "why a password field is expected"   # e.g. a documented break-glass login
-    setup:                       # optional: documented post-start steps (e.g. an API key setting)
-      - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}
+    setup:                       # optional: post-start steps an admin would do (e.g. an API key setting)
+      - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}   # user: run as
     expected_fail:               # optional: known failures, reported but not fatal
       outsider: "why"            # if the check passes, the run fails: remove the marker
     boot_timeout: 600            # seconds for the containers to be ready (default 600)
@@ -180,10 +182,16 @@ user system (Pi-hole, Scrutiny) check the app page itself.
 Rules (`validate.py`): every template has `tests.signin`; `skip: "<reason>"`
 is only for `public`, `custom` and `mtls` apps (no Portcullis user sign-in to
 drive — docs, Plex via plex.tv, Vault UI's client-certificate tier);
-`group_admin: true` needs `admin`; a native-OIDC app with `group_access: false`
-must set `expected_fail.outsider` (it can't refuse outsiders until the Hub
-restricts Keycloak clients per app), and gated (forward-auth / header-auth)
-apps never may.
+`group_admin: true` needs `admin`; gated (forward-auth / header-auth) apps
+never mark `expected_fail.outsider`. A native-OIDC app with
+`group_access: false` that lets every Portcullis user in marks
+`expected_fail.outsider` until the Hub restricts Keycloak clients per app.
+
+Never widen an app's access control to make a check pass (auto-provisioning
+accounts, opening a group restriction): where the app needs an account an
+admin creates first, provision it in the test the way an admin would (a
+`setup` step with the app's own CLI), or mark the check `expected_fail`
+with the reason.
 
 Run it yourself against a stack like CI's (core booted as in
 `test-apps.yml`, app hosts in `/etc/hosts`, core's root CA trusted by
