@@ -19,7 +19,7 @@ while read -r p; do ROUTED+=("$p"); done < <(public_routed_prefixes "$MANIFEST" 
 COMPOSE_OVERRIDE=$(mktemp)
 export COMPOSE_OVERRIDE
 # Core's real public guard checks paths and credentials: give it the
-# policy-file entry the Hub would publish (version 3).
+# policy-file entry the Hub would publish (at the version core's group-gate serves, tests/lib.sh policy_version).
 write_public_policy grafana "$MANIFEST" listed
 # shellcheck disable=SC2016 # ${PORTCULLIS_HOST_GRAFANA} is for compose to expand
 write_public_override "$APP_ID" grafana '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
@@ -31,7 +31,9 @@ wait_for_url "http://${IP}:3000" 60 "$APP_ID"
 
 # Grafana login page should return HTML
 BODY=$(curl -sf "http://${IP}:3000/login" 2>/dev/null || echo "")
-if echo "$BODY" | grep -qi "grafana"; then
+# Here-string, not echo | grep -q: grep exits at the first match and the
+# echo's broken pipe would fail the test under pipefail.
+if grep -qi "grafana" <<< "$BODY"; then
   pass "/login -> Grafana login page returned"
 else
   fail "/login -> Grafana login page not found"

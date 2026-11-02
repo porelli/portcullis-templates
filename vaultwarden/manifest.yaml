@@ -80,9 +80,12 @@ tests:
       - {selector: "input[type=password] >> nth=1", value: "E2e-master-password-{username}"}
     password: "Vaultwarden's master password encrypts the vault; a new user sets it after the SSO login (auth.notes)"
     signed_in:
-      text: "{email}"
+      # The account page of the unlocked vault (the email is a read-only input).
+      js: "document.querySelector('input[formcontrolname=email]')?.value || null"
+      equals: "{email}"
       url: /#/settings/account
       wait: 20
     admin:
+      # admin_paths: group-gate lets only admin_vaultwarden reach the panel
+      # (its ADMIN_TOKEN prompt); members get 403.
       reach: /admin
-      text: "Vaultwarden"

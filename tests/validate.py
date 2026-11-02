@@ -997,6 +997,18 @@ def check_signin_test(t: Template, r: Report) -> None:
     if xfail.get("outsider") and not open_oidc and method not in SIGNIN_GATED_METHODS:
         r.warn(t.m_where, "tests.signin.expected_fail.outsider on an app that restricts sign-in by group",
                "remove it once the outsider check passes")
+    for name, xf in xfail.items():
+        for key in ("match", "not_match"):
+            if isinstance(xf, dict) and isinstance(xf.get(key), str):
+                try:
+                    re.compile(xf[key])
+                except re.error as e:
+                    r.error(t.m_where, f"tests.signin.expected_fail.{name}.{key} is not a valid regex: {e}",
+                            "searched (case-insensitive) in the check's own evidence, pages and app logs")
+    services = (t.compose or {}).get("services") or {}
+    for lf in si.get("log_files") or []:
+        if isinstance(lf, dict) and lf.get("service") not in services:
+            r.error(t.m_where, f"tests.signin.log_files service {lf.get('service')!r} is not a compose service")
     host = si.get("host")
     if isinstance(host, str):
         var = "PORTCULLIS_HOST_" + host[len("{{HOST_"):-2]
@@ -1009,7 +1021,7 @@ def check_signin_test(t: Template, r: Report) -> None:
         if isinstance(st, dict) and st.get("save_env") and st["save_env"] not in env_keys:
             r.error(t.m_where, f"tests.signin.setup save_env {st['save_env']} is not a settings/env key",
                     "setup steps only fill values the manifest documents (e.g. a post-start API key setting)")
-        if isinstance(st, dict) and st.get("service") not in ((t.compose or {}).get("services") or {}):
+        if isinstance(st, dict) and "service" in st and st.get("service") not in ((t.compose or {}).get("services") or {}):
             r.error(t.m_where, f"tests.signin.setup service {st.get('service')!r} is not a compose service")
     sig = si.get("signed_in") or {}
     if method in ("header-auth", "native-oidc") and isinstance(sig, dict):

@@ -152,4 +152,6 @@ tests:
     signed_in:
       json: {url: /api/users/me, field: storageLabel}
     expected_fail:
-      outsider: "group_access: false: Immich has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"
+      outsider:
+        reason: "group_access: false: Immich has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"
+        match: "e2eoutsider signed in"

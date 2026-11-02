@@ -221,6 +221,10 @@ def configure_sso(token):
                 # scope is requested at all).
                 "DefaultUsernameClaim": "preferred_username",
                 "DisableHttps": False,
+                # Jellyfin sits behind Traefik's TLS: without it the plugin
+                # builds http:// callback/auth URLs (the browser then blocks
+                # the cross-scheme /sso/OID/Auth call and nobody signs in).
+                "SchemeOverride": "https",
                 "DisablePushedAuthorization": True,
                 "DoNotValidateEndpoints": False
             }

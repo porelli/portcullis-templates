@@ -141,10 +141,18 @@ app from fresh volumes. It checks:
 |-------|-------------|
 | `member` | `e2emember` is signed in (`signed_in`), with its username; with an `admin` check, it is **not** admin |
 | `admin` | `e2eadmin` is signed in and `admin` holds |
-| `outsider` | `e2eoutsider` never gets signed in (group-gate's 403, or the app's own denial) |
+| `outsider` | `e2eoutsider` never gets signed in: where group-gate decides (forward-auth, header-auth, login-path gates) only group-gate's refusal counts (HTTP 403, its page and its `DENIED` log line); the app's own denial otherwise |
 
-Any visible password field fails the run (Keycloak is passkey-only), unless
-`password` documents why the app shows one.
+Each setup link must register exactly one passkey. A marked expected failure
+must fail the way its `match` regex says, and not as `not_match` says,
+searched only in that check's evidence (its detail, the pages its flow saw,
+the app's logs since its flow started); a flow the test broke (password
+field, Keycloak/enroll or browser error, never on the app) and any exception
+fail the run. Any visible password field fails the run (Keycloak is passkey-only), unless
+`password` documents why the app shows one. If nobody could sign in, the
+outsider's refusal proves nothing and is reported `inconclusive`. One-shot
+helper services (`restart: "no"`) must have exited 0 before the browser
+starts.
 
 ```yaml
 tests:
@@ -158,17 +166,23 @@ tests:
       text: "{username}"         #   visible text (case-insensitive; url: /path to open first)
       # html: "{username}"       #   page source
       # json: {url: /api/user, field: login}          # an API answer (cookies of the session; default equals {username})
-      # js: "fetch('/api/me').then(r => r.json()).then(j => j.name)"   # evaluated in the app's page
+      # js: "fetch('/api/me').then(r => r.json()).then(j => j.name)"   # evaluated in the app's page (url: open first)
       wait: 20                   # seconds to poll (default 10)
       absent: "Permission Denied"   # optional: the app's own denial must not be on the page
-    admin:                       # required with auth.group_admin: true
-      json: {url: /api/user, field: isGrafanaAdmin, equals: true}
-      # reach: /admin            #   the path answers 2xx (members get 403 / the app's denial)
+    admin:                       # required with auth.group_admin: true (e.g. DokuWiki)
+      reach: /doku.php?do=admin  #   the path answers 2xx (members get 403 / the app's denial)
+      text: "Access Control List"
     password: "why a password field is expected"   # e.g. a documented break-glass login
     setup:                       # optional: post-start steps an admin would do (e.g. an API key setting)
       - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}   # user: run as
+      # - restart: true          # a documented restart after the first start
     expected_fail:               # optional: known failures, reported but not fatal
-      outsider: "why"            # if the check passes, the run fails: remove the marker
+      outsider:                  # if the check passes, the run fails: remove the marker
+        reason: "why"
+        match: "e2eoutsider signed in"   # regex the failure must show (evidence, page or app logs)
+    refused_users: [cbadmin-x]   # optional: extra users in both groups that must get HTTP 403
+    log_files:                   # optional: files in the containers searched by match + kept as artifacts
+      - {service: nextcloud, path: /var/www/html/data/nextcloud.log}
     boot_timeout: 600            # seconds for the containers to be ready (default 600)
     timeout: 240                 # seconds per user sign-in (default 240)
 ```

@@ -102,13 +102,78 @@ def core_env(name: str) -> str:
     return v
 
 
-def record(check: str, ok: bool, detail: str, expected_fail: Optional[str]) -> None:
-    if expected_fail:
-        status = "xpass" if ok else "expected_fail"
-        if ok:
-            detail += f" — passes now: remove tests.signin.expected_fail.{check} ({expected_fail})"
+def log_marks() -> Dict[str, Any]:
+    """Where the logs stand now: a UTC timestamp for `docker logs --since`
+    and the byte size of every log_files entry, so a check reads only what
+    its own flow produced."""
+    sizes = {}
+    for lf in SIGNIN.get("log_files") or []:
+        p = subprocess.run(["docker", "exec", f"portcullis-{lf['service']}-1", "sh", "-c",
+                            'wc -c < "$1" 2>/dev/null || echo 0', "sh", lf["path"]], capture_output=True, text=True)
+        try:
+            sizes[f"{lf['service']}:{lf['path']}"] = int((p.stdout or "0").strip() or 0)
+        except ValueError:
+            sizes[f"{lf['service']}:{lf['path']}"] = 0
+    return {"since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1)), "sizes": sizes}
+
+
+def app_logs(marks: Optional[Dict[str, Any]] = None, tag: str = "") -> str:
+    """The app containers' logs and the manifest's log_files since `marks`
+    (everything without), for expected_fail matching; kept as artifacts."""
+    marks = marks or {"since": "", "sizes": {}}
+    out = []
+    for svc in (COMPOSE.get("services") or {}):
+        since = ["--since", marks["since"]] if marks["since"] else ["--tail", "2000"]
+        p = subprocess.run(["docker", "logs", *since, f"portcullis-{svc}-1"], capture_output=True, text=True)
+        out.append(p.stdout + p.stderr)
+    for lf in SIGNIN.get("log_files") or []:
+        off = marks["sizes"].get(f"{lf['service']}:{lf['path']}", 0)
+        p = subprocess.run(["docker", "exec", f"portcullis-{lf['service']}-1", "tail", "-c", f"+{off + 1}", lf["path"]],
+                           capture_output=True, text=True)
+        text = p.stdout + p.stderr
+        out.append(text)
+        name = f"file-{lf['service']}-{os.path.basename(lf['path'])}{'-' + tag if tag else ''}"
+        with open(os.path.join(ART, re.sub(r"[^A-Za-z0-9_.-]", "_", name)), "w", encoding="utf-8") as f:
+            f.write(text)
+    return "\n".join(out)
+
+
+def gate_denied(user: str, host: str, marks: Dict[str, Any]) -> bool:
+    """group-gate itself refused `user` on `host` since `marks` (its
+    DENIED log line naming the access group)."""
+    p = subprocess.run(["docker", "logs", "--since", marks["since"], "portcullis-group-gate-1"],
+                       capture_output=True, text=True)
+    pat = re.compile(rf"DENIED user={re.escape(user)} host={re.escape(host)}\b.*need=")
+    return any(pat.search(line) for line in (p.stdout + p.stderr).splitlines())
+
+
+def record(check: str, ok: bool, detail: str, xfail: Optional[Dict[str, str]] = None,
+           page: Optional["Page"] = None, seen: Optional[List[str]] = None,
+           marks: Optional[Dict[str, Any]] = None) -> None:
+    """A check result. An expected failure must match xfail['match'] (and
+    not xfail['not_match']) in this check's own evidence: its detail, the
+    pages its flow saw and the app's logs since its flow started."""
+    if xfail and ok:
+        status = "xpass"
+        detail += f" — passes now: remove tests.signin.expected_fail.{check} ({xfail['reason']})"
+    elif xfail:
+        hay = detail
+        if page is not None:
+            try:
+                hay += "\n" + page.inner_text("body", timeout=5000)
+            except Exception:  # noqa: BLE001 - a closed page has no text
+                pass
+        hay += "\n" + "\n".join(seen or []) + "\n" + app_logs(marks, check.replace(":", "-"))
+        bad = xfail.get("not_match")
+        if bad and re.search(bad, hay, re.I | re.M):
+            status = "fail"
+            detail += f" — NOT the expected failure: /{bad}/ (not_match) found in its evidence"
+        elif re.search(xfail["match"], hay, re.I | re.M):
+            status = "expected_fail"
+            detail += f" — expected (matched /{xfail['match']}/): {xfail['reason']}"
         else:
-            detail += f" — expected: {expected_fail}"
+            status = "fail"
+            detail += f" — NOT the expected failure: /{xfail['match']}/ not found in the evidence, the pages seen or the app logs"
     else:
         status = "pass" if ok else "fail"
     results.append({"app": APP, "check": check, "status": status, "detail": detail})
@@ -128,7 +193,15 @@ COMPOSE_TEXT = open(os.path.join(APP_DIR, "compose.yml"), encoding="utf-8").read
 COMPOSE = yaml.safe_load(COMPOSE_TEXT)
 AUTH = MANIFEST.get("auth") or {}
 SIGNIN: Dict[str, Any] = (MANIFEST.get("tests") or {}).get("signin") or {}
-XFAIL: Dict[str, str] = SIGNIN.get("expected_fail") or {}
+# expected_fail.<check> = {reason, match}: the check may fail only in the
+# way `match` (regex) describes, found in the evidence, the page or the
+# app's logs; any other failure is a real one.
+XFAIL: Dict[str, Dict[str, str]] = SIGNIN.get("expected_fail") or {}
+# group-gate decides who gets in: forward-auth / header-auth apps, and the
+# native-OIDC apps whose login paths sit behind it (validate.py LOGIN_GATES:
+# gitlab, litellm, vaultwarden). Their outsider must be group-gate's 403.
+GATED = bool(AUTH.get("group_access")) and "portcullis-groups@docker" in COMPOSE_TEXT
+REFUSED_USERS: List[str] = list(SIGNIN.get("refused_users") or [])
 
 # Default instance (tests/lib.sh quirk #13): PORTCULLIS_HOST_<ROUTER> =
 # <default sub>.<domain>, client ids and groups from the manifest.
@@ -212,10 +285,12 @@ def lldap_setup() -> None:
     for g in {ACCESS_GROUP, ADMIN_GROUP} - {""}:
         gql("mutation($n: String!) { createGroup(name: $n) { id } }", {"n": g})  # error if it exists: fine
     groups = {g["displayName"]: g["id"] for g in gql("{ groups { id displayName } }")["data"]["groups"]}
-    for role, user in USERS.items():
+    people = [(role, user) for role, user in USERS.items()] + [("refused", u) for u in REFUSED_USERS]
+    for role, user in people:
         gql("mutation($u: CreateUserInput!) { createUser(user: $u) { id } }",
             {"u": {"id": user, "email": f"{user}@{DOMAIN}", "displayName": user}})
-        want = {"admin": [ACCESS_GROUP, ADMIN_GROUP], "member": [ACCESS_GROUP], "outsider": []}[role]
+        want = {"admin": [ACCESS_GROUP, ADMIN_GROUP], "member": [ACCESS_GROUP], "outsider": [],
+                "refused": [ACCESS_GROUP, ADMIN_GROUP]}[role]
         for g in want:
             if g:
                 out = gql("mutation($u: String!, $g: Int!) { addUserToGroup(userId: $u, groupId: $g) { ok } }",
@@ -224,7 +299,8 @@ def lldap_setup() -> None:
                         and "unique" not in json.dumps(out["errors"]).lower():
                     raise RuntimeError(f"LLDAP addUserToGroup {user} {g}: {out['errors']}")
     log(f"LLDAP: {USERS['admin']} in {ACCESS_GROUP or '-'} + {ADMIN_GROUP or '-'}, "
-        f"{USERS['member']} in {ACCESS_GROUP or '-'}, {USERS['outsider']} in no group")
+        f"{USERS['member']} in {ACCESS_GROUP or '-'}, {USERS['outsider']} in no group"
+        + (f"; {', '.join(REFUSED_USERS)} in both groups (must be refused)" if REFUSED_USERS else ""))
 
 
 def keycloak_token() -> str:
@@ -365,6 +441,17 @@ def fresh_start() -> None:
         docker("volume", "rm", "-f", f"portcullis_{key}")
 
 
+def wait_log(service: str, text: str, timeout: int) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = subprocess.run(["docker", "logs", f"portcullis-{service}-1"], capture_output=True, text=True)
+        if text in out.stdout or text in out.stderr:
+            log(f"setup: {service} logged {text!r}")
+            return
+        time.sleep(3)
+    raise RuntimeError(f"{service} did not log {text!r} within {timeout}s")
+
+
 def run_setup() -> None:
     """tests.signin.setup: post-start steps an admin would do (e.g.
     Headscale's API key for Headplane): run a command in a service; with
@@ -375,6 +462,13 @@ def run_setup() -> None:
         return
     restart = False
     for st in steps:
+        if st.get("restart"):
+            after = st.get("after_log") or {}
+            if after:
+                wait_log(after["service"], after["text"], int(SIGNIN.get("boot_timeout", 600)))
+            restart = True
+            log("setup: restart the app")
+            continue
         user = ["-u", st["user"]] if st.get("user") else []
         out = subprocess.run(["docker", "exec", *user, f"portcullis-{st['service']}-1", *st["command"]],
                              capture_output=True, text=True, timeout=120)
@@ -388,6 +482,7 @@ def run_setup() -> None:
         else:
             log(f"setup: ran `{' '.join(st['command'])}` in {st['service']}")
     if restart:
+        sh("compose_down", APP, check=False)
         sh("compose_up", APP)
 
 
@@ -461,8 +556,9 @@ def body_text(page: Page) -> str:
 class Flow:
     """One user's browser: setup link, passkey, the app's own sign-in."""
 
-    def __init__(self, ctx: BrowserContext, role: str):
-        self.ctx, self.role, self.user = ctx, role, USERS[role]
+    def __init__(self, ctx: BrowserContext, role: str, user: str = ""):
+        self.ctx, self.role, self.user = ctx, role, user or USERS[role]
+        self.expect_refused = role in ("outsider", "refused")
         self.page = ctx.new_page()
         self.key = Authenticator(self.page)
         self.nav: List[Tuple[int, str]] = []    # main-frame navigations on the app's hosts
@@ -470,6 +566,9 @@ class Flow:
         self.denied = ""
         self.landed = False                     # reached the app's host after the setup link
         self.aborted = False                    # stopped by a test failure (password field), not a refusal
+        self.seen: List[str] = []               # page texts on the app's hosts, for expected_fail.match
+        self.broken = ""                        # why the test itself broke (never an expected failure)
+        self.marks = log_marks()                # this flow's log window
         self.page.on("response", self._on_response)
 
     def _on_response(self, resp) -> None:
@@ -533,6 +632,12 @@ class Flow:
             want = self._want(j)
             return val == want, f"GET {url} {j['field']} = {val!r} (want {want!r})"
         if "js" in spec:
+            if spec.get("url") and not page.url.split("://", 1)[-1].endswith(host + subst(spec["url"], self.user)):
+                try:
+                    goto(page, f"https://{host}{subst(spec['url'], self.user)}")
+                    page.wait_for_timeout(1500)
+                except PWError as e:
+                    return False, f"{spec['url']}: {e}"
             if host_of(page.url) != host:
                 return False, f"not on {host} ({page.url.split('?')[0]})"
             try:
@@ -589,6 +694,7 @@ class Flow:
         deadline = time.time() + deadline_s
         landed_at = 0.0
         clicked: Dict[str, int] = {}
+        reloads_404 = 0
         last = ""
         settle = int(SIGNIN.get("refused_after", 45))
         while time.time() < deadline:
@@ -599,6 +705,7 @@ class Flow:
             url = page.url
             if url.startswith("chrome-error://") and not landed_at:
                 shot(page, f"{self.role}-browser-error")
+                self.broken = "browser error"
                 return False, f"browser error page before reaching the app (after {self.nav[-1][1] if self.nav else 'the setup link'})"
             if url.startswith("chrome-error://"):
                 last = f"browser error page after {self.nav[-1][1].split('?')[0] if self.nav else link.split('/invite/')[0]}"
@@ -611,6 +718,7 @@ class Flow:
             if on_login_pages(page):
                 if self.password_visible():
                     self.aborted = True
+                    self.broken = "password field"
                     return False, f"password field on the sign-in pages ({url.split('?')[0]})"
                 for sel in ("#invite-continue", "#registerWebAuthn", "#authenticateWebAuthnButton"):
                     if visible(page, sel):
@@ -625,6 +733,7 @@ class Flow:
                             shot(page, f"{self.role}-keycloak-error")
                             if landed_at:
                                 self.denied = f"refused at {url.split('?')[0]}: {err.first.inner_text()[:200]!r}"
+                            self.broken = "Keycloak/enroll error"
                             return False, f"Keycloak/enroll error at {url.split('?')[0]}: {err.first.inner_text()[:200]!r}"
                     except PWError:
                         pass
@@ -633,20 +742,28 @@ class Flow:
             if host_of(url) not in HOSTS.values():
                 page.wait_for_timeout(700)   # oauth2-proxy and app redirects
                 continue
+            seen = body_text(page)[:4000]
+            if seen and (not self.seen or self.seen[-1] != seen) and len(self.seen) < 200:
+                self.seen.append(seen)
             if not landed_at:
                 landed_at = time.time()
                 self.landed = True
                 shot(page, f"{self.role}-landed")
             if self.password_visible() and not SIGNIN.get("password"):
                 self.aborted = True
+                self.broken = "password field"
                 return False, f"password field at {url.split('?')[0]} (no tests.signin.password documents one)"
             status = self.nav[-1][0] if self.nav else 0
             if status == 403:
                 self.denied = f"HTTP 403 at {self.nav[-1][1].split('?')[0]}"
-                if self.role == "outsider":
+                if self.expect_refused:
                     shot(page, f"{self.role}-denied")
                     return False, self.denied
-            if status in PROBLEM_CODES:
+            # 502-504: the app is still starting, retry. A 404 is retried a
+            # couple of times only: it is usually the app's answer (an error
+            # page), and hammering a login URL trips the app's rate limits.
+            if status in PROBLEM_CODES and (status != 404 or reloads_404 < 2):
+                reloads_404 += status == 404
                 last = f"HTTP {status} at {url.split('?')[0]}"
                 page.wait_for_timeout(3000)
                 try:
@@ -666,7 +783,7 @@ class Flow:
             if ok:
                 shot(page, f"{self.role}-signed-in")
                 return True, last
-            if self.role == "outsider" and time.time() - landed_at > settle:
+            if self.expect_refused and time.time() - landed_at > settle:
                 break
             for f in SIGNIN.get("fill") or []:
                 sel, val = f["selector"], subst(f["value"], self.user)
@@ -676,7 +793,7 @@ class Flow:
                 except PWError:
                     pass
             for sel in SIGNIN.get("login") or []:
-                if clicked.get(sel, 0) < 5 and host_of(page.url) in HOSTS.values() and visible(page, sel):
+                if clicked.get(sel, 0) < int(SIGNIN.get("max_clicks", 5)) and host_of(page.url) in HOSTS.values() and visible(page, sel):
                     clicked[sel] = clicked.get(sel, 0) + 1
                     shot(page, f"{self.role}-click")
                     try:
@@ -700,67 +817,89 @@ def invite(user: str, landing: str) -> str:
     return json.loads(out.stdout.strip().splitlines()[-1])["url"]
 
 
-def run_role(browser, role: str, host: str) -> None:
+def run_role(browser, role: str, host: str, user: str = "") -> None:
     path = SIGNIN.get("path", "/")
-    user = USERS[role]
+    user = user or USERS[role]
+    check = role if role != "refused" else f"refused:{user}"
     ctx = browser.new_context()
     ctx.set_default_timeout(TIMEOUT_MS)
     ctx.on("page", lambda p: p.on("dialog", lambda d: d.accept(d.default_value)))
-    ctx.tracing.start(screenshots=True, snapshots=True, name=role)
-    flow = Flow(ctx, role)
-    failed = False
+    ctx.tracing.start(screenshots=True, snapshots=True, name=check.replace(":", "-"))
+    flow = Flow(ctx, role, user)
+    xf = XFAIL.get(role) if role != "refused" else None
     try:
         link = invite(user, f"https://{host}{path}")
         ok, ev = flow.sign_in(link, host, int(SIGNIN.get("timeout", 240)))
-        if flow.key.registered != 1:
-            ev += f" (passkeys registered: {flow.key.registered})"
         pw_note = f"; password field at {', '.join(flow.passwords)} ({SIGNIN.get('password')})" if flow.passwords else ""
-        if role == "outsider":
+        # The setup link registers exactly one passkey; anything else is a
+        # broken sign-in, never an expected failure.
+        if flow.key.registered != 1:
+            record(check, False, f"{user}: {flow.key.registered} passkeys registered by the setup link (want 1); {ev}")
+            return
+        if flow.expect_refused:
             # Refused = it got through the setup link to the app (or to the
             # app's sign-in at Keycloak) and was never signed in; anything
-            # that stops earlier is a broken test, not a refusal.
+            # that stops earlier is a broken test, not a refusal. Behind
+            # group-gate the refusal is its HTTP 403, nothing else.
             refused = not ok and not flow.aborted and (flow.landed or bool(flow.denied))
             how = flow.denied or ev
-            if not ok and not refused:
+            denied_host = host_of(flow.nav[-1][1]) if flow.nav else host
+            if refused and role == "refused" and not flow.denied.startswith("HTTP 403"):
+                refused = False
+                how = f"not signed in, but no HTTP 403 ({ev})"
+            elif refused and role == "outsider" and GATED:
+                # Only group-gate's own refusal counts: its 403, its page,
+                # and its DENIED log line for this user and host.
+                page_says = "not authorized to access" in body_text(flow.page)
+                logged = gate_denied(user, denied_host, flow.marks)
+                if not (flow.denied.startswith("HTTP 403") and page_says and logged):
+                    refused = False
+                    how = (f"not signed in, but not refused by group-gate (403: {flow.denied.startswith('HTTP 403')}, "
+                           f"its page: {page_says}, its DENIED log line: {logged}; {ev})")
+                else:
+                    how = f"{flow.denied}, group-gate DENIED user={user} host={denied_host}"
+            elif not ok and not refused:
                 how = f"test stopped: {ev}" if flow.aborted else f"never reached the app: {ev}"
-            if refused and not SIGNED_IN:
+            if refused and not SIGNED_IN and role == "outsider":
                 # Nobody got in: the refusal proves nothing about the group.
                 results.append({"app": APP, "check": "outsider", "status": "inconclusive",
                                 "detail": f"{user} not signed in, but neither was anyone else: {how}"})
                 log(f"INCONCLUSIVE: {APP} outsider: nobody could sign in ({how})")
                 return
-            record("outsider", refused, (f"{user} refused: {how}" if refused else (f"{user} signed in: {ev}" if ok else f"{user}: {how}")) + pw_note,
-                   XFAIL.get("outsider") if (ok or refused) else None)
-            failed = not refused and not XFAIL.get("outsider")
+            detail = (f"{user} refused: {how}" if refused else
+                      (f"{user} signed in: {ev}" if ok else f"{user}: {how}")) + pw_note
+            # An expected failure here is "the outsider got in", nothing else.
+            record(check, refused, detail, xf if (ok or refused) else None, flow.page, flow.seen, flow.marks)
             return
         if ok:
             SIGNED_IN.append(role)
+        # A flow the test itself broke (password field, Keycloak/enroll or
+        # browser error, never on the app) is never an expected failure.
+        broken = flow.broken or ("" if flow.landed else "never reached the app")
+        if broken and not ok:
+            ev += f" [test broken: {broken}]"
+            xf = None
         if role == "member":
-            record("member", ok, f"{user}: {ev}{pw_note}", XFAIL.get("member"))
-            failed = not ok and not XFAIL.get("member")
+            record("member", ok, f"{user}: {ev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
             if ok and SIGNIN.get("admin"):
                 is_admin, aev = flow.check(SIGNIN["admin"], host)
-                record("member_not_admin", not is_admin, f"{user} admin check: {aev}", XFAIL.get("member"))
-                failed = failed or (is_admin and not XFAIL.get("member"))
+                record("member_not_admin", not is_admin, f"{user} admin check: {aev}")
             return
         # admin
         if not ok:
-            record("admin", False, f"{user} not signed in: {ev}{pw_note}", XFAIL.get("admin"))
-            failed = not XFAIL.get("admin")
+            record("admin", False, f"{user} not signed in: {ev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
         elif SIGNIN.get("admin"):
             is_admin, aev = flow.check(SIGNIN["admin"], host)
-            record("admin", is_admin, f"{user} signed in ({ev}); admin: {aev}{pw_note}", XFAIL.get("admin"))
-            failed = not is_admin and not XFAIL.get("admin")
+            record("admin", is_admin, f"{user} signed in ({ev}); admin: {aev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
         else:
-            record("admin", True, f"{user} signed in ({ev}); no admin role in this app{pw_note}", XFAIL.get("admin"))
-    except Exception as e:  # noqa: BLE001 - a broken step is a failed check
+            record("admin", True, f"{user} signed in ({ev}); no admin role in this app{pw_note}", xf)
+    except Exception as e:  # noqa: BLE001 - a broken step is a failed check, never an expected one
         traceback.print_exc()
-        record(role, False, f"{type(e).__name__}: {e}", XFAIL.get(role))
-        failed = True
+        record(check, False, f"{type(e).__name__}: {e}")
     finally:
-        shot(flow.page, f"{role}-final")
+        shot(flow.page, f"{check}-final")
         try:
-            ctx.tracing.stop(path=os.path.join(ART, f"trace-{role}.zip"))
+            ctx.tracing.stop(path=os.path.join(ART, f"trace-{check.replace(':', '-')}.zip"))
         finally:
             ctx.close()
 
@@ -836,8 +975,14 @@ def main() -> int:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(args=["--disable-features=WebAuthenticationConditionalUI"])
         warm_up(browser)
-        for role in ROLES:
+        pause = int(SIGNIN.get("pause_between_users", 0))
+        for i, role in enumerate(ROLES):
+            if i and pause:
+                log(f"  waiting {pause}s before {role} (tests.signin.pause_between_users)")
+                time.sleep(pause)
             run_role(browser, role, host)
+        for name in REFUSED_USERS:
+            run_role(browser, "refused", host, name)
         browser.close()
     dump_logs()
     if os.environ.get("E2E_KEEP_UP") != "1":

@@ -27,6 +27,10 @@ auth:
     email match never attaches an OIDC login to an existing GitLab account
     (GitLab instead asks for that account's password). The email is not
     synced from Keycloak after the account is created.
+    CA trust: GitLab's embedded OpenSSL uses the Hub's certs/ca-bundle.crt
+    (system CAs + Portcullis' internal CA) in place of its bundled
+    cacert.pem, so OIDC to auth.<domain> verifies with an ACME or internal
+    certificate.
     Upgrades: the image is pinned; GitLab must be upgraded along its documented
     upgrade path (required stops between versions), never by jumping straight
     to the newest release.

@@ -97,7 +97,7 @@
 #     internal/hub/public.go). Tests emulate that override with
 #     write_public_override and pass it to compose_up via COMPOSE_OVERRIDE,
 #     and give core's real public guard (group-gate /public-guard, policy
-#     file version 3) its entry with write_public_policy. Keep the header and
+#     file at core's version, policy_version) its entry with write_public_policy. Keep the header and
 #     extension lists below in sync with the Hub.
 #
 # 13. INSTANCE VARIABLES (contract v2)
@@ -671,20 +671,35 @@ public_published_entries() {
   done < <(_manifest_public_paths "$manifest") | LC_ALL=C sort -u
 }
 
+# policy_version: the policy-file version core's group-gate serves
+# (POLICY_VERSION in core's group-gate/group-gate.py; any other version is
+# denied, fail closed), like tests/e2e/app_signin.py. Version 5 keys the
+# maps by full hostname, earlier ones by subdomain.
+policy_version() {
+  local v
+  v=$(sed -n 's/^POLICY_VERSION[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$PROJECT_DIR/group-gate/group-gate.py" 2>/dev/null | head -1)
+  [ -n "$v" ] || { fail "cannot read POLICY_VERSION from $PROJECT_DIR/group-gate/group-gate.py"; return 1; }
+  echo "$v"
+}
+
 # write_public_policy <subdomain> <manifest> <all|listed>: the policy file
-# (version 3) the Hub would write for this public exception, into core's
-# hub_data volume, so core's real public guard (group-gate /public-guard)
-# runs in the test. clear_public_policy empties it again.
+# (core's version) the Hub would write for this public exception, into
+# core's hub_data volume, so core's real public guard (group-gate
+# /public-guard) runs in the test. clear_public_policy empties it again.
 write_public_policy() {
-  local sub="$1" manifest="$2" mode="$3" pattern
+  local sub="$1" manifest="$2" mode="$3" pattern ver key
+  ver=$(policy_version) || return 1
+  key="$sub"
+  [ "$ver" -lt 5 ] || key="$sub.$DOMAIN"
   pattern=$(sed -n "s/^    token_pattern:[[:space:]]*['\"]\\(.*\\)['\"][[:space:]]*$/\\1/p" "$manifest")
   public_published_entries "$manifest" "$mode" | jq -R . | jq -s \
-    --arg sub "$sub" --arg pattern "$pattern" --arg exts "$PUBLIC_STATIC_EXTS" \
+    --arg sub "$key" --argjson ver "$ver" --arg pattern "$pattern" --arg exts "$PUBLIC_STATIC_EXTS" \
     --argjson extra_exts "$(_manifest_public_list "$manifest" static_extensions | jq -R . | jq -s .)" \
     --argjson headers "$(_manifest_public_list "$manifest" credential_headers | jq -R . | jq -s .)" \
     --argjson cookies "$(_manifest_public_list "$manifest" credential_cookies | jq -R . | jq -s .)" \
     --argjson query "$(_manifest_public_list "$manifest" credential_query | jq -R . | jq -s .)" '
-      {version: 3, public_paths: {($sub): ({
+      {version: $ver, public_paths: {($sub): ({
         paths: map(if startswith("=") then {path: .[1:], match: "exact"}
                    elif startswith("~") then {path: .[1:], match: "static"}
                    else {path: ., match: "prefix"} end),
@@ -694,7 +709,11 @@ write_public_policy() {
         + (if $pattern != "" then {token_pattern: $pattern} else {} end))}}' | _hub_data_write
 }
 
-clear_public_policy() { echo '{}' | _hub_data_write; }
+clear_public_policy() {
+  local ver
+  ver=$(policy_version) || return 1
+  printf '{"version": %s}' "$ver" | _hub_data_write
+}
 
 # Write stdin as group-gate-policy.json into core's hub_data volume
 # (atomically), using the image group-gate already runs (no extra pull).
@@ -724,6 +743,8 @@ assert_public_path() {
   out=$(via_traefik "$host" "$path" "$@"); code=${out%% *}; loc=${out#* }
   if echo "$loc" | grep -q "auth\.$DOMAIN"; then
     fail "public $path → redirected to Keycloak ($code $loc)"
+  elif [ "$code" = 403 ]; then
+    fail "public $path → HTTP 403 (refused by the public guard: wrong policy file or path list?)"
   elif [ "$code" = 000 ] || [ "$code" = 502 ] || [ "$code" = 421 ] || [ "$code" -ge 500 ] 2>/dev/null; then
     fail "public $path → HTTP $code (not answered by the app)"
   else

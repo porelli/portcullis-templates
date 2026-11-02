@@ -542,7 +542,7 @@ class SigninTest(Case):
 
     def test_gated_app_cannot_expect_outsider_failure(self) -> None:
         self.run_template()
-        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: \"some long enough reason\"\n    admin:\n")
+        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: {reason: \"some long enough reason\", match: \"signed in\"}\n    admin:\n")
         errs = self.recheck()
         self.assertTrue(any("expected_fail.outsider on a header-auth app" in e for e in errs), errs)
 
@@ -550,9 +550,19 @@ class SigninTest(Case):
         self.run_template()
         self.rewrite_manifest("  method: header-auth\n", "  method: native-oidc\n")
         self.rewrite_manifest("  group_access: true\n", "  group_access: false\n")
-        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: \"no OIDC group restriction yet\"\n    admin:\n")
+        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: {reason: \"no OIDC group restriction yet\", match: \"signed in\"}\n    admin:\n")
         errs = self.recheck()
         self.assertFalse(any("expected_fail" in e for e in errs), errs)
+
+    def test_expected_fail_needs_valid_match(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("  method: header-auth\n", "  method: native-oidc\n")
+        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      member: \"just a string reason\"\n    admin:\n")
+        errs = self.recheck()
+        self.assertTrue(any("expected_fail.member" in e for e in errs), errs)
+        self.rewrite_manifest("      member: \"just a string reason\"\n", "      member: {reason: \"a long enough reason\", match: \"(unclosed\"}\n")
+        errs = self.recheck()
+        self.assertTrue(any("not a valid regex" in e for e in errs), errs)
 
     def test_host_must_be_a_host_router(self) -> None:
         self.run_template()
