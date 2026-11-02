@@ -252,13 +252,15 @@ jobs:
           # from the CLI lets `config --images` resolve. It's not shipped.
           ./portcullis init --env-only --non-interactive --domain portcullis.local \
             --email ci@portcullis.local --dns-provider none >/dev/null
-          # Compose services minus the locally built enroll and the unpinned
-          # edge Hub (never started here), plus the base images enroll is
-          # built from and the CLI's pinned helper (alpine), as core's e2e
-          # job lists them.
+          # Compose services minus the locally built enroll and group-gate
+          # and the unpinned edge Hub (never started here), plus the base
+          # images enroll and group-gate are built from and the CLI's pinned
+          # helper (alpine), as core's e2e job lists them.
           {
-            docker compose config --images | { grep -vxE 'portcullis-enroll|ghcr\.io/porelli/portcullis-hub:.*' || true; }
-            sed -nE 's/^FROM[[:space:]]+([^[:space:]]+).*/\1/p' enroll/Dockerfile
+            docker compose config --images | { grep -vxE 'portcullis-enroll|portcullis-group-gate|ghcr\.io/porelli/portcullis-hub:.*' || true; }
+            for df in enroll/Dockerfile group-gate/Dockerfile; do
+              [ -f "$df" ] && sed -nE 's/^FROM[[:space:]]+([^[:space:]]+).*/\1/p' "$df"
+            done
             grep -ohE '[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' scripts/lib/common.sh | { grep -E '^alpine:' || true; }
           } | LC_ALL=C sort -u > ../infra-images.txt
           if grep -v '@sha256:' ../infra-images.txt; then echo "::error::unpinned infra image (above)"; exit 1; fi
@@ -559,10 +561,17 @@ jobs:
           sed -i 's/^          //' docker-compose.ci.yml
           docker compose config -q
 
-      # Its base images were loaded and verified above (infra-images.txt).
-      - name: Build enroll (core)
+      # Their base images were loaded and verified above (infra-images.txt);
+      # group-gate installs its Python deps with pip --require-hashes.
+      - name: Build enroll and group-gate (core)
         working-directory: core
-        run: docker compose build enroll
+        run: |
+          set -euo pipefail
+          if docker compose config --format json | jq -e '.services["group-gate"].build' >/dev/null; then
+            docker compose build enroll group-gate
+          else
+            docker compose build enroll
+          fi
 
       - name: Boot infrastructure
         working-directory: core
