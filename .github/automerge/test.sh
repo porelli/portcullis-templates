@@ -283,6 +283,24 @@ logged "comment" "POST repos/$REPO/issues/2/comments"
 logged "closed" "PATCH repos/$REPO/pulls/2 -f state=closed"
 not_logged "not merged" "pr merge"
 
+echo "# pre-release -> pre-release (already pinned to a pseudo-version): left to a human"
+defaults
+BRANCH=dependabot/go_modules/go-0123456789
+MSG='build(deps): bump the go group
+
+Updates `github.com/vjeantet/ldapserver` from 1.0.2-0.20260725103726-663e6b9910fb to 1.0.2-0.20261001000000-0123456789ab
+
+---
+updated-dependencies:
+- dependency-name: github.com/vjeantet/ldapserver
+  dependency-version: 1.0.2-0.20261001000000-0123456789ab
+  dependency-type: direct:production
+  dependency-group: go
+...'
+FILES='["go.mod","go.sum"]'
+setup; decide
+expect "pseudo -> pseudo: major (not closed)" '.action == "major" and .update_type == "unknown" and .app == "(root)"'
+
 echo "# red patch -> PR left open, update-failed issue opened, then updated, then left alone"
 defaults
 TEST=failure
