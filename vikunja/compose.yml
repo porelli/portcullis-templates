@@ -22,6 +22,15 @@ services:
       # unless the admin turns the setting on.
       VIKUNJA_SERVICE_ENABLELINKSHARING: ${VIKUNJA_LINK_SHARING:-false}
       VIKUNJA_SERVICE_ENABLEREGISTRATION: "false"
+      # Sessions end after 24 h (upstream: 72 h, 30 days "remember me"):
+      # bounds how long a user removed from the group keeps a session.
+      VIKUNJA_SERVICE_JWTTTL: "86400"
+      VIKUNJA_SERVICE_JWTTTLLONG: "86400"
+      # URLs users enter (webhooks, migrations, avatars, backgrounds) never
+      # reach private addresses: portcullis-proxy, the host's networks. The
+      # OIDC client uses its own HTTP client (openid.go httpClient).
+      VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: "false"
+      VIKUNJA_WEBHOOKS_ALLOWNONROUTABLEIPS: "false"
       VIKUNJA_SENTRY_ENABLED: "false"
       VIKUNJA_SENTRY_FRONTENDENABLED: "false"
       VIKUNJA_MAILER_ENABLED: "false"

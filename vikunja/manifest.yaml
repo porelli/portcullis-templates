@@ -34,9 +34,12 @@ auth:
     don't send; teams are managed in Vikunja. CalDAV and the API take
     Vikunja's own CalDAV / API tokens (created by a signed-in user), never a
     password. Public project links are off unless "Link sharing" is turned
-    on. Removing a user from the group blocks new sign-ins (and the Hub
-    signs them out of Keycloak), not Vikunja sessions or tokens already
-    issued; disable the user in Vikunja for that (`vikunja user
+    on. Outgoing requests to URLs users enter (webhooks, imports,
+    avatars) may not reach private addresses. Removing a user from the
+    group blocks new sign-ins (and the Hub signs them out of Keycloak), not
+    Vikunja sessions (at most 24 h: VIKUNJA_SERVICE_JWTTTL, upstream 72 h /
+    30 days) or API / CalDAV tokens already issued; disable the user in
+    Vikunja for that (`vikunja user
     change-status`). Mobile and desktop apps sign in through Vikunja's own
     OAuth flow in the browser, i.e. through Portcullis. Upgrades: database
     migrations run when Vikunja starts; don't bump the PostgreSQL major.

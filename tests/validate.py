@@ -192,6 +192,8 @@ IDENTITY_ENV_FORBIDDEN = [
      "Paperless auto-login / remote-user auth bypasses SSO"),
     (r"^GITEA__oauth2_client__ACCOUNT_LINKING$", r"(?i)^auto$", "Gitea links OAuth logins to existing accounts by name/email"),
     (r"^GITEA__oauth2_client__USERNAME$", r"(?i)^email$", "Gitea OAuth username is the email"),
+    (r"^VIKUNJA_AUTH_OPENID_PROVIDERS_[A-Z0-9_]+_(EMAILFALLBACK|USERNAMEFALLBACK)$", r"(?i)^(true|1)$",
+     "Vikunja links OIDC logins to existing accounts by email / username"),
 ]
 
 # (env key that enables the feature, its value regex, required env key, required value regex, message)
@@ -223,6 +225,11 @@ IDENTITY_ENV_REQUIRED = [
      "Mealie with OIDC must set ALLOW_PASSWORD_LOGIN: \"false\""),
     ("OIDC_AUTH_ENABLED", r"(?i)^true$", "OIDC_USER_CLAIM", r"^preferred_username$",
      "Mealie with OIDC must set OIDC_USER_CLAIM: preferred_username"),
+    ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_AUTH_LOCAL_ENABLED", r"(?i)^false$",
+     "Vikunja with OIDC must set VIKUNJA_AUTH_LOCAL_ENABLED: \"false\" (local accounts: password login, sign-up, invite links)"),
+    ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS", r"(?i)^false$",
+     "Vikunja must set VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: \"false\" (user-supplied URLs must not reach "
+     "portcullis-proxy or the host's private networks)"),
 ]
 
 # image prefix -> (one-shot service that must exist in the same compose file, message)
@@ -233,6 +240,15 @@ REQUIRED_INIT_JOBS = [
      "Paperless password logins (Basic auth, /api/token/) and the fresh-install signup are only closed by the paperless-init job"),
     ("ghcr.io/mealie-recipes/mealie:", "mealie-init",
      "Mealie's password endpoint, seeded admin and username/email account matching are only closed by the mealie-init guard"),
+    ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
+     "Firefox Sync's tokenserver takes any Mozilla account; only the firefox-sync-init allowlist trigger keeps other accounts off"),
+]
+
+# image prefix -> (one-shot the image's Traefik-routed services must wait for, message)
+REQUIRED_BEFORE_ROUTED = [
+    ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
+     "the public Sync server must start only after firefox-sync-init installed the allowlist "
+     "(depends_on: firefox-sync-init: condition: service_completed_successfully)"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -933,6 +949,13 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
         for prefix, job, msg in REQUIRED_INIT_JOBS:
             if image.startswith(prefix) and job not in services:
                 r.error(where, msg, EMAIL_HINT)
+        for prefix, job, msg in REQUIRED_BEFORE_ROUTED:
+            if image.startswith(prefix) and str(labels_of(svc).get("traefik.enable", "")).lower() == "true":
+                dep = svc.get("depends_on")
+                cond = dep.get(job) if isinstance(dep, dict) else None
+                if not (isinstance(cond, dict) and cond.get("condition") == "service_completed_successfully"):
+                    r.error(where, msg, "compose starts a service before a one-shot it doesn't wait for; "
+                            "see the template's auth.notes")
     for where, text in _template_texts(t):
         for rx, msg in IDENTITY_TEXT_FORBIDDEN:
             if re.search(rx, text):

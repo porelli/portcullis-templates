@@ -17,10 +17,36 @@ GUARD="$(dirname "$COMPOSE")/guard.sql"
 if grep -q 'portcullis-auth@docker\|portcullis-groups@docker' "$COMPOSE"; then
   fail "a router uses the Portcullis gateway (Firefox's Sync requests carry no cookie)"
 else
-  pass "no gateway middlewares (auth.method public)"
+  pass "no gateway middlewares (auth.method custom, no native_login)"
 fi
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.tls.options 'public@file'
-assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.middlewares 'rate-limit@file,firefoxsync-body,security-headers@file'
+assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.middlewares 'rate-limit@file,security-headers@file'
+assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-token.middlewares 'rate-limit-auth@file,security-headers@file'
+MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
+if grep -q '^  method: custom' "$MANIFEST" && ! grep -q 'native_login' "$MANIFEST"; then
+  pass "manifest: method custom without native_login (the gateway would break Firefox)"
+else
+  fail "manifest must be method custom without native_login"
+fi
+# The internet-facing server: same image as the migrations, runs none, app role.
+IMG_APP=$(yq -r '.services["firefox-sync"].image' "$COMPOSE")
+IMG_MIG=$(yq -r '.services["firefox-sync-migrate"].image' "$COMPOSE")
+if [ "$IMG_APP" = "$IMG_MIG" ]; then
+  pass "firefox-sync and firefox-sync-migrate run the same image"
+else
+  fail "image mismatch: $IMG_APP vs $IMG_MIG"
+fi
+if [ "$(yq -r '.services["firefox-sync"].environment.SYNC_TOKENSERVER__RUN_MIGRATIONS' "$COMPOSE")" = false ]; then
+  pass "public server: SYNC_TOKENSERVER__RUN_MIGRATIONS false"
+else
+  fail "public server runs tokenserver migrations"
+fi
+URLS=$(yq -r '.services["firefox-sync"].environment | to_entries[] | select(.key | test("DATABASE_URL")) | .value' "$COMPOSE")
+if [ "$(echo "$URLS" | grep -c '^postgres://firefoxsync_app:')" = 2 ]; then
+  pass "public server connects as firefoxsync_app"
+else
+  fail "public server database URLs: $URLS"
+fi
 assert_compose_setting "$COMPOSE" FIREFOX_SYNC_ALLOWED_ACCOUNTS '\$\{FIREFOX_SYNC_ALLOWED_ACCOUNTS:-\}'
 if grep -q 'BEFORE INSERT OR UPDATE OF email ON users' "$GUARD"; then
   pass "guard.sql: allowlist trigger on users"
@@ -56,6 +82,7 @@ db() {
 # Runs guard.sql as firefox-sync-init does, with another Allowed accounts value.
 guard() {
   docker exec -i -e FIREFOX_SYNC_ALLOWED_ACCOUNTS="$1" -e "FIREFOX_SYNC_NODE_URL=https://$HOST" \
+    -e FIREFOX_SYNC_APP_DB_PASSWORD \
     portcullis-firefox-sync-db-1 psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction \
     -U firefoxsync -d firefoxsync -f - < "$GUARD" 2>&1
 }
@@ -72,8 +99,34 @@ if [ "$LIST" = "$ALLOWED_A,$ALLOWED_B" ]; then
 else
   fail "allowlist: $LIST"
 fi
-NODE=$(db "SELECT count(*) FROM nodes WHERE node = 'https://$HOST' AND downed = 0")
-[ "$NODE" = 1 ] && pass "sync node https://$HOST" || fail "sync node missing ($NODE)"
+NODE=$(db "SELECT count(*) FROM nodes WHERE node = 'https://$HOST' AND downed = 0 AND capacity = 2147483647")
+[ "$NODE" = 1 ] && pass "sync node https://$HOST, capacity 2147483647" || fail "sync node missing or capacity not raised ($NODE)"
+
+# The server's role can't touch the guard (socket connection as firefoxsync_app).
+app_sql() {
+  docker exec portcullis-firefox-sync-db-1 psql -X -U firefoxsync_app -d firefoxsync -tAc "$1" 2>&1
+}
+for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
+            "ALTER TABLE users DISABLE TRIGGER ALL" \
+            "SET session_replication_role = replica" \
+            "INSERT INTO portcullis_allowed_accounts (uid) VALUES ('$OUTSIDER')" \
+            "DELETE FROM portcullis_allowed_accounts" \
+            "DROP EVENT TRIGGER portcullis_app_no_ddl" \
+            "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$" \
+            "CREATE TABLE public.portcullis_x (a int)"; do
+  OUT=$(app_sql "$stmt" || true)
+  if echo "$OUT" | grep -Eqi 'permission denied|must be owner|may not create|must be superuser'; then
+    pass "firefoxsync_app refused: ${stmt:0:40}"
+  else
+    fail "firefoxsync_app could: $stmt -> $OUT"
+  fi
+done
+OUT=$(app_sql "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (version VARCHAR(50) PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)" || true)
+if echo "$OUT" | grep -qi 'error'; then
+  fail "diesel's no-op migration check refused for firefoxsync_app: $OUT"
+else
+  pass "diesel's no-op migration check allowed for firefoxsync_app"
+fi
 
 OUT=$(insert_user "$OUTSIDER" || true)
 if echo "$OUT" | grep -q "portcullis: Firefox account $OUTSIDER is not in the Allowed accounts setting"; then

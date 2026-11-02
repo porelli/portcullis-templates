@@ -13,17 +13,22 @@ services:
     cap_drop: [ALL]
     mem_limit: 512m
     pids_limit: 256
-    environment: &syncstorage-env
+    environment:
       SYNC_HOST: 0.0.0.0
       SYNC_PORT: "8000"
       SYNC_HUMAN_LOGS: "1"
       RUST_LOG: info
       SYNC_MASTER_SECRET: ${FIREFOX_SYNC_MASTER_SECRET:?FIREFOX_SYNC_MASTER_SECRET must be set}
-      SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
+      # Connects as firefoxsync_app (guard.sql): owns no table, no superuser,
+      # read-only on the allowlist; can't drop or bypass the trigger.
+      SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
       SYNC_TOKENSERVER__ENABLED: "true"
-      SYNC_TOKENSERVER__RUN_MIGRATIONS: "true"
+      # Migrations run in firefox-sync-migrate (as the owner), never here.
+      # (syncstorage-rs' storage side always runs diesel's check, a no-op
+      # once migrated; see guard.sql.)
+      SYNC_TOKENSERVER__RUN_MIGRATIONS: "false"
       SYNC_TOKENSERVER__NODE_TYPE: postgres
-      SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
+      SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
       # The storage node Firefox is sent to: this instance's own hostname.
       SYNC_TOKENSERVER__INIT_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
       # Mozilla accounts: Firefox signs in at accounts.firefox.com; the
@@ -52,9 +57,15 @@ services:
       traefik.http.routers.firefox-sync.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`)
       traefik.http.routers.firefox-sync.entrypoints: websecure
       traefik.http.routers.firefox-sync.tls.options: public@file
-      traefik.http.routers.firefox-sync.middlewares: rate-limit@file,firefoxsync-body,security-headers@file
-      # Firefox uploads batches of up to ~2.5 MB per request.
-      traefik.http.middlewares.firefoxsync-body.buffering.maxrequestbodybytes: "10485760"
+      # Request size: syncstorage-rs enforces its own max_request_bytes.
+      traefik.http.routers.firefox-sync.middlewares: rate-limit@file,security-headers@file
+      # The tokenserver (one request per Firefox per hour or so): the
+      # stricter auth rate limit, against token replay and load inflation.
+      traefik.http.routers.firefox-sync-token.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`) && PathPrefix(`/1.0/`)
+      traefik.http.routers.firefox-sync-token.entrypoints: websecure
+      traefik.http.routers.firefox-sync-token.tls.options: public@file
+      traefik.http.routers.firefox-sync-token.middlewares: rate-limit-auth@file,security-headers@file
+      traefik.http.routers.firefox-sync-token.service: firefox-sync
       traefik.http.services.firefox-sync.loadbalancer.server.port: "8000"
     restart: unless-stopped
 
@@ -71,7 +82,29 @@ services:
     cap_drop: [ALL]
     mem_limit: 512m
     pids_limit: 128
-    environment: *syncstorage-env
+    environment:
+      # The owner (database superuser): only this job and firefox-sync-init.
+      SYNC_HOST: 0.0.0.0
+      SYNC_PORT: "8000"
+      SYNC_HUMAN_LOGS: "1"
+      RUST_LOG: info
+      SYNC_MASTER_SECRET: ${FIREFOX_SYNC_MASTER_SECRET:?FIREFOX_SYNC_MASTER_SECRET must be set}
+      SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
+      SYNC_TOKENSERVER__ENABLED: "true"
+      SYNC_TOKENSERVER__RUN_MIGRATIONS: "true"
+      SYNC_TOKENSERVER__NODE_TYPE: postgres
+      SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}@firefox-sync-db:5432/firefoxsync
+      # The storage node Firefox is sent to: this instance's own hostname.
+      SYNC_TOKENSERVER__INIT_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      # Mozilla accounts: Firefox signs in at accounts.firefox.com; the
+      # tokenserver verifies its OAuth token there and knows the account
+      # only as <uid>@api.accounts.firefox.com.
+      SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN: api.accounts.firefox.com
+      SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL: https://oauth.accounts.firefox.com/v1
+      SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET: ${FIREFOX_SYNC_METRICS_SECRET:?FIREFOX_SYNC_METRICS_SECRET must be set}
+      SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
+      # No account-events webhook (default off; kept explicit).
+      SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -114,6 +147,7 @@ services:
       PGUSER: firefoxsync
       PGDATABASE: firefoxsync
       PGPASSWORD: ${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}
+      FIREFOX_SYNC_APP_DB_PASSWORD: ${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}
       FIREFOX_SYNC_ALLOWED_ACCOUNTS: ${FIREFOX_SYNC_ALLOWED_ACCOUNTS:-}
       FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
     volumes:

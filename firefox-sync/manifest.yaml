@@ -7,7 +7,9 @@ tags: [firefox, sync, bookmarks, browser, mozilla]
 instances: multi
 
 auth:
-  method: public
+  # A vendor account system (Mozilla accounts), like plex.tv: no
+  # native_login, since the gateway in front of it would stop Firefox.
+  method: custom
   sso: false
   group_access: false
   group_admin: false
@@ -18,21 +20,30 @@ auth:
     tokenserver with that account's OAuth token, which the tokenserver
     verifies with Mozilla and exchanges for a short-lived storage token
     (1 h).
-    Why public: Firefox makes every Sync and tokenserver request in the
-    background as an anonymous request, without cookies, HTTP
-    authentication or a client certificate (RESTRequest LOAD_ANONYMOUS,
-    resource.sys.mjs fetch; tested by porelli/firefox-sync with a sign-in
-    proxy and with mTLS: "no_node_found" / NS_ERROR_NET_UNCLEAN_SHUTDOWN).
-    Portcullis sign-in, group-gate or a client-certificate tier in front of
-    this host would stop every Firefox, so the whole host is public
-    (public@file, rate-limit, 10 MB request bodies) and access is decided
-    by the server itself.
+    Why no Portcullis sign-in (method custom, no native_login): Firefox
+    makes every Sync and tokenserver request in the background as an
+    anonymous request, without cookies, HTTP authentication or a client
+    certificate (RESTRequest LOAD_ANONYMOUS, resource.sys.mjs fetch;
+    tested by porelli/firefox-sync with a sign-in proxy and with mTLS:
+    "no_node_found" / NS_ERROR_NET_UNCLEAN_SHUTDOWN). Portcullis sign-in,
+    group-gate or a client-certificate tier in front of this host would
+    break every Firefox, so the host is open (public@file, rate-limit; the
+    tokenserver path /1.0/ the stricter rate-limit-auth; syncstorage-rs
+    enforces its own request size limits) and access is decided by the
+    server itself.
     Exposed on the host: GET /1.0/sync/1.5 (tokenserver: a Mozilla OAuth
     token with the Sync scope is required, 401 otherwise), /1.5/<uid>/...
     (storage: Hawk-signed with this instance's secret, 401 otherwise),
     /__heartbeat__, /__lbheartbeat__, /__version__, /__error__ (a test
     error), / and the API docs (/swagger-ui, /api-doc/openapi.json). No
     password, no sign-up page, no admin UI.
+    Database roles: the internet-facing server connects as firefoxsync_app,
+    which owns no table and is no superuser (it can't drop or disable the
+    allowlist trigger, change session_replication_role or write the
+    allowlist) and may create no database object (an event trigger; it
+    keeps CREATE on the schema only for syncstorage-rs' no-op migration
+    check). It runs no migrations; firefox-sync-migrate and
+    firefox-sync-init use the owner and are not reachable.
     Who can sync: only the Mozilla accounts listed in the Allowed accounts
     setting (their uids). A database trigger (guard.sql, installed by
     firefox-sync-init before the server starts, every start) refuses every
@@ -59,8 +70,11 @@ auth:
     server; iOS: Advanced Sync Settings), before signing in to the account.
     After a hostname change every Firefox must be pointed at the new URL;
     the accounts move to the new node at the next start.
-    Residuals: refused tries still add to the node's load until the next
-    start recounts it (capacity 100000); the tokenserver needs outbound
+    Node load: the tokenserver counts a new account in the node's load
+    before the trigger refuses it, so one valid Mozilla token replayed
+    would otherwise fill the node; every start sets the node's capacity to
+    the maximum (2147483647) and recounts the load from its accounts.
+    Residuals: the tokenserver needs outbound
     HTTPS to oauth.accounts.firefox.com. Upgrades: keep firefox-sync and
     firefox-sync-migrate on the same image; don't bump the PostgreSQL
     major.
@@ -76,7 +90,10 @@ settings:
 
 env:
   - key: FIREFOX_SYNC_DB_PASSWORD
-    description: Firefox Sync database password
+    description: Firefox Sync database owner password (migrations, allowlist)
+    generate: random
+  - key: FIREFOX_SYNC_APP_DB_PASSWORD
+    description: Firefox Sync database password of the server's own role (no owner rights)
     generate: random
   - key: FIREFOX_SYNC_MASTER_SECRET
     description: syncstorage-rs master secret (signs the storage tokens)
@@ -95,4 +112,4 @@ urls:
 # Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
 tests:
   signin:
-    skip: "public: Firefox signs in with a Mozilla account, not Portcullis (auth.method public); tests/apps/firefox-sync.sh checks the allowlist"
+    skip: "custom: Firefox signs in with a Mozilla account, not Portcullis (no gateway); tests/apps/firefox-sync.sh checks the allowlist and the database roles"

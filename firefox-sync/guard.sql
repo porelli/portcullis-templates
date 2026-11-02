@@ -16,6 +16,12 @@
 --   FIREFOX_SYNC_NODE_URL          https://<this instance's hostname>
 \getenv allowed FIREFOX_SYNC_ALLOWED_ACCOUNTS
 \getenv node_url FIREFOX_SYNC_NODE_URL
+\getenv app_password FIREFOX_SYNC_APP_DB_PASSWORD
+
+-- The app role's password is in a statement below: never put statement text
+-- in the server log, not even on an error (this runs as the superuser).
+SET LOCAL log_statement = 'none';
+SET LOCAL log_min_error_statement = 'panic';
 
 -- An unset variable would stay as the literal text :'allowed' and fail the
 -- statement below (fail closed); an empty setting is a valid empty list.
@@ -25,6 +31,7 @@ FROM regexp_split_to_table(:'allowed', '[,;[:space:]]+') AS x
 WHERE x <> '';
 
 CREATE TEMP TABLE portcullis_node ON COMMIT DROP AS SELECT :'node_url'::text AS url;
+CREATE TEMP TABLE portcullis_pw ON COMMIT DROP AS SELECT length(:'app_password') AS len;
 
 DO $$
 DECLARE
@@ -33,6 +40,9 @@ BEGIN
     SELECT string_agg(left(uid, 40), ', ') INTO bad FROM portcullis_wanted WHERE uid !~ '^[0-9a-f]{32}$';
     IF bad IS NOT NULL THEN
         RAISE EXCEPTION 'portcullis: Allowed accounts: % is not a Mozilla account uid (32 hexadecimal characters)', bad;
+    END IF;
+    IF (SELECT len FROM portcullis_pw) < 16 THEN
+        RAISE EXCEPTION 'portcullis: FIREFOX_SYNC_APP_DB_PASSWORD is missing or too short';
     END IF;
     IF (SELECT url FROM portcullis_node) !~ '^https://[a-z0-9.-]+$' THEN
         RAISE EXCEPTION 'portcullis: FIREFOX_SYNC_NODE_URL is not https://<hostname>';
@@ -57,23 +67,28 @@ INSERT INTO portcullis_allowed_accounts (uid) SELECT uid FROM portcullis_wanted;
 -- makes post_user fail: the tokenserver answers 500 and issues no token (the
 -- same path as the upstream MAX_USERS trigger of porelli/firefox-sync). The
 -- uid of a refused account shows in the database log, for the admin to list.
-CREATE OR REPLACE FUNCTION portcullis_check_allowed_account() RETURNS trigger
-LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+-- Runs as the caller (the app role). search_path is pg_catalog only and
+-- the table is schema-qualified: the app role may create objects in public
+-- (below), so an unqualified call could resolve to a function it planted
+-- (e.g. a better-matching split_part(varchar, ...)).
+CREATE OR REPLACE FUNCTION public.portcullis_check_allowed_account() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
-    account TEXT := lower(split_part(NEW.email, '@', 1));
+    account pg_catalog.text := pg_catalog.lower(pg_catalog.split_part(NEW.email::pg_catalog.text, '@', 1));
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM portcullis_allowed_accounts WHERE uid = account) THEN
-        RAISE EXCEPTION 'portcullis: Firefox account % is not in the Allowed accounts setting: refused', left(account, 64)
+    IF NOT EXISTS (SELECT 1 FROM public.portcullis_allowed_accounts a WHERE a.uid::pg_catalog.text = account) THEN
+        RAISE EXCEPTION 'portcullis: Firefox account % is not in the Allowed accounts setting: refused', pg_catalog.left(account, 64)
             USING ERRCODE = 'insufficient_privilege';
     END IF;
     RETURN NEW;
 END;
 $$;
+REVOKE ALL ON FUNCTION public.portcullis_check_allowed_account() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS portcullis_allowed_account ON users;
 CREATE TRIGGER portcullis_allowed_account
 BEFORE INSERT OR UPDATE OF email ON users
-FOR EACH ROW EXECUTE FUNCTION portcullis_check_allowed_account();
+FOR EACH ROW EXECUTE FUNCTION public.portcullis_check_allowed_account();
 
 -- Accounts taken off the list lose their tokenserver rows: their next token
 -- request finds no user, tries to create one and is refused by the trigger.
@@ -103,7 +118,14 @@ WHERE s.service = 'sync-1.5' AND n.service = s.id AND n.node <> p.url;
 
 -- The tokenserver adds one to a node's load before it inserts a new account
 -- (add_user_to_node, then post_user, separately), and a refused INSERT does
--- not take it back: count the load again from the accounts it holds.
+-- not take it back: one valid Mozilla token, replayed, would fill the node
+-- until it takes nobody new. The node of this hostname gets the largest
+-- capacity the column holds, and the load is counted again from the
+-- accounts on every start.
+UPDATE nodes n SET capacity = 2147483647
+FROM services s, portcullis_node p
+WHERE s.service = 'sync-1.5' AND n.service = s.id AND n.node = p.url;
+
 UPDATE nodes n
 SET current_load = r.real_load,
     available = CASE WHEN n.downed = 0 THEN GREATEST(0, n.capacity - r.real_load) ELSE n.available END
@@ -112,6 +134,47 @@ FROM (SELECT n2.id, COUNT(DISTINCT u.email)::INT AS real_load
       LEFT JOIN users u ON u.nodeid = n2.id AND u.replaced_at IS NULL
       GROUP BY n2.id) r
 WHERE r.id = n.id;
+
+-- The internet-facing server connects as firefoxsync_app: not the owner of
+-- any table (no DROP / DISABLE TRIGGER, no ALTER), not a superuser (no
+-- session_replication_role), read-only on the allowlist. Only
+-- firefox-sync-migrate and this job use the owner. It needs CREATE on
+-- public: syncstorage-rs runs diesel's migration check at every start, and
+-- its CREATE TABLE IF NOT EXISTS __diesel_schema_migrations needs the
+-- schema privilege even when the table exists (PostgreSQL checks it first,
+-- namespace.c RangeVarGetAndCheckCreationNamespace). So that it can't use
+-- it to plant anything (a function another session would resolve to), an
+-- event trigger refuses every object it would actually create outside its
+-- own temporary schema: the no-op IF NOT EXISTS passes, nothing else does.
+CREATE OR REPLACE FUNCTION public.portcullis_app_no_ddl() RETURNS event_trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+    IF session_user = 'firefoxsync_app' AND EXISTS (
+        SELECT 1 FROM pg_catalog.pg_event_trigger_ddl_commands() c
+        WHERE c.schema_name IS NULL OR c.schema_name NOT LIKE 'pg\_temp%') THEN
+        RAISE EXCEPTION 'portcullis: firefoxsync_app may not create database objects'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.portcullis_app_no_ddl() FROM PUBLIC;
+DROP EVENT TRIGGER IF EXISTS portcullis_app_no_ddl;
+CREATE EVENT TRIGGER portcullis_app_no_ddl ON ddl_command_end
+EXECUTE FUNCTION public.portcullis_app_no_ddl();
+
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'firefoxsync_app') AS portcullis_new_role \gset
+\if :portcullis_new_role
+CREATE ROLE firefoxsync_app;
+\endif
+ALTER ROLE firefoxsync_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
+    PASSWORD :'app_password';
+ALTER ROLE firefoxsync_app SET search_path = public;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM firefoxsync_app;
+GRANT USAGE, CREATE ON SCHEMA public TO firefoxsync_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO firefoxsync_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO firefoxsync_app;
+REVOKE ALL ON public.portcullis_allowed_accounts FROM firefoxsync_app;
+GRANT SELECT ON public.portcullis_allowed_accounts TO firefoxsync_app;
 
 SELECT 'portcullis-guard: ' || (SELECT count(*) FROM portcullis_allowed_accounts) || ' allowed account(s), '
        || (SELECT count(DISTINCT email) FROM users) || ' with Sync data on this server' AS status;
