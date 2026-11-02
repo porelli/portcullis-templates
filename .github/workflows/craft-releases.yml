@@ -1,0 +1,40 @@
+name: Craft releases
+
+# The Craft templates (storytold/<app>, static web releases) pin their
+# release zip as ${CRAFT_VERSION:-...} + ${CRAFT_SHA256:-...} in compose.yml,
+# which Dependabot can't track. Weekly, tests/craft-releases.sh compares each
+# pin with the repo's latest release and opens one PR per newer release,
+# after the GitHub asset digest, SHA256SUMS.txt and the download agree.
+# PRs opened with GITHUB_TOKEN start no workflows: run Test Apps with
+# apps=<app> on the branch (the PR body says so) before merging.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: craft-releases
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Bump Craft release pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRAFT_BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh auth setup-git
+          bash tests/craft-releases.sh
