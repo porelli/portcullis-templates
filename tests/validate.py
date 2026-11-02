@@ -1110,10 +1110,38 @@ def check_mosquitto(t: Template, services: Dict[str, Any], r: Report) -> None:
             text = f.read()
         if not re.search(r"(?m)^allow_anonymous false\s*$", text) or re.search(r"(?m)^\s*allow_anonymous\s+true", text):
             r.error(f"{t.id}/{os.path.basename(conf)}", "mosquitto.conf must set allow_anonymous false (and never true)")
+        acl_path = os.path.join(t.dir, "acl")
+        if os.path.isfile(acl_path):
+            check_ha_acl(t, acl_path, r)
         if not re.search(r"(?m)^(plugin_opt_password_file|password_file)\s+\S", text):
             r.error(f"{t.id}/{os.path.basename(conf)}", "mosquitto.conf must check a password file "
                     "(plugin_opt_password_file of mosquitto_password_file.so)")
 
+
+
+def check_ha_acl(t: Template, path: str, r: Report) -> None:
+    """The Home Assistant account of a bundled broker is an allowlist: no
+    deny lines (Zigbee2MQTT lowercases bridge request keys, so a denylist
+    is bypassable by casing) and no wildcard grant but discovery reads."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    user = None
+    for n, raw in enumerate(lines, 1):
+        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith("topic") else raw.strip()
+        if line.startswith("user "):
+            user = line.split(None, 1)[1].strip()
+            continue
+        if user != "homeassistant" or not line.startswith("topic"):
+            continue
+        parts = line.split()
+        access, topic = (parts[1], parts[2]) if len(parts) == 3 else ("readwrite", parts[1] if len(parts) > 1 else "")
+        where = f"{t.id}/{os.path.basename(path)}:{n}"
+        if access == "deny":
+            r.error(where, "the homeassistant account must be an allowlist, not deny lines",
+                    "Zigbee2MQTT matches bridge requests case-insensitively; grant only what Home Assistant uses")
+        elif "#" in topic and not (access == "read" and topic == "homeassistant/#"):
+            r.error(where, f"the homeassistant account must not get a wildcard grant ({access} {topic})",
+                    "grant only what Home Assistant uses (state, set/get commands, permit_join)")
 
 def check_signin_test(t: Template, r: Report) -> None:
     m = t.manifest or {}

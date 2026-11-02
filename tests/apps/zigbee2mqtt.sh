@@ -96,25 +96,36 @@ mq_deliver() {  # <publisher z2m|ha> <subscriber z2m|ha> <topic>: 0 if delivered
   local from="$1" to="$2" topic="$3"
   docker exec "$MQ" sh -c "
     rm -f /tmp/got
-    XDG_CONFIG_HOME=/tmp/mq-$to mosquitto_sub -t '$topic' -C 1 -W 8 > /tmp/got 2>/tmp/sub.err & s=\$!
+    XDG_CONFIG_HOME=/tmp/mq-$to mosquitto_sub -t '$topic' -C 1 -W 5 > /tmp/got 2>/tmp/sub.err & s=\$!
     sleep 2
     XDG_CONFIG_HOME=/tmp/mq-$from mosquitto_pub -t '$topic' -m portcullis-ci 2>/dev/null || true
     wait \$s; grep -qx portcullis-ci /tmp/got"
 }
-if mq_deliver z2m ha zigbee2mqtt/ci/roundtrip; then pass "zigbee2mqtt -> homeassistant on zigbee2mqtt/#"; else fail "no delivery on zigbee2mqtt/#"; docker exec "$MQ" cat /tmp/sub.err || true; fi
-if mq_deliver z2m ha homeassistant/ci/roundtrip; then pass "zigbee2mqtt -> homeassistant on homeassistant/#"; else fail "no delivery on homeassistant/#"; fi
-if mq_deliver ha z2m zigbee2mqtt/bridge/request/permit_join; then pass "homeassistant -> zigbee2mqtt on bridge requests (control)"; else fail "homeassistant cannot publish bridge requests"; fi
-# Meaningful only because the deliveries above work with the same clients.
-if mq_deliver z2m ha other/ci; then fail "ACL lets other/# through"; else pass "ACL: nothing delivered outside zigbee2mqtt/# and homeassistant/#"; fi
-for topic in zigbee2mqtt/bridge/request/extension/save zigbee2mqtt/bridge/request/extension/remove \
-             zigbee2mqtt/bridge/request/converter/save zigbee2mqtt/bridge/request/backup zigbee2mqtt/bridge/request/options; do
+# Allowed: what Home Assistant's MQTT integration uses (controls: these
+# deliveries make the refusals below meaningful).
+for spec in "z2m ha zigbee2mqtt/ci_lamp" "z2m ha zigbee2mqtt/ci_lamp/availability" "z2m ha zigbee2mqtt/bridge/state" \
+            "z2m ha homeassistant/light/0x00ci/light/config" "ha z2m homeassistant/status" \
+            "ha z2m zigbee2mqtt/ci_lamp/set" "ha z2m zigbee2mqtt/ci_lamp/set/state" "ha z2m zigbee2mqtt/ci_lamp/l1/set" \
+            "ha z2m zigbee2mqtt/ci_lamp/get" "ha z2m zigbee2mqtt/bridge/request/permit_join"; do
+  # shellcheck disable=SC2086
+  set -- $spec
+  if mq_deliver "$1" "$2" "$3"; then pass "ACL allows $1 -> $2 on $3"; else fail "ACL refuses $1 -> $2 on $3"; docker exec "$MQ" cat /tmp/sub.err || true; fi
+done
+# Refused for homeassistant, in every casing (Zigbee2MQTT lowercases the
+# bridge request key): code (extensions / converters), options, backup,
+# restart, other bridge requests, and anything outside its allowlist.
+for topic in zigbee2mqtt/bridge/request/extension/save zigbee2mqtt/bridge/request/Extension/save \
+             zigbee2mqtt/bridge/request/EXTENSION/SAVE zigbee2mqtt/bridge/request/extension/remove \
+             zigbee2mqtt/bridge/request/converter/save zigbee2mqtt/bridge/request/Converter/Save \
+             zigbee2mqtt/bridge/request/backup zigbee2mqtt/bridge/request/Backup zigbee2mqtt/bridge/request/BACKUP \
+             zigbee2mqtt/bridge/request/options zigbee2mqtt/bridge/request/Options zigbee2mqtt/bridge/request/restart \
+             zigbee2mqtt/bridge/request/Permit_Join zigbee2mqtt/bridge/request/device/remove zigbee2mqtt/ci/other other/ci; do
   if mq_deliver ha z2m "$topic"; then fail "homeassistant may publish $topic"; else pass "ACL: homeassistant can't publish $topic"; fi
 done
-if mq_deliver z2m ha zigbee2mqtt/bridge/response/backup; then
-  fail "homeassistant receives zigbee2mqtt/bridge/response/backup"
-else
-  pass "ACL: homeassistant can't read zigbee2mqtt/bridge/response/backup"
-fi
+for topic in zigbee2mqtt/bridge/response/backup zigbee2mqtt/bridge/response/Backup zigbee2mqtt/bridge/logging \
+             zigbee2mqtt/bridge/request/backup zigbee2mqtt/kitchen/lamp other/ci; do
+  if mq_deliver z2m ha "$topic"; then fail "homeassistant receives $topic"; else pass "ACL: homeassistant can't read $topic"; fi
+done
 docker exec "$MQ" rm -rf /tmp/mq-z2m /tmp/mq-ha /tmp/mq-bad /tmp/got /tmp/sub.err
 
 # No coordinator configured: Zigbee2MQTT idles and says what to set.

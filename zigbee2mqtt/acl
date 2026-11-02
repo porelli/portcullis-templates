@@ -1,20 +1,49 @@
 # Bundled broker ACL (copied by mosquitto-init next to the password file).
-# zigbee2mqtt: the bridge; homeassistant: Home Assistant's MQTT integration.
-# Both get the base topic and Home Assistant's discovery prefix, nothing else.
-# Mosquitto 2.1 (plugins/acl-file): "deny" entries are checked before every
-# grant of the user and refuse both read and write, so homeassistant can
-# never install code into Zigbee2MQTT (external extensions / converters),
-# change its options (e.g. the MQTT server), or request / read a backup
-# (the coordinator backup holds the network key).
+# Mosquitto 2.1 (plugins/acl-file): anything not granted to the user is
+# refused (reads are checked on delivery, writes on publish).
+#
+# zigbee2mqtt: the bridge itself.
 user zigbee2mqtt
 topic readwrite zigbee2mqtt/#
 topic readwrite homeassistant/#
 
+# homeassistant: Home Assistant's MQTT integration, an allowlist (no
+# zigbee2mqtt/# grant). Zigbee2MQTT 2.14 matches bridge requests
+# case-insensitively (lib/extension/bridge.ts lowercases the key), so no
+# denylist: whatever isn't listed is refused in every casing. Never
+# granted: bridge requests other than permit_join (extensions / converters
+# = code in the container, options, backup, restart, ...), bridge
+# responses (the backup response holds the network key) and
+# bridge/logging (Zigbee2MQTT logs every MQTT publish with its payload,
+# lib/mqtt.ts, and forwards its log there).
 user homeassistant
-topic deny zigbee2mqtt/bridge/request/extension/#
-topic deny zigbee2mqtt/bridge/request/converter/#
-topic deny zigbee2mqtt/bridge/request/backup
-topic deny zigbee2mqtt/bridge/request/options
-topic deny zigbee2mqtt/bridge/response/backup
-topic readwrite zigbee2mqtt/#
-topic readwrite homeassistant/#
+# MQTT discovery: Zigbee2MQTT's discovery configs; HA's birth message.
+topic read homeassistant/#
+topic write homeassistant/status
+# Device and group state and availability (friendly names without "/";
+# zigbee2mqtt/+ never matches a bridge topic, nothing is published at
+# zigbee2mqtt/bridge itself).
+topic read zigbee2mqtt/+
+topic read zigbee2mqtt/+/availability
+# Bridge status for Home Assistant's Zigbee2MQTT bridge entities.
+topic read zigbee2mqtt/bridge/state
+topic read zigbee2mqtt/bridge/info
+topic read zigbee2mqtt/bridge/devices
+topic read zigbee2mqtt/bridge/groups
+topic read zigbee2mqtt/bridge/event
+# Device and group commands: <name>/set|get[/<attribute>] and, with an
+# endpoint, <name>/<endpoint>/set|get[/<attribute>] (Zigbee2MQTT's
+# discovery command topics). None of these shapes is a bridge request
+# Zigbee2MQTT acts on: no request key ends in set/get, and the extension /
+# converter handlers need save|remove right after their name.
+topic write zigbee2mqtt/+/set
+topic write zigbee2mqtt/+/set/+
+topic write zigbee2mqtt/+/get
+topic write zigbee2mqtt/+/get/+
+topic write zigbee2mqtt/+/+/set
+topic write zigbee2mqtt/+/+/set/+
+topic write zigbee2mqtt/+/+/get
+topic write zigbee2mqtt/+/+/get/+
+# The one bridge request Home Assistant's Zigbee2MQTT entities may use
+# (the "Permit join" switch).
+topic write zigbee2mqtt/bridge/request/permit_join

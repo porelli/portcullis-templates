@@ -813,3 +813,13 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.setUp()
         self.edit("motioneye", "compose.yml", "motioneye-init", "motioneye-setup", count=3)
         self.assertFails("motioneye-init")
+
+    def test_homeassistant_acl_is_an_allowlist(self) -> None:
+        for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),
+                              ("topic readwrite zigbee2mqtt/#\n", "wildcard grant"),
+                              ("topic zigbee2mqtt/#\n", "wildcard grant"),
+                              ("topic write homeassistant/#\n", "wildcard grant")):
+            with self.subTest(extra=extra.strip()):
+                self.setUp()
+                self.edit("zigbee2mqtt", "acl", "user homeassistant\n", "user homeassistant\n" + extra)
+                self.assertFails(needle)
