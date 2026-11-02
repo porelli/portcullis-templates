@@ -48,10 +48,10 @@ if grep -q 'configuration.yaml:/config/configuration.yaml:ro' "$COMPOSE"; then
 else
   fail "configuration.yaml must be mounted read-only"
 fi
-if grep -Eq '^AUTH_OIDC_SHA256 = "[0-9a-f]{64}"$' "$DIR/init.py" && grep -Eq '^JOSERFC_SHA256 = "[0-9a-f]{64}"$' "$DIR/init.py"; then
-  pass "init.py pins auth_oidc and joserfc by SHA-256"
+if grep -Eq '^AUTH_OIDC_SHA256 = "[0-9a-f]{64}"$' "$DIR/init.py"; then
+  pass "init.py pins auth_oidc by SHA-256"
 else
-  fail "init.py must pin auth_oidc and joserfc by SHA-256"
+  fail "init.py must pin auth_oidc by SHA-256"
 fi
 
 compose_up "$APP_ID"
@@ -123,13 +123,17 @@ if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -q 'Using pending HTTP conf
 else
   pass "Home Assistant uses the stable HTTP config"
 fi
-# joserfc comes from the pinned wheel in /config/deps, never from a runtime pip install
-JOSE=$(docker exec -e PYTHONUSERBASE=/config/deps "portcullis-${SERVICE}-1" python3 -c 'import importlib.metadata as m, joserfc; print(m.version("joserfc"), joserfc.__file__)' 2>&1 || true)
-SYS=$(docker exec -e PYTHONNOUSERSITE=1 "portcullis-${SERVICE}-1" python3 -c 'import importlib.util; print(importlib.util.find_spec("joserfc"))' 2>&1 || true)
-if echo "$JOSE" | grep -q '^1\.7\.7 /config/deps/' && [ "$SYS" = None ]; then
-  pass "joserfc 1.7.7 from /config/deps only ($JOSE)"
+# auth_oidc's requirements come from the pinned image (nothing pip-installed at runtime)
+REQS=$(docker exec "portcullis-${SERVICE}-1" python3 -c 'import importlib.metadata as m; print(" ".join(f"{p}={m.version(p)}" for p in ("joserfc", "aiofiles", "Jinja2")))' 2>&1 || true)
+if echo "$REQS" | grep -Eq '^joserfc=[0-9.]+ aiofiles=[0-9.]+ Jinja2=[0-9.]+$'; then
+  pass "auth_oidc requirements present in the image ($REQS)"
 else
-  fail "joserfc: deps=$JOSE system=$SYS"
+  fail "auth_oidc requirements: $REQS"
+fi
+if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -qi 'Attempting install of\|Unable to install package'; then
+  fail "Home Assistant installed packages at runtime"
+else
+  pass "no runtime package installs"
 fi
 if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -qi 'Registered OIDC provider'; then
   pass "auth_oidc registered its provider"

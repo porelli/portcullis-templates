@@ -18,8 +18,8 @@ auth:
     through the OpenID Connect custom integration auth_oidc
     (christiaangoossens/hass-oidc-auth, the integration HACS lists, here
     pinned to release 1.2.1 and installed by the homeassistant-init one-shot
-    from the release asset after its SHA-256 matched, together with its
-    pinned joserfc wheel; a mismatch stops the start). It is the only auth
+    from the release asset after its SHA-256 matched; a mismatch stops the
+    start. Its Python requirements ship in the Home Assistant image). It is the only auth
     provider: configuration.yaml (shipped read-only) sets auth_providers: []
     so Home Assistant's own username/password login doesn't exist, and
     homeassistant-init marks onboarding done before the first start, so the

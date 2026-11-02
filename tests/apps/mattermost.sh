@@ -62,7 +62,28 @@ mm_login() {  # mm_login <login_id> <password>: prints the HTTP status, body in 
     | curl -s -o /tmp/mm-login.json -w '%{http_code}' -H 'Content-Type: application/json' \
       --data-binary @- "http://${IP}:8065/api/v4/users/login" 2>/dev/null || echo 000
 }
-mmctl_local() { docker exec "portcullis-${SERVICE}-1" mmctl --local "$@"; }
+# Local-mode API calls (as an operator would with mmctl --local), through the
+# init image on the socket in the data volume: create e2etaker, rename the
+# bootstrap admin away, give e2etaker its name.
+mm_local_api() {
+  docker run --rm -i --user 2000:2000 -v "portcullis_mattermost-data:/mattermost/data" \
+    -e ADMIN="$1" -e TAKER_PW="$2" --entrypoint python3 \
+    python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 - <<'PY'
+import http.client, json, os, socket
+class C(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX); self.sock.connect("/mattermost/data/mattermost_local.socket")
+def call(m, p, b=None):
+    c = C("localhost"); c.request(m, p, json.dumps(b) if b is not None else None, {"Content-Type": "application/json"})
+    r = c.getresponse(); d = r.read(); return r.status, (json.loads(d) if d else None)
+a = os.environ["ADMIN"]
+s, t = call("POST", "/api/v4/users", {"username": "e2etaker", "email": "e2etaker@mattermost.invalid", "password": os.environ["TAKER_PW"]})
+s2, adm = call("GET", f"/api/v4/users/username/{a}")
+s3, _ = call("PUT", f"/api/v4/users/{adm['id']}/patch", {"username": a + "-old"})
+s4, _ = call("PUT", f"/api/v4/users/{t['id']}/patch", {"username": a})
+print("create", s, "lookup", s2, "rename-admin", s3, "rename-taker", s4)
+PY
+}
 # The mattermost image is distroless: read/remove the state file through the
 # init image (same uid) with the data volume mounted.
 state_file() {
@@ -109,10 +130,8 @@ fi
 # Takeover attempt: the bootstrap admin is renamed and another account
 # takes its name. The one-shot must fail closed and grant nothing.
 TAKER_PW="$(openssl rand -hex 16)"
-# (test-only throwaway password on mmctl's argv)
-mmctl_local user create --username e2etaker --email e2etaker@mattermost.invalid --password "$TAKER_PW" >/dev/null 2>&1 || true
-mmctl_local user username "$ADMIN" "${ADMIN}-old" >/dev/null 2>&1 || true
-mmctl_local user username e2etaker "$ADMIN" >/dev/null 2>&1 || true
+TAKE=$(mm_local_api "$ADMIN" "$TAKER_PW" 2>&1 || true)
+info "takeover setup: $TAKE"
 RC=$(run_init /tmp/mm-init.log)
 if [ "$RC" != 0 ] && grep -q 'not the pinned bootstrap admin' /tmp/mm-init.log; then
   pass "name taken by another account -> mattermost-init fails closed"

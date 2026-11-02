@@ -8,10 +8,10 @@
 2. The auth_oidc custom integration (christiaangoossens/hass-oidc-auth) is
    installed from its pinned release asset into
    /config/custom_components/auth_oidc, replacing whatever is there, after
-   its SHA-256 matched. Its Python requirement joserfc (not shipped by Home
-   Assistant) is installed the same way, as a pinned wheel, into
-   /config/deps, which Home Assistant puts on sys.path, so Home Assistant
-   never installs an unpinned copy at runtime.
+   its SHA-256 matched. Its Python requirements (aiofiles, jinja2, joserfc)
+   ship in the pinned Home Assistant image, so nothing is installed at
+   runtime; a stale /config/deps copy of joserfc from older template
+   versions is removed.
 3. The HTTP server config (.storage/http, which Home Assistant 2026.10 uses
    instead of the deprecated http: YAML) is rewritten as the confirmed
    ("stable") config with nothing pending: X-Forwarded-For trusted from
@@ -32,7 +32,6 @@ import ipaddress
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -45,11 +44,6 @@ AUTH_OIDC_VERSION = "1.2.1"
 AUTH_OIDC_URL = ("https://github.com/christiaangoossens/hass-oidc-auth/releases/download/"
                  f"v{AUTH_OIDC_VERSION}/hass-oidc-auth.zip")
 AUTH_OIDC_SHA256 = "e5badaaacaa63cfd6fe733924a05e76d75058836190398598fb24de57cd47ccd"
-
-JOSERFC_VERSION = "1.7.7"
-JOSERFC_URL = ("https://files.pythonhosted.org/packages/df/9f/934db284aa22f37af59708e382903860d4b81329c137b1b0ed2745daeb65/"
-               f"joserfc-{JOSERFC_VERSION}-py3-none-any.whl")
-JOSERFC_SHA256 = "06979cfbab78bc802f14c0358f32969826cc26720e13cb38926ffdc86bc0cb2c"
 
 ONBOARDING_STEPS = ["user", "core_config", "analytics", "integration"]
 
@@ -158,24 +152,16 @@ def install_auth_oidc() -> None:
     log(f"auth_oidc {AUTH_OIDC_VERSION} installed (sha256 verified)")
 
 
-def install_joserfc() -> None:
-    data = fetch_verified(JOSERFC_URL, JOSERFC_SHA256, f"joserfc-{JOSERFC_VERSION}-py3-none-any.whl")
-    # The same user site Home Assistant mounts (bootstrap.async_mount_local_lib_path:
-    # PYTHONUSERBASE=/config/deps, python -m site --user-site).
+def remove_stale_deps() -> None:
     deps = os.path.join(CONFIG, "deps")
-    env = dict(os.environ, PYTHONUSERBASE=deps)
-    site = subprocess.run([sys.executable, "-m", "site", "--user-site"], env=env,
-                          capture_output=True, text=True, check=True).stdout.strip()
-    if not site.startswith(deps + os.sep):
-        die(f"unexpected user site {site!r}")
-    os.makedirs(site, exist_ok=True)
-    for entry in os.listdir(site):
-        if entry == "joserfc" or (entry.startswith("joserfc-") and entry.endswith(".dist-info")):
-            p = os.path.join(site, entry)
-            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.unlink(p)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        safe_extract(zf, site)
-    log(f"joserfc {JOSERFC_VERSION} installed into {site} (sha256 verified)")
+    if not os.path.isdir(deps):
+        return
+    for root, dirs, _ in os.walk(deps):
+        for d in list(dirs):
+            if d == "joserfc" or (d.startswith("joserfc-") and d.endswith(".dist-info")):
+                shutil.rmtree(os.path.join(root, d))
+                dirs.remove(d)
+                log(f"removed stale {os.path.join(root, d)}")
 
 
 def http_config() -> None:
@@ -217,7 +203,7 @@ def main() -> None:
     os.makedirs(CACHE, exist_ok=True)
     onboarding_done()
     install_auth_oidc()
-    install_joserfc()
+    remove_stale_deps()
     http_config()
     include_files()
     log("done")
