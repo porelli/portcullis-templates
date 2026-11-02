@@ -21,3 +21,11 @@ config_files: []
 urls:
   - label: Database Manager
     url: "https://{{HOST_CLOUDBEAVER}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    signed_in:
+      text: "{username}"
+      wait: 30

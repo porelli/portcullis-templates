@@ -60,3 +60,8 @@ config_files: []
 urls:
   - label: Plex
     url: "https://{{HOST_PLEX}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    skip: "custom: Plex signs in through plex.tv (an account and a claim token from plex.tv), not possible headlessly in CI"

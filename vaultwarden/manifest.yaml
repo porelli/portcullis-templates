@@ -66,3 +66,22 @@ config_files: []
 urls:
   - label: Vault
     url: "https://{{HOST_VAULTWARDEN}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /#/sso
+    login: ["button:has-text('Use single sign-on')", "a:has-text('Use single sign-on')", "button:has-text('Log in')", "button:has-text('Continue')"]
+    fill:
+      - {selector: "input[type=email]", value: "{email}"}
+      - {selector: "input[formcontrolname=identifier]", value: "portcullis"}
+    # After the first SSO login Vaultwarden asks the new user to set a
+    # master password (vault encryption, not a login).
+    signed_in:
+      html: "{email}"
+      url_contains: set-initial-password
+      wait: 20
+    password: "Vaultwarden's master password encrypts the vault; it is set after the SSO login (auth.notes)"
+    admin:
+      reach: /admin
+      text: "Vaultwarden"

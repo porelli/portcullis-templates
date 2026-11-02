@@ -65,3 +65,14 @@ config_files: []
 urls:
   - label: Wiki
     url: "https://{{HOST_DOKUWIKI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /doku.php?do=login
+    login: ["a:has-text('Portcullis')", "button:has-text('Portcullis')"]
+    signed_in:
+      text: "{username}"
+    admin:
+      reach: /doku.php?do=admin
+      text: "Access Control List"

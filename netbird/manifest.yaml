@@ -82,3 +82,13 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_NETBIRD_DASH}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    signed_in:
+      text: "{username}"
+      wait: 30
+    expected_fail:
+      outsider: "group_access: false: NetBird has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"

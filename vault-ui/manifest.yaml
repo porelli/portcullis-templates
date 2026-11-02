@@ -19,3 +19,8 @@ config_files: []
 urls:
   - label: Vault UI
     url: "https://{{HOST_VAULT_UI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    skip: "mtls: no Portcullis sign-in (TLS client-certificate tier, then Vault's own token login); core's e2e covers the mtls tier"

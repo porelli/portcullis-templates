@@ -688,6 +688,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
     check_identity(t, services, r)
+    check_signin_test(t, r)
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -892,6 +893,73 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
     if "omniauth_providers" in t.compose_values and \
             not re.search(r"omniauth_auto_link_user'\]\s*=\s*false", t.compose_values):
         r.error(t.c_where, "GitLab OIDC needs gitlab_rails['omniauth_auto_link_user'] = false", EMAIL_HINT)
+
+
+# ── tests.signin (sign-in e2e, tests/e2e/app_signin.py) ─────────────
+SIGNIN_HINT = "see CONTRIBUTING.md, \"Sign-in test\""
+# Methods without a Portcullis user sign-in the e2e could drive: these
+# declare why in tests.signin.skip.
+SIGNIN_SKIP_METHODS = {"public", "custom", "mtls"}
+# Gated methods: group-gate refuses outsiders, never an expected failure.
+SIGNIN_GATED_METHODS = {"forward-auth", "header-auth"}
+
+
+def check_signin_test(t: Template, r: Report) -> None:
+    m = t.manifest or {}
+    auth = m.get("auth") or {}
+    method = auth.get("method")
+    si = (m.get("tests") or {}).get("signin")
+    if not isinstance(si, dict):
+        r.error(t.m_where, "no tests.signin block",
+                "every template declares how CI signs a user in (path + signed_in), or tests.signin.skip with the "
+                f"reason for public / custom / mtls apps; {SIGNIN_HINT}")
+        return
+    if si.get("skip"):
+        if method not in SIGNIN_SKIP_METHODS:
+            r.error(t.m_where, f"tests.signin.skip is only for auth.method {', '.join(sorted(SIGNIN_SKIP_METHODS))} "
+                    f"(got {method!r})",
+                    "apps signed in through Portcullis get a real sign-in test; mark a known failure with "
+                    f"tests.signin.expected_fail.<check> instead; {SIGNIN_HINT}")
+        return
+    if method == "public":
+        r.error(t.m_where, "auth.method public has no sign-in: set tests.signin.skip with the reason", SIGNIN_HINT)
+    xfail = si.get("expected_fail") or {}
+    if auth.get("group_admin") and not si.get("admin"):
+        r.error(t.m_where, "auth.group_admin is true but tests.signin has no admin check",
+                f"add tests.signin.admin: how to recognise the admin rights admin_group grants; {SIGNIN_HINT}")
+    open_oidc = method == "native-oidc" and auth.get("group_access") is False
+    if open_oidc and not xfail.get("outsider"):
+        r.error(t.m_where, "native-oidc app with group_access: false: outsiders can sign in, but "
+                "tests.signin.expected_fail.outsider is not set",
+                "until the Hub restricts Keycloak clients per app (Task 4b), set expected_fail.outsider with that reason")
+    if method in SIGNIN_GATED_METHODS and xfail.get("outsider"):
+        r.error(t.m_where, f"tests.signin.expected_fail.outsider on a {method} app",
+                "group-gate refuses users outside access_group; fix the gate instead of marking it")
+    if xfail.get("outsider") and not open_oidc and method not in SIGNIN_GATED_METHODS:
+        r.warn(t.m_where, "tests.signin.expected_fail.outsider on an app that restricts sign-in by group",
+               "remove it once the outsider check passes")
+    host = si.get("host")
+    if isinstance(host, str):
+        var = "PORTCULLIS_HOST_" + host[len("{{HOST_"):-2]
+        if t.host_vars and var not in t.host_vars:
+            r.error(t.m_where, f"tests.signin.host {host} is not a host router of compose.yml",
+                    f"use one of {', '.join('{{HOST_' + v[len('PORTCULLIS_HOST_'):] + '}}' for v in sorted(t.host_vars))}")
+    env_keys = {e.get("key") for e in m.get("env") or [] if isinstance(e, dict)} | \
+               {e.get("key") for e in m.get("settings") or [] if isinstance(e, dict)}
+    for st in si.get("setup") or []:
+        if isinstance(st, dict) and st.get("save_env") and st["save_env"] not in env_keys:
+            r.error(t.m_where, f"tests.signin.setup save_env {st['save_env']} is not a settings/env key",
+                    "setup steps only fill values the manifest documents (e.g. a post-start API key setting)")
+        if isinstance(st, dict) and st.get("service") not in ((t.compose or {}).get("services") or {}):
+            r.error(t.m_where, f"tests.signin.setup service {st.get('service')!r} is not a compose service")
+    sig = si.get("signed_in") or {}
+    if method in ("header-auth", "native-oidc") and isinstance(sig, dict):
+        named = any("{username}" in str(sig.get(k, "")) or "{email}" in str(sig.get(k, "")) for k in ("text", "html")) \
+            or "json" in sig or "js" in sig
+        if not named:
+            r.warn(t.m_where, f"tests.signin.signed_in of a {method} app does not check the username",
+                   "prefer text/html with {username}, or json/js (default: equals {username}), so the test proves "
+                   "the app got the right identity")
 
 
 def check_service(t: Template, sname: str, svc: Dict[str, Any], where: str, r: Report) -> None:

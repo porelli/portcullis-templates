@@ -48,3 +48,13 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_ADGUARD}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # Past the gateway the browser reaches AdGuard Home itself: its setup
+    # wizard on a fresh install. No identity reaches AdGuard (no SSO).
+    signed_in:
+      html: "AdGuard Home"
+    password: "AdGuard Home keeps its own admin password behind the gateway (auth.notes: no web allowlist upstream)"

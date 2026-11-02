@@ -35,3 +35,14 @@ config_files: []
 urls:
   - label: Budget
     url: "https://{{HOST_ACTUAL}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    login: ["button:has-text('Sign in with OpenID')", "button:has-text('OpenID')"]
+    signed_in:
+      text: "{username}"
+      wait: 20
+    expected_fail:
+      outsider: "group_access: false: Actual has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"

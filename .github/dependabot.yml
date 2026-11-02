@@ -83,3 +83,17 @@ updates:
     groups:
       validator:
         patterns: ["*"]
+
+  # Sign-in e2e (tests/e2e/requirements.in -> requirements.txt, hashed).
+  # A Playwright bump also changes the cached Chromium build (test-apps.yml
+  # keys the browser cache on requirements.txt) and reruns every app's e2e.
+  - package-ecosystem: pip
+    directory: "/tests/e2e"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "tests"
+    groups:
+      signin-e2e:
+        patterns: ["*"]

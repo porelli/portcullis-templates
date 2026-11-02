@@ -163,3 +163,14 @@ config_files: []
 urls:
   - label: Nextcloud
     url: "https://{{HOST_NEXTCLOUD}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /login
+    signed_in:
+      json: {url: "/ocs/v2.php/cloud/user?format=json", field: ocs.data.id, headers: {OCS-APIRequest: "true"}}
+    admin:
+      # nextcloud-cron maps admin_<id> to Nextcloud's admin group within a minute.
+      json: {url: "/ocs/v2.php/cloud/users/{username}/groups?format=json", field: ocs.data.groups, contains: admin, headers: {OCS-APIRequest: "true"}}
+      wait: 120

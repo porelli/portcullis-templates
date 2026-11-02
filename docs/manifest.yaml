@@ -20,3 +20,7 @@ urls:
   - label: Docs
     url: "https://{{HOST_DOCS}}"
 
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    skip: "public: no sign-in (auth.method public)"

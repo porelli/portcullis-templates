@@ -76,3 +76,22 @@ config_files: []
 urls:
   - label: Wiki
     url: "https://{{HOST_WIKI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /login
+    login: ["text=Portcullis"]
+    signed_in:
+      js: >-
+        fetch('/graphql', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: '{ users { profile { providerName email } } }'})})
+        .then(r => r.json()).then(j => j.data.users.profile.email)
+      equals: "{email}"
+      wait: 20
+    admin:
+      js: >-
+        fetch('/graphql', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: '{ users { profile { groups } } }'})})
+        .then(r => r.json()).then(j => (j.data.users.profile.groups || []).includes('{admin_group}'))
+      equals: true
