@@ -12,9 +12,12 @@ auth:
   group_admin: false
   access_group: users_cloudbeaver
   admin_group: admin_cloudbeaver
-  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User (the immutable LLDAP username; the provider has no email header) and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User or X-Forwarded-Email from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name and X-Forwarded-Email headers. Accounts created when the header carried the email are named after it; rename them to the LLDAP username in CloudBeaver's admin UI. Roles and connections are managed in CloudBeaver.
+  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User (the immutable LLDAP username; the provider has no email header) and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User or X-Forwarded-Email from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name and X-Forwarded-Email headers. Accounts created when the header carried the email are named after it; rename them to the LLDAP username in CloudBeaver's admin UI. Roles and connections are managed in CloudBeaver. The server is configured automatically at first start (CB_SERVER_* / CB_ADMIN_*), so nobody gets the initial-configuration wizard; its local administrator cbadmin (CLOUDBEAVER_ADMIN_PASSWORD) is break-glass only. Before every start, cloudbeaver-config (a one-shot, JSON-aware patch of workspace/.data/.cloudbeaver.runtime.conf) re-enables the reverseProxy provider with X-Forwarded-User, and CloudBeaver doesn't start if that fails.
 
-env: []
+env:
+  - key: CLOUDBEAVER_ADMIN_PASSWORD
+    description: Password of CloudBeaver's local administrator cbadmin (break-glass; set by the automatic server configuration)
+    generate: random
 keycloak_clients: []
 config_files: []
 
@@ -29,6 +32,3 @@ tests:
     signed_in:
       text: "{username}"
       wait: 30
-    expected_fail:
-      admin: "CloudBeaver has no automatic server configuration in this template: the first user past the gate gets its initial-configuration wizard (server settings + a local administrator password), not a reverseProxy session; entrypoint.sh's runtime-config patch also breaks on the multi-line enabledAuthProviders the wizard writes (template fix needed)"
-      member: "CloudBeaver has no automatic server configuration in this template: the first user past the gate gets its initial-configuration wizard (server settings + a local administrator password), not a reverseProxy session; entrypoint.sh's runtime-config patch also breaks on the multi-line enabledAuthProviders the wizard writes (template fix needed)"

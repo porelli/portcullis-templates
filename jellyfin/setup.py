@@ -84,6 +84,9 @@ def authenticate():
     auth_header = 'MediaBrowser Client="Portcullis", Device="Setup", DeviceId="portcullis-setup", Version="1.0"'
     headers = {
         "Content-Type": "application/json",
+        # Jellyfin 12 reads only the standard Authorization header (the
+        # legacy X-Emby-Authorization is ignored: "request.App" is null).
+        "Authorization": auth_header,
         "X-Emby-Authorization": auth_header
     }
 
@@ -107,7 +110,7 @@ def authenticate():
 
 
 def setup_sso_plugin(token):
-    auth = {"X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
+    auth = {"Authorization": f'MediaBrowser Token="{token}"', "X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
 
     # Add SSO repository
     try:
@@ -175,7 +178,7 @@ def setup_sso_plugin(token):
 
 
 def configure_sso(token):
-    auth = {"X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
+    auth = {"Authorization": f'MediaBrowser Token="{token}"', "X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
 
     # Find SSO plugin ID
     sso_plugin_id = None
@@ -232,7 +235,7 @@ def configure_sso(token):
 
 def configure_network(token):
     """Set KnownProxies so Jellyfin trusts X-Forwarded-Proto from Traefik."""
-    auth = {"X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
+    auth = {"Authorization": f'MediaBrowser Token="{token}"', "X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
 
     try:
         net = requests.get(f"{JF}/System/Configuration/network", headers=auth).json()
@@ -266,7 +269,7 @@ def main():
         sys.exit(0)
 
     # Restart to load plugin
-    auth = {"X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
+    auth = {"Authorization": f'MediaBrowser Token="{token}"', "X-Emby-Authorization": f'MediaBrowser Token="{token}"'}
     requests.post(f"{JF}/System/Restart", headers=auth)
     print("setup: Restarting Jellyfin to load SSO plugin...")
     time.sleep(10)
