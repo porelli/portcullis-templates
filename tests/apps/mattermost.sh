@@ -32,7 +32,31 @@ compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_MATTERMOST"
 
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
-wait_for_url "http://${IP}:8065/api/v4/system/ping" 600 "$APP_ID" || docker logs "portcullis-${SERVICE}-1" 2>&1 | tail -40
+# Probe sign-up as soon as Mattermost answers, racing mattermost-init: with
+# no account yet, Mattermost would make the first sign-up a system admin.
+# Plain and invite-id sign-ups must answer 501 signup_email_disabled
+# (IsUserSignUpAllowed; an invite token is looked up first, but
+# CreateUserWithToken runs the same check).
+signup_probes() {  # signup_probes <label>
+  local q code body
+  for q in "" "?iid=e2einviteid00000000000000"; do
+    body=$(curl -s -w '\n%{http_code}' -H 'Content-Type: application/json' \
+      -d '{"username":"e2esignup","email":"e2esignup@x.invalid","password":"e2e-signup-Password-1"}' \
+      "http://${IP}:8065/api/v4/users${q}" 2>/dev/null || echo 000)
+    code=${body##*$'\n'}
+    if [ "$code" = 501 ] && echo "$body" | grep -q 'signup_email_disabled'; then
+      pass "$1: POST /api/v4/users${q%%=*} -> 501 signup_email_disabled"
+    else
+      fail "$1: POST /api/v4/users${q%%=*} -> $code $(echo "$body" | head -c 200)"
+    fi
+  done
+}
+for _ in $(seq 1 600); do
+  curl -sf -o /dev/null "http://${IP}:8065/api/v4/system/ping" 2>/dev/null && break
+  sleep 0.5
+done
+INIT_STATE=$(docker inspect -f '{{.State.Status}}' "portcullis-mattermost-init-1" 2>/dev/null || echo none)
+signup_probes "first answer (mattermost-init: $INIT_STATE)"
 
 info "Waiting for mattermost-init..."
 if INIT_RC=$(timeout 600 docker wait "portcullis-mattermost-init-1" 2>/dev/null) && [ "$INIT_RC" = 0 ]; then
@@ -46,15 +70,7 @@ if docker logs "portcullis-mattermost-init-1" 2>&1 | grep -q "$MATTERMOST_ADMIN_
 else
   pass "admin password not in the logs"
 fi
-
-# Self sign-up is refused (the first account included)
-CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-  -d '{"username":"e2esignup","email":"e2esignup@x.invalid","password":"e2e-signup-Password-1"}' \
-  "http://${IP}:8065/api/v4/users" 2>/dev/null || echo 000)
-case "$CODE" in
-  201|200) fail "POST /api/v4/users (sign-up) -> $CODE" ;;
-  *) pass "POST /api/v4/users (sign-up) -> $CODE" ;;
-esac
+signup_probes "after mattermost-init"
 
 ADMIN="mmadmin-${MATTERMOST_ADMIN_SUFFIX:0:12}"
 mm_login() {  # mm_login <login_id> <password>: prints the HTTP status, body in /tmp/mm-login.json

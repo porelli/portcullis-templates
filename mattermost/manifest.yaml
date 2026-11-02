@@ -12,7 +12,6 @@ auth:
   group_access: true
   group_admin: false
   access_group: users_mattermost
-  admin_group: admin_mattermost
   notes: >
     Mattermost Team Edition 12.0 has no SSO that works with Portcullis:
     OpenID Connect (and Google / Entra ID / SAML / LDAP) need a paid
@@ -22,20 +21,35 @@ auth:
     no numeric id) and which can't restrict sign-in to a group. So the
     whole host is behind Portcullis sign-in + group-gate (users_mattermost)
     and Mattermost keeps its own accounts behind it. Self sign-up is off
-    (no email sign-up, no open server, no invite-link sign-up; locked in
-    the System Console): accounts are created by a system admin (System
-    Console > Users, or mmctl --local user create inside the container).
+    (no email sign-up, which also closes the first-account and invite-link
+    sign-ups; no open server; locked in the System Console). Team Edition's
+    System Console can't create accounts; an admin creates them with
+    mmctl in local mode, in the container (Hub exec or the server shell):
+    `mmctl --local user create --username <LLDAP username> --email <email>
+    --password <random placeholder>`, then `mmctl --local user
+    change-password <username>`, which prompts for the real initial
+    password on stdin (mmctl only takes the create password as an argument,
+    so use a throwaway there), hands that password over out of band, and
+    the user changes it after signing in. Local mode answers anyone who can
+    run a process in the Mattermost container with full system-admin rights
+    (no authentication); Hub exec into that container is admin access.
     Give each account the person's LLDAP username, since Mattermost doesn't
-    know who passed the gateway. The bootstrap system admin is
-    mmadmin-<first 12 characters of MATTERMOST_ADMIN_SUFFIX> with the
+    know who passed the gateway. No admin group: Mattermost can't map one
+    (no SSO), so admins are made in Mattermost (by a system admin, e.g.
+    mmctl --local roles system-admin <username>). The bootstrap system admin
+    is mmadmin-<first 12 characters of MATTERMOST_ADMIN_SUFFIX> with the
     generated password MATTERMOST_ADMIN_PASSWORD, created once by the
     mattermost-init one-shot over the local-mode socket and pinned by its
-    user ID in the data volume: system_admin is never granted to an account
-    found by name, and if the bootstrap name later maps to another account
-    the one-shot fails and the app doesn't start until that is resolved.
-    Change its password after the first sign-in. Team Edition can't lock
-    usernames (LockProfileFieldsForEmailUsers is Enterprise-only), so users
-    can rename themselves; Mattermost usernames are not an identity
+    user ID in the data volume: system_admin is granted only to the account
+    that run created, never to an account found by name. If the bootstrap
+    name later belongs to a different account (renamed and taken) or exists
+    without the pinned ID, mattermost-init fails (the Hub reports the failed
+    one-shot) and grants nothing; Mattermost itself keeps running (its
+    image has no shell, so its healthcheck can't read the state file), and
+    the account holding the name stays a plain user. Change the bootstrap
+    password after the first sign-in. Team Edition can't lock usernames
+    (LockProfileFieldsForEmailUsers is Enterprise-only), so users can
+    rename themselves; Mattermost usernames are not an identity
     Portcullis vouches for. GitLab SSO, personal access tokens and plugin
     uploads are off. What doesn't work through the gateway: the Mattermost
     desktop and mobile apps and anything else that talks to the API

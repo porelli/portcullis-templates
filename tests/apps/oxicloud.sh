@@ -120,6 +120,21 @@ if echo "$loc" | grep -q 'client_id=oxicloud'; then
 else
   pass "authorize not answered by OxiCloud without a Portcullis session"
 fi
+# Back-channel logout: reachable by Keycloak without Portcullis sign-in, and
+# it refuses a logout token it can't verify.
+out=$(via_traefik "$HOST" /api/auth/oidc/backchannel-logout -X POST -d 'logout_token=e2e.not.a-jwt'); code=${out%% *}
+if echo "${out#* }" | grep -q "auth\.$DOMAIN"; then
+  fail "back-channel logout is behind forward-auth (Keycloak can't reach it): $out"
+elif [ "$code" -ge 400 ] 2>/dev/null && [ "$code" -lt 500 ]; then
+  pass "back-channel logout answered by OxiCloud, bad token refused ($code)"
+else
+  fail "back-channel logout with a bad token: $out"
+fi
+if grep -q 'backchannel_logout_url: "https://{{HOST_OXICLOUD}}/api/auth/oidc/backchannel-logout"' "$MANIFEST"; then
+  pass "manifest: back-channel logout URL on the Keycloak client"
+else
+  fail "manifest must set keycloak_clients[].backchannel_logout_url"
+fi
 out=$(via_traefik "$HOST" /webdav/)
 case "${out%% *}" in
   401) pass "WebDAV without credentials -> 401 from OxiCloud (ungated, app passwords)" ;;

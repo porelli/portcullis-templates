@@ -11,6 +11,7 @@ auth:
   sso: true
   group_access: true
   group_admin: true
+  keycloak_access_role: true
   access_group: users_homeassistant
   admin_group: admin_homeassistant
   notes: >
@@ -25,26 +26,34 @@ auth:
     homeassistant-init marks onboarding done before the first start, so the
     onboarding wizard (which creates a password owner) never opens. The app
     is routed only while /auth/providers lists auth_oidc alone and
-    onboarding is closed. Only users_homeassistant members can sign in
-    (roles.user on the groups claim); admin_homeassistant members become
-    Home Assistant administrators. Upstream sets roles only when the account
-    is created (first login): change an existing user's administrator flag
+    onboarding is closed. Who can sign in: auth_oidc admits users in
+    users_homeassistant (roles.user) and also users in admin_homeassistant
+    alone (roles.admin implies access upstream), so the Hub's Keycloak
+    access role (keycloak_access_role) restricts the client to
+    users_homeassistant as well: in production only that group gets a
+    token at all. admin_homeassistant members become Home Assistant
+    administrators. Upstream sets roles only when the account is created
+    (first login): change an existing user's administrator flag
     in Settings > People. Accounts are keyed on the OIDC issuer + sub, the
     display name is the LLDAP username (preferred_username), and SSO logins
     are never linked to existing accounts (automatic_user_linking off). No
     one is the instance owner; administrators can do everything an owner
     can except owner-only operations. Break-glass: there is no local login;
-    an operator with shell access edits the configuration (custom
-    override) to add a provider temporarily.
+    an operator temporarily mounts a modified configuration.yaml (with a
+    local provider) over the template's through the Hub's custom override.
     What works: the web UI and its websocket API (straight to Home
     Assistant, no forward-auth on the host), long-lived access tokens
     created by a signed-in user, and the Companion apps: upstream signs
     mobile apps in with a device code shown in the app and confirmed in a
     browser (Chrome/Safari or another computer) where the user signs in to
-    Portcullis. Limits: removing a user from the groups blocks new sign-ins
-    only; Home Assistant refresh tokens and long-lived tokens stay valid
-    (upstream has no session management / back-channel logout yet), so
-    deactivate the user in Home Assistant too. Networking: the container is
+    Portcullis. That device-code step is phishable: a member can be tricked
+    into entering a code an outsider's app shows, which signs that app in
+    as the member (enter only codes from your own device). Limits: removing
+    a user from the groups blocks new sign-ins only. Home Assistant refresh
+    tokens stay valid until unused for 90 days and long-lived access tokens
+    are effectively permanent (upstream has no session management or
+    back-channel logout yet): deactivate the user in Home Assistant
+    (Settings > People) to revoke them. Networking: the container is
     on Docker bridge networks only (never host networking, which would
     publish port 8123 past the gateway), so mDNS/SSDP/DHCP discovery,
     Bluetooth and USB radios are not available; use IP-based integrations

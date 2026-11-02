@@ -43,6 +43,11 @@ fi
 assert_compose_setting "$COMPOSE" HA_TRUSTED_PROXY '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
 assert_compose_setting "$COMPOSE" HA_ACCESS_GROUP '\$\{PORTCULLIS_ACCESS_GROUP:-users_homeassistant\}'
 assert_compose_setting "$COMPOSE" HA_ADMIN_GROUP '\$\{PORTCULLIS_ADMIN_GROUP:-admin_homeassistant\}'
+if grep -q '^  keycloak_access_role: true' "$DIR/manifest.yaml"; then
+  pass "manifest: keycloak_access_role (auth_oidc's admin role implies access)"
+else
+  fail "manifest must set keycloak_access_role: true"
+fi
 if grep -q 'configuration.yaml:/config/configuration.yaml:ro' "$COMPOSE"; then
   pass "configuration.yaml mounted read-only"
 else

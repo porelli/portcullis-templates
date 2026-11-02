@@ -39,9 +39,22 @@ auth:
     it first) is closed by the oxicloud-init one-shot before OxiCloud
     starts (it marks the instance initialized), and the app is routed only
     while it reports itself initialized.
-    Not through the gateway: OxiCloud's own sessions (1 h access token, 7 d
-    rotating refresh token) and app passwords outlive a removal from the
-    group; deactivate the user in OxiCloud for that. WebDAV, CalDAV and
+    Sessions: Keycloak calls OxiCloud's back-channel logout
+    (/api/auth/oidc/backchannel-logout) whenever a Keycloak session ends;
+    the Hub signs a user out of Keycloak when they leave the group, so their
+    OxiCloud sessions (7 d rotating refresh tokens) are revoked then. What
+    remains until it expires or is revoked in OxiCloud: an access token
+    already issued (at most 1 h) and app passwords (WebDAV/CalDAV/CardDAV,
+    no expiry); deactivate the user in OxiCloud to cut those. Device sign-in
+    (RFC 8628, /api/auth/device) is approved by a signed-in user: a member
+    can be tricked into approving a code an outsider started, which signs
+    the outsider in as that member (approve only codes you started).
+    Public share links (/api/s/{token}, the share page and its assets) are
+    answered by OxiCloud without Portcullis sign-in by design: the host
+    router has no forward-auth (native OIDC). On a host whose policy
+    requires a client certificate they are refused at the TLS layer like
+    everything else; this template declares no auth.public_access, so no
+    exception can be opened for them there. WebDAV, CalDAV and
     CardDAV clients use app passwords (created by the signed-in user under
     Settings); the Nextcloud-compatible API for Nextcloud desktop/mobile
     apps is off (it would add another login flow). Upgrades: read the
@@ -62,6 +75,7 @@ keycloak_clients:
   - client_id: oxicloud
     secret_env: OXICLOUD_OIDC_SECRET
     redirect_uri: "https://{{HOST_OXICLOUD}}/api/auth/oidc/callback"
+    backchannel_logout_url: "https://{{HOST_OXICLOUD}}/api/auth/oidc/backchannel-logout"
     name: OxiCloud
 
 config_files: []
