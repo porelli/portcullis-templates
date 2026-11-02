@@ -114,7 +114,17 @@ CATCH_ALL_TRUST = [
 LOGIN_GATES = {
     "gitlab": ["/users"],
     "litellm": ["/ui", "/sso", "/login", "/v2/login", "/fallback/login", "/onboarding"],
+    "paperless": ["/accounts/oidc", "/api/auth/headless/browser/v1/auth/provider",
+                  "/api/auth/headless/app/v1/auth/provider"],
     "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
+}
+# Native-OIDC templates whose separately hosted static web client is gated
+# as a whole (forward-auth + group-gate on its host router) while the app's
+# API host stays ungated: app-id -> router names. Only static clients that
+# hold no server data and have no login of their own belong here; each
+# listed router must stay gated (check_routers).
+GATED_CLIENT_ROUTERS = {
+    "matrix": {"element"},
 }
 # Never protect a password form or a setup wizard with these: Traefik's path
 # matching differs from the app's (case, repeated slashes, /index.php).
@@ -172,6 +182,10 @@ IDENTITY_ENV_FORBIDDEN = [
     (r"^SSO_SIGNUPS_MATCH_EMAIL$", r"(?i)^(true|1|yes)$", "Vaultwarden links SSO logins to existing accounts by email"),
     (r"^GENERIC_USER_ID_ATTRIBUTE$", r"(?i)email", "LiteLLM SSO user id is the email"),
     (r"^(OAUTH2_PROXY_USER_ID_CLAIM|OIDC_USERNAME_CLAIM|OIDC_USER_CLAIM)$", r"(?i)email", "user id claim is the email"),
+    (r"^PAPERLESS_(AUTO_LOGIN_USERNAME|ENABLE_HTTP_REMOTE_USER(_API)?)$", r".",
+     "Paperless auto-login / remote-user auth bypasses SSO"),
+    (r"^GITEA__oauth2_client__ACCOUNT_LINKING$", r"(?i)^auto$", "Gitea links OAuth logins to existing accounts by name/email"),
+    (r"^GITEA__oauth2_client__USERNAME$", r"(?i)^email$", "Gitea OAuth username is the email"),
 ]
 
 # (env key that enables the feature, its value regex, required env key, required value regex, message)
@@ -195,6 +209,24 @@ IDENTITY_ENV_REQUIRED = [
      "Kanboard reverse proxy auth must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
     ("GENERIC_CLIENT_ID", r".", "GENERIC_USER_EMAIL_ATTRIBUTE", r"^(?!email$).+",
      "LiteLLM matches SSO logins to existing users by email; map GENERIC_USER_EMAIL_ATTRIBUTE to a claim that is never sent"),
+    ("PAPERLESS_SOCIALACCOUNT_PROVIDERS", r".", "PAPERLESS_DISABLE_REGULAR_LOGIN", r"(?i)^true$",
+     "Paperless SSO must set PAPERLESS_DISABLE_REGULAR_LOGIN: \"true\""),
+    ("GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION", r"(?i)^true$", "GITEA__oauth2_client__ACCOUNT_LINKING", r"^disabled$",
+     "Gitea auto-registration must set GITEA__oauth2_client__ACCOUNT_LINKING=disabled"),
+    ("OIDC_AUTH_ENABLED", r"(?i)^true$", "ALLOW_PASSWORD_LOGIN", r"(?i)^false$",
+     "Mealie with OIDC must set ALLOW_PASSWORD_LOGIN: \"false\""),
+    ("OIDC_AUTH_ENABLED", r"(?i)^true$", "OIDC_USER_CLAIM", r"^preferred_username$",
+     "Mealie with OIDC must set OIDC_USER_CLAIM: preferred_username"),
+]
+
+# image prefix -> (one-shot service that must exist in the same compose file, message)
+REQUIRED_INIT_JOBS = [
+    ("ghcr.io/immich-app/immich-server:", "immich-lock-local-users",
+     "Immich links OAuth logins to existing users by email and cannot be told not to; keep the immich-lock-local-users job"),
+    ("ghcr.io/paperless-ngx/paperless-ngx:", "paperless-init",
+     "Paperless password logins (Basic auth, /api/token/) and the fresh-install signup are only closed by the paperless-init job"),
+    ("ghcr.io/mealie-recipes/mealie:", "mealie-init",
+     "Mealie's password endpoint, seeded admin and username/email account matching are only closed by the mealie-init guard"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -210,6 +242,10 @@ IDENTITY_TEXT_FORBIDDEN = [
      "Nextcloud user_oidc soft auto-provisioning attaches SSO logins to existing local accounts"),
     (r"[\"']json-mail[\"']\s*=>\s*[\"']email[\"']",
      "the DokuWiki oauth plugin finds accounts by the json-mail claim; map it to preferred_username"),
+    (r"[\"']allow_existing_users[\"']\s*:\s*True", "Synapse would attach SSO logins to existing accounts"),
+    (r"[\"'](localpart|subject|email)_template[\"']\s*:\s*[\"']\{\{\s*user\.email",
+     "Synapse keys users on email"),
+    (r"[\"']subject_claim[\"']\s*:\s*[\"']email[\"']", "Synapse keys users on email"),
 ]
 
 
@@ -868,10 +904,10 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
             if on_key in env and re.search(on_re, env[on_key]):
                 if not re.search(req_re, env.get(req_key, "")):
                     r.error(where, msg, EMAIL_HINT)
-        if str(svc.get("image", "")).startswith("ghcr.io/immich-app/immich-server:") \
-                and "immich-lock-local-users" not in services:
-            r.error(where, "Immich links OAuth logins to existing users by email and cannot be told not to; "
-                    "keep the immich-lock-local-users job", EMAIL_HINT)
+        image = str(svc.get("image", ""))
+        for prefix, job, msg in REQUIRED_INIT_JOBS:
+            if image.startswith(prefix) and job not in services:
+                r.error(where, msg, EMAIL_HINT)
     for where, text in _template_texts(t):
         for rx, msg in IDENTITY_TEXT_FORBIDDEN:
             if re.search(rx, text):
@@ -1133,7 +1169,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
             if not (has_auth and has_groups):
                 r.error(where, f"{method} router must use middlewares {AUTH_MW},{GROUPS_MW}")
         elif method == "native-oidc":
-            if has_auth and host_wide:
+            if has_auth and host_wide and name not in GATED_CLIENT_ROUTERS.get(t.id, set()):
                 r.error(where, f"native-oidc router must not use {AUTH_MW} on the whole host",
                         "the app's own OIDC login, API and mobile clients break behind forward-auth; "
                         "gate only specific paths (PathPrefix) such as an admin panel or the login pages")
@@ -1154,6 +1190,11 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
         if not any(any(prefix_covers(p, ap) for p in ps) for _, ps in gated):
             r.error(t.m_where, f"auth.admin_paths {ap}: no router with {AUTH_MW},{GROUPS_MW} serves this path",
                     "group-gate only sees requests on routers that use portcullis-groups@docker; add a PathPrefix router for it")
+
+    for gr in sorted(GATED_CLIENT_ROUTERS.get(t.id, set())):
+        if not any(n == gr and ps == ["/"] for n, ps in gated):
+            r.error(t.c_where, f"security regression: router {gr} must be a host router with {AUTH_MW},{GROUPS_MW}",
+                    "the static web client on its own host is gated as a whole; see the auth notes in manifest.yaml")
 
     for p in LOGIN_GATES.get(t.id, []):
         if not any(any(prefix_covers(q, p) for q in ps) for _, ps in gated):

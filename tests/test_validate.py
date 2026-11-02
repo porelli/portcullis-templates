@@ -415,6 +415,80 @@ class TestIdentityRules(Case):
         self.assertError(errors, "FTLCONF_webserver_acl")
 
 
+    def test_paperless_sso_needs_regular_login_off(self) -> None:
+        errors, _ = self.run_template(env='      PAPERLESS_SOCIALACCOUNT_PROVIDERS: "{}"\n')
+        self.assertError(errors, "PAPERLESS_DISABLE_REGULAR_LOGIN")
+        errors, _ = self.run_template(env='      PAPERLESS_SOCIALACCOUNT_PROVIDERS: "{}"\n'
+                                          '      PAPERLESS_DISABLE_REGULAR_LOGIN: "true"\n')
+        self.assertClean(errors)
+        errors, _ = self.run_template(env='      PAPERLESS_AUTO_LOGIN_USERNAME: admin\n')
+        self.assertError(errors, "remote-user auth bypasses SSO")
+
+    def test_gitea_never_links_accounts(self) -> None:
+        errors, _ = self.run_template(env="      GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: \"true\"\n"
+                                          "      GITEA__oauth2_client__ACCOUNT_LINKING: auto\n")
+        self.assertError(errors, "Gitea links OAuth logins")
+        self.assertError(errors, "ACCOUNT_LINKING=disabled")
+        errors, _ = self.run_template(env="      GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: \"true\"\n"
+                                          "      GITEA__oauth2_client__ACCOUNT_LINKING: disabled\n")
+        self.assertClean(errors)
+        errors, _ = self.run_template(env="      GITEA__oauth2_client__USERNAME: email\n")
+        self.assertError(errors, "Gitea OAuth username is the email")
+
+    def test_mealie_oidc_needs_password_login_off_and_username_claim(self) -> None:
+        errors, _ = self.run_template(env='      OIDC_AUTH_ENABLED: "true"\n')
+        self.assertError(errors, "ALLOW_PASSWORD_LOGIN")
+        self.assertError(errors, "OIDC_USER_CLAIM: preferred_username")
+        errors, _ = self.run_template(env='      OIDC_AUTH_ENABLED: "true"\n      ALLOW_PASSWORD_LOGIN: "false"\n'
+                                          "      OIDC_USER_CLAIM: preferred_username\n")
+        self.assertClean(errors)
+
+    def test_synapse_never_attaches_existing_users(self) -> None:
+        errors, _ = self.run_template(extra_files=(("start.py", '"allow_existing_users": True,\n'),))
+        self.assertError(errors, "Synapse would attach SSO logins")
+        errors, _ = self.run_template(extra_files=(("start.py", '"localpart_template": "{{ user.email }}",\n'),))
+        self.assertError(errors, "Synapse keys users on email")
+        errors, _ = self.run_template(extra_files=(("start.py", '"allow_existing_users": False,\n'
+                                                                '"localpart_template": "{{ user.preferred_username }}",\n'),))
+        self.assertClean(errors)
+
+    def test_required_init_jobs(self) -> None:
+        for image, job in (("ghcr.io/paperless-ngx/paperless-ngx:3.4.1", "paperless-init"),
+                           ("ghcr.io/mealie-recipes/mealie:v3.30.0", "mealie-init"),
+                           ("ghcr.io/immich-app/immich-server:v2.0.0", "immich-lock-local-users")):
+            with self.subTest(job=job):
+                self.run_template()
+                self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+                self.assertError(self.recheck(), job)
+                self.rewrite_compose("services:\n", f"services:\n  {job}:\n"
+                                     f"    image: {image}@sha256:{'0' * 64}\n    restart: \"no\"\n")
+                self.assertFalse([e for e in self.recheck() if job in e])
+
+
+class TestGatedClientRouters(unittest.TestCase):
+    HOST = "Host(`${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}`)"
+
+    def check(self, app_id: str, gated: bool) -> List[str]:
+        mws = ("client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file"
+               if gated else "client-headers@file,security-headers@file")
+        routers = {"element": {"rule": self.HOST, "entrypoints": "websecure",
+                               "tls.options": "authaware@file", "middlewares": mws}}
+        t = v.Template(app_id)
+        t.manifest = {"instances": "multi", "auth": {"method": "native-oidc", "group_access": True}}
+        r = v.Report()
+        v.check_routers(t, routers, r)
+        return r.errors
+
+    def test_other_native_oidc_app_cannot_gate_its_host(self) -> None:
+        errors = self.check("demo", gated=True)
+        self.assertTrue(any("must not use" in e for e in errors), errors)
+
+    def test_listed_static_client_may_and_must_be_gated(self) -> None:
+        self.assertFalse([e for e in self.check("matrix", gated=True) if "element" in e])
+        errors = self.check("matrix", gated=False)
+        self.assertTrue(any("router element must be a host router" in e for e in errors), errors)
+
+
 class TestCross(Case):
     def test_multi_volume_keys_must_be_unique_across_templates(self) -> None:
         self.run_template(app_id="demo")
