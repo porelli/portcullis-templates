@@ -1,0 +1,128 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Matrix (Synapse + Element)
+description: Self-hosted Matrix chat server (Synapse) with the Element web client
+icon: "\U0001F4AC"
+category: communication
+tags: [chat, matrix, synapse, element, messaging, e2ee]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: false
+  access_group: users_matrix
+  admin_group: admin_matrix
+  admin_paths: ["/_synapse/admin"]
+  notes: >
+    Two hosts per instance. The homeserver (matrix.<domain>, Synapse) does
+    its own OIDC login against Keycloak and has no forward-auth, so Element,
+    the Element mobile apps and other Matrix clients and bots reach the
+    client API directly; Synapse only lets in users whose groups claim
+    contains users_matrix (oidc attribute_requirements): outsiders get no
+    account and no session. Element Web (element.<domain>) is a static
+    client behind forward-auth + group-gate, so only members even get the
+    page; it is fixed to this homeserver (no server picker) and redirects
+    straight to SSO.
+    Revoking access: Synapse checks the group only at the SSO login, so a
+    user removed from users_matrix (or disabled in LLDAP) keeps the
+    sessions they already have; every session expires after 7 days
+    (session_lifetime) and must sign in again through the group-checked
+    login. To cut a user off at once, deactivate them through the Admin API
+    from inside the synapse container (POST
+    /_synapse/admin/v1/deactivate/<user id> with an admin access token) or
+    log out their devices (DELETE /_synapse/admin/v2/users/<user id>/devices/<device id>).
+    Element Web is the one native-OIDC host router behind forward-auth
+    (validate.py GATED_CLIENT_ROUTERS): it is a static client with no login
+    of its own and no server data.
+    Identity: accounts are keyed on the OIDC sub; the Matrix id is
+    @<LLDAP username>:<homeserver host> (localpart_template
+    preferred_username). allow_existing_users is false, so an SSO login is
+    never attached to an existing account, and the email is not imported.
+    No password login (password_config.enabled false), no open registration,
+    no 3PID changes. A reused LLDAP username (new Keycloak sub) gets a new
+    id with a numeric suffix, never the old account.
+    server_name is the homeserver's hostname, so no .well-known on the apex
+    is needed (Synapse serves /.well-known/matrix/client itself). It is
+    permanent: every user and room id contains it. Synapse refuses to start
+    if the instance's homeserver hostname changes after the first start;
+    pick it before enabling the instance.
+    Admins: Synapse has no group-to-admin mapping, so admin_matrix grants
+    nothing inside Synapse. Promote the first admin after their first SSO
+    login with `UPDATE users SET admin = 1 WHERE name =
+    '@alice:<homeserver host>';` in the matrix-db container (psql -U
+    synapse -d synapse), then restart the synapse container; later admins
+    via the Admin API (PUT /_synapse/admin/v2/users/<user id> {"admin":
+    true}). The Admin API (/_synapse/admin, including shared-secret
+    registration) is additionally behind forward-auth + group-gate and
+    requires admin_matrix (auth.admin_paths), so call it from a browser
+    session of an admin_matrix member or from inside the synapse container
+    (curl http://localhost:8008/_synapse/admin/... with an admin access
+    token, Element: Settings, Help & About).
+    Federation is off: federation_domain_whitelist is [] and the listener
+    serves no federation resource. To federate with specific servers, list
+    their server names in the Federation peers setting: Synapse then serves
+    the federation API and /.well-known/matrix/server on the homeserver
+    host (port 443) and federates with those servers only. Open federation
+    is not offered.
+    Secrets (database, OIDC, registration shared secret, macaroon and form
+    secrets) are generated per instance; the config is rendered at every
+    start into a tmpfs; the server signing key is created once in the
+    synapse-data volume (back it up with the volume: losing it breaks
+    federation and other servers' trust). Synapse trusts X-Forwarded-For
+    from any peer on portcullis-proxy (client IPs in logs and rate limits
+    only).
+    Upgrades: Synapse supports rolling upgrades between releases but read
+    docs/upgrade.md for each step; keep matrix-db on PostgreSQL 16.
+    Element Web is independent of the Synapse version.
+
+settings:
+  - key: MATRIX_FEDERATION_DOMAINS
+    label: Federation peers
+    description: >
+      Comma-separated Matrix server names this homeserver may federate with
+      (e.g. matrix.example.org). Empty = federation off (default).
+    type: text
+
+env:
+  - key: MATRIX_DB_PASSWORD
+    description: Synapse PostgreSQL password
+    generate: random
+  - key: MATRIX_OIDC_SECRET
+    description: Synapse OIDC client secret
+    generate: random
+  - key: SYNAPSE_REGISTRATION_SECRET
+    description: Synapse registration_shared_secret (Admin API break-glass registration)
+    generate: random
+  - key: SYNAPSE_MACAROON_SECRET
+    description: Synapse macaroon_secret_key (signs access and login tokens)
+    generate: random
+  - key: SYNAPSE_FORM_SECRET
+    description: Synapse form_secret (signs consent and SSO forms)
+    generate: random
+
+keycloak_clients:
+  - client_id: matrix
+    secret_env: MATRIX_OIDC_SECRET
+    redirect_uri: "https://{{HOST_MATRIX}}/_synapse/client/oidc/callback"
+    name: Matrix (Synapse)
+
+config_files: []
+
+urls:
+  - label: Element
+    url: "https://{{HOST_ELEMENT}}"
+  - label: Homeserver
+    url: "https://{{HOST_MATRIX}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test"):
+# Element (forward-auth + group-gate) redirects straight to the homeserver's
+# SSO, Synapse's OIDC login, back to Element with a login token.
+tests:
+  signin:
+    host: "{{HOST_ELEMENT}}"
+    path: /
+    login: ["a:has-text('Sign in')", "button:has-text('Continue with Portcullis')"]
+    signed_in:
+      js: "(localStorage.getItem('mx_user_id') || '').replace(/^@/, '').split(':')[0]"
+      wait: 30

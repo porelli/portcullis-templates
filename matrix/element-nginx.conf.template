@@ -1,0 +1,36 @@
+# Element Web site config (portcullis-element): the image's
+# apps/web/docker/nginx-templates/default.conf.template (v1.12.33) with one
+# change: /config* is served from /tmp/portcullis-element, the config
+# element-start.sh generates, never the image's sample config.
+server {
+    listen       ${ELEMENT_WEB_PORT};
+    listen  [::]:${ELEMENT_WEB_PORT};
+    server_name  localhost;
+
+    root   /usr/share/nginx/html;
+    index  index.html;
+
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+    location = /version {
+        add_header Cache-Control "no-cache";
+    }
+    location /i18n/ {
+        add_header Cache-Control "no-cache";
+    }
+    location /usercontent/ {
+        add_header Cache-Control "no-cache";
+    }
+
+    # config.json (config.<hostname>.json requests get 404; Element then
+    # loads config.json).
+    location /config {
+        root /tmp/portcullis-element;
+        add_header Cache-Control "no-cache";
+    }
+    location /modules {
+        alias /modules;
+    }
+    error_page   500 502 503 504  /50x.html;
+}

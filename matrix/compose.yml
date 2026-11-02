@@ -1,0 +1,176 @@
+# Matrix: Synapse (homeserver, native OIDC) + Element Web (static client,
+# behind forward-auth + group-gate) + PostgreSQL.
+# server_name is the homeserver's own hostname (PORTCULLIS_HOST_MATRIX), so
+# no .well-known on the apex is needed. It is permanent: see auth.notes.
+services:
+  synapse:
+    image: ghcr.io/element-hq/synapse:v1.164.1@sha256:fa4aa980f279bcf26d4e7ecc2a2c9a701c73f2ebe8841da9bdcf3b2fdf693d75
+    # synapse-start.py renders homeserver.yaml (into the tmpfs, never the
+    # data volume) from the environment, refuses to start on any missing or
+    # malformed value, creates the signing key once in /data, pins
+    # server_name, then execs the image's /start.py. It never prints a
+    # secret.
+    entrypoint: ["python3", "/portcullis/synapse-start.py"]
+    user: "991:991"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      MATRIX_HOST: ${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}
+      ELEMENT_HOST: ${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}
+      MATRIX_OIDC_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      MATRIX_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-matrix}
+      MATRIX_OIDC_SECRET: ${MATRIX_OIDC_SECRET:?MATRIX_OIDC_SECRET must be set}
+      # Synapse refuses OIDC logins whose groups claim lacks this group
+      # (attribute_requirements), so only members get an account.
+      MATRIX_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_matrix}
+      MATRIX_DB_PASSWORD: ${MATRIX_DB_PASSWORD:?MATRIX_DB_PASSWORD must be set}
+      SYNAPSE_REGISTRATION_SECRET: ${SYNAPSE_REGISTRATION_SECRET:?SYNAPSE_REGISTRATION_SECRET must be set}
+      SYNAPSE_MACAROON_SECRET: ${SYNAPSE_MACAROON_SECRET:?SYNAPSE_MACAROON_SECRET must be set}
+      SYNAPSE_FORM_SECRET: ${SYNAPSE_FORM_SECRET:?SYNAPSE_FORM_SECRET must be set}
+      # Empty (default) = federation off. See auth.notes.
+      MATRIX_FEDERATION_DOMAINS: ${MATRIX_FEDERATION_DOMAINS:-}
+      # Keycloak may use the internal PKI: OpenSSL (Twisted / pyOpenSSL)
+      # reads the bundle (system CAs + Portcullis chain) from here.
+      SSL_CERT_FILE: /etc/ssl/certs/ca-bundle.crt
+    volumes:
+      - synapse-data:/data
+      - ./templates/matrix/synapse-start.py:/portcullis/synapse-start.py:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
+    depends_on:
+      synapse-init:
+        condition: service_completed_successfully
+      matrix-db:
+        condition: service_healthy
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      # Native OIDC: the client-server API, Synapse's SSO pages and the OIDC
+      # callback are not behind forward-auth (Element, mobile apps and bots
+      # log in at the homeserver itself).
+      traefik.http.routers.matrix.rule: Host(`${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}`)
+      traefik.http.routers.matrix.entrypoints: websecure
+      traefik.http.routers.matrix.tls.options: authaware@file
+      traefik.http.routers.matrix.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.matrix.service: matrix
+      traefik.http.services.matrix.loadbalancer.server.port: "8008"
+      # Synapse Admin API (incl. shared-secret registration): additionally
+      # behind forward-auth + group-gate, which requires admin_matrix there
+      # (auth.admin_paths). Defence in depth only: every admin endpoint
+      # still needs a Synapse admin access token.
+      traefik.http.routers.matrix-admin.rule: Host(`${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}`) && PathPrefix(`/_synapse/admin`)
+      traefik.http.routers.matrix-admin.priority: "100"
+      traefik.http.routers.matrix-admin.entrypoints: websecure
+      traefik.http.routers.matrix-admin.tls.options: authaware@file
+      traefik.http.routers.matrix-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.matrix-admin.service: matrix
+    restart: unless-stopped
+
+  # A fresh named volume's mountpoint is root-owned and the image has no
+  # /data; this one-shot hands it to Synapse's uid (991) so the long-running
+  # service never runs as root. Only the top directory: Synapse owns what it
+  # creates inside.
+  synapse-init:
+    image: ghcr.io/element-hq/synapse:v1.164.1@sha256:fa4aa980f279bcf26d4e7ecc2a2c9a701c73f2ebe8841da9bdcf3b2fdf693d75
+    user: "0:0"
+    # Only while /data is not 991's yet (first start): afterwards root has
+    # no CAP_FOWNER here, so chmod on 991's directory would fail and keep
+    # Synapse down on every later `compose up`.
+    entrypoint: ["/bin/sh", "-ec", "if [ \"$$(stat -c %u /data)\" != 991 ]; then chmod 0700 /data; chown 991:991 /data; fi"]
+    read_only: true
+    network_mode: none
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    mem_limit: 64m
+    pids_limit: 16
+    volumes:
+      - synapse-data:/data
+    restart: "no"
+
+  element:
+    image: vectorim/element-web:v1.12.33@sha256:b0aa4b5a4fc1afaaff62e2dbd0c92d57e2b20724f3ccb2fef53aae949088c3d2
+    # element-start.sh writes config.json (homeserver = this instance's
+    # Synapse, no custom servers, SSO only) into the tmpfs, then runs the
+    # image's nginx entrypoint. element-nginx.conf.template replaces the
+    # image's site config only to serve /config* from that file.
+    entrypoint: ["/bin/sh", "/portcullis/element-start.sh"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /etc/nginx/conf.d:size=1m,mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 256
+    environment:
+      MATRIX_HOST: ${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}
+      ELEMENT_HOST: ${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}
+      ELEMENT_WEB_PORT: "8080"
+    volumes:
+      - ./templates/matrix/element-start.sh:/portcullis/element-start.sh:ro
+      - ./templates/matrix/element-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    # Healthy only while nginx serves exactly the generated config (Traefik
+    # routes nothing before), never the image's sample config.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/config.json | cmp -s - /tmp/portcullis-element/config.json"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      # Static web client: only members of the access group get it. Login
+      # itself happens at the homeserver (its own group check).
+      traefik.http.routers.element.rule: Host(`${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}`)
+      traefik.http.routers.element.entrypoints: websecure
+      traefik.http.routers.element.tls.options: authaware@file
+      traefik.http.routers.element.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.element.service: element
+      traefik.http.services.element.loadbalancer.server.port: "8080"
+    restart: unless-stopped
+
+  matrix-db:
+    # Synapse needs C collation / ctype (docs/postgres.md).
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: ${MATRIX_DB_PASSWORD:?MATRIX_DB_PASSWORD must be set}
+      POSTGRES_DB: synapse
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=1m
+    security_opt: [no-new-privileges:true]
+    # The entrypoint fixes data-dir ownership as root, then drops to postgres.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    mem_limit: 1g
+    pids_limit: 256
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - matrix-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  synapse-data: {}
+  matrix-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true
