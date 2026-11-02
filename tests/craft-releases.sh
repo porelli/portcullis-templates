@@ -104,7 +104,7 @@ for compose in */compose.yml; do
     commit -q -m "templates: bump $app web release to $ver" \
     -m "storytold/$app $tag: $zip sha256 $sha (GitHub asset digest, SHA256SUMS.txt and download agree)."
   git push -q origin "HEAD:refs/heads/$branch"
-  gh pr create --base "$BASE" --head "$branch" \
+  pr_url=$(gh pr create --base "$BASE" --head "$branch" \
     --title "templates: bump $app web release to $ver" \
     --body "$(cat <<EOF
 Bumps the pinned web release of \`$app\` from $cur to $ver (https://github.com/$repo/releases/tag/$tag).
@@ -112,9 +112,18 @@ Bumps the pinned web release of \`$app\` from $cur to $ver (https://github.com/$
 - \`CRAFT_VERSION\`: $cur -> $ver
 - \`CRAFT_SHA256\`: \`$sha\` (the GitHub asset digest of \`$zip\`, its line in \`SHA256SUMS.txt\` and the downloaded file agree)
 
-Opened by the Craft releases workflow with GITHUB_TOKEN, so CI does not start on its own: run **Test Apps** with \`apps=$app\` on this branch (or close and reopen the PR) before merging, and read the release notes for changes to the web packaging (MIME types, isolation headers, file layout).
+Opened by the Craft releases workflow with GITHUB_TOKEN, so pull_request CI does not start on its own: the workflow dispatches **Test Apps** (\`pr=<this PR>\`, \`apps=$app\`, core ref from the base) and **Lint** on this branch. If either is missing, dispatch it by hand (or close and reopen the PR) before merging, and read the release notes for changes to the web packaging (MIME types, isolation headers, file layout).
 EOF
-)"
+)")
+  pr_num="${pr_url##*/}"
+  # workflow_dispatch is the one event GITHUB_TOKEN may start (actions: write).
+  if [[ "$pr_num" =~ ^[0-9]+$ ]] \
+      && gh workflow run test-apps.yml --ref "$BASE" -f pr="$pr_num" -f apps="$app" \
+      && gh workflow run lint.yml --ref "$branch"; then
+    log "$app: PR #$pr_num opened, Test Apps (apps=$app) + Lint dispatched"
+  else
+    err "$app: PR ${pr_url:-?} opened, but dispatching Test Apps / Lint failed"
+  fi
   git checkout -q "origin/$BASE"
 done
 
