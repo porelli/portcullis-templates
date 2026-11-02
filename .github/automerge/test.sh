@@ -77,7 +77,8 @@ setup() {
       user: {login: $u}, head: {sha: $s, ref: $b, repo: {full_name: $hr}}, base: {ref: "main", repo: {full_name: $repo}},
       commits: $c, labels: ($l | map({name: .}))}')
   put "repos/$REPO/pulls/$NUM" "$pr"
-  put "repos/$REPO/pulls?state=open&head=$(enc "${REPO%%/*}:$BRANCH")&per_page=10" "[$pr]"
+  # Like the real API, the list has no `commits` (only GET pulls/<n> does).
+  put "repos/$REPO/pulls?state=open&head=$(enc "${REPO%%/*}:$BRANCH")&per_page=10" "$(jq -c '[del(.commits)]' <<<"$pr")"
   put "repos/$REPO/commits/$PR_SHA" "$(jq -n --arg a "$COMMIT_AUTHOR" --argjson v "$VERIFIED" --arg m "$MSG" \
     '{author: {login: $a}, commit: {message: $m, verification: {verified: $v}}}')"
   put "repos/$REPO/pulls/$NUM/files?per_page=100" "$(jq -c 'map({filename: .})' <<<"$FILES")"
@@ -149,10 +150,14 @@ logged "branch deleted" "DELETE repos/$REPO/git/refs/heads/dependabot/docker_com
 act issue
 logged "issue 77 closed" "PATCH repos/$REPO/issues/77 -f state=closed"
 not_logged "issue 78 untouched" "issues/78"
+for wf in lint test-apps docs-dispatch; do for st in queued in_progress; do
+  put "repos/$REPO/actions/workflows/$wf.yml/runs?branch=main&status=$st&per_page=1" '{"total_count":0}'
+done; done
+put "repos/$REPO/actions/workflows/docs-dispatch.yml/runs?branch=main&status=in_progress&per_page=1" '{"total_count":1}'
 POST_MERGE_WORKFLOWS=$'lint.yml\ntest-apps.yml apps={apps}\ndocs-dispatch.yml' DECISION=$OUT bash "$SCRIPT" dispatch >/dev/null
 logged "dispatched lint on main" "^gh workflow run lint.yml -R $REPO --ref main$"
 logged "dispatched test-apps apps=matrix" "^gh workflow run test-apps.yml -R $REPO --ref main -f apps=matrix$"
-logged "dispatched docs" "^gh workflow run docs-dispatch.yml"
+not_logged "docs-dispatch running on main: not dispatched (would cancel it)" "^gh workflow run docs-dispatch.yml"
 
 echo "# minor, green -> merge"
 defaults
