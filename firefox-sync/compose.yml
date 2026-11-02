@@ -57,7 +57,14 @@ services:
       traefik.http.routers.firefox-sync.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`)
       traefik.http.routers.firefox-sync.entrypoints: websecure
       traefik.http.routers.firefox-sync.tls.options: public@file
-      # Request size: syncstorage-rs enforces its own max_request_bytes.
+      # No proxy body cap: Traefik's buffering middleware would hold every
+      # body (up to its cap) in core Traefik's memory / tmp before anything
+      # checks it. Without it Traefik streams the request, and syncstorage-rs
+      # bounds it itself: unauthenticated requests fail the Hawk extractor
+      # before the body is read; storage writes check Content-Length and
+      # stream-limit the read to max_request_bytes, 413 otherwise
+      # (syncserver/src/web/extractors/bso_bodies.rs, bso_body.rs, utils.rs
+      # check_content_length, 0.24.0). The other routes read no body.
       traefik.http.routers.firefox-sync.middlewares: rate-limit@file,security-headers@file
       # The tokenserver (one request per Firefox per hour or so): the
       # stricter auth rate limit, against token replay and load inflation.

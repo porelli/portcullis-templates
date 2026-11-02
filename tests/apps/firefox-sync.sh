@@ -23,7 +23,7 @@ assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.tls.options 
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.middlewares 'rate-limit@file,security-headers@file'
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-token.middlewares 'rate-limit-auth@file,security-headers@file'
 MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
-if grep -q '^  method: custom' "$MANIFEST" && ! grep -q 'native_login' "$MANIFEST"; then
+if grep -q '^  method: custom' "$MANIFEST" && ! grep -q '^  native_login:' "$MANIFEST"; then
   pass "manifest: method custom without native_login (the gateway would break Firefox)"
 else
   fail "manifest must be method custom without native_login"
@@ -184,6 +184,22 @@ if [ "${out%% *}" = 401 ] && ! echo "${out#* }" | grep -q "auth\.$DOMAIN"; then
   pass "tokenserver via Traefik -> 401 from the app (no Portcullis redirect)"
 else
   fail "tokenserver via Traefik: $out"
+fi
+
+# No proxy body cap (see compose.yml): an oversized upload is answered by
+# syncstorage-rs without being stored anywhere. Unauthenticated, the Hawk
+# extractor refuses it before the body extractor runs; authenticated, the
+# body extractors check Content-Length and stream-limit the read to
+# max_request_bytes (2.5 MiB + 4 KiB) and answer 413 (upstream's unit tests).
+OUT=$(head -c 67108864 /dev/zero | curl -sk -o /dev/null -w '%{http_code} %{time_total} %{size_upload}' --max-time 60 \
+  -H 'Content-Type: application/json' -H 'Expect:' --data-binary @- \
+  --resolve "$HOST:443:127.0.0.1" "https://$HOST/1.5/1/storage/bookmarks" 2>/dev/null || echo "000 0 0")
+read -r CODE SECS SENT <<< "$OUT"
+info "64 MiB POST through Traefik: HTTP $CODE in ${SECS}s, $SENT bytes sent"
+if { [ "$CODE" = 401 ] || [ "$CODE" = 413 ]; } && awk "BEGIN{exit !($SECS < 15)}"; then
+  pass "oversized unauthenticated upload refused by syncstorage-rs ($CODE) without a proxy cap"
+else
+  fail "oversized upload: HTTP $CODE in ${SECS}s"
 fi
 
 compose_down "$APP_ID"
