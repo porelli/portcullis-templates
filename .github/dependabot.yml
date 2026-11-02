@@ -24,6 +24,7 @@ updates:
       - "/figcraft"
       - "/filmcraft"
       - "/firefly-iii"
+      - "/firefox-sync"
       - "/gitea"
       - "/gitlab"
       - "/grafana"
@@ -49,6 +50,7 @@ updates:
       - "/texturecraft"
       - "/vaultwarden"
       - "/vectorcraft"
+      - "/vikunja"
       - "/wiki"
       - "/wordcraft"
     schedule:

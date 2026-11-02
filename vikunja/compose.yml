@@ -1,0 +1,117 @@
+services:
+  vikunja:
+    image: vikunja/vikunja:2.7.1@sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576
+    # The image's own user (scratch image, USER 1000); vikunja-perms has
+    # made the files volume 1000's.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 256
+    environment:
+      VIKUNJA_SERVICE_PUBLICURL: https://${PORTCULLIS_HOST_VIKUNJA:-tasks.portcullis.local}/
+      # Signs the session JWTs; generated, so sessions survive restarts.
+      VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SECRET:?VIKUNJA_SECRET must be set}
+      # Client IPs (rate limits, audit) from Traefik's X-Forwarded-For only.
+      VIKUNJA_SERVICE_IPEXTRACTIONMETHOD: xff
+      VIKUNJA_SERVICE_TRUSTEDPROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
+      # Public project links (anonymous access to a project by its hash): off
+      # unless the admin turns the setting on.
+      VIKUNJA_SERVICE_ENABLELINKSHARING: ${VIKUNJA_LINK_SHARING:-false}
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: "false"
+      VIKUNJA_SENTRY_ENABLED: "false"
+      VIKUNJA_SENTRY_FRONTENDENABLED: "false"
+      VIKUNJA_MAILER_ENABLED: "false"
+      # ── Sign-in: OpenID Connect only ──
+      # No local accounts: without auth.local the routes for /login,
+      # /register, password reset and invite links are not registered at all
+      # (pkg/routes/routes.go, api/v2/auth_login.go, auth_public.go,
+      # invite_links.go); the login page then redirects straight to the one
+      # provider. No LDAP.
+      VIKUNJA_AUTH_LOCAL_ENABLED: "false"
+      VIKUNJA_AUTH_LDAP_ENABLED: "false"
+      VIKUNJA_AUTH_OPENID_ENABLED: "true"
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_NAME: Portcullis
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_AUTHURL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_CLIENTID: ${PORTCULLIS_OIDC_CLIENT_ID:-vikunja}
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_CLIENTSECRET: ${VIKUNJA_OIDC_SECRET:?VIKUNJA_OIDC_SECRET must be set}
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_SCOPE: openid profile email
+      # Accounts are keyed on (issuer, sub) and named after
+      # preferred_username (the LLDAP username). Never linked to an existing
+      # account by email or username (both fallbacks off, the default).
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_EMAILFALLBACK: "false"
+      VIKUNJA_AUTH_OPENID_PROVIDERS_PORTCULLIS_USERNAMEFALLBACK: "false"
+      VIKUNJA_DATABASE_TYPE: postgres
+      VIKUNJA_DATABASE_HOST: vikunja-db
+      VIKUNJA_DATABASE_USER: vikunja
+      VIKUNJA_DATABASE_PASSWORD: ${VIKUNJA_DB_PASSWORD:?VIKUNJA_DB_PASSWORD must be set}
+      VIKUNJA_DATABASE_DATABASE: vikunja
+    volumes:
+      - vikunja-files:/app/vikunja/files
+      # Core's CA bundle (system roots + Portcullis CA) as Go's default file.
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    depends_on:
+      vikunja-perms:
+        condition: service_completed_successfully
+      vikunja-db:
+        condition: service_healthy
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.vikunja.rule: Host(`${PORTCULLIS_HOST_VIKUNJA:-tasks.portcullis.local}`)
+      traefik.http.routers.vikunja.entrypoints: websecure
+      traefik.http.routers.vikunja.tls.options: authaware@file
+      traefik.http.routers.vikunja.middlewares: security-headers@file
+      traefik.http.services.vikunja.loadbalancer.server.port: "3456"
+    restart: unless-stopped
+
+  # One-shot: a fresh named volume's mountpoint is root-owned (the scratch
+  # image has no /app/vikunja/files); hand it to uid 1000. Only chown.
+  vikunja-perms:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    user: "0:0"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 64m
+    pids_limit: 16
+    entrypoint: ["chown", "-R", "1000:1000", "/files"]
+    volumes:
+      - vikunja-files:/files
+    restart: "no"
+
+  vikunja-db:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: vikunja
+      POSTGRES_PASSWORD: ${VIKUNJA_DB_PASSWORD:?VIKUNJA_DB_PASSWORD must be set}
+      POSTGRES_DB: vikunja
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - vikunja-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vikunja -d vikunja"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  vikunja-files: {}
+  vikunja-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

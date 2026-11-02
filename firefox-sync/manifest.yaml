@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Firefox Sync
+description: Self-hosted Firefox Sync server (bookmarks, passwords, history, tabs) for Mozilla accounts
+icon: "\U0001F98A"
+category: productivity
+tags: [firefox, sync, bookmarks, browser, mozilla]
+instances: multi
+
+auth:
+  method: public
+  sso: false
+  group_access: false
+  group_admin: false
+  notes: >
+    Mozilla's syncstorage-rs 0.24.0 (Sync storage + tokenserver), as built
+    by porelli/firefox-sync (PostgreSQL image). Firefox signs in with a
+    Mozilla account at accounts.firefox.com, then calls this server's
+    tokenserver with that account's OAuth token, which the tokenserver
+    verifies with Mozilla and exchanges for a short-lived storage token
+    (1 h).
+    Why public: Firefox makes every Sync and tokenserver request in the
+    background as an anonymous request, without cookies, HTTP
+    authentication or a client certificate (RESTRequest LOAD_ANONYMOUS,
+    resource.sys.mjs fetch; tested by porelli/firefox-sync with a sign-in
+    proxy and with mTLS: "no_node_found" / NS_ERROR_NET_UNCLEAN_SHUTDOWN).
+    Portcullis sign-in, group-gate or a client-certificate tier in front of
+    this host would stop every Firefox, so the whole host is public
+    (public@file, rate-limit, 10 MB request bodies) and access is decided
+    by the server itself.
+    Exposed on the host: GET /1.0/sync/1.5 (tokenserver: a Mozilla OAuth
+    token with the Sync scope is required, 401 otherwise), /1.5/<uid>/...
+    (storage: Hawk-signed with this instance's secret, 401 otherwise),
+    /__heartbeat__, /__lbheartbeat__, /__version__, /__error__ (a test
+    error), / and the API docs (/swagger-ui, /api-doc/openapi.json). No
+    password, no sign-up page, no admin UI.
+    Who can sync: only the Mozilla accounts listed in the Allowed accounts
+    setting (their uids). A database trigger (guard.sql, installed by
+    firefox-sync-init before the server starts, every start) refuses every
+    other account: no tokenserver row, no token, no storage. Empty (the
+    default) = nobody; an invalid entry stops the instance (fail closed).
+    Taking a uid off the list deletes that account's tokenserver rows at
+    the next start: its tokens expire within the hour and it can't get new
+    ones (its encrypted data stays, unreachable).
+    Identity: Mozilla accounts, not Portcullis. Firefox has no way to use
+    Keycloak or LLDAP for Sync (the self-hosted Mozilla accounts stack has
+    no external OIDC login and is not published as an image), so
+    Portcullis users and groups don't apply here; the admin decides who
+    syncs, by uid. Sync data is end-to-end encrypted with keys derived from
+    the Mozilla account: this server, and whoever controls it, can't read
+    it.
+    Finding a uid: in a Firefox signed in to the account, Browser Console
+    (devtools.chrome.enabled = true) -
+    (await ChromeUtils.importESModule("resource://gre/modules/FxAccounts.sys.mjs").getFxAccountsSingleton().getSignedInUser()).uid
+    - or let the person try: the refused uid is in the firefox-sync-db log
+    ("portcullis: Firefox account <uid> is not in the Allowed accounts
+    setting").
+    Firefox setup: about:config identity.sync.tokenserver.uri =
+    https://<this host>/1.0/sync/1.5 (Android: Sync Debug > Custom Sync
+    server; iOS: Advanced Sync Settings), before signing in to the account.
+    After a hostname change every Firefox must be pointed at the new URL;
+    the accounts move to the new node at the next start.
+    Residuals: refused tries still add to the node's load until the next
+    start recounts it (capacity 100000); the tokenserver needs outbound
+    HTTPS to oauth.accounts.firefox.com. Upgrades: keep firefox-sync and
+    firefox-sync-migrate on the same image; don't bump the PostgreSQL
+    major.
+
+settings:
+  - key: FIREFOX_SYNC_ALLOWED_ACCOUNTS
+    label: Allowed accounts
+    description: >
+      Mozilla account uids (32 hexadecimal characters) that may sync with
+      this server, separated by commas or spaces. Empty = nobody. Applied at
+      every start; a removed uid loses access within the hour.
+    type: text
+
+env:
+  - key: FIREFOX_SYNC_DB_PASSWORD
+    description: Firefox Sync database password
+    generate: random
+  - key: FIREFOX_SYNC_MASTER_SECRET
+    description: syncstorage-rs master secret (signs the storage tokens)
+    generate: random
+  - key: FIREFOX_SYNC_METRICS_SECRET
+    description: tokenserver metrics hash secret
+    generate: random
+
+keycloak_clients: []
+config_files: []
+
+urls:
+  - label: Token server (identity.sync.tokenserver.uri)
+    url: "https://{{HOST_FIREFOX_SYNC}}/1.0/sync/1.5"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    skip: "public: Firefox signs in with a Mozilla account, not Portcullis (auth.method public); tests/apps/firefox-sync.sh checks the allowlist"

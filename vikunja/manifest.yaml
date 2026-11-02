@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Vikunja
+description: Self-hosted to-do lists, kanban boards and project planning
+icon: "✅"
+category: productivity
+tags: [tasks, todo, kanban, projects, caldav]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  keycloak_access_role: true
+  group_admin: false
+  access_group: users_vikunja
+  notes: >
+    Native OIDC (Vikunja v2.7.1). The login page redirects straight to
+    Portcullis: local accounts are off (auth.local.enabled false), so
+    Vikunja registers no password login, sign-up, password reset or invite
+    link route at all, and LDAP is off. Who may sign in: Vikunja has no
+    OIDC group restriction of its own, so the Hub enforces users_vikunja
+    in Keycloak (keycloak_access_role: the client's access role and browser
+    flow; direct grants and the other non-browser grants are off on the
+    client). Accounts are created on the first SSO login, keyed on the
+    OIDC issuer + sub and named after preferred_username (the LLDAP
+    username; Vikunja picks a random one if that name is taken); they are
+    never linked to an existing account by email or username
+    (emailfallback / usernamefallback false). Users need an email in LLDAP
+    (Vikunja requires the claim; it is display/notification only). Every
+    SSO user is a regular user: Vikunja's instance admin is a paid feature
+    (admin panel license) set only with the CLI, so admin_vikunja is not
+    used. Team sync: Vikunja reads teams only from a custom vikunja_groups
+    claim (objects with name and oidcID), which the Hub's Keycloak clients
+    don't send; teams are managed in Vikunja. CalDAV and the API take
+    Vikunja's own CalDAV / API tokens (created by a signed-in user), never a
+    password. Public project links are off unless "Link sharing" is turned
+    on. Removing a user from the group blocks new sign-ins (and the Hub
+    signs them out of Keycloak), not Vikunja sessions or tokens already
+    issued; disable the user in Vikunja for that (`vikunja user
+    change-status`). Mobile and desktop apps sign in through Vikunja's own
+    OAuth flow in the browser, i.e. through Portcullis. Upgrades: database
+    migrations run when Vikunja starts; don't bump the PostgreSQL major.
+
+settings:
+  - key: VIKUNJA_LINK_SHARING
+    label: Link sharing
+    description: >
+      Let users share a project through a public link (anyone with the link,
+      optionally a password, gets the rights the link grants; no Portcullis
+      sign-in).
+    type: boolean
+    default: "false"
+
+env:
+  - key: VIKUNJA_DB_PASSWORD
+    description: Vikunja database password
+    generate: random
+  - key: VIKUNJA_SECRET
+    description: Vikunja service secret (signs session tokens)
+    generate: random
+  - key: VIKUNJA_OIDC_SECRET
+    description: Vikunja OIDC client secret
+    generate: random
+
+keycloak_clients:
+  - client_id: vikunja
+    secret_env: VIKUNJA_OIDC_SECRET
+    redirect_uris:
+      - "https://{{HOST_VIKUNJA}}/auth/openid/portcullis"
+    name: Vikunja
+
+config_files: []
+
+urls:
+  - label: Tasks
+    url: "https://{{HOST_VIKUNJA}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # Only one provider and no local login: /login redirects to Keycloak.
+    path: /login
+    signed_in:
+      # The SPA keeps its session JWT in localStorage; the API answers the
+      # signed-in user.
+      js: >-
+        (async () => { const t = localStorage.getItem('token'); if (!t) return null;
+        const r = await fetch('/api/v1/user', {headers: {Authorization: 'Bearer ' + t}});
+        return r.ok ? (await r.json()).username : null; })()
+      wait: 30
+    expected_fail:
+      outsider:
+        reason: "Vikunja has no OIDC group restriction of its own: only the Hub's Keycloak access role (keycloak_access_role) keeps outsiders out, and CI runs without the Hub (app_signin.py registers plain clients)"
+        match: "e2eoutsider signed in"
