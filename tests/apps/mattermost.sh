@@ -72,6 +72,30 @@ else
 fi
 signup_probes "after mattermost-init"
 
+# The pinned plugins are installed and active (local-mode API)
+PLUGINS=$(docker run --rm -i --user 2000:2000 -v "portcullis_mattermost-data:/mattermost/data" --entrypoint python3 \
+  python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 - 2>&1 <<'PY' || true
+import http.client, json, socket
+class C(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX); self.sock.connect("/mattermost/data/mattermost_local.socket")
+c = C("localhost"); c.request("GET", "/api/v4/plugins"); d = json.loads(c.getresponse().read())
+print(" ".join(sorted(f"{m['id']}={m['version']}" for m in d.get("active") or [])))
+PY
+)
+for want in freemium=2.0.0 com.github.matterpoll.matterpoll=1.9.2; do
+  if echo " $PLUGINS " | grep -q " $want "; then
+    pass "plugin $want active"
+  else
+    fail "plugin $want not active: $PLUGINS"
+  fi
+done
+if grep -Eq '"[0-9a-f]{64}"\)' "$(dirname "$COMPOSE")/init.py" && ! grep -q 'releases/latest' "$(dirname "$COMPOSE")/init.py"; then
+  pass "plugins pinned by release and SHA-256"
+else
+  fail "plugins must be pinned by release and SHA-256"
+fi
+
 ADMIN="mmadmin-${MATTERMOST_ADMIN_SUFFIX:0:12}"
 mm_login() {  # mm_login <login_id> <password>: prints the HTTP status, body in /tmp/mm-login.json
   printf '{"login_id":"%s","password":"%s"}' "$1" "$2" \

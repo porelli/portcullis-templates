@@ -19,8 +19,13 @@ The account is pinned by its user ID, never trusted by name:
 
 The password comes from the environment and goes only into the request body
 (never argv, never printed).
+
+Then the pinned plugins (PLUGINS below: release asset URL + SHA-256) are
+installed over the same socket when missing or at another version, and
+enabled. A download whose digest doesn't match is refused (fail closed).
 """
 
+import hashlib
 import http.client
 import json
 import os
@@ -29,10 +34,23 @@ import socket
 import sys
 import tempfile
 import time
+import urllib.request
+import uuid
 
 SOCK = os.environ["MATTERMOST_SOCKET"]
 SUFFIX = os.environ["MATTERMOST_ADMIN_SUFFIX"]
 PASSWORD = os.environ["MATTERMOST_ADMIN_PASSWORD"]
+# (plugin id, version, release asset, sha256)
+PLUGINS = [
+    # Hides Team Edition's upgrade/upsell UI (no config setting does).
+    ("freemium", "2.0.0",
+     "https://github.com/dy0gu/mattermost-plugin-freemium/releases/download/v2.0.0/freemium.tar.gz",
+     "00726f4c3d0e639c1e0d669cc450c039003126f1c712959ed41872126ae64618"),
+    # In-channel polls (/poll).
+    ("com.github.matterpoll.matterpoll", "1.9.2",
+     "https://github.com/matterpoll/matterpoll/releases/download/v1.9.2/com.github.matterpoll.matterpoll-1.9.2.tar.gz",
+     "46ff4864a1cc4d754a39f38c6c7c29b20452afa690da34f6c606e9bbd39da416"),
+]
 STATE = os.environ.get("MATTERMOST_ADMIN_STATE", "/mattermost/data/.portcullis-bootstrap-admin.json")
 
 
@@ -43,16 +61,20 @@ class UnixConnection(http.client.HTTPConnection):
 
     def connect(self) -> None:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(30)
+        s.settimeout(self.timeout)
         s.connect(self.path)
         self.sock = s
 
 
-def call(method: str, path: str, body=None):
+def call(method: str, path: str, body=None, raw: bytes = None, ctype: str = ""):
     conn = UnixConnection(SOCK)
+    conn.timeout = 300
     try:
-        data = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json"} if data is not None else {}
+        if raw is not None:
+            data, headers = raw, {"Content-Type": ctype}
+        else:
+            data = json.dumps(body).encode() if body is not None else None
+            headers = {"Content-Type": "application/json"} if data is not None else {}
         conn.request(method, path, body=data, headers=headers)
         resp = conn.getresponse()
         raw = resp.read()
@@ -85,7 +107,50 @@ def write_state(uid: str, username: str) -> None:
     os.replace(tmp, STATE)
 
 
+def installed_plugins() -> dict:
+    status, doc = call("GET", "/api/v4/plugins")
+    if status != 200 or not isinstance(doc, dict):
+        die(f"listing plugins failed: HTTP {status}")
+    out = {}
+    for state in ("active", "inactive"):
+        for m in doc.get(state) or []:
+            out[m.get("id")] = (m.get("version"), state)
+    return out
+
+
+def install_plugins() -> None:
+    have = installed_plugins()
+    for pid, version, url, sha256 in PLUGINS:
+        if have.get(pid, (None,))[0] != version:
+            try:
+                with urllib.request.urlopen(url, timeout=120) as resp:
+                    data = resp.read()
+            except OSError as e:
+                die(f"download of {url} failed: {e}")
+            got = hashlib.sha256(data).hexdigest()
+            if got != sha256:
+                die(f"plugin {pid}: sha256 {got} != pinned {sha256}")
+            boundary = uuid.uuid4().hex
+            body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"force\"\r\n\r\ntrue\r\n"
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"plugin\"; filename=\"{pid}.tar.gz\"\r\n"
+                    "Content-Type: application/gzip\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+            del data
+            status, doc = call("POST", "/api/v4/plugins", raw=body, ctype=f"multipart/form-data; boundary={boundary}")
+            if status != 201 or (doc or {}).get("id") != pid:
+                die(f"installing plugin {pid} {version} failed: HTTP {status} {(doc or {}).get('id', '')}")
+            log(f"plugin {pid} {version} installed (sha256 verified)")
+        status, _ = call("POST", f"/api/v4/plugins/{pid}/enable")
+        if status != 200:
+            die(f"enabling plugin {pid} failed: HTTP {status}")
+    log("plugins enabled")
+
+
 def main() -> None:
+    bootstrap_admin()
+    install_plugins()
+
+
+def bootstrap_admin() -> None:
     if not re.fullmatch(r"[0-9a-f]{12,}", SUFFIX):
         die("MATTERMOST_ADMIN_SUFFIX must be at least 12 lowercase hex characters")
     if len(PASSWORD) < 16:

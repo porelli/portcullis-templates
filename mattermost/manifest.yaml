@@ -50,8 +50,23 @@ auth:
     password after the first sign-in. Team Edition can't lock usernames
     (LockProfileFieldsForEmailUsers is Enterprise-only), so users can
     rename themselves; Mattermost usernames are not an identity
-    Portcullis vouches for. GitLab SSO, personal access tokens and plugin
-    uploads are off. What doesn't work through the gateway: the Mattermost
+    Portcullis vouches for. GitLab SSO, personal access tokens and the
+    plugin marketplace are off. Plugins: mattermost-init installs and
+    enables a pinned list (init.py PLUGINS, each a GitHub release asset
+    checked against its SHA-256; a mismatch fails the one-shot): freemium
+    2.0.0 (dy0gu/mattermost-plugin-freemium, hides Team Edition's upsell
+    UI) and Matterpoll 1.9.2 (/poll). Plugin uploads are on for that, so
+    system admins can also upload plugins, which run code inside the
+    Mattermost container. Bump a plugin by editing its version, URL and
+    SHA-256 there (Dependabot doesn't see them). SSO, re-checked: the free
+    GitLab provider can't use Keycloak today. Team Edition switches to the
+    licensed OpenID provider whenever the GitLab scope contains "openid",
+    while Keycloak's userinfo refuses tokens without the openid scope
+    ("Missing openid scope"), and the provider needs a stable numeric "id"
+    that no static Keycloak mapper can derive (LLDAP has no numeric
+    attribute, Keycloak ids are UUIDs). It becomes possible once the Hub
+    allocates a per-person numeric id (a user attribute mapped to "id"),
+    plus mappers for username, which the Hub doesn't create yet. What doesn't work through the gateway: the Mattermost
     desktop and mobile apps and anything else that talks to the API
     directly (bots, incoming/outgoing webhooks, slash-command callbacks,
     personal or bot access tokens), because every request needs a

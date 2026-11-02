@@ -18,7 +18,17 @@ services:
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
       MM_GITLABSETTINGS_ENABLE: "false"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
-      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+      # Plugins: only the pinned list mattermost-init installs over the
+      # local-mode socket (uploads must be on for that; system admins can
+      # then also upload plugins, which run inside this container). No
+      # marketplace (unpinned downloads).
+      MM_PLUGINSETTINGS_ENABLE: "true"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
+      MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_SERVICESETTINGS_ENABLETUTORIAL: "false"
+      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       # Local mode (mmctl --local): the socket lives in the data volume so
       # the one-shot mattermost-init can create the bootstrap admin.
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
@@ -55,14 +65,17 @@ services:
   # over the local-mode socket, pinned by user ID in the data volume; never
   # grants system_admin to an account found by name (init.py). The password
   # is read from the environment and sent in the request body, never on argv
-  # or in logs. Default network only (it talks to the socket, not TCP).
+  # or in logs. Then installs the pinned plugins (release asset + SHA-256,
+  # init.py PLUGINS) and enables them. Default network only: it talks to
+  # the socket, and downloads the plugin releases from GitHub.
   mattermost-init:
     image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
     user: "2000:2000"
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    mem_limit: 64m
+    # Plugin bundles (~70 MB each) are verified in memory.
+    mem_limit: 384m
     pids_limit: 16
     entrypoint: ["python3", "/portcullis/init.py"]
     environment:
