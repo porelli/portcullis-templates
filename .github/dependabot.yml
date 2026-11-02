@@ -6,7 +6,13 @@
 #   - database majors (postgres, mysql, redis) are never bumped automatically;
 #   - GitLab and Nextcloud majors must follow the upstream upgrade path, so
 #     only minor/patch updates are proposed;
-#   - multi-image apps are grouped so they move in lockstep.
+#   - multi-image apps are grouped so they move in lockstep;
+#   - no pre-releases (pip, Go and Actions skip them by default; docker
+#     needs the explicit ranges below).
+#
+# PRs are merged by .github/workflows/dependabot-automerge.yml once Lint and
+# Test Apps pass (patch, minor, digest-only); majors get `major-update` and
+# wait for a manual merge; red CI opens an `update-failed` issue.
 version: 2
 updates:
   - package-ecosystem: docker-compose
@@ -81,6 +87,14 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "nextcloud"
         update-types: ["version-update:semver-major"]
+      # No pre-releases. Dependabot's own pre-release filter let
+      # python 3.16.0a1-alpine through (PR #2). Docker `versions` use Ruby Gem
+      # requirement syntax: ">= X.Y.0.a, < X.Y.0" is exactly X.Y.0's alphas,
+      # betas and rcs (3.16.0a1, 3.16.0b2, 3.16.0rc1; not 3.16.0 or 3.15.x).
+      # Add the next minor when its pre-releases start. Anything that still
+      # gets through is closed by the auto-merge workflow (.github/automerge).
+      - dependency-name: "python"
+        versions: [">= 3.16.0.a, < 3.16.0", ">= 3.17.0.a, < 3.17.0", ">= 3.18.0.a, < 3.18.0"]
 
   - package-ecosystem: github-actions
     directory: "/"

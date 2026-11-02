@@ -48,7 +48,11 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh .github/automerge/*.sh
+
+      # Dependabot auto-merge decisions (fake gh + fixtures, no network).
+      - name: auto-merge tests
+        run: bash .github/automerge/test.sh
 
       # The actionlint image bundles shellcheck for run: blocks.
       - name: actionlint
