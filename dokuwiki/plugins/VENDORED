@@ -1,0 +1,12 @@
+Vendored DokuWiki plugins (GPL-2.0, like DokuWiki), copied unmodified from
+the GitHub tag archives below so the template needs no download at start
+(init.sh installs them from here into the instance's volume).
+
+oauth         https://github.com/cosmocode/dokuwiki-plugin-oauth        tag 2026-10-29
+              archive sha256 12ce0ff222be76ed1dc3a2089a265d012b7c90ec610086c5cc94d1f0f4a9cee0
+oauthgeneric  https://github.com/cosmocode/dokuwiki-plugin-oauthgeneric tag 2025-10-02
+              archive sha256 b55eb7d9226fb3a0d35c51bb677cc32e5cb51db17f973aaaf2413b0f8a3da3b5
+
+Upgrade: replace the directory with the new tag archive's content (top
+directory stripped), update this file, and check plugin.info.txt's date
+(init.sh reinstalls when it differs from the installed copy).

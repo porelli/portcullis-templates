@@ -115,12 +115,10 @@ LOGIN_GATES = {
     "gitlab": ["/users"],
     "litellm": ["/ui", "/sso", "/login", "/v2/login", "/fallback/login", "/onboarding"],
     "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
-    # The break-glass admin's password form (Nextcloud restricts OIDC logins
-    # by group itself; the gate keeps the password form off the internet).
-    "nextcloud": ["/login", "/index.php/login"],
-    # Wiki.js can't restrict OIDC logins by group; /finalize is the wizard.
-    "wiki": ["/login", "/finalize"],
 }
+# Never protect a password form or a setup wizard with these: Traefik's path
+# matching differs from the app's (case, repeated slashes, /index.php).
+# Nextcloud and Wiki.js have no password login at all instead (see their notes).
 
 
 # Public path exceptions (auth.public_access): mirror of the Hub's
@@ -1093,8 +1091,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     for p in LOGIN_GATES.get(t.id, []):
         if not any(any(prefix_covers(q, p) for q in ps) for _, ps in gated):
             r.error(t.c_where, f"security regression: {p} must be served by a router with {AUTH_MW},{GROUPS_MW}",
-                    "without it any Keycloak realm user can sign in (or a password form faces the internet); "
-                    "see the auth notes in manifest.yaml")
+                    "without it any Keycloak realm user can sign in; see the auth notes in manifest.yaml")
     if t.id in LOGIN_GATES and not auth.get("group_access"):
         r.error(t.m_where, "security regression: login is gated by group-gate, so group_access must be true")
 

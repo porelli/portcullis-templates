@@ -1,5 +1,5 @@
 name: Pi-hole
-description: Network-wide ad blocking via DNS sinkhole
+description: Network-wide ad blocking via DNS sinkhole (every member of the access group is a full Pi-hole admin; Pi-hole has no roles)
 icon: "\U0001F6AB"
 category: networking
 tags: [dns, adblock, privacy, filtering]

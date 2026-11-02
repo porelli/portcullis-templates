@@ -25,6 +25,44 @@ else
 fi
 if bash -n "$INIT"; then pass "init.sh parses"; else fail "init.sh has a syntax error"; fi
 
+# Fail closed: run init.sh against a temporary DokuWiki tree (needs php).
+if command -v php >/dev/null 2>&1; then
+  T=$(mktemp -d)
+  mkdir -p "$T/dw/conf" "$T/app"
+  printf '*\t@ALL\t1\n' > "$T/dw/conf/acl.auth.php"
+  printf '<?php\n' > "$T/app/install.php"
+  run_init() {
+    env PORTCULLIS_DW_ROOT="$T/dw" PORTCULLIS_DW_APP="$T/app" PORTCULLIS_DW_PLUGIN_SRC="$1" \
+      PORTCULLIS_DOMAIN=example.org PORTCULLIS_HOST_DOKUWIKI=wiki.example.org PORTCULLIS_OIDC_CLIENT_ID=dokuwiki \
+      PORTCULLIS_ACCESS_GROUP=users_dokuwiki PORTCULLIS_ADMIN_GROUP=admin_dokuwiki \
+      PORTCULLIS_TRAEFIK_IP=172.31.250.2 DOKUWIKI_OIDC_SECRET=s3cr3t bash "$INIT" >/dev/null 2>&1
+  }
+  # 1. The plugins can't be installed: the wiki must stay locked down.
+  if run_init "$T/missing"; then
+    fail "init.sh succeeded without its plugins"
+  else
+    pass "init.sh fails without its plugins"
+  fi
+  if grep -q "'portcullislocked'" "$T/dw/conf/local.protected.php" && grep -q "disableactions.*login" "$T/dw/conf/local.protected.php" \
+      && ! grep -q "oauth" "$T/dw/conf/local.protected.php" && [ ! -e "$T/app/install.php" ]; then
+    pass "failed init leaves the wiki locked down (no auth backend, login disabled, install.php gone)"
+  else
+    fail "failed init does not leave the wiki locked down"
+  fi
+  # 2. Normal run: working configuration, ACL without anonymous rights.
+  if run_init "$(dirname "$INIT")/plugins" && grep -q "'authtype'] = 'oauth'" "$T/dw/conf/local.protected.php" \
+      && grep -q "'baseurl'] = 'https://wiki.example.org'" "$T/dw/conf/local.protected.php" \
+      && [ -f "$T/dw/lib/plugins/oauth/auth.php" ] && [ -f "$T/dw/lib/plugins/oauthgeneric/action.php" ] \
+      && grep -q "^\*.@ALL.0.# Portcullis" "$T/dw/conf/acl.auth.php" && ! grep -q "^\*.@ALL.1" "$T/dw/conf/acl.auth.php"; then
+    pass "init.sh configures OIDC, installs the vendored plugins and denies anonymous access"
+  else
+    fail "init.sh normal run did not produce the expected configuration"
+  fi
+  rm -rf "$T"
+else
+  info "php not installed: init.sh fail-closed test skipped"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")

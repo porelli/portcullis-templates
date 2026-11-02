@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Wiki.js setup sidecar (runs at every start, stdlib only).
+"""Wiki.js setup sidecar (runs at every start, stdlib only, internal network).
 
-1. Fresh install: completes the setup wizard (POST /finalize) with the
-   break-glass local admin (WIKI_ADMIN_EMAIL / WIKI_ADMIN_PASSWORD) and the
-   instance's site URL. /finalize is also behind forward-auth + group-gate in
-   Traefik, so nobody else can finish the wizard first.
-2. Signs in as that local admin (GraphQL) and re-applies, from the
-   environment:
+The Traefik router of the wiki only exists while the wiki container is
+healthy, and its healthcheck passes only in the OIDC-only state this sidecar
+produces (strategy "portcullis" enabled, "local" disabled). So the setup
+wizard and the local password login are never reachable from the internet.
+
+1. Fresh install: completes the setup wizard (POST /finalize) with the local
+   admin (WIKI_ADMIN_EMAIL / WIKI_ADMIN_PASSWORD) and the instance's site URL.
+2. Authenticates with its own API key (kept in the wiki-setup-data volume,
+   rotated every run) or, on the first run, as that local admin, and
+   re-applies from the environment:
    - the Portcullis OIDC strategy (key "portcullis", Wiki.js' generic OpenID
      Connect module): client, Keycloak endpoints, groups claim mapping,
      self-registration without any default group;
+   - the local strategy DISABLED (no password login, no registration);
    - the instance's access group (created once with editor permissions) and
      admin group (manage:system, re-applied every start);
-   - the Guests group stripped of every permission (no anonymous access:
-     the host is not behind forward-auth).
+   - the Guests group stripped of every permission.
 The site URL itself is written before Wiki.js boots, by wiki-init.
-Never prints WIKI_OIDC_SECRET or the admin password.
+Never prints WIKI_OIDC_SECRET, the admin password or the API key.
 """
 
 import json
@@ -38,6 +42,8 @@ ADMIN_PASSWORD = os.environ["WIKI_ADMIN_PASSWORD"]
 STRATEGY_KEY = "portcullis"  # callback: https://<host>/login/portcullis/callback
 REALM = f"https://auth.{DOMAIN}/realms/portcullis"
 GUESTS_ID = 2  # created by the wizard (server/setup.js), cannot be deleted
+KEY_FILE = "/state/apikey"
+KEY_NAME = "portcullis-wiki-setup"
 
 EDITOR_ROLES = ["read:pages", "read:assets", "read:comments", "write:comments",
                 "write:pages", "write:assets", "read:source", "read:history"]
@@ -134,14 +140,19 @@ def ensure_strategy(token):
     for s in active:
         if s["key"] == STRATEGY_KEY:
             continue
+        local = s["strategy"]["key"] == "local"
         # activeStrategies returns {"...prop info", "value": v}; the input wants {"v": v}.
         cfg = [{"key": c["key"], "value": json.dumps({"v": json.loads(c["value"]).get("value")})}
                for c in s.get("config") or []]
         strategies.append({
             "key": s["key"], "strategyKey": s["strategy"]["key"], "config": cfg,
-            "displayName": s["displayName"], "order": s["order"], "isEnabled": s["isEnabled"],
-            "selfRegistration": s["selfRegistration"], "domainWhitelist": s["domainWhitelist"] or [],
-            "autoEnrollGroups": s["autoEnrollGroups"] or [],
+            "displayName": s["displayName"], "order": s["order"],
+            # Local accounts: no web login, no self-registration (the GraphQL
+            # login/register mutations face the internet).
+            "isEnabled": False if local else s["isEnabled"],
+            "selfRegistration": False if local else s["selfRegistration"],
+            "domainWhitelist": s["domainWhitelist"] or [],
+            "autoEnrollGroups": [] if local else (s["autoEnrollGroups"] or []),
         })
     oidc = {
         "clientId": CLIENT_ID,
@@ -188,21 +199,62 @@ def main():
         time.sleep(5)
         wait_for(("ready",))
 
-    try:
-        res = gql("mutation($u: String!, $p: String!) { authentication { login(username: $u, password: $p, strategy: \"local\") "
-                  "{ responseResult { succeeded message } jwt } } }", {"u": ADMIN_EMAIL, "p": ADMIN_PASSWORD})
-        token = (res["authentication"]["login"] or {}).get("jwt")
-    except RuntimeError as e:
-        log(f"local admin login refused: {e}")
-        token = None
+    token = stored_key()
     if not token:
-        log(f"cannot sign in as the local admin {ADMIN_EMAIL}; Portcullis sign-in is NOT configured. "
-            "Give that local account the WIKI_ADMIN_PASSWORD from the Hub (or create it) and restart.")
-        sys.exit(0)
+        try:
+            res = gql("mutation($u: String!, $p: String!) { authentication { login(username: $u, password: $p, strategy: \"local\") "
+                      "{ responseResult { succeeded message } jwt } } }", {"u": ADMIN_EMAIL, "p": ADMIN_PASSWORD})
+            token = (res["authentication"]["login"] or {}).get("jwt")
+        except RuntimeError as e:
+            log(f"local admin login refused: {e}")
+            token = None
+    if not token:
+        log(f"no API key and no local login as {ADMIN_EMAIL}; Portcullis sign-in is NOT configured and the "
+            "wiki stays unrouted (healthcheck). Break-glass steps: see the template's auth notes.")
+        sys.exit(1)
 
+    token = rotate_key(token)
     ensure_groups(token)
     ensure_strategy(token)
-    log(f"configured https://{HOST} (OIDC client {CLIENT_ID})")
+    log(f"configured https://{HOST} (OIDC client {CLIENT_ID}, local login off)")
+
+
+def stored_key():
+    """The sidecar's API key, if it still works (manage:system)."""
+    try:
+        with open(KEY_FILE, encoding="utf-8") as f:
+            key = f.read().strip()
+    except OSError:
+        return None
+    try:
+        gql("{ authentication { apiState } }", token=key)
+        return key
+    except RuntimeError:
+        log("stored API key no longer works")
+        return None
+
+
+def rotate_key(token):
+    """Enable the API, create a fresh full-access key, store it, revoke the old ones."""
+    res = gql("mutation { authentication { setApiState(enabled: true) { responseResult { succeeded message } } } }",
+              token=token)["authentication"]["setApiState"]
+    check_result(res, "enable API")
+    res = gql("mutation($n: String!) { authentication { createApiKey(name: $n, expiration: \"3y\", fullAccess: true) "
+              "{ responseResult { succeeded message } key } } }", {"n": KEY_NAME}, token)["authentication"]["createApiKey"]
+    check_result(res, "create API key")
+    key = res["key"]
+    os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
+    fd = os.open(KEY_FILE + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key)
+    os.replace(KEY_FILE + ".new", KEY_FILE)
+    keys = gql("{ authentication { apiKeys { id name isRevoked } } }", token=key)["authentication"]["apiKeys"]
+    mine = sorted(k["id"] for k in keys if k["name"] == KEY_NAME and not k["isRevoked"])
+    for kid in mine[:-1]:
+        res = gql("mutation($id: Int!) { authentication { revokeApiKey(id: $id) { responseResult { succeeded message } } } }",
+                  {"id": kid}, key)["authentication"]["revokeApiKey"]
+        check_result(res, f"revoke API key {kid}")
+    return key
 
 
 if __name__ == "__main__":

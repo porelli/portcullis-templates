@@ -15,27 +15,37 @@ services:
     depends_on:
       wiki-init:
         condition: service_completed_successfully
+    # Healthy only when the "portcullis" OIDC strategy is enabled and the
+    # local (password) strategy is not, i.e. after wiki-setup has finished.
+    # The setup wizard, a fresh install and a re-enabled local login are
+    # unhealthy, so Traefik serves 404 for the host.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          out=$$(wget -qO- --header='Content-Type: application/json'
+          --post-data='{"query":"{authentication{activeStrategies(enabledOnly:true){key}}}"}'
+          http://127.0.0.1:3000/graphql) &&
+          echo "$$out" | grep -q '"key":"portcullis"' &&
+          ! echo "$$out" | grep -q '"key":"local"'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - default
       - portcullis-proxy
     labels:
       traefik.enable: "true"
       # Native OIDC: the host is not behind forward-auth (the API and the
-      # wiki's own sessions work as usual).
+      # wiki's own sessions work as usual). Traefik only routes healthy
+      # containers, so this router exists only in the OIDC-only state (see
+      # healthcheck): the setup wizard and the local login are never
+      # reachable from the internet.
       traefik.http.routers.wiki.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`)
       traefik.http.routers.wiki.entrypoints: websecure
       traefik.http.routers.wiki.tls.options: authaware@file
       traefik.http.routers.wiki.middlewares: client-headers@file,security-headers@file
-      traefik.http.routers.wiki.service: wiki
-      # Wiki.js can't restrict OIDC logins by group: the login pages (also
-      # /login/portcullis and its callback) and the setup wizard's /finalize
-      # sit behind forward-auth + group-gate.
-      traefik.http.routers.wiki-login.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`) && (PathPrefix(`/login`) || Path(`/finalize`))
-      traefik.http.routers.wiki-login.priority: "100"
-      traefik.http.routers.wiki-login.entrypoints: websecure
-      traefik.http.routers.wiki-login.tls.options: authaware@file
-      traefik.http.routers.wiki-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
-      traefik.http.routers.wiki-login.service: wiki
       traefik.http.services.wiki.loadbalancer.server.port: "3000"
     restart: unless-stopped
 
@@ -76,11 +86,15 @@ services:
       PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_wiki}
       PORTCULLIS_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_wiki}
       WIKI_OIDC_SECRET: ${WIKI_OIDC_SECRET:?WIKI_OIDC_SECRET must be set}
-      # Break-glass local admin (Wiki.js signs local users in by email).
+      # Local admin created by the wizard (Wiki.js signs local users in by
+      # email); its login is off once OIDC is configured (break-glass: notes).
       WIKI_ADMIN_EMAIL: admin@wiki.invalid
       WIKI_ADMIN_PASSWORD: ${WIKI_ADMIN_PASSWORD:?WIKI_ADMIN_PASSWORD must be set}
     volumes:
       - ./templates/wiki/setup.py:/setup.py:ro
+      # The sidecar's own Wiki.js API key (it can't log in once the local
+      # strategy is off).
+      - wiki-setup-data:/state
     depends_on:
       - wiki
     restart: "no"
@@ -96,6 +110,7 @@ services:
 
 volumes:
   wiki-db-data: {}
+  wiki-setup-data: {}
 
 networks:
   portcullis-proxy:

@@ -27,6 +27,8 @@ services:
     volumes:
       - dokuwiki-data:/config
       - ./templates/dokuwiki/init.sh:/portcullis/init.sh:ro
+      # Vendored oauth + oauthgeneric plugins (see plugins/VENDORED).
+      - ./templates/dokuwiki/plugins:/portcullis/plugins:ro
       # Keycloak may use the internal PKI (PHP's default CA file on Alpine).
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     networks:

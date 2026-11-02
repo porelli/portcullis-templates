@@ -15,9 +15,10 @@ services:
       - sh
     command: ["apache2-foreground"]
     environment:
-      # Break-glass local admin (created at install; password login only via
-      # /login?direct=1, which sits behind the Portcullis gateway).
-      NEXTCLOUD_ADMIN_USER: admin
+      # Local admin the image creates at install. setup.sh disables it (and
+      # every other local account) at every start: there is no password
+      # login; break-glass is occ on the server (manifest notes).
+      NEXTCLOUD_ADMIN_USER: nc-breakglass
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?NEXTCLOUD_ADMIN_PASSWORD must be set}
       NEXTCLOUD_TRUSTED_DOMAINS: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
       OVERWRITEPROTOCOL: https
@@ -47,18 +48,6 @@ services:
       traefik.http.routers.nextcloud.entrypoints: websecure
       traefik.http.routers.nextcloud.tls.options: authaware@file
       traefik.http.routers.nextcloud.middlewares: client-headers@file,security-headers@file
-      traefik.http.routers.nextcloud.service: nextcloud
-      # The login page (GET redirects to Portcullis; POST is the password
-      # form of the break-glass admin) behind forward-auth + group-gate, so
-      # the password form never faces the internet. Exact paths only: the
-      # Login Flow v2 poll endpoint (/login/v2/poll) stays reachable for the
-      # sync clients.
-      traefik.http.routers.nextcloud-login.rule: Host(`${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}`) && (Path(`/login`) || Path(`/index.php/login`))
-      traefik.http.routers.nextcloud-login.priority: "100"
-      traefik.http.routers.nextcloud-login.entrypoints: websecure
-      traefik.http.routers.nextcloud-login.tls.options: authaware@file
-      traefik.http.routers.nextcloud-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
-      traefik.http.routers.nextcloud-login.service: nextcloud
       traefik.http.services.nextcloud.loadbalancer.server.port: "80"
     restart: unless-stopped
 

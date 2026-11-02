@@ -96,54 +96,55 @@ auth:
       - prefix: /apps/text/public
         description: Markdown / README viewer public sessions (token in the request body, so only in mode all)
   notes: >
-    Native OIDC through Nextcloud's official user_oidc app (pinned
-    v8.11.0, installed and configured by setup.sh at every start; upgrade it
-    there). Sign-in is one Portcullis login: the login page redirects to
-    Keycloak. Accounts are created on the first SSO login and keyed on the
-    LLDAP username (preferred_username, unique-uid off, so the Nextcloud user
-    id is the username); soft auto-provisioning is off, so an SSO login is
-    never attached to an existing local account and nothing is matched by
-    email (the user-editable email only fills the profile). A local account
-    with the same name as an LLDAP user (e.g. the break-glass "admin") makes
-    that user's SSO login fail with "User conflict" until it is renamed or
-    removed (occ files:transfer-ownership moves its files). Only members of
-    users_nextcloud or admin_nextcloud may sign in (user_oidc group
-    whitelist + login restriction); both groups are synced into Nextcloud at
-    each login, and members of admin_nextcloud become Nextcloud admins
-    within a minute (nextcloud-cron maps them into Nextcloud's "admin"
-    group and removes SSO accounts that left it; local accounts are never
-    touched). Desktop/mobile clients use Login Flow v2 and get app passwords;
-    WebDAV/OCS accept only app passwords or tokens (token_auth_enforced), never
-    an account password. Break-glass: the local "admin" account
-    (NEXTCLOUD_ADMIN_PASSWORD) signs in at /login?direct=1; /login sits behind
-    forward-auth + group-gate (users_nextcloud), so its password form never
-    faces the internet. Last resort: occ inside the container. Removing a
-    user from the groups blocks new SSO logins and drops the groups at their
-    next login, not sessions or app passwords already issued (disable the
-    user in Nextcloud for that); single logout is off because the Keycloak
-    client has no post-logout redirect URI. Hostname: setup.sh re-applies
-    trusted_domains, overwrite.cli.url, overwritehost and overwriteprotocol
-    from the instance's hostname at every start, so a hostname change only
-    needs a restart. Existing installs: the first start installs user_oidc;
-    local accounts created by hand keep working with their passwords only
-    through /login?direct=1 (behind the gateway) and app passwords.
-    Public exceptions: with native OIDC the host is not behind forward-auth,
-    so share links work like on any Nextcloud (share token, password, expiry
-    and Nextcloud's brute-force protection, which sees the client IP via
-    TRUSTED_PROXIES = Traefik). The Hub exception matters when the host's
-    policy requires a client certificate: then only the listed share links
-    (or all, in mode all) and the static files their page needs skip it, and
-    logins (Basic auth, remember-me cookies) are refused there. The PDF
-    viewer page (a PHP route) is not in the list, so on such hosts PDFs on a
-    share download instead of opening inline; Markdown renders only in mode
-    all. Apps installed under /custom_apps that hook the share page are not
-    covered.
+    Native OIDC through Nextcloud's official user_oidc app (pinned v8.11.0,
+    installed and configured by setup.sh at every start; upgrade it there).
+    Sign-in is one Portcullis login: the login page redirects to Keycloak.
+    Accounts are created on the first SSO login and keyed on the LLDAP
+    username (preferred_username, unique-uid off, so the Nextcloud user id is
+    the username); soft auto-provisioning is off, so an SSO login is never
+    attached to an existing local account and nothing is matched by email
+    (the user-editable email only fills the profile). Only members of
+    users_nextcloud or admin_nextcloud may sign in (user_oidc group whitelist
+    + login restriction); both groups are synced into Nextcloud at each
+    login, and members of admin_nextcloud become Nextcloud admins within a
+    minute (nextcloud-cron maps them into Nextcloud's "admin" group and
+    removes SSO accounts that left it). No password login at all: Nextcloud
+    can't switch its password form off server-side, so every local account
+    (the nc-breakglass admin the image creates at install, the "admin" of
+    installs made before this template version, accounts created in the
+    Users page) is disabled at every start and within a minute by
+    nextcloud-cron; the login form is hidden. Move a local account's files to
+    its owner's SSO account with occ files:transfer-ownership. An LLDAP user
+    whose name is a local account (e.g. "admin" on older installs) gets "User
+    conflict" until that account is deleted (occ user:delete). Desktop/mobile
+    clients use Login Flow v2 and get app passwords; WebDAV/OCS accept only
+    app passwords or tokens (token_auth_enforced). Break-glass is occ on the
+    server, e.g. docker compose -p portcullis-<instance> exec -u www-data
+    nextcloud php occ group:adduser admin <user> (or user_oidc:provider,
+    config:system:set, user:info). Removing a user from the groups blocks new
+    SSO logins and drops the groups at their next login, not sessions or app
+    passwords already issued (occ user:disable <user> for that); single
+    logout is off because the Keycloak client has no post-logout redirect
+    URI. Hostname: setup.sh re-applies trusted_domains, overwrite.cli.url,
+    overwritehost and overwriteprotocol from the instance's hostname at every
+    start, so a hostname change only needs a restart.
+    Public exceptions: the host is not behind forward-auth, so every share
+    link already works without Portcullis sign-in, listed or not (Nextcloud's
+    share token, password, expiry and brute-force protection apply; it sees
+    the client IP via TRUSTED_PROXIES = Traefik). The Hub exception only
+    changes hosts whose policy requires a client certificate: there, the
+    listed share links (mode all: every share) and the static files their
+    page needs are served without one, and logins (Basic auth, remember-me
+    cookies) are refused on those paths. The PDF viewer page (a PHP route) is
+    not in the list, so on such hosts PDFs on a share download instead of
+    opening inline; Markdown renders only in mode all. Apps installed under
+    /custom_apps that hook the share page are not covered.
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
     Keep nextcloud and nextcloud-cron on the same image.
 env:
   - key: NEXTCLOUD_ADMIN_PASSWORD
-    description: Password of the break-glass local Nextcloud admin (sign in at /login?direct=1)
+    description: Install-time password of the local admin nc-breakglass (disabled after install; no password login)
     generate: random
   - key: NEXTCLOUD_OIDC_SECRET
     description: Nextcloud OIDC client secret

@@ -14,40 +14,52 @@ auth:
   admin_group: admin_wiki
   notes: >
     Native OIDC through Wiki.js' generic OpenID Connect strategy (key
-    "portcullis"), configured by the wiki-setup sidecar at every start
-    (GraphQL API, as the break-glass local admin). One Portcullis login:
-    users pick "Portcullis" on the login page. Identity: Wiki.js keys
-    accounts on the OIDC subject (the Keycloak id of the LLDAP user, never
-    the email; Wiki.js has no username-claim option). It requires an email
-    claim and only uses it for the profile; it would link a login to a user
-    an admin pre-created for this strategy with the same email, so never
-    pre-create users for the Portcullis strategy (LLDAP emails are
-    user-editable). Rights come only from groups: new accounts get no
-    group, and at each login Wiki.js sets the user's membership of the
-    Wiki.js groups users_wiki (editors, created once; adjust its rights in
-    Wiki.js) and admin_wiki (manage:system, re-applied every start) from the
-    groups claim. The Guests group has no permissions (re-applied before
-    every boot by wiki-init), so nothing is readable anonymously. Wiki.js
-    can't restrict OIDC logins by group, so /login (also /login/portcullis
-    and its callback) and the setup wizard's /finalize sit behind
-    forward-auth + group-gate (users_wiki); a realm user outside the groups
-    who still got an account has no rights. Removing a user from the groups
-    takes effect at their next login (Wiki.js sessions last up to 14 days).
-    Break-glass: the local admin admin@wiki.invalid with WIKI_ADMIN_PASSWORD
-    (set by the sidecar's setup wizard on a fresh install); its password
-    login goes through the GraphQL API, rate-limited by Wiki.js (5 per
-    minute). Existing installs whose admin has another email or password:
-    the sidecar logs that Portcullis sign-in is not configured; create that
-    local admin (or give an admin those credentials) and restart. Hostname:
-    wiki-init writes the site URL from the instance's hostname before Wiki.js
-    boots, so a hostname change only needs a restart.
-
+    "portcullis"), configured by the wiki-setup sidecar at every start over
+    the internal network (GraphQL, with its own API key kept in the
+    wiki-setup-data volume). One Portcullis login: the login page offers only
+    "Portcullis". No password login: the sidecar disables the local strategy
+    (and its self-registration), so the internet-facing GraphQL login and
+    register mutations refuse local accounts. Traefik only routes the wiki
+    while its healthcheck passes, which needs the Portcullis strategy enabled
+    and the local one disabled: the setup wizard of a fresh install, and a
+    re-enabled local login, get 404 from Traefik. Identity: Wiki.js keys
+    accounts on the OIDC subject (the Keycloak id of the LLDAP user, never the
+    email; Wiki.js has no username-claim option). It requires an email claim
+    and keeps emails unique per strategy, so an account's email is only
+    profile data, but: it would link a login to a user an admin pre-created
+    for this strategy with the same email (never pre-create users for the
+    Portcullis strategy), and a user who sets their LLDAP email to another
+    user's address makes the later login of whichever of them is second fail
+    (denial of service, no takeover; fix the email in LLDAP). Rights come only
+    from groups: new accounts get no group, and at each login Wiki.js sets the
+    user's membership of the Wiki.js groups users_wiki (editors, created once;
+    adjust its rights in Wiki.js) and admin_wiki (manage:system, re-applied
+    every start) from the groups claim. A realm user outside the groups can
+    sign in but has no rights. The Guests group has no permissions
+    (re-applied before every boot by wiki-init and by the sidecar), so
+    nothing is readable anonymously. Removing a user from the groups takes
+    effect at their next login (Wiki.js sessions last up to 14 days).
+    Break-glass, on the server only: docker compose -p portcullis-<instance>
+    exec wiki-db psql -U wiki -d wiki -c "UPDATE authentication SET
+    \"isEnabled\" = true WHERE key = 'local'", restart the wiki container,
+    open Wiki.js directly on its container address (e.g. an SSH tunnel to
+    <container ip>:3000; Traefik serves 404 meanwhile) and sign in as
+    admin@wiki.invalid with WIKI_ADMIN_PASSWORD; the next start of the app
+    (Hub) disables the local login again. Existing installs: local accounts
+    can no longer sign in; reset or remove them in Administration > Users (as
+    an SSO admin) since their passwords stay valid if the local login is ever
+    re-enabled. If the sidecar has neither its API key nor the local admin
+    admin@wiki.invalid / WIKI_ADMIN_PASSWORD (installs whose first admin had
+    another email), it can't configure anything and the wiki stays unrouted:
+    create that local admin through the break-glass steps and restart.
+    Hostname: wiki-init writes the site URL from the instance's hostname
+    before Wiki.js boots, so a hostname change only needs a restart.
 env:
   - key: WIKI_DB_PASSWORD
     description: Wiki.js database password
     generate: random
   - key: WIKI_ADMIN_PASSWORD
-    description: Password of the break-glass local Wiki.js admin (admin@wiki.invalid)
+    description: Password of the local Wiki.js admin admin@wiki.invalid (its login is off; break-glass only)
     generate: random
   - key: WIKI_OIDC_SECRET
     description: Wiki.js OIDC client secret

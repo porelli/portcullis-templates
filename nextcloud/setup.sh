@@ -31,12 +31,28 @@ occ config:system:set overwritehost --value="$HOST" >/dev/null
 occ config:system:set overwriteprotocol --value=https >/dev/null
 occ maintenance:update:htaccess >/dev/null
 
-# ── Logins ──
-# Clients (desktop, mobile, WebDAV, OCS) must use app passwords / Login Flow
-# tokens, never an account password: the only password account is the
-# break-glass admin, whose form login sits behind the Portcullis gateway.
+# ── Logins: Portcullis (user_oidc) only, no password login at all ──
+# Nextcloud has no switch that turns its password form off server-side
+# (hide_login_form only hides it), so no account may have a usable
+# password: every enabled local account (backend "Database": the
+# break-glass admin created at install, accounts of older installs, any
+# account created in the Users page) is disabled here and every minute by
+# nextcloud-cron. Break-glass is occ on the server, see the manifest notes.
+# Clients (desktop, mobile, WebDAV, OCS) use app passwords / Login Flow
+# tokens of SSO accounts, never an account password.
+occ config:system:set hide_login_form --type=boolean --value=true >/dev/null
 occ config:system:set token_auth_enforced --type=boolean --value=true >/dev/null
 occ config:system:set lost_password_link --value=disabled >/dev/null
+disable_local_accounts() {
+  occ user:list --info --limit=0 --output=json | php -r '
+    $u = json_decode(stream_get_contents(STDIN), true);
+    if (!is_array($u)) exit(1);
+    foreach ($u as $id => $i) if (($i["backend"] ?? "") === "Database" && !empty($i["enabled"])) echo $id, "\n";
+  ' | while read -r id; do
+    occ user:disable "$id" >/dev/null && echo "portcullis: disabled local account $id (Portcullis sign-in only)"
+  done
+}
+disable_local_accounts
 # Background jobs run from the nextcloud-cron service.
 occ background:cron >/dev/null
 
@@ -78,23 +94,23 @@ occ app:enable user_oidc >/dev/null
 # Accounts are created on first SSO login (auto_provision) and keyed on the
 # LLDAP username: unique-uid=0 + mapping-uid=preferred_username, so the
 # Nextcloud user id IS the username. soft_auto_provision=false: an SSO login
-# is never attached to an account of another backend (the local break-glass
-# admin, or local users created by hand), and nothing is ever matched by
+# is never attached to an account of another backend (the disabled local
+# accounts), and nothing is ever matched by
 # email (LLDAP emails are user-editable; the email claim only fills the
 # profile). Single logout is off: the Keycloak client has no post-logout
 # redirect URI, so Keycloak would refuse it.
 occ config:system:set user_oidc auto_provision --type=boolean --value=true >/dev/null
 occ config:system:set user_oidc soft_auto_provision --type=boolean --value=false >/dev/null
 occ config:system:set user_oidc single_logout --type=boolean --value=false >/dev/null
-# The login page goes straight to Portcullis; /login?direct=1 shows the
-# password form (break-glass admin).
+# The login page goes straight to Portcullis (/login?direct=1 would show
+# the hidden form, but no account can use it).
 occ config:app:set user_oidc allow_multiple_user_backends --type=string --value=0 >/dev/null
 
 # Groups: only the instance's access and admin groups are synced (created,
 # joined and left at each login); only their members may sign in.
 occ user_oidc:provider Portcullis \
   --clientid="$PORTCULLIS_OIDC_CLIENT_ID" \
-  --clientsecret="$NEXTCLOUD_OIDC_SECRET" \
+  --clientsecret-env=NEXTCLOUD_OIDC_SECRET \
   --discoveryuri="https://auth.$PORTCULLIS_DOMAIN/realms/portcullis/.well-known/openid-configuration" \
   --scope="openid email profile" \
   --unique-uid=0 \

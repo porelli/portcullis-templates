@@ -16,8 +16,13 @@ auth:
     Native OIDC through the oauth + oauthgeneric plugins
     (https://www.dokuwiki.org/plugin:oauth,
     https://www.dokuwiki.org/plugin:oauthgeneric; maintained by CosmoCode,
-    DokuWiki's authors), pinned and configured by init.sh at every start
-    (conf/local.protected.php, which the admin UI can't override). One
+    DokuWiki's authors), vendored in the template (dokuwiki/plugins, see
+    VENDORED; no download at start) and configured by init.sh at every start
+    (conf/local.protected.php, which the admin UI can't override). Fail
+    closed: init.sh first locks the wiki down (install.php deleted, no auth
+    backend so DokuWiki grants nothing, login disabled) and only its last
+    step writes the OIDC configuration, so a failed start leaves a wiki that
+    nobody can read or sign in to (the container log says why). One
     Portcullis login: the login page only offers the Portcullis button.
     Why not header auth: the header plugins in the DokuWiki repository
     (authserversso, genericsso, authremoteuser, authenvvars) read a server
