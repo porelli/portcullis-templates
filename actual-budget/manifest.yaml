@@ -57,7 +57,7 @@ tests:
     # manual), so the outsider is refused by Actual itself.
     expected_fail:
       member:
-        reason: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would let every Portcullis user in until the Hub's per-app Keycloak client access (Task 4b)"
+        reason: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would rest only on the Hub's Keycloak access role (keycloak_access_role), which CI (no Hub) doesn't apply"
         # Actual answers the refused grant with 400 {"reason":"openid-grant-failed"}
         # (its access log line in this flow's window counts too).
         match: "openid-grant-failed|GET 400 /openid/callback"
