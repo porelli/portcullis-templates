@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: TextureCraft
+description: 3D texture painting tool by ArtCraft, running entirely in the browser (Rust/WebAssembly; files stay on your device). In development.
+icon: "\U0001F9F1"
+category: creative
+tags: [artcraft, wasm, 3d, texture, painting]
+instances: multi
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_texturecraft
+  admin_group: admin_texturecraft
+  notes: >
+    In development upstream (https://getartcraft.com/apps): expect missing
+    features and breaking changes between versions.
+    TextureCraft (https://github.com/storytold/texturecraft, Apache-2.0 OR MIT) is a
+    static site: the app runs in the visitor's browser and has no user
+    system, no server-side code and no server-side storage. Open uses the
+    browser's file picker, Save/Export download files; preferences live in
+    the browser's storage for this hostname.
+    Portcullis sign-in (forward-auth + group-gate) is the only login; every
+    member of the access group gets the same app (there are no roles).
+    At every start the texturecraft-fetch init container downloads the release's
+    texturecraft-web-<version>.zip from GitHub, checks its SHA-256 against the pin
+    before unpacking, and swaps the unpacked site into the texturecraft-site volume
+    by rename; on any error it exits non-zero and the web server doesn't
+    start (an unchanged pin skips the download). The host needs outbound
+    HTTPS to github.com. The web server (nginx-unprivileged, read-only,
+    no directory listing) answers only Traefik and itself.
+    Version: CRAFT_VERSION / CRAFT_SHA256 default to the pin in compose.yml
+    (bumped with the template); set both together, from the release's
+    SHA256SUMS.txt, to pin another release.
+
+env:
+  - key: CRAFT_VERSION
+    description: >
+      TextureCraft release to serve (x.y.z, without the "v"). Empty = the version
+      pinned in compose.yml. Set CRAFT_SHA256 with it.
+    generate: none
+  - key: CRAFT_SHA256
+    description: >
+      SHA-256 of texturecraft-web-<CRAFT_VERSION>.zip (lowercase hex, from the
+      release's SHA256SUMS.txt). Empty = the pin in compose.yml. A mismatch
+      stops the start.
+    generate: none
+keycloak_clients: []
+config_files: []
+
+urls:
+  - label: Open TextureCraft
+    url: "https://{{HOST_TEXTURECRAFT}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # No identity reaches TextureCraft (a static site, no user system): the app's
+    # page itself, served through forward-auth + group-gate (outsiders: 403).
+    signed_in:
+      html: "<title>TextureCraft</title>"
+      wait: 20

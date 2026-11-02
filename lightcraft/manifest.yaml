@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: LightCraft
+description: Non-destructive photo editor and library by ArtCraft, running entirely in the browser (Rust/WebAssembly; files stay on your device). In development.
+icon: "\U0001F305"
+category: creative
+tags: [artcraft, wasm, photo, raw, library]
+instances: multi
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_lightcraft
+  admin_group: admin_lightcraft
+  notes: >
+    In development upstream (https://getartcraft.com/apps): expect missing
+    features and breaking changes between versions.
+    LightCraft (https://github.com/storytold/lightcraft, Apache-2.0 OR MIT) is a
+    static site: the app runs in the visitor's browser and has no user
+    system, no server-side code and no server-side storage. Open uses the
+    browser's file picker, Save/Export download files; preferences live in
+    the browser's storage for this hostname.
+    LightCraft keeps its photo library in the browser's Origin Private File System (or IndexedDB) on the user's device; nothing is uploaded to the server.
+    Portcullis sign-in (forward-auth + group-gate) is the only login; every
+    member of the access group gets the same app (there are no roles).
+    At every start the lightcraft-fetch init container downloads the release's
+    lightcraft-web-<version>.zip from GitHub, checks its SHA-256 against the pin
+    before unpacking, and swaps the unpacked site into the lightcraft-site volume
+    by rename; on any error it exits non-zero and the web server doesn't
+    start (an unchanged pin skips the download). The host needs outbound
+    HTTPS to github.com. The web server (nginx-unprivileged, read-only,
+    no directory listing) answers only Traefik and itself.
+    Version: CRAFT_VERSION / CRAFT_SHA256 default to the pin in compose.yml
+    (bumped with the template); set both together, from the release's
+    SHA256SUMS.txt, to pin another release.
+
+env:
+  - key: CRAFT_VERSION
+    description: >
+      LightCraft release to serve (x.y.z, without the "v"). Empty = the version
+      pinned in compose.yml. Set CRAFT_SHA256 with it.
+    generate: none
+  - key: CRAFT_SHA256
+    description: >
+      SHA-256 of lightcraft-web-<CRAFT_VERSION>.zip (lowercase hex, from the
+      release's SHA256SUMS.txt). Empty = the pin in compose.yml. A mismatch
+      stops the start.
+    generate: none
+keycloak_clients: []
+config_files: []
+
+urls:
+  - label: Open LightCraft
+    url: "https://{{HOST_LIGHTCRAFT}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # No identity reaches LightCraft (a static site, no user system): the app's
+    # page itself, served through forward-auth + group-gate (outsiders: 403).
+    signed_in:
+      html: "<title>LightCraft</title>"
+      wait: 20

@@ -1,0 +1,85 @@
+# FigCraft (https://github.com/storytold/figcraft): a static Rust/WebAssembly
+# site that runs entirely in the browser. figcraft-fetch puts the pinned web
+# release into the figcraft-site volume; figcraft serves it read-only.
+services:
+  # One-shot before every start: download figcraft-web-<version>.zip, verify its
+  # SHA-256 before unpacking, unpack next to the live copy and swap it in by
+  # rename (fetch.sh). Any error exits non-zero, so figcraft doesn't start.
+  # Version bumps: CRAFT_VERSION and CRAFT_SHA256 together (from the
+  # release's SHA256SUMS.txt); Dependabot can't track release zips.
+  figcraft-fetch:
+    image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+    command: ["/bin/sh", "/craft-fetch.sh"]
+    environment:
+      CRAFT_APP: figcraft
+      CRAFT_REPO: storytold/figcraft
+      CRAFT_VERSION: ${CRAFT_VERSION:-0.14.0}
+      CRAFT_SHA256: ${CRAFT_SHA256:-e0379c8038c68f9639952b0a5c45b8c42640377111d97da2c4f8db9db8ec8083}
+    volumes:
+      - figcraft-site:/srv/craft
+      - ./templates/figcraft/fetch.sh:/craft-fetch.sh:ro
+    # Root without capabilities: owner of the fresh volume, nothing more.
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 32
+    networks:
+      - default
+    restart: "no"
+
+  figcraft:
+    image: nginxinc/nginx-unprivileged:1.31.7-alpine3.24@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
+    # Writes the allowlist (Traefik + loopback) nginx.conf includes, then
+    # runs nginx; without a valid Traefik IP nothing starts.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        case "$$PORTCULLIS_TRAEFIK_IP" in
+          ""|*[!0-9.]*) echo "PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1 ;;
+        esac
+        printf 'allow %s;\nallow 127.0.0.1;\ndeny all;\n' "$$PORTCULLIS_TRAEFIK_IP" > /tmp/portcullis-allow.conf
+        exec nginx -g 'daemon off;'
+    environment:
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+    volumes:
+      - figcraft-site:/srv/craft:ro
+      - ./templates/figcraft/nginx.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    depends_on:
+      figcraft-fetch:
+        condition: service_completed_successfully
+        restart: true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/index.html"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.figcraft.rule: Host(`${PORTCULLIS_HOST_FIGCRAFT:-figcraft.portcullis.local}`)
+      traefik.http.routers.figcraft.entrypoints: websecure
+      traefik.http.routers.figcraft.tls.options: authaware@file
+      traefik.http.routers.figcraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.services.figcraft.loadbalancer.server.port: "8080"
+    restart: unless-stopped
+
+volumes:
+  figcraft-site: {}
+
+networks:
+  portcullis-proxy:
+    external: true
