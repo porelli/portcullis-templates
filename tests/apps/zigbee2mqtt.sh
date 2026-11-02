@@ -69,38 +69,39 @@ else
   fail "password file not hashed / wrong mode or owner"
 fi
 
-# Client options files inside the broker container (the passwords travel by
-# environment, never a command line).
+# Client config files inside the broker container ($XDG_CONFIG_HOME/
+# mosquitto_pub|mosquitto_sub, one option per line): the passwords travel by
+# environment, never a command line.
 docker exec -e Z2M_BROKER_PASSWORD -e Z2M_BROKER_HA_PASSWORD "$MQ" sh -c '
   umask 077
-  printf -- "-h 127.0.0.1\n-u zigbee2mqtt\n-P %s\n" "$Z2M_BROKER_PASSWORD" > /tmp/z2m.opts
-  printf -- "-h 127.0.0.1\n-u homeassistant\n-P %s\n" "$Z2M_BROKER_HA_PASSWORD" > /tmp/ha.opts
-  printf -- "-h 127.0.0.1\n-u homeassistant\n-P wrong-password\n" > /tmp/bad.opts'
+  for u in z2m ha bad; do mkdir -p /tmp/mq-$u; done
+  printf -- "-h 127.0.0.1\n-u zigbee2mqtt\n-P %s\n" "$Z2M_BROKER_PASSWORD" > /tmp/mq-z2m/mosquitto_pub
+  printf -- "-h 127.0.0.1\n-u homeassistant\n-P %s\n" "$Z2M_BROKER_HA_PASSWORD" > /tmp/mq-ha/mosquitto_sub
+  printf -- "-h 127.0.0.1\n-u homeassistant\n-P wrong-password\n" > /tmp/mq-bad/mosquitto_pub'
 
-if docker exec "$MQ" mosquitto_pub -h 127.0.0.1 -t zigbee2mqtt/ci -m x >/dev/null 2>&1; then
-  fail "anonymous client accepted"
-else
-  pass "anonymous client refused"
-fi
-if docker exec "$MQ" mosquitto_pub --options-file /tmp/bad.opts -t zigbee2mqtt/ci -m x >/dev/null 2>&1; then
-  fail "wrong password accepted"
-else
-  pass "wrong password refused"
-fi
+# Refusals must be the broker's (not a client error).
+refused() {  # <XDG dir or ""> : 0 if the broker refused the connection
+  local out
+  out=$(docker exec ${1:+-e XDG_CONFIG_HOME="$1"} "$MQ" mosquitto_pub -h 127.0.0.1 -t zigbee2mqtt/ci -m x 2>&1 || true)
+  echo "$out" | grep -qiE 'not authori[sz]ed|bad user name or password'
+}
+refused "" && pass "anonymous client refused by the broker" || fail "anonymous client not refused"
+refused /tmp/mq-bad && pass "wrong password refused by the broker" || fail "wrong password not refused"
 
-# Allowed topic: homeassistant receives what zigbee2mqtt publishes.
+# homeassistant receives what zigbee2mqtt publishes, on allowed topics only.
 mq_roundtrip() {  # <topic>: 0 if a message published by zigbee2mqtt reaches homeassistant
   local topic="$1"
   docker exec "$MQ" sh -c "
-    mosquitto_sub --options-file /tmp/ha.opts -t '$topic' -C 1 -W 8 > /tmp/got 2>/dev/null & s=\$!
+    XDG_CONFIG_HOME=/tmp/mq-ha mosquitto_sub -t '$topic' -C 1 -W 8 > /tmp/got 2>/tmp/sub.err & s=\$!
     sleep 2
-    mosquitto_pub --options-file /tmp/z2m.opts -t '$topic' -m portcullis-ci
+    XDG_CONFIG_HOME=/tmp/mq-z2m mosquitto_pub -t '$topic' -m portcullis-ci || echo 'publish failed' >&2
     wait \$s; grep -qx portcullis-ci /tmp/got"
 }
-mq_roundtrip zigbee2mqtt/ci/roundtrip && pass "zigbee2mqtt -> homeassistant on zigbee2mqtt/#" || fail "no delivery on zigbee2mqtt/#"
-mq_roundtrip homeassistant/ci/roundtrip && pass "zigbee2mqtt -> homeassistant on homeassistant/#" || fail "no delivery on homeassistant/#"
-mq_roundtrip other/ci && fail "ACL lets other/# through" || pass "ACL: nothing outside zigbee2mqtt/# and homeassistant/#"
-docker exec "$MQ" rm -f /tmp/z2m.opts /tmp/ha.opts /tmp/bad.opts /tmp/got
+if mq_roundtrip zigbee2mqtt/ci/roundtrip; then pass "zigbee2mqtt -> homeassistant on zigbee2mqtt/#"; else fail "no delivery on zigbee2mqtt/#"; docker exec "$MQ" cat /tmp/sub.err || true; fi
+if mq_roundtrip homeassistant/ci/roundtrip; then pass "zigbee2mqtt -> homeassistant on homeassistant/#"; else fail "no delivery on homeassistant/#"; fi
+# Meaningful only because the two deliveries above work with the same clients.
+if mq_roundtrip other/ci; then fail "ACL lets other/# through"; else pass "ACL: nothing delivered outside zigbee2mqtt/# and homeassistant/#"; fi
+docker exec "$MQ" rm -rf /tmp/mq-z2m /tmp/mq-ha /tmp/mq-bad /tmp/got /tmp/sub.err
 
 # No coordinator configured: Zigbee2MQTT idles and says what to set.
 sleep 3
