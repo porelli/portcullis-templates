@@ -1,4 +1,8 @@
 services:
+  # On the instance's private network only (alias mattermost-internal):
+  # mattermost-gate, the only service on portcullis-proxy, is its one way in,
+  # so no other container on portcullis-proxy can reach Mattermost past
+  # forward-auth or hand it a forged client address.
   mattermost:
     image: mattermost/mattermost-team-edition:12.0.1@sha256:8ca1050cb8a2ec1ec0be5aff90ee40aa03e134f48443f7526b7b2b18872cf31b
     security_opt: [no-new-privileges:true]
@@ -44,9 +48,12 @@ services:
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: /mattermost/data/mattermost_local.socket
       MMCTL_LOCAL_SOCKET_PATH: /mattermost/data/mattermost_local.socket
-      # Client address only from X-Real-Ip, which Traefik always overwrites
-      # with the peer it accepted the connection from (X-Forwarded-For can
-      # carry client-supplied entries).
+      # Client address only from X-Real-Ip. Only mattermost-gate reaches
+      # Mattermost, and the gate answers Traefik's address alone; Traefik
+      # (no forwardedHeaders.trustedIPs) deletes client-sent X-Real-Ip /
+      # X-Forwarded-For and sets X-Real-Ip to the peer it accepted, which the
+      # gate passes on unchanged. X-Forwarded-For is not trusted: the gate
+      # appends Traefik's own address to it.
       MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: X-Real-Ip
       MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
@@ -60,6 +67,35 @@ services:
         condition: service_healthy
       mattermost-plugins:
         condition: service_completed_successfully
+    networks:
+      default:
+        # Called by mattermost-gate under a default-only name: a service name
+        # on portcullis-proxy would be shared by every app (contracts §3).
+        aliases: [mattermost-internal]
+    # The image's HEALTHCHECK (/api/v4/system/ping) applies.
+    restart: unless-stopped
+
+  # The only service on portcullis-proxy (gate.sh, the same reviewed gate as
+  # esphome / zigbee2mqtt / motioneye): answers Traefik's address alone
+  # (every other container on portcullis-proxy gets 403), no realip module,
+  # removes the Portcullis session (Authorization, access-token headers,
+  # forward-auth cookies) and passes everything else, the websocket
+  # (/api/v4/websocket) included, to Mattermost.
+  mattermost-gate:
+    image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
+    security_opt: [no-new-privileges:true]
+    # nginx's master needs only these (worker user, cache dirs); no NET_RAW.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    environment:
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GATE_UPSTREAM: http://mattermost-internal:8065
+      GATE_LISTEN: "8065"
+    entrypoint: ["/bin/sh", "/portcullis/gate.sh"]
+    volumes:
+      - ./templates/mattermost/gate.sh:/portcullis/gate.sh:ro
+    depends_on:
+      - mattermost
     networks:
       - default
       - portcullis-proxy

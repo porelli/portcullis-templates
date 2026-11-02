@@ -873,10 +873,10 @@ if __name__ == "__main__":
 
 
 class TestGatedHomeTemplates(unittest.TestCase):
-    """The real esphome / zigbee2mqtt / motioneye templates, each guard
-    removed in turn: every removal must fail validation."""
+    """The real esphome / zigbee2mqtt / motioneye / mattermost templates,
+    each guard removed in turn: every removal must fail validation."""
 
-    APPS = ("esphome", "zigbee2mqtt", "motioneye")
+    APPS = ("esphome", "zigbee2mqtt", "motioneye", "mattermost")
     REPO = v.ROOT   # the real repo (setUp runs again per subTest)
 
     def setUp(self) -> None:
@@ -1005,6 +1005,99 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.setUp()
         self.edit("motioneye", "compose.yml", "motioneye-init", "motioneye-setup", count=3)
         self.assertFails("motioneye-init")
+
+    def test_mattermost_is_gated(self) -> None:
+        # Mattermost trusts X-Real-Ip: back on portcullis-proxy (any
+        # neighbour could skip forward-auth and forge its client address),
+        # routed itself, or without the gate's mount, it must fail.
+        mm = "        aliases: [mattermost-internal]\n"
+        for new, needle in (
+                (mm + "      portcullis-proxy: {}\n", "default network only"),
+                (mm + "    labels:\n      traefik.enable: \"false\"\n", "no traefik labels"),
+        ):
+            with self.subTest(needle=needle):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", mm, new)
+                self.assertFails(needle)
+        for line, needle in (
+                ("      - ./templates/mattermost/gate.sh:/portcullis/gate.sh:ro\n", "must be the gate"),
+                ("    cap_drop: [ALL]\n    cap_add: [CHOWN, SETGID, SETUID]\n", "drop all capabilities"),
+                ("      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n", "PORTCULLIS_TRAEFIK_IP"),
+        ):
+            with self.subTest(line=line.strip()):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", line)
+                self.assertFails(needle)
+        self.setUp()
+        # Sharing the gate's network namespace would put it on portcullis-proxy.
+        self.edit("mattermost", "compose.yml", "    # The image's HEALTHCHECK (/api/v4/system/ping) applies.\n",
+                  "    network_mode: service:mattermost-gate\n")
+        self.assertFails("must not set network_mode")
+        self.setUp()
+        os.remove(os.path.join(self.tmp.name, "mattermost", "gate.sh"))
+        self.assertFails("mattermost/gate.sh is missing")
+        for image in ("mattermost/mattermost-team-edition:12.0.1", "docker.io/mattermost/mattermost-enterprise-edition:12.0.1",
+                      "mirror.example.org/hub/mattermost/mattermost-team-edition:12.0.1"):
+            self.assertTrue(any(v.repo_is(image, repo) for repo in v.GATED_BACKENDS), image)
+
+    def test_gate_upstream_names(self) -> None:
+        # Another template's container answering to a gate's upstream name on
+        # portcullis-proxy would receive that gate's traffic (Docker DNS).
+        z2m_gate = "    networks:\n      - default\n      - portcullis-proxy\n    labels:\n"
+        self.edit("zigbee2mqtt", "compose.yml", z2m_gate,
+                  "    networks:\n      default: {}\n      portcullis-proxy:\n        aliases: [mattermost-internal]\n    labels:\n")
+        self.assertFails("ends in -internal but is on network 'portcullis-proxy'")
+        self.assertFails("is mattermost's gate upstream (here on network 'portcullis-proxy')")
+        for key in ("hostname", "container_name"):
+            with self.subTest(key=key):
+                self.setUp()
+                self.edit("zigbee2mqtt", "compose.yml", z2m_gate, f"    {key}: esphome-internal\n" + z2m_gate)
+                self.assertFails("is esphome's gate upstream")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", z2m_gate,
+                  "    networks:\n      default: {}\n      portcullis-proxy:\n        aliases: [anything-internal]\n    labels:\n")
+        self.assertFails("'anything-internal' ends in -internal")
+        for old, new, needle in (
+                ("GATE_UPSTREAM: http://mattermost-internal:8065", "GATE_UPSTREAM: http://mattermost:8065",
+                 "must name a <app>-internal alias"),
+                ("GATE_UPSTREAM: http://mattermost-internal:8065", "GATE_UPSTREAM: http://other-internal:8065",
+                 "must be a default-network alias of the gated backend"),
+                ("    shm_size: 128mb\n", "    shm_size: 128mb\n    networks:\n      default:\n        aliases: [mattermost-internal]\n",
+                 "is also services.mattermost-db on 'default'"),
+        ):
+            with self.subTest(needle=needle):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", old, new)
+                self.assertFails(needle)
+
+    def test_shared_default_network_is_not_private(self) -> None:
+        # networks.default renamed / external = a shared network: refused, and
+        # its -internal names count as being on a shared network.
+        for spec in ("    name: portcullis-proxy\n    external: true\n", "    name: portcullis_esphome_default\n",
+                     "    external: true\n"):
+            with self.subTest(spec=spec.strip()):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", "networks:\n  portcullis-proxy:\n",
+                          "networks:\n  default:\n" + spec + "  portcullis-proxy:\n")
+                self.assertFails("networks.default must stay the project's own network")
+                self.assertFails("needs the project's own default network")
+                self.assertFails("'mattermost-internal' ends in -internal but is on network 'default'")
+                self.assertFails("must be a default-network alias of the gated backend")
+
+    def test_network_mode_names_a_network(self) -> None:
+        # network_mode <network> joins that network: refused, and its names
+        # are checked like any other network's.
+        self.edit("zigbee2mqtt", "compose.yml", "services:\n",
+                  "services:\n  sneaky:\n    image: nginx:1.31.8-alpine@sha256:" + "0" * 64 + "\n"
+                  "    hostname: esphome-internal\n    network_mode: portcullis-proxy\n    restart: unless-stopped\n")
+        self.assertFails("network_mode 'portcullis-proxy': only none, host or service:")
+        self.assertFails("'esphome-internal' ends in -internal but is on network 'portcullis-proxy'")
+        self.assertFails("is esphome's gate upstream (here on network 'portcullis-proxy')")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", "services:\n",
+                  "services:\n  quiet:\n    image: nginx:1.31.8-alpine@sha256:" + "0" * 64 + "\n"
+                  "    hostname: esphome-internal\n    network_mode: none\n    restart: unless-stopped\n")
+        self.assertFalse([e for e in self.errors() if "-internal" in e or "network_mode" in e])
 
     def test_homeassistant_acl_is_an_allowlist(self) -> None:
         for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),

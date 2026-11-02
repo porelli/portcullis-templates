@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Test: Mattermost (forward-auth + group-gate; own accounts behind it, no self sign-up, bootstrap admin)
+# Test: Mattermost (forward-auth + group-gate; own accounts behind it, no self sign-up, bootstrap admin;
+# Traefik-only gate, Mattermost on the instance's private network)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
@@ -29,9 +30,31 @@ assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS fals
 assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER X-Real-Ip
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEUPLOADS false
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEMARKETPLACE false
+assert_compose_setting "$COMPOSE" PORTCULLIS_TRAEFIK_IP '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
+# Network names of a service (list or map form).
+nets() {
+  if [ "$(yq -r ".services[\"$1\"].networks | tag" "$COMPOSE")" = '!!map' ]; then
+    yq -r ".services[\"$1\"].networks | keys | join(\",\")" "$COMPOSE"
+  else
+    yq -r "[.services[\"$1\"].networks[]] | join(\",\")" "$COMPOSE"
+  fi
+}
+[ "$(nets mattermost)" = default ] && pass "Mattermost on the default network only" \
+  || fail "Mattermost networks: $(nets mattermost) (want default only)"
+[ "$(yq -r '.services.mattermost.labels // {} | length' "$COMPOSE")" = 0 ] && pass "Mattermost has no traefik labels" \
+  || fail "Mattermost carries labels (only the gate is routed)"
+case "$(nets mattermost-gate)" in *portcullis-proxy*) pass "only mattermost-gate joins portcullis-proxy" ;; *) fail "gate networks: $(nets mattermost-gate)" ;; esac
+if cmp -s "$(dirname "$COMPOSE")/gate.sh" "$(dirname "$(_find_compose esphome)")/gate.sh"; then
+  pass "gate.sh is the reviewed gate (identical to esphome's)"
+else
+  fail "mattermost/gate.sh differs from esphome/gate.sh"
+fi
 
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_MATTERMOST"
+GATE=portcullis-mattermost-gate-1
+GATE_IMG=$(yq -r '.services["mattermost-gate"].image' "$COMPOSE")
+TRAEFIK_IP=$(_core_env PORTCULLIS_TRAEFIK_IP); TRAEFIK_IP=${TRAEFIK_IP:-172.31.250.2}
 
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
 # Probe sign-up as soon as Mattermost answers, racing mattermost-init: with
@@ -316,6 +339,89 @@ fi
 rm -f /tmp/mm-plugins.log
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE true
 assert_compose_setting "$COMPOSE" MM_FILESETTINGS_DRIVERNAME local
+
+# ── Isolation: Mattermost is reachable only through the gate ──
+MM_IP=$(docker inspect "portcullis-${SERVICE}-1" --format '{{range $n, $c := .NetworkSettings.Networks}}{{$n}}={{$c.IPAddress}} {{end}}')
+case "$MM_IP" in *portcullis-proxy=*) fail "Mattermost is on portcullis-proxy: $MM_IP" ;; *) pass "Mattermost networks at runtime: $MM_IP" ;; esac
+on_proxy=$(docker network inspect portcullis-proxy --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' \
+  | grep -E '^portcullis-mattermost' | sort | tr '\n' ' ')
+[ "$on_proxy" = "$GATE " ] && pass "only $GATE is on portcullis-proxy" || fail "on portcullis-proxy: $on_proxy"
+# Any other app's container on portcullis-proxy, with forged forwarding
+# headers: Mattermost by name or address is out of reach (no answer at all).
+for target in "mattermost-internal:8065" "mattermost:8065" "${IP}:8065"; do
+  out=$(docker run --rm --network portcullis-proxy --entrypoint wget "$GATE_IMG" -S -q -O- -T 5 \
+    --header "X-Real-IP: $TRAEFIK_IP" --header "X-Forwarded-For: $TRAEFIK_IP" \
+    "http://${target}/api/v4/system/ping" 2>&1 || true)
+  if echo "$out" | grep -q 'HTTP/'; then
+    fail "a portcullis-proxy neighbour reached Mattermost at $target: $(echo "$out" | head -2 | tr '\n' ' ')"
+  else
+    pass "a portcullis-proxy neighbour cannot reach Mattermost at $target"
+  fi
+done
+GATE_IP=$(docker inspect "$GATE" --format '{{with index .NetworkSettings.Networks "portcullis-proxy"}}{{.IPAddress}}{{end}}')
+for _ in $(seq 1 20); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${GATE_IP}:8065/" 2>/dev/null || true)
+  [ "$code" = 000 ] && sleep 1 || break
+done
+for p in / /login /api/v4/system/ping /api/v4/users/login /api/v4/websocket; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://${GATE_IP}:8065${p}" 2>/dev/null || true)
+  [ "$code" = 403 ] && pass "gate refuses a non-Traefik peer on $p (403)" || fail "gate answered $p to a non-Traefik peer: HTTP $code"
+done
+st=$(docker run --rm --network portcullis-proxy --entrypoint wget "$GATE_IMG" -S -q -O /dev/null -T 10 \
+  --header "X-Forwarded-For: $TRAEFIK_IP" --header "X-Real-IP: $TRAEFIK_IP" "http://${GATE_IP}:8065/api/v4/system/ping" 2>&1 \
+  | grep -o 'HTTP/1.1 [0-9]*' | tail -1 || true)
+[ "$st" = "HTTP/1.1 403" ] && pass "gate refuses a portcullis-proxy neighbour with forged X-Real-IP / X-Forwarded-For (403)" \
+  || fail "gate answered a portcullis-proxy neighbour: ${st:-no answer}"
+
+# What Mattermost's TrustedProxyIPHeader (X-Real-Ip) receives through the
+# real Traefik: this template's gate.sh in a throwaway gate (routed by
+# Traefik without forward-auth, Traefik's real address allowed) in front of
+# an echo upstream. A client-forged X-Real-Ip / X-Forwarded-For never gets
+# through: X-Real-Ip is the address Traefik accepted, X-Forwarded-For ends in
+# Traefik's own address.
+gt=pc-gatetest-mattermost
+GT_HOST="mmgatetest.$DOMAIN"
+gt_cleanup() {
+  docker rm -f "$gt-up" "$gt-gate" >/dev/null 2>&1 || true
+  docker network rm "$gt" >/dev/null 2>&1 || true
+}
+gt_cleanup
+docker network create --internal "$gt" >/dev/null
+docker run -d --name "$gt-up" --network "$gt" --network-alias gt-upstream --entrypoint /bin/sh "$GATE_IMG" -c '
+  printf "%s\n" "server { listen 8080; location / { default_type text/plain; return 200 \"xrip=[\$http_x_real_ip] xff=[\$http_x_forwarded_for] auth=[\$http_authorization]\n\"; } }" > /etc/nginx/conf.d/default.conf
+  exec nginx -g "daemon off;"' >/dev/null
+docker create --name "$gt-gate" --network portcullis-proxy \
+  -e PORTCULLIS_TRAEFIK_IP="$TRAEFIK_IP" -e GATE_UPSTREAM=http://gt-upstream:8080 -e GATE_LISTEN=9000 \
+  -v "$(cd "$(dirname "$COMPOSE")" && pwd)/gate.sh:/portcullis/gate.sh:ro" \
+  -l traefik.enable=true -l traefik.docker.network=portcullis-proxy \
+  -l "traefik.http.routers.mmgatetest.rule=Host(\`$GT_HOST\`)" \
+  -l traefik.http.routers.mmgatetest.entrypoints=websecure \
+  -l traefik.http.routers.mmgatetest.tls.options=authaware@file \
+  -l traefik.http.routers.mmgatetest.service=mmgatetest \
+  -l traefik.http.services.mmgatetest.loadbalancer.server.port=9000 \
+  --entrypoint /bin/sh "$GATE_IMG" /portcullis/gate.sh >/dev/null
+docker network connect "$gt" "$gt-gate"
+docker start "$gt-gate" >/dev/null
+FORGED=203.0.113.66
+gt_via() {
+  curl -sk --max-time 10 --resolve "$GT_HOST:443:127.0.0.1" -H "X-Real-Ip: $FORGED" -H "X-Forwarded-For: $FORGED" \
+    -H "Authorization: Bearer e2e-not-for-the-app" "https://$GT_HOST/" 2>/dev/null || true
+}
+for _ in $(seq 1 30); do
+  gt_via | grep -q '^xrip=' && break
+  sleep 1
+done
+out=$(gt_via)
+xrip=$(echo "$out" | sed -n 's/^xrip=\[\([^]]*\)\].*/\1/p')
+xff=$(echo "$out" | sed -n 's/.* xff=\[\([^]]*\)\].*/\1/p')
+info "through Traefik + gate: $out"
+if [ -n "$xrip" ] && ! echo "$out" | grep -qF "$FORGED" && [ "$xff" = "$xrip, $TRAEFIK_IP" ] \
+   && echo "$out" | grep -qF 'auth=[]'; then
+  pass "Traefik + gate hand on X-Real-Ip = the accepted peer ($xrip); forged X-Real-Ip / X-Forwarded-For dropped"
+else
+  fail "X-Real-Ip through Traefik + gate: ${out:-no answer}"
+fi
+gt_cleanup
 
 # Through Traefik (routed once healthy): forward-auth on every path
 for _ in $(seq 1 60); do
