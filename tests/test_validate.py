@@ -774,10 +774,10 @@ if __name__ == "__main__":
 
 
 class TestGatedHomeTemplates(unittest.TestCase):
-    """The real esphome / zigbee2mqtt / motioneye templates, each guard
-    removed in turn: every removal must fail validation."""
+    """The real esphome / zigbee2mqtt / motioneye / mattermost templates,
+    each guard removed in turn: every removal must fail validation."""
 
-    APPS = ("esphome", "zigbee2mqtt", "motioneye")
+    APPS = ("esphome", "zigbee2mqtt", "motioneye", "mattermost")
     REPO = v.ROOT   # the real repo (setUp runs again per subTest)
 
     def setUp(self) -> None:
@@ -906,6 +906,40 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.setUp()
         self.edit("motioneye", "compose.yml", "motioneye-init", "motioneye-setup", count=3)
         self.assertFails("motioneye-init")
+
+    def test_mattermost_is_gated(self) -> None:
+        # Mattermost trusts X-Real-Ip: back on portcullis-proxy (any
+        # neighbour could skip forward-auth and forge its client address),
+        # routed itself, or without the gate's mount, it must fail.
+        mm = "        aliases: [mattermost-internal]\n"
+        for new, needle in (
+                (mm + "      portcullis-proxy: {}\n", "default network only"),
+                (mm + "    labels:\n      traefik.enable: \"false\"\n", "no traefik labels"),
+        ):
+            with self.subTest(needle=needle):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", mm, new)
+                self.assertFails(needle)
+        for line, needle in (
+                ("      - ./templates/mattermost/gate.sh:/portcullis/gate.sh:ro\n", "must be the gate"),
+                ("    cap_drop: [ALL]\n    cap_add: [CHOWN, SETGID, SETUID]\n", "drop all capabilities"),
+                ("      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n", "PORTCULLIS_TRAEFIK_IP"),
+        ):
+            with self.subTest(line=line.strip()):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", line)
+                self.assertFails(needle)
+        self.setUp()
+        # Sharing the gate's network namespace would put it on portcullis-proxy.
+        self.edit("mattermost", "compose.yml", "    # The image's HEALTHCHECK (/api/v4/system/ping) applies.\n",
+                  "    network_mode: service:mattermost-gate\n")
+        self.assertFails("must not set network_mode")
+        self.setUp()
+        os.remove(os.path.join(self.tmp.name, "mattermost", "gate.sh"))
+        self.assertFails("mattermost/gate.sh is missing")
+        for image in ("mattermost/mattermost-team-edition:12.0.1", "docker.io/mattermost/mattermost-enterprise-edition:12.0.1",
+                      "mirror.example.org/hub/mattermost/mattermost-team-edition:12.0.1"):
+            self.assertTrue(any(v.repo_is(image, repo) for repo in v.GATED_BACKENDS), image)
 
     def test_homeassistant_acl_is_an_allowlist(self) -> None:
         for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),

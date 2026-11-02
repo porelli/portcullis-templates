@@ -1048,7 +1048,8 @@ SIGNIN_GATED_METHODS = {"forward-auth", "header-auth"}
 
 
 # Apps with no access control of their own (ESPHome Device Builder,
-# Zigbee2MQTT) or whose own login is only a second step (motionEye): the app
+# Zigbee2MQTT), whose own login is only a second step (motionEye) or that
+# trust a forwarded client-address header (Mattermost, X-Real-Ip): the app
 # service stays on the instance's default network, and the only routed
 # service is the Traefik-only nginx gate running the template's gate.sh
 # (byte-identical in every template, check_cross). Value: extra
@@ -1058,6 +1059,8 @@ GATED_BACKENDS = {   # image repository (any registry or mirror prefix)
     "esphome/esphome": {},
     "koenkk/zigbee2mqtt": {},
     "motioneye-project/motioneye": {"healthy": True, "init": "motioneye-init"},
+    "mattermost/mattermost-team-edition": {},
+    "mattermost/mattermost-enterprise-edition": {},
 }
 GATE_CAPS = {"CHOWN", "SETGID", "SETUID"}
 
@@ -1137,9 +1140,14 @@ def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> No
         where = f"{t.c_where}: services.{sname}"
         if any(k.startswith("traefik.") for k in labels_of(svc)):
             r.error(where, "an unauthenticated backend must have no traefik labels", GATE_HINT)
-        if str(svc.get("network_mode", "")).lower() == "host":
+        mode = str(svc.get("network_mode", "")).lower()
+        if mode == "host":
             r.error(where, "an unauthenticated backend must not use host networking", GATE_HINT)
-        if _nets(svc) != ["default"]:
+        elif mode:
+            # service:<gate> / container:<x> would share another network namespace.
+            r.error(where, f"an unauthenticated backend must not set network_mode (got {mode!r})", GATE_HINT)
+        # No networks key = the default network only.
+        if mode != "host" and (_nets(svc) or ["default"]) != ["default"]:
             r.error(where, f"an unauthenticated backend must be on the default network only (got {_nets(svc)})", GATE_HINT)
         if extra.get("init") and _depends(svc, extra["init"]) != "service_completed_successfully":
             r.error(where, f"must depend on {extra['init']} with condition service_completed_successfully",

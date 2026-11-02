@@ -89,9 +89,16 @@ auth:
     desktop and mobile apps and anything else that talks to the API
     directly (bots, incoming/outgoing webhooks, slash-command callbacks,
     personal or bot access tokens), because every request needs a
-    Portcullis browser session first; use the web app. Mattermost takes the
-    client address (logs, rate limits) from X-Real-Ip, which Traefik
-    overwrites. Upgrades: follow
+    Portcullis browser session first; use the web app. Networking:
+    Mattermost is on the instance's private network only; the gate in front
+    of it (nginx, mattermost-gate, the only container on portcullis-proxy)
+    answers Traefik's address alone, so no other container can reach
+    Mattermost past the gateway. The gate never forwards the Portcullis
+    session (Authorization, access-token headers and the forward-auth
+    cookies are removed) and passes the websocket through. Mattermost takes
+    the client address (logs, rate limits) from X-Real-Ip, which Traefik
+    sets to the peer it accepted (client-sent copies are deleted) and the
+    gate passes on unchanged. Upgrades: follow
     Mattermost's upgrade path (extended support releases, one major at a
     time); don't bump the PostgreSQL major.
 
