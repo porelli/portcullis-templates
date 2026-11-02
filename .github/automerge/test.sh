@@ -49,7 +49,9 @@ enc() { jq -rn --arg v "$1" '$v|@uri'; }
 defaults() {
   NUM=4 BRANCH=dependabot/docker_compose/matrix/element-hq/synapse-v1.164.2
   AUTHOR='dependabot[bot]' HEAD_REPO=$REPO RUN_REPO=$REPO RUN_EVENT=pull_request
-  PR_SHA=$SHA RUN_SHA=$SHA COMMITS=1 COMMIT_AUTHOR='dependabot[bot]' VERIFIED=true
+  PR_SHA=$SHA RUN_SHA=$SHA COMMITS=1 COMMIT_AUTHOR='dependabot[bot]' VERIFIED=true REASON=valid
+  COMMITTER=web-flow COMMITTER_EMAIL=noreply@github.com EXTRA_COMMIT=false
+  PUSHER='dependabot[bot]' TIMELINE_AUTHOR='49699333+dependabot[bot]@users.noreply.github.com' NO_TIMELINE=false
   LINT=success TEST=success TEST_STATUS=completed LABELS='[]'
   FILES='["matrix/compose.yml"]' ISSUES='[]'
   MSG='templates: bump element-hq/synapse from v1.164.1 to v1.164.2 in /matrix
@@ -79,8 +81,17 @@ setup() {
   put "repos/$REPO/pulls/$NUM" "$pr"
   # Like the real API, the list has no `commits` (only GET pulls/<n> does).
   put "repos/$REPO/pulls?state=open&head=$(enc "${REPO%%/*}:$BRANCH")&per_page=10" "$(jq -c '[del(.commits)]' <<<"$pr")"
-  put "repos/$REPO/commits/$PR_SHA" "$(jq -n --arg a "$COMMIT_AUTHOR" --argjson v "$VERIFIED" --arg m "$MSG" \
-    '{author: {login: $a}, commit: {message: $m, verification: {verified: $v}}}')"
+  put "repos/$REPO/pulls/$NUM/commits?per_page=100" "$(jq -n --arg a "$COMMIT_AUTHOR" --argjson v "$VERIFIED" --arg m "$MSG" \
+    --arg r "$REASON" --arg c "$COMMITTER" --arg ce "$COMMITTER_EMAIL" --arg s "$PR_SHA" --argjson extra "$EXTRA_COMMIT" '
+    [{sha: $s, author: {login: $a}, committer: {login: $c},
+      commit: {message: $m, committer: {email: $ce}, verification: {verified: $v, reason: $r}}}]
+    | if $extra then [{sha: "3333333333333333333333333333333333333333", author: {login: "mallory"}, committer: {login: "mallory"},
+                       commit: {message: "fix", committer: {email: "m@example.com"}, verification: {verified: true, reason: "valid"}}}] + . else . end')"
+  [ "$NO_TIMELINE" = true ] || put "repos/$REPO/issues/$NUM/timeline?per_page=100" "$(jq -n --arg p "$PUSHER" --arg a "$TIMELINE_AUTHOR" --arg s "$PR_SHA" '
+    [{event: "labeled", actor: {login: "dependabot[bot]"}},
+     {event: "committed", sha: $s, author: {email: $a}, committer: {email: "noreply@github.com"}},
+     {event: "head_ref_force_pushed", actor: {login: $p}},
+     {event: "commented", actor: {login: "someone"}}]')"
   put "repos/$REPO/pulls/$NUM/files?per_page=100" "$(jq -c 'map({filename: .})' <<<"$FILES")"
   put "repos/$REPO/actions/runs?head_sha=$PR_SHA&event=pull_request&per_page=100" "$(jq -n --arg s "$PR_SHA" --arg repo "$REPO" \
     --arg lint "$LINT" --arg test "$TEST" --arg ts "$TEST_STATUS" '
@@ -348,9 +359,23 @@ expect "SHA mismatch (PR head moved)" '.action == "refuse" and (.reason|test("st
 defaults; COMMITS=2; setup; decide
 expect "extra commits" '.action == "refuse" and (.reason|test("2 commits"))'
 defaults; COMMIT_AUTHOR=mallory; setup; decide
-expect "head commit not Dependabot's" '.action == "refuse" and (.reason|test("signed"))'
-defaults; VERIFIED=false; setup; decide
-expect "unsigned head commit" '.action == "refuse"'
+expect "head commit not Dependabot's" '.action == "refuse" and (.reason|test("author mallory"))'
+defaults; COMMITTER=mallory COMMITTER_EMAIL="49699333+dependabot[bot]@users.noreply.github.com"; setup; decide
+expect "forged author (dependabot[bot]) with own verified signature, not web-flow" '.action == "refuse" and (.reason|test("committer mallory"))'
+defaults; COMMITTER_EMAIL=mallory@example.com; setup; decide
+expect "non-GitHub committer email" '.action == "refuse" and (.reason|test("committer email"))'
+defaults; VERIFIED=false REASON=unsigned; setup; decide
+expect "unsigned head commit" '.action == "refuse" and (.reason|test("signature"))'
+defaults; REASON=bad_email; setup; decide
+expect "verified but reason not valid" '.action == "refuse" and (.reason|test("signature"))'
+defaults; EXTRA_COMMIT=true; setup; decide
+expect "extra human commit in the list (PR count still 1)" '.action == "refuse" and (.reason|test("2 commits listed"))'
+defaults; PUSHER=mallory; setup; decide
+expect "human force-push in the timeline" '.action == "refuse" and (.reason|test("head_ref_force_pushed by mallory"))'
+defaults; TIMELINE_AUTHOR=mallory@example.com; setup; decide
+expect "timeline commit not Dependabot's" '.action == "refuse" and (.reason|test("commit .* by mallory"))'
+defaults; NO_TIMELINE=true; setup; decide
+expect "timeline unreadable: fail closed" '.action == "refuse" and (.reason|test("unreadable"))'
 defaults; RUN_EVENT=push; setup; decide
 expect "push run" '.action == "refuse" and (.reason|test("push run"))'
 defaults; BRANCH=feature/x; setup; decide
