@@ -1,0 +1,227 @@
+services:
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.1@sha256:1a08d8dfc2b51a08de09652dd86ad4d0c611c362382f944533ad38b73125fbc4
+    # Rootless mode (upstream supports `user:`; the image makes /run
+    # world-writable and owns its volume directories as uid 1000): s6 and
+    # every service run as paperless, USERMAP_* and root-only steps
+    # (installing extra OCR languages) are skipped. Not read_only: the s6
+    # init, fontconfig cache and gnupg home write to the image filesystem.
+    user: "1000:1000"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # OCR (tesseract, ghostscript, OCRmyPDF) is memory hungry.
+    mem_limit: 3g
+    pids_limit: 1024
+    environment:
+      PAPERLESS_URL: https://${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}
+      # Only its own hostname (plus localhost for the healthcheck).
+      PAPERLESS_ALLOWED_HOSTS: ${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}
+      # Client IPs (logs, allauth rate limits) from Traefik only.
+      PAPERLESS_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      # Traefik terminates TLS; core's security-headers@file sets this header.
+      PAPERLESS_PROXY_SSL_HEADER: '["HTTP_X_FORWARDED_PROTO", "https"]'
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?PAPERLESS_SECRET_KEY must be set}
+      PAPERLESS_REDIS: redis://paperless-redis:6379
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: paperless-db
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: ${PAPERLESS_DB_PASSWORD:?PAPERLESS_DB_PASSWORD must be set}
+      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE:-eng}
+      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE:-UTC}
+      # Sessions last 12 hours (upstream default: 3 weeks). Group, superuser
+      # and staff sync happen only at login, so this bounds how long a user
+      # removed from users_/admin_paperless keeps their rights in the
+      # browser; signing in again through Portcullis is silent.
+      PAPERLESS_SESSION_COOKIE_AGE: "43200"
+      # ── Sign-in: OpenID Connect only (django-allauth) ──
+      PAPERLESS_APPS: allauth.socialaccount.providers.openid_connect
+      # Accounts are keyed on the OIDC sub (allauth SocialAccount.uid) and
+      # named after preferred_username (the LLDAP username). Never linked to
+      # an existing account by email (EMAIL_AUTHENTICATION false; LLDAP
+      # emails are user-editable). Groups arrive in the "groups" claim (a
+      # default scope of every Hub client).
+      PAPERLESS_SOCIALACCOUNT_PROVIDERS: >-
+        {"openid_connect": {"SCOPE": ["openid", "profile"], "EMAIL_AUTHENTICATION": false,
+        "VERIFIED_EMAIL": false, "APPS": [{"provider_id": "portcullis", "name": "Portcullis",
+        "client_id": "${PORTCULLIS_OIDC_CLIENT_ID:-paperless}",
+        "secret": "${PAPERLESS_OIDC_SECRET:?PAPERLESS_OIDC_SECRET must be set}",
+        "settings": {"server_url": "https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis",
+        "oauth_pkce_enabled": true}}]}}
+      # No username/password form (allauth pre_authenticate refuses it) and
+      # straight to Portcullis. Password APIs (Basic auth, /api/token/) are
+      # closed by init.py: no account has a usable password.
+      PAPERLESS_DISABLE_REGULAR_LOGIN: "true"
+      PAPERLESS_REDIRECT_LOGIN_TO_SSO: "true"
+      # No local signup; accounts are created by the (group-gated) SSO login.
+      PAPERLESS_ACCOUNT_ALLOW_SIGNUPS: "false"
+      PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS: "true"
+      PAPERLESS_SOCIAL_AUTO_SIGNUP: "true"
+      PAPERLESS_ACCOUNT_EMAIL_VERIFICATION: none
+      PAPERLESS_ACCOUNT_EMAIL_UNKNOWN_ACCOUNTS: "false"
+      # Paperless groups = the user's Keycloak groups that exist as Paperless
+      # groups, re-synced at every login; admin_<app> = superuser + staff
+      # (granted and revoked at every login).
+      PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS: "true"
+      PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM: groups
+      PAPERLESS_SOCIAL_ACCOUNT_SYNC_SUPERUSER_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_paperless}
+      PAPERLESS_SOCIAL_ACCOUNT_SYNC_STAFF_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_paperless}
+      # Keycloak's certificate is signed by core's CA (python-requests).
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/portcullis-ca-bundle.crt
+      SSL_CERT_FILE: /etc/ssl/certs/portcullis-ca-bundle.crt
+    volumes:
+      - paperless-data:/usr/src/paperless/data
+      - paperless-media:/usr/src/paperless/media
+      - paperless-export:/usr/src/paperless/export
+      - paperless-consume:/usr/src/paperless/consume
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "--max-time", "5", "-o", "/dev/null", "http://localhost:8000/accounts/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    depends_on:
+      paperless-init:
+        condition: service_completed_successfully
+      paperless-db:
+        condition: service_healthy
+      paperless-redis:
+        condition: service_healthy
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.paperless.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`)
+      traefik.http.routers.paperless.entrypoints: websecure
+      traefik.http.routers.paperless.tls.options: authaware@file
+      traefik.http.routers.paperless.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.paperless.service: paperless
+      traefik.http.services.paperless.loadbalancer.server.port: "8000"
+      # SSO start and callback (allauth /accounts/oidc/<provider>/login/ and
+      # .../login/callback/): behind forward-auth + group-gate, so only
+      # users_<app> members can sign in or get an account (allauth has no
+      # OIDC group restriction). No password form exists to bypass: the
+      # regular login is off and no account has a usable password. The API
+      # (tokens, mobile apps) stays on the ungated host router.
+      traefik.http.routers.paperless-sso.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && PathPrefix(`/accounts/oidc`)
+      traefik.http.routers.paperless-sso.priority: "100"
+      traefik.http.routers.paperless-sso.entrypoints: websecure
+      traefik.http.routers.paperless-sso.tls.options: authaware@file
+      traefik.http.routers.paperless-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.paperless-sso.service: paperless
+      # allauth headless provider login (an ID token for this client
+      # exchanged for a session): same gate as the browser SSO paths, so no
+      # SSO login skips group-gate. The rest of /api stays ungated.
+      traefik.http.routers.paperless-headless.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && (PathPrefix(`/api/auth/headless/browser/v1/auth/provider`) || PathPrefix(`/api/auth/headless/app/v1/auth/provider`))
+      traefik.http.routers.paperless-headless.priority: "100"
+      traefik.http.routers.paperless-headless.entrypoints: websecure
+      traefik.http.routers.paperless-headless.tls.options: authaware@file
+      traefik.http.routers.paperless-headless.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.paperless-headless.service: paperless
+      # Django admin: superusers only in Paperless; here also behind
+      # forward-auth + group-gate with admin_<app> (auth.admin_paths).
+      traefik.http.routers.paperless-admin.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && PathPrefix(`/admin`)
+      traefik.http.routers.paperless-admin.priority: "100"
+      traefik.http.routers.paperless-admin.entrypoints: websecure
+      traefik.http.routers.paperless-admin.tls.options: authaware@file
+      traefik.http.routers.paperless-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.paperless-admin.service: paperless
+    restart: unless-stopped
+
+  # One-shot, every start (init.py): migrations, no usable password for any
+  # account (DB trigger), a placeholder account that closes the
+  # fresh-install signup, the access group's role. Fails closed: Paperless
+  # does not start unless it exits 0. Default network only.
+  paperless-init:
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.1@sha256:1a08d8dfc2b51a08de09652dd86ad4d0c611c362382f944533ad38b73125fbc4
+    user: "1000:1000"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # Data migrations may read every document (e.g. checksum recomputation
+    # on large libraries), so the limits match the main container.
+    mem_limit: 3g
+    pids_limit: 256
+    entrypoint: ["python3", "/portcullis/init.py"]
+    environment:
+      PAPERLESS_URL: https://${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?PAPERLESS_SECRET_KEY must be set}
+      PAPERLESS_REDIS: redis://paperless-redis:6379
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: paperless-db
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: ${PAPERLESS_DB_PASSWORD:?PAPERLESS_DB_PASSWORD must be set}
+      PAPERLESS_APPS: allauth.socialaccount.providers.openid_connect
+      PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_paperless}
+    # Every volume of the main container: migrations recorded as applied
+    # here are never rerun by Paperless itself, and some data migrations
+    # read the stored documents (media) to recompute values.
+    volumes:
+      - paperless-data:/usr/src/paperless/data
+      - paperless-media:/usr/src/paperless/media
+      - paperless-export:/usr/src/paperless/export
+      - paperless-consume:/usr/src/paperless/consume
+      - ./templates/paperless/init.py:/portcullis/init.py:ro
+    depends_on:
+      paperless-db:
+        condition: service_healthy
+      paperless-redis:
+        condition: service_healthy
+    restart: "no"
+
+  paperless-redis:
+    image: redis:8.10.3-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537
+    # The image's redis user owns /data; the entrypoint skips its root step.
+    user: "999:1000"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 64
+    volumes:
+      - paperless-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  paperless-db:
+    image: postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    # The image's postgres user (alpine uid 70) owns /var/lib/postgresql, so
+    # a fresh volume is writable without the entrypoint's root step.
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${PAPERLESS_DB_PASSWORD:?PAPERLESS_DB_PASSWORD must be set}
+      POSTGRES_DB: paperless
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # PostgreSQL 18 images keep PGDATA in /var/lib/postgresql/18/docker.
+    volumes:
+      - paperless-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperless -d paperless"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  paperless-data: {}
+  paperless-media: {}
+  paperless-export: {}
+  paperless-consume: {}
+  paperless-redis-data: {}
+  paperless-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true
