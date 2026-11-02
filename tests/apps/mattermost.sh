@@ -79,8 +79,9 @@ def call(m, p, b=None):
 a = os.environ["ADMIN"]
 s, t = call("POST", "/api/v4/users", {"username": "e2etaker", "email": "e2etaker@mattermost.invalid", "password": os.environ["TAKER_PW"]})
 s2, adm = call("GET", f"/api/v4/users/username/{a}")
-s3, _ = call("PUT", f"/api/v4/users/{adm['id']}/patch", {"username": a + "-old"})
-s4, _ = call("PUT", f"/api/v4/users/{t['id']}/patch", {"username": a})
+# Local mode has no /patch route: PUT the whole user with the new name.
+s3, _ = call("PUT", f"/api/v4/users/{adm['id']}", dict(adm, username=a + "-old"))
+s4, _ = call("PUT", f"/api/v4/users/{t['id']}", dict(t, username=a))
 print("create", s, "lookup", s2, "rename-admin", s3, "rename-taker", s4)
 PY
 }
