@@ -1,0 +1,169 @@
+services:
+  mealie:
+    image: ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784
+    # Runs as the image's app user (uid 911) from the start: the entrypoint
+    # then skips its root-only usermod/chown/gosu step. mealie-perms has made
+    # the data volume 911's.
+    user: "911:911"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # Upstream recommends a memory limit (Python over-allocates otherwise).
+    mem_limit: 1g
+    pids_limit: 256
+    environment:
+      BASE_URL: https://${PORTCULLIS_HOST_MEALIE:-recipes.portcullis.local}
+      # Uvicorn trusts X-Forwarded-For/-Proto from Traefik only (default "*"
+      # trusts every peer on portcullis-proxy).
+      HOST_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      API_DOCS: "false"
+      DB_ENGINE: postgres
+      POSTGRES_SERVER: mealie-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: mealie
+      POSTGRES_USER: mealie
+      POSTGRES_PASSWORD: ${MEALIE_DB_PASSWORD:?MEALIE_DB_PASSWORD must be set}
+      # No local accounts: no self sign-up, no password form, and (Mealie
+      # refuses invitation tokens without password login) no invitations.
+      # The password API itself is closed by guard.py (every account is
+      # OIDC, which CredentialsProvider refuses).
+      ALLOW_SIGNUP: "false"
+      ALLOW_PASSWORD_LOGIN: "false"
+      LDAP_AUTH_ENABLED: "false"
+      REVERSE_PROXY_AUTH_ENABLED: "false"
+      REVERSE_PROXY_AUTH_SIGNUP_ENABLED: "false"
+      OIDC_AUTH_ENABLED: "true"
+      OIDC_CONFIGURATION_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration
+      OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-mealie}
+      OIDC_CLIENT_SECRET: ${MEALIE_OIDC_SECRET:?MEALIE_OIDC_SECRET must be set}
+      OIDC_PROVIDER_NAME: Portcullis
+      # Accounts are keyed on the LLDAP username, never the email.
+      OIDC_USER_CLAIM: preferred_username
+      # Mealie requires its name claim (default "name"), which Keycloak only
+      # sends when a first or last name is set; Hub-created LLDAP users have
+      # neither. The claim only fills the display name.
+      OIDC_NAME_CLAIM: preferred_username
+      OIDC_GROUPS_CLAIM: groups
+      # Only these groups may sign in; admin_<app> members become Mealie
+      # admins (re-evaluated at every login), everyone else a plain user.
+      OIDC_USER_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_mealie}
+      OIDC_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_mealie}
+      OIDC_SIGNUP_ENABLED: "true"
+      OIDC_AUTO_REDIRECT: "true"
+      # Keycloak marks LLDAP emails unverified (email_verified=false), which
+      # Mealie refuses by default. Mealie looks the preferred_username claim
+      # up in the username column, then in the email column; guard.py makes
+      # that email lookup unable to match (every email contains '@', which
+      # LLDAP usernames can't, and no email equals another account's
+      # username) and keeps every account's username and email fixed.
+      OIDC_REQUIRES_EMAIL_VERIFICATION: "false"
+      OIDC_TLS_CACERTFILE: /etc/ssl/certs/ca-bundle.crt
+    volumes:
+      - mealie-data:/app/data
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
+      - ./templates/mealie/guard.py:/portcullis/guard.py:ro
+    # Healthy (= routed by Traefik) only while the users guard is in place
+    # and no account has a password login.
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mealie/bin/python /portcullis/guard.py --check && /app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      mealie-init:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.mealie.rule: Host(`${PORTCULLIS_HOST_MEALIE:-recipes.portcullis.local}`)
+      traefik.http.routers.mealie.entrypoints: websecure
+      traefik.http.routers.mealie.tls.options: authaware@file
+      traefik.http.routers.mealie.middlewares: client-headers@file,security-headers@file
+      traefik.http.services.mealie.loadbalancer.server.port: "9000"
+    restart: unless-stopped
+
+  # One-shot, every start: Mealie's database init (migrations, first-boot
+  # seed) and the users guard (guard.py), before the app listens. Fails
+  # closed: the app doesn't start if this fails. Default network only.
+  mealie-init:
+    image: ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784
+    user: "911:911"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 128
+    working_dir: /app
+    entrypoint: ["/opt/mealie/bin/python", "/portcullis/guard.py"]
+    environment:
+      DB_ENGINE: postgres
+      POSTGRES_SERVER: mealie-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: mealie
+      POSTGRES_USER: mealie
+      POSTGRES_PASSWORD: ${MEALIE_DB_PASSWORD:?MEALIE_DB_PASSWORD must be set}
+    volumes:
+      - mealie-data:/app/data
+      - ./templates/mealie/guard.py:/portcullis/guard.py:ro
+    depends_on:
+      mealie-perms:
+        condition: service_completed_successfully
+      mealie-db:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: a fresh named volume's mountpoint is root-owned (the image only
+  # declares VOLUME /app/data); hand it to uid 911 so nothing else runs as
+  # root. Only chown, no network use.
+  mealie-perms:
+    image: ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784
+    user: "0:0"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 64m
+    pids_limit: 16
+    entrypoint: ["chown", "-R", "911:911", "/app/data"]
+    volumes:
+      - mealie-data:/app/data
+    restart: "no"
+
+  mealie-db:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    # The image's postgres user (alpine uid 70) owns PGDATA in the image, so
+    # a fresh volume is writable without the entrypoint's root step.
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: mealie
+      POSTGRES_PASSWORD: ${MEALIE_DB_PASSWORD:?MEALIE_DB_PASSWORD must be set}
+      POSTGRES_DB: mealie
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - mealie-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mealie -d mealie"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mealie-data: {}
+  mealie-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

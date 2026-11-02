@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Mealie
+description: Self-hosted recipe manager, meal planner and shopping lists
+icon: "\U0001F37D"
+category: productivity
+tags: [recipes, cooking, meal-planning, shopping-list, food]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: true
+  access_group: users_mealie
+  admin_group: admin_mealie
+  notes: >
+    Native OIDC (Mealie v3.30.0). The login page redirects straight to
+    Portcullis (OIDC_AUTO_REDIRECT). Only members of users_mealie or
+    admin_mealie may sign in (OIDC_USER_GROUP / OIDC_ADMIN_GROUP, checked by
+    Mealie on the groups claim); accounts are created on the first SSO login
+    and keyed on the LLDAP username (OIDC_USER_CLAIM preferred_username).
+    admin_mealie members are Mealie admins, re-evaluated at every login;
+    everyone else is a plain user of the default group/household (an admin
+    can move them). No password login at all: Mealie's
+    ALLOW_PASSWORD_LOGIN=false only hides the form and its token API still
+    accepts passwords, so the mealie-init one-shot (guard.py, before the
+    app starts, every start) installs a database trigger that makes every
+    account an OIDC account (Mealie refuses passwords for those), and
+    retires the admin Mealie seeds on an empty database (well-known
+    password) by giving it a username and email no SSO login can match. Self
+    sign-up, invitations and LDAP / reverse-proxy logins are off. Identity:
+    Mealie matches an SSO login to an existing account by the
+    preferred_username claim in the username column, then in the email
+    column, and lets users edit both, so the trigger keeps the username and
+    email of every account fixed (an edit is refused), refuses emails
+    without '@' (LLDAP usernames never contain one) and any account whose
+    email equals another account's username or the reverse: the email
+    lookup can never hand one user's login to another. That is also why
+    OIDC_REQUIRES_EMAIL_VERIFICATION can be off (Keycloak marks LLDAP emails
+    unverified). The name claim is preferred_username (OIDC_NAME_CLAIM;
+    Keycloak omits "name" for users without a first/last name). An admin who creates
+    a user in Mealie pre-provisions it for the LLDAP user of that username
+    (no password). The app's healthcheck fails (Traefik stops routing) if
+    the trigger is missing or an account has a password login. Users need
+    an email in LLDAP (Mealie requires the claim); two LLDAP users with the
+    same email can't both sign in (Mealie's email column is unique), and a
+    member who sets their LLDAP email to someone else's before that person's
+    first login blocks that person's account creation on purpose (an admin
+    has to correct the email in LLDAP).
+    Removing a user from the groups blocks new SSO logins, not sessions
+    (TOKEN_TIME, 48 h) or API tokens already issued; delete or lock the user
+    in Mealie for that. Mobile/desktop apps use the OIDC native flow
+    (register their redirect URI on the Keycloak client).
+    Upgrades: read the Mealie release notes; database migrations run in
+    mealie-init and fail closed if one would change an account's username or
+    email. Keep mealie, mealie-init and mealie-perms on the same image;
+    don't bump the PostgreSQL major.
+
+env:
+  - key: MEALIE_DB_PASSWORD
+    description: Mealie database password
+    generate: random
+  - key: MEALIE_OIDC_SECRET
+    description: Mealie OIDC client secret
+    generate: random
+
+keycloak_clients:
+  - client_id: mealie
+    secret_env: MEALIE_OIDC_SECRET
+    redirect_uris:
+      - "https://{{HOST_MEALIE}}/login"
+      - "https://{{HOST_MEALIE}}/login?direct=1"
+    name: Mealie
+
+config_files: []
+
+urls:
+  - label: Recipes
+    url: "https://{{HOST_MEALIE}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # OIDC_AUTO_REDIRECT: the login page goes straight to Keycloak.
+    path: /login
+    login: ["button:has-text('Login with Portcullis')"]
+    signed_in:
+      json: {url: /api/users/self, field: username}
+      wait: 20
+    admin:
+      json: {url: /api/users/self, field: admin, equals: true}
