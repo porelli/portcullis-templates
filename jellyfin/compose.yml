@@ -4,6 +4,9 @@ services:
     environment:
       JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+    depends_on:
+      jellyfin-plugin:
+        condition: service_completed_successfully
     volumes:
       - jellyfin-config:/config
       - jellyfin-cache:/cache
@@ -20,12 +23,21 @@ services:
       traefik.http.services.jellyfin.loadbalancer.server.port: "8096"
     restart: unless-stopped
 
+  # Installs the SSO plugin, pinned by version + SHA-256 (plugin.py), before
+  # Jellyfin starts; Jellyfin doesn't start if that fails.
+  jellyfin-plugin:
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    command: ["python3", "/plugin.py"]
+    volumes:
+      - jellyfin-config:/config
+      - ./templates/jellyfin/plugin.py:/plugin.py:ro
+    restart: "no"
+
+  # Wizard, SSO configuration and the local admin's password login off
+  # (setup.py, stdlib only; keeps its API key in the config volume).
   jellyfin-setup:
     image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        pip install --quiet requests && python3 /setup.py
+    command: ["python3", "/setup.py"]
     environment:
       JELLYFIN_ADMIN_PASSWORD: ${JELLYFIN_ADMIN_PASSWORD:?JELLYFIN_ADMIN_PASSWORD must be set}
       JELLYFIN_OIDC_SECRET: ${JELLYFIN_OIDC_SECRET:-}
@@ -34,6 +46,7 @@ services:
       JELLYFIN_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_jellyfin}
       JELLYFIN_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_jellyfin}
     volumes:
+      - jellyfin-config:/config
       - ./templates/jellyfin/setup.py:/setup.py:ro
     depends_on:
       - jellyfin
