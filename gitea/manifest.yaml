@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Gitea
+description: Lightweight self-hosted Git forge — repositories, issues, pull requests, packages
+icon: "\U0001F375"
+category: devops
+tags: [git, forge, code-review, issues, packages]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: true
+  access_group: users_gitea
+  admin_group: admin_gitea
+  notes: >
+    Native OIDC through a Gitea OAuth2 authentication source ("Portcullis")
+    that the gitea-auth job writes into Gitea's database at every start
+    (client id, secret, discovery URL, groups), so a hostname, client or
+    group change only needs a restart. Gitea loads the client id, secret
+    and discovery URL when it starts, so a changed client secret takes
+    effect once the gitea container itself restarts (rerunning the job is
+    not enough); the required group and the admin group are read at every
+    login. The client secret never appears on a
+    command line: Gitea's CLI only takes it as an argument, so the job uses
+    psql with the values read from its environment. The login page goes
+    straight to Portcullis: there is no password sign-in form (POST
+    /user/login answers 403), no sign-up form, no passkey or OpenID 2.0
+    sign-in, no HTTP basic authentication with a password and no
+    reverse-proxy header auth. Nothing is readable without signing in
+    (REQUIRE_SIGNIN_VIEW). Any other authentication source added in the
+    admin panel is switched off at the next start.
+    Access: Gitea refuses the login ("Sign-in prohibited") unless the groups
+    claim contains users_gitea, checked at every login. Admin: Gitea sets or
+    clears the site-admin flag from admin_gitea at every login (an admin
+    must also be in users_gitea). Everyone else is a regular user (the
+    least-privileged full account; Gitea's "restricted" users can't see
+    public repositories, so that role is left to admins).
+    Removing a user from users_gitea blocks new logins only: open sessions,
+    personal access tokens and SSH keys keep working; disable the user in
+    Site Administration to cut access at once.
+    Identity: accounts are created on the first Portcullis login, named
+    after preferred_username (the immutable LLDAP username, not renameable
+    in Gitea) and keyed on the OIDC sub. ACCOUNT_LINKING is disabled, so a
+    login is never attached to an existing account by name or email (LLDAP
+    emails are user-editable); a clash with an existing username or email
+    is refused (an error page, no takeover). The email is only taken at
+    account creation and kept private by default.
+    Break-glass admin: Gitea makes the first account it creates a site
+    admin and never demotes the last admin, so gitea-migrate creates the
+    local admin portcullis-breakglass before anyone signs in (random
+    password, never printed or stored) and gitea-auth keeps it admin with
+    sign-in prohibited; Gitea won't start without it. To recover admin
+    rights on the server, add a user to admin_gitea in LLDAP, or run
+    docker compose -p portcullis-<instance> exec gitea-db psql -U gitea -d
+    gitea -c "UPDATE \"user\" SET is_admin = true WHERE lower_name =
+    '<username>'".
+    Git over HTTPS: clone https://<host>/<owner>/<repo>.git with your
+    username and a personal access token (User Settings > Applications) as
+    the password; git-credential-manager / git-credential-oauth can use
+    Gitea's own OAuth2 provider instead. Git over SSH is off by default:
+    turn on the "Git over SSH" setting and keep the SSH host port (default
+    2222, Gitea's built-in SSH server, keys from User Settings > SSH Keys);
+    every instance needs its own host port. Webhooks and migrations to
+    private addresses stay blocked (Gitea's defaults).
+    Upgrades: the image is pinned; Gitea migrates its database on start and
+    supports upgrading from older releases directly, but read the release
+    notes of each major (28.x) before bumping. Keep gitea and gitea-migrate
+    on the same image.
+
+settings:
+  - key: GITEA_SSH_ENABLED
+    label: Git over SSH
+    description: >-
+      Start Gitea's built-in SSH server (container port 2222) and show SSH
+      clone URLs. Off by default: git over HTTPS with a personal access token
+      works without it.
+    type: boolean
+    default: "false"
+
+ports:
+  - key: GITEA_SSH_PORT
+    label: Git over SSH
+    description: >-
+      Host port of Gitea's SSH server, used only when "Git over SSH" is on.
+      Clearing it is recommended while "Git over SSH" is off (nothing listens
+      on it then); a second instance needs another port or an empty one.
+    container: 2222
+    protocol: tcp
+    default: 2222
+    required: false
+    service: gitea
+
+env:
+  - key: GITEA_DB_PASSWORD
+    description: Gitea database password
+    generate: random
+  - key: GITEA_SECRET_KEY
+    description: Gitea SECRET_KEY (encrypts stored secrets such as 2FA seeds)
+    generate: random
+  - key: GITEA_INTERNAL_TOKEN
+    description: Gitea INTERNAL_TOKEN (git hooks to the internal API)
+    generate: random
+  - key: GITEA_OIDC_SECRET
+    description: Gitea OIDC client secret
+    generate: random
+
+keycloak_clients:
+  - client_id: gitea
+    secret_env: GITEA_OIDC_SECRET
+    redirect_uri: "https://{{HOST_GITEA}}/user/oauth2/Portcullis/callback"
+    name: Gitea
+
+config_files: []
+
+urls:
+  - label: Gitea
+    url: "https://{{HOST_GITEA}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # With one OAuth2 source and every other login off, Gitea's login page
+    # redirects straight to it.
+    path: /user/login
+    signed_in:
+      # Gitea's API takes no session cookie: read the (read-only) username
+      # field of the profile settings page instead.
+      js: >-
+        fetch('/user/settings', {redirect: 'manual'})
+        .then(r => r.ok ? r.text() : '')
+        .then(t => { const e = new DOMParser().parseFromString(t, 'text/html').querySelector('input#username'); return e ? e.value : null; })
+      wait: 20
+      absent: "Sign-in prohibited"
+    admin:
+      reach: /-/admin

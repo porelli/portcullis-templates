@@ -1,0 +1,223 @@
+# Start order (every start, each step fails closed: Gitea is not started,
+# so Traefik routes nothing, if one fails):
+#   gitea-db -> gitea-migrate (schema, locked break-glass admin)
+#   -> gitea-auth (Portcullis OAuth2 source, client secret) -> gitea.
+services:
+  gitea:
+    image: gitea/gitea:28.3.0-rootless@sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d
+    # Git over SSH is a per-instance choice (setting GITEA_SSH_ENABLED, off
+    # by default): Gitea's built-in SSH server only listens when it is on,
+    # and SSH clone URLs / SSH key settings are hidden otherwise. Then the
+    # image's own entrypoint (app.ini from GITEA__* below, then gitea web).
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ "$${GITEA_SSH_ENABLED:-false}" = true ]; then
+          export GITEA__server__DISABLE_SSH=false GITEA__server__START_SSH_SERVER=true
+        else
+          export GITEA__server__DISABLE_SSH=true GITEA__server__START_SSH_SERVER=false
+        fi
+        exec /usr/bin/dumb-init -- /usr/local/bin/docker-entrypoint.sh
+    environment:
+      # Temp files (uploads, merge checkouts) on the data volume, not in
+      # memory (the root filesystem is read-only).
+      GITEA_TEMP: /var/lib/gitea/tmp
+      TMPDIR: /var/lib/gitea/tmp
+      # Go's TLS roots: system CAs + Portcullis' internal CA (Hub bundle),
+      # for the OIDC discovery / token calls to auth.<domain>.
+      SSL_CERT_FILE: /portcullis/ca-bundle.crt
+      GITEA_SSH_ENABLED: ${GITEA_SSH_ENABLED:-false}
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: gitea-db:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: ${GITEA_DB_PASSWORD:?GITEA_DB_PASSWORD must be set}
+      # No install wizard, ever.
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+      # Client IPs from X-Forwarded-For only when Traefik sent it.
+      GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GITEA__security__REVERSE_PROXY_LIMIT: "1"
+      GITEA__server__PROTOCOL: http
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__DOMAIN: ${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}
+      GITEA__server__ROOT_URL: https://${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}/
+      GITEA__server__SSH_DOMAIN: ${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}
+      # Port shown in SSH clone URLs = the host port (manifest ports:).
+      GITEA__server__SSH_PORT: ${GITEA_SSH_PORT:-2222}
+      GITEA__server__SSH_LISTEN_PORT: "2222"
+      GITEA__server__LFS_START_SERVER: "true"
+      GITEA__server__OFFLINE_MODE: "true"
+      GITEA__session__COOKIE_SECURE: "true"
+      # Accounts only through the Portcullis OAuth2 source (gitea-auth):
+      # no sign-up form, no password sign-in form (POST /user/login answers
+      # 403), no passkey or OpenID 2.0 sign-in, no HTTP basic auth with a
+      # password (personal access tokens still work for git over HTTPS and
+      # the API), no reverse-proxy header auth.
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
+      GITEA__service__SHOW_REGISTRATION_BUTTON: "false"
+      GITEA__service__ENABLE_PASSWORD_SIGNIN_FORM: "false"
+      GITEA__service__ENABLE_PASSKEY_AUTHENTICATION: "false"
+      GITEA__service__ENABLE_BASIC_AUTHENTICATION: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: "false"
+      GITEA__openid__ENABLE_OPENID_SIGNIN: "false"
+      GITEA__openid__ENABLE_OPENID_SIGNUP: "false"
+      # Nothing is readable without signing in (the host is not behind
+      # forward-auth: native OIDC, git and API clients use tokens).
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+      GITEA__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
+      GITEA__service__REGISTER_EMAIL_CONFIRM: "false"
+      GITEA__service__ENABLE_NOTIFY_MAIL: "false"
+      GITEA__mailer__ENABLED: "false"
+      GITEA__picture__DISABLE_GRAVATAR: "true"
+      # SSO accounts: created on the first Portcullis login, named after
+      # preferred_username (the immutable LLDAP username) and keyed on the
+      # OIDC sub. Never linked to an existing account by name or email
+      # (LLDAP emails are user-editable): a clash is refused.
+      GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"
+      GITEA__oauth2_client__USERNAME: preferred_username
+      GITEA__oauth2_client__ACCOUNT_LINKING: disabled
+      GITEA__oauth2_client__REGISTER_EMAIL_CONFIRM: "false"
+      GITEA__oauth2_client__UPDATE_AVATAR: "false"
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+      - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 1024
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      gitea-auth:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      # Native OIDC: no forward-auth, so git over HTTPS and the API work with
+      # personal access tokens. Gitea itself restricts sign-in to the access
+      # group (required groups claim, see gitea-auth).
+      traefik.http.routers.gitea.rule: Host(`${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}`)
+      traefik.http.routers.gitea.entrypoints: websecure
+      traefik.http.routers.gitea.tls.options: authaware@file
+      traefik.http.routers.gitea.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.gitea.service: gitea
+      traefik.http.services.gitea.loadbalancer.server.port: "3000"
+    restart: unless-stopped
+
+  # One-shot: database schema and the locked break-glass admin (setup.sh).
+  # Same image, volumes and database settings as gitea; the image's
+  # entrypoint writes app.ini from the GITEA__* variables first.
+  gitea-migrate:
+    image: gitea/gitea:28.3.0-rootless@sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d
+    entrypoint: ["/usr/bin/dumb-init", "--", "/usr/local/bin/docker-entrypoint.sh"]
+    command: ["/bin/sh", "/portcullis/setup.sh"]
+    environment:
+      GITEA_TEMP: /var/lib/gitea/tmp
+      TMPDIR: /var/lib/gitea/tmp
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: gitea-db:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: ${GITEA_DB_PASSWORD:?GITEA_DB_PASSWORD must be set}
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
+      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
+      GITEA__server__DOMAIN: ${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}
+      GITEA__server__ROOT_URL: https://${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}/
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+      - ./templates/gitea/setup.sh:/portcullis/setup.sh:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    depends_on:
+      gitea-db:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: writes the Portcullis OAuth2 authentication source straight
+  # into Gitea's database (auth.sh). Gitea's CLI only takes the client
+  # secret on argv (visible in the host's process list) and contacts
+  # Keycloak from a container that has no route to it; psql reads every
+  # value from the environment (\getenv) instead.
+  gitea-auth:
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    entrypoint: ["/bin/sh", "/portcullis/auth.sh"]
+    user: "70:70"
+    environment:
+      PGHOST: gitea-db
+      PGUSER: gitea
+      PGDATABASE: gitea
+      PGPASSWORD: ${GITEA_DB_PASSWORD:?GITEA_DB_PASSWORD must be set}
+      GITEA_OIDC_SECRET: ${GITEA_OIDC_SECRET:?GITEA_OIDC_SECRET must be set}
+      GITEA_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-gitea}
+      GITEA_OIDC_DISCOVERY_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration
+      GITEA_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_gitea}
+      GITEA_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_gitea}
+    volumes:
+      - ./templates/gitea/auth.sh:/portcullis/auth.sh:ro
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    depends_on:
+      gitea-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  gitea-db:
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: gitea
+      POSTGRES_PASSWORD: ${GITEA_DB_PASSWORD:?GITEA_DB_PASSWORD must be set}
+      POSTGRES_DB: gitea
+    volumes:
+      - gitea-db-data:/var/lib/postgresql/data
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    security_opt: [no-new-privileges:true]
+    # The entrypoint starts as root to own the data directory, then drops
+    # to the postgres user.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    mem_limit: 1g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitea -d gitea"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  gitea-data: {}
+  gitea-config: {}
+  gitea-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true
