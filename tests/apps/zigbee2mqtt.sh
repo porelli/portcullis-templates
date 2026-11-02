@@ -190,6 +190,147 @@ if echo "$cfg" | grep -q '^onboarding: true'; then fail "configuration.yaml has 
 if echo "$cfg" | yq -r '.frontend.enabled' - 2>/dev/null | grep -qx true; then pass "frontend enabled"; else fail "frontend not enabled"; fi
 if echo "$cfg" | yq -r '.advanced.enable_external_js' - 2>/dev/null | grep -qx false; then pass "external JS off"; else fail "external JS not off in configuration.yaml"; fi
 
+# ── Bridge topics vs. the homeassistant ACL ─────────────────
+# The homeassistant account reads zigbee2mqtt/+/+, which also matches every
+# zigbee2mqtt/bridge/<x> topic; acl lists the ones Zigbee2MQTT publishes,
+# each explicitly read or deny. A Zigbee2MQTT update (Dependabot merges minor
+# bumps on its own) that publishes a new bridge topic must fail here, so a
+# human reviews it instead of Home Assistant silently reading it.
+# Zigbee2MQTT only connects to MQTT after zigbee-herdsman started, and CI has
+# no coordinator: this run replaces herdsman's adapter with a stand-in radio
+# (no devices; NODE_OPTIONS preload, this test only, never in the template)
+# and keeps everything else real: this template's start script and settings,
+# Zigbee2MQTT's controller and extensions, the bundled broker and its ACL.
+docker exec -i "$Z2M" sh -c 'umask 077; rm -rf /tmp/z2m-ci; mkdir -p /tmp/z2m-ci/data; cat > /tmp/z2m-ci/fake-adapter.cjs' <<'JS'
+// CI only: a stand-in Zigbee radio for zigbee-herdsman, so Zigbee2MQTT starts
+// without a coordinator. Coordinator only, no devices, sends nothing.
+"use strict";
+const {EventEmitter} = require("node:events");
+const {Adapter} = require("/app/node_modules/zigbee-herdsman/dist/adapter/adapter.js");
+const ACTIVE_ENDPOINTS_REQUEST = 0x0005;
+const SIMPLE_DESCRIPTOR_REQUEST = 0x0004;
+class FakeAdapter extends EventEmitter {
+  constructor(network) {
+    super();
+    this.network = network;
+    this.hasZdoMessageOverhead = false;
+    this.manufacturerID = 0;
+  }
+  async start() { return "resumed"; }
+  async stop() {}
+  async getCoordinatorIEEE() { return "0x00124b00c1c1c1c1"; }
+  async getCoordinatorVersion() { return {type: "portcullis-ci", meta: {}}; }
+  async reset() {}
+  async supportsBackup() { return false; }
+  async backup() { throw new Error("no backup in CI"); }
+  async getNetworkParameters() {
+    const ext = this.network.extendedPanID || [0, 0, 0, 0, 0, 0, 0, 0];
+    return {panID: this.network.panID, extendedPanID: "0x" + Buffer.from(ext).toString("hex"),
+            channel: this.network.channelList[0], nwkUpdateID: 0};
+  }
+  async addInstallCode() {}
+  waitFor() { return {promise: new Promise(() => {}), cancel() {}}; }
+  async sendZdo(ieee, nwk, clusterId) {
+    if (clusterId === ACTIVE_ENDPOINTS_REQUEST) return [0, {nwkAddress: nwk, endpointList: [1]}];
+    if (clusterId === SIMPLE_DESCRIPTOR_REQUEST) {
+      return [0, {nwkAddress: nwk, length: 0, endpoint: 1, profileId: 0x0104, deviceId: 0x0005, deviceVersion: 0,
+                  inClusterList: [], outClusterList: []}];
+    }
+    throw new Error(`portcullis-ci: no ZDO 0x${clusterId.toString(16)}`);
+  }
+  async permitJoin() {}
+  async sendZclFrameToEndpoint() { throw new Error("portcullis-ci: no devices"); }
+  async sendZclFrameToGroup() {}
+  async sendZclFrameToAll() {}
+  async setChannelInterPAN() {}
+  async sendZclFrameInterPANToIeeeAddr() {}
+  async sendZclFrameInterPANBroadcast() { throw new Error("portcullis-ci: no devices"); }
+  async restoreChannelInterPAN() {}
+}
+Adapter.create = async (network) => {
+  console.log("portcullis-ci: stand-in adapter (no radio)");
+  return new FakeAdapter(network);
+};
+JS
+docker exec -e Z2M_BROKER_PASSWORD "$MQ" sh -c '
+  umask 077; mkdir -p /tmp/mq-z2m
+  printf -- "-h 127.0.0.1\n-u zigbee2mqtt\n-P %s\n" "$Z2M_BROKER_PASSWORD" > /tmp/mq-z2m/mosquitto_sub
+  rm -f /tmp/bridge-topics'
+# Subscribed before Zigbee2MQTT connects: live-only topics count too.
+docker exec -d "$MQ" sh -c 'XDG_CONFIG_HOME=/tmp/mq-z2m timeout 150 mosquitto_sub -t "zigbee2mqtt/bridge/#" -F %t > /tmp/bridge-topics 2>/tmp/bridge-sub.err'
+sleep 2
+docker exec -d -e Z2M_NETWORK_COORDINATOR=tcp://127.0.0.1:9 -e Z2M_ADAPTER=zstack -e ZIGBEE2MQTT_DATA=/tmp/z2m-ci/data \
+  -e NODE_OPTIONS=--require=/tmp/z2m-ci/fake-adapter.cjs "$Z2M" \
+  sh -c 'timeout 140 sh /portcullis/z2m-start.sh > /tmp/z2m-ci/log 2>&1'
+started=""
+for i in $(seq 1 60); do
+  if docker exec "$Z2M" grep -q 'Zigbee2MQTT started!' /tmp/z2m-ci/log 2>/dev/null; then started=1; break; fi
+  if [ "$i" -gt 5 ] && ! docker exec "$Z2M" pgrep -f 'node index.js' >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+if [ -n "$started" ] && docker exec "$Z2M" grep -q 'portcullis-ci: stand-in adapter' /tmp/z2m-ci/log; then
+  pass "Zigbee2MQTT started with a stand-in adapter and connected to the broker"
+else
+  fail "Zigbee2MQTT did not start with the stand-in adapter"
+  docker exec "$Z2M" tail -40 /tmp/z2m-ci/log 2>&1 || true
+fi
+sleep 15  # publishes after start (bridge info, devices, definitions, health...)
+docker exec "$Z2M" pkill -TERM -f 'node index.js' 2>/dev/null || true
+sleep 5   # the shutdown's bridge/state offline
+docker exec "$MQ" pkill -TERM mosquitto_sub 2>/dev/null || true
+sleep 1
+topics=$(docker exec "$MQ" sort -u /tmp/bridge-topics 2>/dev/null || true)
+info "bridge topics published: $(echo "$topics" | tr '\n' ' ')"
+for want in zigbee2mqtt/bridge/state zigbee2mqtt/bridge/info zigbee2mqtt/bridge/devices; do
+  echo "$topics" | grep -qx "$want" && pass "collected $want (control)" || fail "$want not collected (the check below would see nothing)"
+done
+# Each topic: an exact "topic read" or "topic deny" line for homeassistant,
+# or no homeassistant read grant matches it at all (refused by default).
+# Anything only a wildcard grant reaches fails.
+ACL="$(dirname "$COMPOSE")/acl"
+acl_out=$(printf '%s\n' "$topics" | python3 -c '
+import sys
+def match(pat, topic):
+    p, t = pat.split("/"), topic.split("/")
+    for i, x in enumerate(p):
+        if x == "#":
+            return True
+        if i >= len(t) or (x != "+" and x != t[i]):
+            return False
+    return len(p) == len(t)
+user, reads, denies = None, [], []
+for line in open(sys.argv[1], encoding="utf-8"):
+    f = line.split()
+    if not f or f[0].startswith("#"):
+        continue
+    if f[0] == "user":
+        user = " ".join(f[1:])
+    elif f[0] == "topic" and user == "homeassistant":
+        access, topic = (f[1], f[2]) if len(f) == 3 else ("readwrite", f[1])
+        if access == "deny":
+            denies.append(topic)
+        elif access in ("read", "readwrite"):
+            reads.append(topic)
+for t in (x.strip() for x in sys.stdin):
+    if not t:
+        continue
+    if t in denies:
+        print(f"ok {t} denied")
+    elif t in reads:
+        print(f"ok {t} allowed")
+    elif any(match(d, t) for d in denies):
+        print(f"ok {t} denied by pattern")
+    else:
+        via = [r for r in reads if match(r, t)]
+        print(f"bad {t} readable via {via[0]} without its own read or deny line" if via else f"ok {t} not readable")
+' "$ACL")
+while read -r verdict rest; do
+  [ -n "$verdict" ] || continue
+  if [ "$verdict" = ok ]; then pass "homeassistant ACL: $rest"; else fail "homeassistant ACL: $rest (review it, then add topic read or topic deny to $APP_ID/acl and validate.py HA_ACL_ALLOWED / HA_ACL_BRIDGE_DENY)"; fi
+done <<< "$acl_out"
+docker exec "$Z2M" rm -rf /tmp/z2m-ci
+docker exec "$MQ" rm -rf /tmp/mq-z2m /tmp/bridge-topics /tmp/bridge-sub.err
+
 # The gate answers Traefik only.
 GATE_IP=$(docker inspect "$GATE" --format '{{with index .NetworkSettings.Networks "portcullis-proxy"}}{{.IPAddress}}{{end}}')
 for _ in $(seq 1 20); do
