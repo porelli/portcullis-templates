@@ -50,7 +50,7 @@ else
 fi
 
 # Secret never on a command line.
-if grep -qE -- '--secret' "$(dirname "$COMPOSE")/setup.sh" "$AUTH_SH" \
+if grep -hvE '^[[:space:]]*#' "$(dirname "$COMPOSE")/setup.sh" "$AUTH_SH" | grep -qE -- '--secret' \
   || ! grep -q '\\getenv oidc_secret GITEA_OIDC_SECRET' "$AUTH_SH"; then
   fail "the OIDC secret must reach Gitea through psql \\getenv, not the CLI"
 else
@@ -118,12 +118,16 @@ else
   fail "/api/v1/repos/search anonymous expected 401/403, got $CODE"
 fi
 
-# Basic auth with a password is refused (tokens only).
-CODE=$(curl -s -o /dev/null -w '%{http_code}' -u 'portcullis-breakglass:x' "http://${IP}:3000/api/v1/user" || echo 000)
-if [ "$CODE" = "401" ]; then
-  pass "basic auth with a password -> 401"
+# Basic auth with a password is ignored (tokens only): the request is as
+# anonymous as one without credentials (REQUIRE_SIGNIN_VIEW: 403). With
+# basic auth on, a wrong password would be checked and answered 401.
+ANON=$(curl -s -o /dev/null -w '%{http_code}' "http://${IP}:3000/api/v1/user" || echo 000)
+BODY=$(curl -s -w ' %{http_code}' -u 'portcullis-breakglass:x' "http://${IP}:3000/api/v1/user" || echo 000)
+CODE=${BODY##* }
+if { [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; } && [ "$CODE" = "$ANON" ]; then
+  pass "basic auth with a password treated as anonymous ($CODE, same as no credentials)"
 else
-  fail "basic auth with a password expected 401, got $CODE"
+  fail "basic auth with a password: got $CODE (anonymous: $ANON): ${BODY:0:200}"
 fi
 
 compose_down "$APP_ID"

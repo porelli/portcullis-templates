@@ -58,8 +58,15 @@ wait_for_container "portcullis-paperless-1" 120
 IP=$(app_container_ip "$APP_ID")
 HOST="paperless.$DOMAIN"
 # Paperless only answers its own hostname (PAPERLESS_ALLOWED_HOSTS).
-wait_for_url "http://${IP}:8000/accounts/login/" 420 "$APP_ID" || true
 app_get() { curl -s --max-time 15 -H "Host: $HOST" "$@" 2>/dev/null || true; }
+# Without the Host header Paperless answers 400 (ALLOWED_HOSTS).
+info "Waiting for $APP_ID..."
+up=""
+for _ in $(seq 1 420); do
+  [ "$(app_get -o /dev/null -w '%{http_code}' "http://${IP}:8000/accounts/login/")" = 200 ] && { up=1; break; }
+  sleep 1
+done
+if [ -n "$up" ]; then pass "paperless answers on its hostname"; else fail "Timeout waiting for $APP_ID (http://${IP}:8000/accounts/login/, Host: $HOST)"; fi
 
 # Login page: SSO button only, no username / password inputs.
 LOGIN=$(app_get "http://${IP}:8000/accounts/login/")

@@ -59,6 +59,8 @@ tests:
     path: /
     # No identity reaches DesignCraft (a static site, no user system): the app's
     # page itself, served through forward-auth + group-gate (outsiders: 403).
+    # Its canvas, not the <title>: the running app may rename the document
+    # (CADCraft: "Drawing1 — CADCraft"), the canvas id stays.
     signed_in:
-      html: "<title>DesignCraft</title>"
+      html: "<canvas id=\"designcraft_canvas\""
       wait: 20

@@ -59,6 +59,8 @@ tests:
     path: /
     # No identity reaches GridCraft (a static site, no user system): the app's
     # page itself, served through forward-auth + group-gate (outsiders: 403).
+    # Its canvas, not the <title>: the running app may rename the document
+    # (CADCraft: "Drawing1 — CADCraft"), the canvas id stays.
     signed_in:
-      html: "<title>GridCraft</title>"
+      html: "<canvas id=\"gridcraft_canvas\""
       wait: 20

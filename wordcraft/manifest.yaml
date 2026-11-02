@@ -59,6 +59,8 @@ tests:
     path: /
     # No identity reaches WordCraft (a static site, no user system): the app's
     # page itself, served through forward-auth + group-gate (outsiders: 403).
+    # Its canvas, not the <title>: the running app may rename the document
+    # (CADCraft: "Drawing1 — CADCraft"), the canvas id stays.
     signed_in:
-      html: "<title>WordCraft</title>"
+      html: "<canvas id=\"wordcraft_canvas\""
       wait: 20

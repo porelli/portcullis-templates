@@ -134,8 +134,12 @@ fi
 
 # Through Traefik: Element redirects to Keycloak; the homeserver's client
 # API and SSO redirect are reachable without forward-auth; the Admin API is gated.
-for _ in $(seq 1 30); do
-  out=$(via_traefik "$ELEMENT" /); [ "${out%% *}" != 404 ] && break; sleep 2
+# Traefik routes a container only once its healthcheck reports healthy
+# (Synapse's image checks every 15 s), so wait for both hosts.
+for host in "$ELEMENT" "$MATRIX"; do
+  for _ in $(seq 1 60); do
+    out=$(via_traefik "$host" /_matrix/client/versions); [ "${out%% *}" != 404 ] && break; sleep 2
+  done
 done
 assert_gated_path "$ELEMENT" /
 assert_gated_path "$MATRIX" /_synapse/admin/v1/server_version

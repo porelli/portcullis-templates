@@ -86,7 +86,7 @@ else
 fi
 
 # The trigger refuses username / email changes of an account
-OUT=$(db "BEGIN; UPDATE users SET username = 'e2e-takeover' WHERE id = (SELECT id FROM users LIMIT 1); ROLLBACK;")
+OUT=$(db "BEGIN; UPDATE users SET username = 'e2e-takeover' WHERE id = (SELECT id FROM users LIMIT 1); ROLLBACK;" || true)
 if echo "$OUT" | grep -q 'portcullis: the username and email'; then
   pass "username change refused by the guard"
 else
@@ -95,13 +95,13 @@ fi
 
 # The trigger refuses emails that the username-in-email lookup could match
 # (BEFORE triggers run ahead of NOT NULL checks, so a minimal row suffices).
-OUT=$(db "BEGIN; INSERT INTO users (id, username, email) VALUES (gen_random_uuid(), 'e2e-attacker', 'e2e-victim'); ROLLBACK;")
+OUT=$(db "BEGIN; INSERT INTO users (id, username, email) VALUES (gen_random_uuid(), 'e2e-attacker', 'e2e-victim'); ROLLBACK;" || true)
 if echo "$OUT" | grep -q 'portcullis: a Mealie account email must contain @'; then
   pass "email without @ refused by the guard"
 else
   fail "email without @ not refused: $OUT"
 fi
-OUT=$(db "BEGIN; INSERT INTO users (id, username, email) SELECT gen_random_uuid(), email, 'e2e@x.invalid' FROM users LIMIT 1; ROLLBACK;")
+OUT=$(db "BEGIN; INSERT INTO users (id, username, email) SELECT gen_random_uuid(), email, 'e2e@x.invalid' FROM users LIMIT 1; ROLLBACK;" || true)
 if echo "$OUT" | grep -q 'portcullis: a Mealie account username or email equals'; then
   pass "username equal to another account's email refused by the guard"
 else
