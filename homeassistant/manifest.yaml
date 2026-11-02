@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Home Assistant
+description: Open-source home automation hub with dashboards, automations and integrations
+icon: "\U0001F3E0"
+category: home-automation
+tags: [home-automation, smart-home, iot, dashboards, automations]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: true
+  access_group: users_homeassistant
+  admin_group: admin_homeassistant
+  notes: >
+    Home Assistant 2026.10 has no OpenID Connect of its own; sign-in goes
+    through the OpenID Connect custom integration auth_oidc
+    (christiaangoossens/hass-oidc-auth, the integration HACS lists, here
+    pinned to release 1.2.1 and installed by the homeassistant-init one-shot
+    from the release asset after its SHA-256 matched, together with its
+    pinned joserfc wheel; a mismatch stops the start). It is the only auth
+    provider: configuration.yaml (shipped read-only) sets auth_providers: []
+    so Home Assistant's own username/password login doesn't exist, and
+    homeassistant-init marks onboarding done before the first start, so the
+    onboarding wizard (which creates a password owner) never opens. The app
+    is routed only while /auth/providers lists auth_oidc alone and
+    onboarding is closed. Only users_homeassistant members can sign in
+    (roles.user on the groups claim); admin_homeassistant members become
+    Home Assistant administrators. Upstream sets roles only when the account
+    is created (first login): change an existing user's administrator flag
+    in Settings > People. Accounts are keyed on the OIDC issuer + sub, the
+    display name is the LLDAP username (preferred_username), and SSO logins
+    are never linked to existing accounts (automatic_user_linking off). No
+    one is the instance owner; administrators can do everything an owner
+    can except owner-only operations. Break-glass: there is no local login;
+    an operator with shell access edits the configuration (custom
+    override) to add a provider temporarily.
+    What works: the web UI and its websocket API (straight to Home
+    Assistant, no forward-auth on the host), long-lived access tokens
+    created by a signed-in user, and the Companion apps: upstream signs
+    mobile apps in with a device code shown in the app and confirmed in a
+    browser (Chrome/Safari or another computer) where the user signs in to
+    Portcullis. Limits: removing a user from the groups blocks new sign-ins
+    only; Home Assistant refresh tokens and long-lived tokens stay valid
+    (upstream has no session management / back-channel logout yet), so
+    deactivate the user in Home Assistant too. Networking: the container is
+    on Docker bridge networks only (never host networking, which would
+    publish port 8123 past the gateway), so mDNS/SSDP/DHCP discovery,
+    Bluetooth and USB radios are not available; use IP-based integrations
+    (or MQTT / a network radio bridge). That is also why several instances
+    can run side by side (instances: multi). Upgrades: read the Home
+    Assistant and hass-oidc-auth release notes; bump auth_oidc (version and
+    SHA-256 in init.py) together with Home Assistant when upstream requires
+    it.
+
+env:
+  - key: HOMEASSISTANT_OIDC_SECRET
+    description: Home Assistant OIDC client secret
+    generate: random
+
+keycloak_clients:
+  - client_id: homeassistant
+    secret_env: HOMEASSISTANT_OIDC_SECRET
+    redirect_uri: "https://{{HOST_HOMEASSISTANT}}/auth/oidc/callback"
+    name: Home Assistant
+
+config_files: []
+
+urls:
+  - label: Home
+    url: "https://{{HOST_HOMEASSISTANT}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # / -> /auth/authorize -> (injected) /auth/oidc/welcome -> Keycloak; the
+    # web client stores its tokens (storeToken), read by the checks below
+    # through the websocket API (auth/current_user).
+    path: /
+    signed_in:
+      js: >-
+        new Promise((resolve) => {
+          let t = null; try { t = JSON.parse(localStorage.getItem('hassTokens') || 'null'); } catch (e) {}
+          if (!t || !t.access_token) { resolve(null); return; }
+          const ws = new WebSocket('wss://' + location.host + '/api/websocket');
+          const done = (v) => { try { ws.close(); } catch (e) {} resolve(v); };
+          setTimeout(() => done(null), 8000);
+          ws.onerror = () => done(null);
+          ws.onmessage = (ev) => {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'auth_required') ws.send(JSON.stringify({type: 'auth', access_token: t.access_token}));
+            else if (m.type === 'auth_ok') ws.send(JSON.stringify({id: 1, type: 'auth/current_user'}));
+            else if (m.type === 'auth_invalid') done(null);
+            else if (m.id === 1) done(m.success && m.result ? m.result.name : null);
+          };
+        })
+      wait: 60
+    admin:
+      js: >-
+        new Promise((resolve) => {
+          let t = null; try { t = JSON.parse(localStorage.getItem('hassTokens') || 'null'); } catch (e) {}
+          if (!t || !t.access_token) { resolve(null); return; }
+          const ws = new WebSocket('wss://' + location.host + '/api/websocket');
+          const done = (v) => { try { ws.close(); } catch (e) {} resolve(v); };
+          setTimeout(() => done(null), 8000);
+          ws.onerror = () => done(null);
+          ws.onmessage = (ev) => {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'auth_required') ws.send(JSON.stringify({type: 'auth', access_token: t.access_token}));
+            else if (m.type === 'auth_ok') ws.send(JSON.stringify({id: 1, type: 'auth/current_user'}));
+            else if (m.type === 'auth_invalid') done(null);
+            else if (m.id === 1) done(m.success && m.result ? m.result.is_admin : null);
+          };
+        })
+      equals: true
+      wait: 20
+    boot_timeout: 900

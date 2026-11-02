@@ -1,0 +1,136 @@
+services:
+  oxicloud:
+    image: diocrafts/oxicloud:0.10.0@sha256:ef5174909d03f6197265dc87642fa621fdb43a176b1a16e2f1612bf29a982f79
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      OXICLOUD_SERVER_HOST: 0.0.0.0
+      OXICLOUD_SERVER_PORT: "8086"
+      OXICLOUD_BASE_URL: https://${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}
+      OXICLOUD_STORAGE_PATH: /app/storage
+      OXICLOUD_DB_CONNECTION_STRING: postgres://oxicloud:${OXICLOUD_DB_PASSWORD:?OXICLOUD_DB_PASSWORD must be set}@oxicloud-db:5432/oxicloud
+      OXICLOUD_JWT_SECRET: ${OXICLOUD_JWT_SECRET:?OXICLOUD_JWT_SECRET must be set}
+      # X-Forwarded-For is trusted from Traefik only.
+      OXICLOUD_TRUST_PROXY_CIDR: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
+      # OpenID Connect is the only login method: no password login (the
+      # /api/auth/login, register and OPAQUE endpoints refuse), and the OIDC
+      # master rule hard-disables magic links. GET /login redirects to the
+      # OIDC authorize endpoint, which only access-group members reach
+      # (oxicloud-sso router below).
+      OXICLOUD_AUTH_METHODS: oidc
+      OXICLOUD_AUTH_POLICIES: auto_redirect_if_standalone_oidc
+      OXICLOUD_DISABLE_REGISTRATION: "true"
+      OXICLOUD_ALLOW_EXTERNAL_USERS: "false"
+      OXICLOUD_NEXTCLOUD_ENABLED: "false"
+      OXICLOUD_WOPI_ENABLED: "false"
+      OXICLOUD_OIDC_ENABLED: "true"
+      OXICLOUD_OIDC_ISSUER_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      OXICLOUD_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-oxicloud}
+      OXICLOUD_OIDC_CLIENT_SECRET: ${OXICLOUD_OIDC_SECRET:?OXICLOUD_OIDC_SECRET must be set}
+      OXICLOUD_OIDC_REDIRECT_URI: https://${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}/api/auth/oidc/callback
+      OXICLOUD_OIDC_FRONTEND_URL: https://${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}
+      OXICLOUD_OIDC_PROVIDER_NAME: Portcullis
+      # Accounts are keyed on (issuer, sub); the username comes from
+      # preferred_username (the LLDAP username). Never link an SSO login to
+      # an existing account by email (LLDAP emails are user-editable).
+      OXICLOUD_OIDC_AUTO_PROVISION: "true"
+      OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH: "false"
+      OXICLOUD_REQUIRE_VERIFIED_EMAIL: "false"
+      # admin_<app> members become OxiCloud admins when their account is
+      # created (first login); everyone else a plain user.
+      OXICLOUD_OIDC_ADMIN_GROUPS: ${PORTCULLIS_ADMIN_GROUP:-admin_oxicloud}
+      # reqwest (rustls-native-certs) reads the Portcullis CA from here.
+      SSL_CERT_FILE: /etc/ssl/certs/portcullis-ca-bundle.crt
+    volumes:
+      - oxicloud-storage:/app/storage
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    # Healthy (= routed by Traefik) only once the instance counts as
+    # initialized, i.e. the first-run setup endpoint is closed.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8086/api/auth/status | grep -q '\"initialized\":true'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      oxicloud-init:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.oxicloud.rule: Host(`${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}`)
+      traefik.http.routers.oxicloud.entrypoints: websecure
+      traefik.http.routers.oxicloud.tls.options: authaware@file
+      traefik.http.routers.oxicloud.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.oxicloud.service: oxicloud
+      traefik.http.services.oxicloud.loadbalancer.server.port: "8086"
+      # OxiCloud can't restrict OIDC logins to a group: only the OIDC
+      # authorize endpoint (which mints the login state the callback needs)
+      # goes through Portcullis sign-in + group-gate. Every other path,
+      # WebDAV/CalDAV/CardDAV with app passwords included, stays ungated.
+      traefik.http.routers.oxicloud-sso.rule: Host(`${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}`) && PathPrefix(`/api/auth/oidc/authorize`)
+      traefik.http.routers.oxicloud-sso.priority: "100"
+      traefik.http.routers.oxicloud-sso.entrypoints: websecure
+      traefik.http.routers.oxicloud-sso.tls.options: authaware@file
+      traefik.http.routers.oxicloud-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.oxicloud-sso.service: oxicloud
+    restart: unless-stopped
+
+  # One-shot, every start, before OxiCloud: marks the instance initialized,
+  # so the first-run setup endpoint (POST /api/setup, which would create a
+  # password owner account for whoever calls it first) is closed before the
+  # app ever listens. Creates only what OxiCloud's first migration creates
+  # with IF NOT EXISTS (schema auth, table auth.admin_settings). Fails closed.
+  oxicloud-init:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    user: "70:70"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 64m
+    pids_limit: 32
+    entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/portcullis/init.sql"]
+    environment:
+      PGHOST: oxicloud-db
+      PGUSER: oxicloud
+      PGDATABASE: oxicloud
+      PGPASSWORD: ${OXICLOUD_DB_PASSWORD:?OXICLOUD_DB_PASSWORD must be set}
+    volumes:
+      - ./templates/oxicloud/init.sql:/portcullis/init.sql:ro
+    depends_on:
+      oxicloud-db:
+        condition: service_healthy
+    restart: "no"
+
+  oxicloud-db:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: oxicloud
+      POSTGRES_PASSWORD: ${OXICLOUD_DB_PASSWORD:?OXICLOUD_DB_PASSWORD must be set}
+      POSTGRES_DB: oxicloud
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - oxicloud-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oxicloud -d oxicloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  oxicloud-storage: {}
+  oxicloud-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

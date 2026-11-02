@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Mattermost
+description: Team chat with channels, threads, file sharing and integrations (Team Edition)
+icon: "\U0001F4AC"
+category: productivity
+tags: [chat, messaging, team, collaboration, slack-alternative]
+instances: multi
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_mattermost
+  admin_group: admin_mattermost
+  notes: >
+    Mattermost Team Edition 12.0 has no SSO that works with Portcullis:
+    OpenID Connect (and Google / Entra ID / SAML / LDAP) need a paid
+    license, and the free GitLab SSO provider reads a GitLab user API
+    (numeric "id", "username"), which Keycloak's userinfo doesn't serve
+    (the Hub creates clients without custom mappers, and LLDAP users have
+    no numeric id) and which can't restrict sign-in to a group. So the
+    whole host is behind Portcullis sign-in + group-gate (users_mattermost)
+    and Mattermost keeps its own accounts behind it. Self sign-up is off
+    (no email sign-up, no open server, no invite-link sign-up; locked in
+    the System Console): accounts are created by a system admin (System
+    Console > Users, or mmctl --local user create inside the container).
+    Give each account the person's LLDAP username, since Mattermost doesn't
+    know who passed the gateway. The bootstrap system admin is mmadmin with
+    the generated password MATTERMOST_ADMIN_PASSWORD (created by the
+    mattermost-init one-shot over the local-mode socket); change it after
+    the first sign-in. GitLab SSO, personal access tokens and plugin
+    uploads are off. What doesn't work through the gateway: the Mattermost
+    desktop and mobile apps and anything else that talks to the API
+    directly (bots, incoming/outgoing webhooks, slash-command callbacks,
+    personal or bot access tokens), because every request needs a
+    Portcullis browser session first; use the web app. Mattermost reads
+    the client address from X-Forwarded-For without a proxy allowlist (only
+    used for logs and rate limits; Traefik sets it). Upgrades: follow
+    Mattermost's upgrade path (extended support releases, one major at a
+    time); don't bump the PostgreSQL major.
+
+env:
+  - key: MATTERMOST_DB_PASSWORD
+    description: Mattermost database password
+    generate: random
+  - key: MATTERMOST_ADMIN_PASSWORD
+    description: Password of the bootstrap system admin mmadmin
+    generate: random
+
+config_files: []
+
+urls:
+  - label: Chat
+    url: "https://{{HOST_MATTERMOST}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /login
+    # Past the gateway the browser reaches Mattermost's own login page; no
+    # identity reaches Mattermost (no SSO in Team Edition).
+    signed_in:
+      html: "<title>Mattermost</title>"
+      wait: 30
+    password: "Mattermost keeps its own account login behind the gateway (Team Edition has no usable SSO, see auth.notes)"
+    boot_timeout: 900
