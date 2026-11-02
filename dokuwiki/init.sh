@@ -20,7 +20,6 @@ APP=${PORTCULLIS_DW_APP:-/app/www/public}
 SRC=${PORTCULLIS_DW_PLUGIN_SRC:-/portcullis/plugins}
 PLUGINS=$DW/lib/plugins
 CONF=$DW/conf
-PHP=$(command -v php || command -v php85)
 
 trap 'echo "portcullis: DokuWiki configuration FAILED (line $LINENO); the wiki stays locked down (no login, no anonymous access)" >&2' ERR
 
@@ -41,6 +40,9 @@ $conf['disableactions'] = 'login,register,resendpwd,profile,profile_delete,edit,
 PHPCONF
 mv "$CONF/local.protected.php.new" "$CONF/local.protected.php"
 chmod 0640 "$CONF/local.protected.php"
+
+# Everything below may fail; the lockdown above already holds.
+PHP=$(command -v php || command -v php85)
 
 : "${PORTCULLIS_DOMAIN:?}" "${PORTCULLIS_HOST_DOKUWIKI:?}" "${PORTCULLIS_OIDC_CLIENT_ID:?}"
 : "${PORTCULLIS_ACCESS_GROUP:?}" "${PORTCULLIS_ADMIN_GROUP:?}" "${PORTCULLIS_TRAEFIK_IP:?}"

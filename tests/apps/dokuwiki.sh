@@ -49,6 +49,18 @@ if command -v php >/dev/null 2>&1; then
   else
     fail "failed init does not leave the wiki locked down"
   fi
+  # 1b. No php at all (the lookup comes after the lockdown): still locked down.
+  printf '<?php\n' > "$T/app/install.php"
+  BIN="$T/bin"; mkdir -p "$BIN"
+  for b in env bash rm mkdir cat mv chmod sed cp grep; do ln -s "$(command -v "$b")" "$BIN/$b"; done
+  rm -f "$T/dw/conf/local.protected.php"
+  if PATH="$BIN" run_init "$T/missing"; then
+    fail "init.sh succeeded without php"
+  elif grep -q "'portcullislocked'" "$T/dw/conf/local.protected.php" 2>/dev/null && [ ! -e "$T/app/install.php" ]; then
+    pass "no php: init.sh fails and the lockdown is already in place"
+  else
+    fail "no php: the lockdown was not written before the failure"
+  fi
   # 2. Normal run: working configuration, ACL without anonymous rights.
   if run_init "$(dirname "$INIT")/plugins" && grep -q "'authtype'] = 'oauth'" "$T/dw/conf/local.protected.php" \
       && grep -q "'baseurl'] = 'https://wiki.example.org'" "$T/dw/conf/local.protected.php" \

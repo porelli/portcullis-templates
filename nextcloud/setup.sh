@@ -45,16 +45,37 @@ occ maintenance:update:htaccess >/dev/null
 occ config:system:set hide_login_form --type=boolean --value=true >/dev/null
 occ config:system:set token_auth_enforced --type=boolean --value=true >/dev/null
 occ config:system:set lost_password_link --value=disabled >/dev/null
-disable_local_accounts() {
-  occ user:list --info --limit=0 --output=json | php -r '
+# >>> local-accounts (tests/apps/nextcloud.sh runs this block with a stub occ)
+# Enabled local accounts, one per line. Fails (non-zero) when occ or the
+# JSON parse fails; no pipe hides occ's exit status.
+enabled_local_accounts() {
+  _json=$(occ user:list --info --limit=0 --output=json) || return 1
+  printf '%s' "$_json" | php -r '
     $u = json_decode(stream_get_contents(STDIN), true);
     if (!is_array($u)) exit(1);
     foreach ($u as $id => $i) if (($i["backend"] ?? "") === "Database" && !empty($i["enabled"])) echo $id, "\n";
-  ' | while read -r id; do
-    occ user:disable "$id" >/dev/null && echo "portcullis: disabled local account $id (Portcullis sign-in only)"
-  done
+  '
 }
-disable_local_accounts
+if ! accounts=$(enabled_local_accounts); then
+  echo "portcullis: cannot list local accounts; not starting the web server" >&2
+  exit 1
+fi
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  if ! occ user:disable "$id" >/dev/null; then
+    echo "portcullis: cannot disable local account $id; not starting the web server" >&2
+    exit 1
+  fi
+  echo "portcullis: disabled local account $id (Portcullis sign-in only)"
+done <<ACCOUNTS
+$accounts
+ACCOUNTS
+# Fail closed: Apache must not start while any local account could log in.
+if ! left=$(enabled_local_accounts) || [ -n "$left" ]; then
+  echo "portcullis: local accounts still enabled (${left:-listing failed}); not starting the web server" >&2
+  exit 1
+fi
+# <<< local-accounts
 # Background jobs run from the nextcloud-cron service.
 occ background:cron >/dev/null
 

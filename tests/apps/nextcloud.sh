@@ -108,6 +108,47 @@ else
   fail "cron.sh admin mapping missing"
 fi
 
+# Fail closed: setup.sh stops (Apache never starts) when a local account
+# stays enabled or occ fails. Run its local-accounts block with a stub occ.
+if command -v php >/dev/null 2>&1; then
+  BLOCK=$(sed -n '/^# >>> local-accounts/,/^# <<< local-accounts/p' "$SETUP")
+  run_block() {  # $1 = what user:disable does: ok | noop | fail; $2 = what user:list does: ok | fail
+    STATE=$(mktemp)
+    printf 'nc-breakglass\n' > "$STATE"
+    sh -c '
+      STATE=$1 DISABLE=$2 LIST=$3
+      occ() {
+        case "$1" in
+          user:list)
+            [ "$LIST" = ok ] || return 1
+            printf "{"; sep=""
+            for u in nc-breakglass other; do
+              if grep -qx "$u" "$STATE"; then en=true; else en=false; fi
+              printf "%s\"%s\":{\"backend\":\"Database\",\"enabled\":%s}" "$sep" "$u" "$en"; sep=,
+            done
+            printf ",\"sso\":{\"backend\":\"user_oidc\",\"enabled\":true}}" ;;
+          user:disable)
+            case "$DISABLE" in
+              ok) grep -vx "$2" "$STATE" > "$STATE.n" || true; mv "$STATE.n" "$STATE" ;;
+              noop) : ;;
+              *) return 1 ;;
+            esac ;;
+        esac
+      }
+      eval "$4"
+    ' sh "$STATE" "$1" "$2" "$BLOCK" >/dev/null 2>&1
+    rc=$?
+    rm -f "$STATE" "$STATE.n"
+    return $rc
+  }
+  if run_block ok ok; then pass "local accounts disabled: setup.sh continues"; else fail "setup.sh stops although every local account was disabled"; fi
+  if run_block noop ok; then fail "setup.sh continues while a local account stays enabled"; else pass "a local account still enabled: setup.sh exits non-zero (no Apache)"; fi
+  if run_block fail ok; then fail "setup.sh continues after occ user:disable failed"; else pass "occ user:disable failure: setup.sh exits non-zero"; fi
+  if run_block ok fail; then fail "setup.sh continues when the accounts can't be listed"; else pass "occ user:list failure: setup.sh exits non-zero"; fi
+else
+  info "php not installed: setup.sh local-accounts test skipped"
+fi
+
 # Shell syntax of the support scripts
 for f in "$SETUP" "$CRON"; do
   if sh -n "$f"; then pass "$(basename "$f") parses"; else fail "$(basename "$f") has a syntax error"; fi
