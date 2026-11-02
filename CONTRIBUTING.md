@@ -252,8 +252,11 @@ CLI clients keep working. Then check **who can log in**:
   interactive login paths behind forward-auth + group-gate on a
   higher-priority `PathPrefix` router and keep the API on the host-wide router
   without forward-auth. See `gitlab/` (`/users`) and `litellm/` (`/ui`, `/sso`,
-  `/login`, ...). A host-wide router of a native-OIDC app must never use
-  `portcullis-auth@docker`.
+  `/login`, ...; `paperless/` gates `/accounts/oidc`). A host-wide router of a
+  native-OIDC app must never use `portcullis-auth@docker`. The one exception
+  is a static web client on its own host that has no login of its own and no
+  server data (`matrix/`'s Element): list its router in validate.py
+  `GATED_CLIENT_ROUTERS`, which then also requires it to stay gated.
 - Give SSO-created users the **least-privileged role** the app has, and map
   `admin_group` to admin only where the app supports it.
 
