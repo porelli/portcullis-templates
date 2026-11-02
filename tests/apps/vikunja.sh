@@ -80,8 +80,12 @@ LOCALS=$(docker exec portcullis-vikunja-db-1 psql -X -U vikunja -d vikunja -tAc 
   "SELECT count(*) FROM users WHERE issuer IS NULL OR issuer = 'local'" 2>&1)
 [ "$LOCALS" = 0 ] && pass "no local accounts" || fail "local accounts: $LOCALS"
 
-# Through Traefik
-out=$(via_traefik "$HOST" /api/v1/info)
+# Through Traefik (it picks the new container up within a few seconds)
+for _ in $(seq 1 30); do
+  out=$(via_traefik "$HOST" /api/v1/info)
+  [ "${out%% *}" = 200 ] && break
+  sleep 2
+done
 [ "${out%% *}" = 200 ] && pass "https://$HOST/api/v1/info -> 200 via Traefik" || fail "via Traefik: $out"
 
 compose_down "$APP_ID"
