@@ -114,6 +114,12 @@ if echo "$out" | grep -qF 'auth=[] xfat=[] xarat=[] cookie=[a=1; b=2]' && ! echo
 else
   fail "gate forwards Portcullis credentials: $(echo "$out" | tail -1)"
 fi
+out=$(gt_get 10.254.77.10 --header "Cookie: a=1;_oauth2_proxy=$FAKE;$(printf '\t')__Host-portcullis_ext=$FAKE; b=2")
+if echo "$out" | grep -qF 'cookie=[a=1; b=2]' && ! echo "$out" | grep -qF "$FAKE"; then
+  pass "gate strips forward-auth cookies after ';' without a space or with a tab"
+else
+  fail "gate kept a forward-auth cookie behind ';' / tab: $(echo "$out" | tail -1)"
+fi
 many="Cookie: a=1"
 for i in 0 1 2 3 4 5 6; do many="$many; _oauth2_proxy_$i=$FAKE"; done
 if gt_get 10.254.77.10 --header "$many" | grep -q 'HTTP/1.1 400'; then

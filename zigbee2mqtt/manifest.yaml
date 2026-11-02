@@ -41,15 +41,20 @@ auth:
     Assistant), ACL limited to zigbee2mqtt/# and homeassistant/# (the base
     topic is fixed to zigbee2mqtt). The homeassistant account has an
     allowlist only (Zigbee2MQTT matches bridge requests case-insensitively,
-    so nothing is denylisted): discovery (read homeassistant/#, write
-    homeassistant/status), device and group state and availability,
-    <name>[/<endpoint>]/set|get commands, bridge state/info/devices/groups/
-    event, and the permit_join request; never other bridge requests
-    (extensions, converters, options, backup, restart, ...), bridge
-    responses or bridge/logging. So in Home Assistant the bridge's log
-    level select and restart button don't work, and devices whose friendly
-    name contains "/" aren't visible (use names without "/", or your own
-    broker via "MQTT server"). External
+    so writes are never denylisted): discovery (read homeassistant/#,
+    write homeassistant/status), device and group state, endpoint state,
+    availability and device-trigger actions, the bridge's status topics
+    (all two-level topics except bridge/logging, where Zigbee2MQTT logs
+    every MQTT publish with its payload), <name>[/<endpoint>]/set|get
+    commands and the permit_join request; never other bridge requests
+    (extensions, converters, options, backup, restart, OTA updates, ...)
+    nor bridge responses. So in Home Assistant the bridge's log level
+    select and restart button and the firmware update entities (Zigbee2MQTT
+    OTA update requests) are refused, and Home Assistant can't clear
+    retained discovery messages (deleting a device in Home Assistant leaves
+    its discovery config; remove the device in Zigbee2MQTT, which clears
+    it). Use friendly names without "/" (availability and two-level names
+    aren't covered), or your own broker via "MQTT server". External
     JavaScript (extensions and converters, arbitrary code) is off unless
     the instance setting turns it on. The gate never forwards the
     Portcullis session (Authorization, access-token headers, forward-auth

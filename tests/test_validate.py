@@ -816,10 +816,39 @@ class TestGatedHomeTemplates(unittest.TestCase):
 
     def test_homeassistant_acl_is_an_allowlist(self) -> None:
         for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),
-                              ("topic readwrite zigbee2mqtt/#\n", "wildcard grant"),
-                              ("topic zigbee2mqtt/#\n", "wildcard grant"),
-                              ("topic write homeassistant/#\n", "wildcard grant")):
+                              ("topic readwrite zigbee2mqtt/#\n", "not in the reviewed"),
+                              ("topic zigbee2mqtt/#\n", "not in the reviewed"),
+                              ("topic write homeassistant/#\n", "not in the reviewed"),
+                              ("topic read zigbee2mqtt/+/+/+\n", "not in the reviewed"),
+                              ("topic write zigbee2mqtt/bridge/request/options\n", "only to request/permit_join"),
+                              ("topic write zigbee2mqtt/bridge/request/Permit_Join\n", "only to request/permit_join"),
+                              ("topic readwrite zigbee2mqtt/bridge/request/permit_join/x\n", "only to request/permit_join"),
+                              ("topic read zigbee2mqtt/bridge/+\n", "no wildcard at or after the bridge level"),
+                              ("topic read zigbee2mqtt/bridge/response/#\n", "no wildcard at or after the bridge level")):
             with self.subTest(extra=extra.strip()):
                 self.setUp()
                 self.edit("zigbee2mqtt", "acl", "user homeassistant\n", "user homeassistant\n" + extra)
                 self.assertFails(needle)
+        self.setUp()
+        self.edit("zigbee2mqtt", "acl", "user homeassistant\n", "pattern readwrite %u/#\nuser homeassistant\n")
+        self.assertFails("pattern lines")
+        self.setUp()
+        self.edit("zigbee2mqtt", "acl", "user zigbee2mqtt\n", "topic readwrite #\nuser zigbee2mqtt\n")
+        self.assertFails("before any user")
+        self.setUp()
+        self.edit("zigbee2mqtt", "acl", "topic deny zigbee2mqtt/bridge/logging\n", "")
+        self.assertFails("needs topic deny zigbee2mqtt/bridge/logging")
+
+    def test_gate_caps_are_a_subset(self) -> None:
+        self.edit("esphome", "compose.yml", "    cap_add: [CHOWN, SETGID, SETUID]\n", "    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]\n")
+        self.assertFails("add back only CHOWN, SETGID, SETUID")
+
+    def test_backends_matched_behind_a_mirror(self) -> None:
+        self.assertEqual(v.image_repo("ghcr.io/esphome/esphome:2026.10.1@sha256:" + "0" * 64), "esphome/esphome")
+        self.assertTrue(v.repo_is("mirror.example.org:5000/proxy/koenkk/zigbee2mqtt:2.14.3", "koenkk/zigbee2mqtt"))
+        self.assertTrue(v.repo_is("docker.io/library/eclipse-mosquitto:2.1.2-alpine", "eclipse-mosquitto"))
+        self.assertFalse(v.repo_is("ghcr.io/esphome/esphome-other:1", "esphome/esphome"))
+        self.edit("esphome", "compose.yml", "image: ghcr.io/esphome/esphome:", "image: mirror.example.org/ghcr/esphome/esphome:", count=1)
+        self.edit("esphome", "compose.yml", "        aliases: [esphome-internal]\n",
+                  "        aliases: [esphome-internal]\n      portcullis-proxy: {}\n")
+        self.assertFails("default network only")

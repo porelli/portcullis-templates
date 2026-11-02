@@ -38,7 +38,7 @@ case "${GATE_LISTEN:-}" in
 esac
 
 # One forward-auth cookie out of Cookie per pass.
-strip='"~*^(?<pre>.*?)(?:^|;[ ]*)(?:_oauth2_proxy|__Host-portcullis_ext)[^=;]*=[^;]*(?<post>.*)$" "$pre$post";'
+strip='"~*^(?<pre>.*?)(?:^|;)[ \t]*(?:_oauth2_proxy|__Host-portcullis_ext)[^=;]*=[^;]*(?<post>.*)$" "$pre$post";'
 
 cat > /etc/nginx/conf.d/default.conf <<EOF
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
@@ -48,12 +48,14 @@ map \$pc_c2 \$pc_c3 { ${strip} default \$pc_c2; }
 map \$pc_c3 \$pc_c4 { ${strip} default \$pc_c3; }
 map \$pc_c4 \$pc_c5 { ${strip} default \$pc_c4; }
 map \$pc_c5 \$pc_c6 { ${strip} default \$pc_c5; }
-map \$pc_c6 \$pc_cookie { "~^[ ;]*(?<rest>.*)\$" "\$rest"; }
-map \$pc_c6 \$pc_cookie_left { "~*(?:^|;[ ]*)(?:_oauth2_proxy|__Host-portcullis_ext)" 1; default 0; }
+map \$pc_c6 \$pc_cookie { "~^[ \t;]*(?<rest>.*)\$" "\$rest"; }
+map \$pc_cookie \$pc_cookie_left { "~*(?:^|;)[ \t]*(?:_oauth2_proxy|__Host-portcullis_ext)" 1; default 0; }
 server {
   listen ${GATE_LISTEN};
   server_tokens off;
   client_max_body_size 0;
+  # Room for large session / app cookies (oauth2-proxy splits at 4 kB).
+  large_client_header_buffers 4 32k;
   allow ${ip};
   deny all;
   if (\$pc_cookie_left) { return 400; }

@@ -976,11 +976,32 @@ SIGNIN_GATED_METHODS = {"forward-auth", "header-auth"}
 # (byte-identical in every template, check_cross). Value: extra
 # requirements ("healthy": the gate waits for the app's healthcheck;
 # "init": the app waits for that one-shot job).
-GATED_BACKENDS = {
-    "ghcr.io/esphome/esphome:": {},
-    "ghcr.io/koenkk/zigbee2mqtt:": {},
-    "ghcr.io/motioneye-project/motioneye:": {"healthy": True, "init": "motioneye-init"},
+GATED_BACKENDS = {   # image repository (any registry or mirror prefix)
+    "esphome/esphome": {},
+    "koenkk/zigbee2mqtt": {},
+    "motioneye-project/motioneye": {"healthy": True, "init": "motioneye-init"},
 }
+GATE_CAPS = {"CHOWN", "SETGID", "SETUID"}
+
+
+def image_repo(image: str) -> str:
+    """Repository path of an image reference without registry host, tag or
+    digest, lowercase (ghcr.io/esphome/esphome:1@sha256:.. -> esphome/esphome)."""
+    ref = image.split("@", 1)[0].strip().lower()
+    parts = ref.split("/")
+    if parts and ":" in parts[-1]:
+        parts[-1] = parts[-1].split(":", 1)[0]
+    if len(parts) > 1 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        parts = parts[1:]
+    if parts[:1] == ["library"]:
+        parts = parts[1:]
+    return "/".join(parts)
+
+
+def repo_is(image: str, repo: str) -> bool:
+    """The image is that repository, also behind a mirror path prefix."""
+    got = image_repo(image)
+    return got == repo or got.endswith("/" + repo)
 GATE_SH = "gate.sh"
 GATE_SH_REQUIRED = [
     (r"(?m)^\s*allow \$\{ip\};$", "allow ${ip}; (Traefik's address only)"),
@@ -1028,8 +1049,8 @@ def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> No
         if not isinstance(svc, dict):
             continue
         image = str(svc.get("image", ""))
-        for prefix, extra in GATED_BACKENDS.items():
-            if image.startswith(prefix) and str(svc.get("network_mode", "")) != "none":
+        for repo, extra in GATED_BACKENDS.items():
+            if repo_is(image, repo) and str(svc.get("network_mode", "")) != "none":
                 backends[sname] = extra
     if not backends:
         return
@@ -1061,10 +1082,10 @@ def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> No
             r.error(where, f"the gate must run /portcullis/{GATE_SH} (entrypoint)", GATE_HINT)
         if env_of(svc).get("PORTCULLIS_TRAEFIK_IP") != "${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}":
             r.error(where, "the gate needs PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}", GATE_HINT)
-        caps_drop = [str(c).upper() for c in as_list(svc.get("cap_drop"))]
-        caps_add = [str(c).upper() for c in as_list(svc.get("cap_add"))]
-        if "ALL" not in caps_drop or "NET_RAW" in caps_add:
-            r.error(where, "the gate must drop all capabilities (cap_drop: [ALL]; add back only CHOWN, SETGID, SETUID)")
+        caps_drop = [str(c).upper().removeprefix("CAP_") for c in as_list(svc.get("cap_drop"))]
+        caps_add = [str(c).upper().removeprefix("CAP_") for c in as_list(svc.get("cap_add"))]
+        if "ALL" not in caps_drop or not set(caps_add) <= GATE_CAPS:
+            r.error(where, "the gate must drop all capabilities (cap_drop: [ALL]) and add back only CHOWN, SETGID, SETUID")
         for b, extra in backends.items():
             if extra.get("healthy") and _depends(svc, b) != "service_healthy":
                 r.error(where, f"the gate must depend on {b} with condition service_healthy",
@@ -1089,7 +1110,7 @@ def check_mosquitto(t: Template, services: Dict[str, Any], r: Report) -> None:
     """A bundled Mosquitto refuses anonymous clients and checks a password
     file that its one-shot mosquitto-init wrote before it started."""
     for sname, svc in services.items():
-        if not isinstance(svc, dict) or not str(svc.get("image", "")).startswith("eclipse-mosquitto:"):
+        if not isinstance(svc, dict) or not repo_is(str(svc.get("image", "")), "eclipse-mosquitto"):
             continue
         if str(svc.get("network_mode", "")) == "none":
             continue  # the one-shot init itself
@@ -1119,29 +1140,68 @@ def check_mosquitto(t: Template, services: Dict[str, Any], r: Report) -> None:
 
 
 
+# The homeassistant account of a bundled Zigbee2MQTT broker: exactly these
+# lines are allowed (reviewed against Zigbee2MQTT 2.14's topic handlers).
+# Zigbee2MQTT lowercases bridge request keys, so nothing is denylisted for
+# writes; the one deny is the read of bridge/logging (exact topic: Mosquitto
+# matches case-sensitively, Zigbee2MQTT publishes exactly that).
+HA_ACL_ALLOWED = {
+    ("read", "homeassistant/#"), ("write", "homeassistant/status"),
+    ("deny", "zigbee2mqtt/bridge/logging"),
+    ("read", "zigbee2mqtt/+"), ("read", "zigbee2mqtt/+/+"),
+    ("read", "zigbee2mqtt/+/availability"), ("read", "zigbee2mqtt/+/action"),
+    ("write", "zigbee2mqtt/+/set"), ("write", "zigbee2mqtt/+/set/+"),
+    ("write", "zigbee2mqtt/+/get"), ("write", "zigbee2mqtt/+/get/+"),
+    ("write", "zigbee2mqtt/+/+/set"), ("write", "zigbee2mqtt/+/+/set/+"),
+    ("write", "zigbee2mqtt/+/+/get"), ("write", "zigbee2mqtt/+/+/get/+"),
+    ("write", "zigbee2mqtt/bridge/request/permit_join"),
+}
+HA_ACL_HINT = ("Zigbee2MQTT matches bridge requests case-insensitively: the homeassistant account is a reviewed "
+               "allowlist (validate.py HA_ACL_ALLOWED); grant only what Home Assistant's integration uses")
+
+
 def check_ha_acl(t: Template, path: str, r: Report) -> None:
-    """The Home Assistant account of a bundled broker is an allowlist: no
-    deny lines (Zigbee2MQTT lowercases bridge request keys, so a denylist
-    is bypassable by casing) and no wildcard grant but discovery reads."""
+    """The Home Assistant account of a bundled broker is a reviewed
+    allowlist; no pattern lines, no topic lines outside a user section."""
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
     user = None
+    ha: Set[Tuple[str, str]] = set()
     for n, raw in enumerate(lines, 1):
-        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith("topic") else raw.strip()
-        if line.startswith("user "):
-            user = line.split(None, 1)[1].strip()
+        line = raw.strip()
+        if not line or line.startswith("#"):
             continue
-        if user != "homeassistant" or not line.startswith("topic"):
-            continue
-        parts = line.split()
-        access, topic = (parts[1], parts[2]) if len(parts) == 3 else ("readwrite", parts[1] if len(parts) > 1 else "")
         where = f"{t.id}/{os.path.basename(path)}:{n}"
-        if access == "deny":
-            r.error(where, "the homeassistant account must be an allowlist, not deny lines",
-                    "Zigbee2MQTT matches bridge requests case-insensitively; grant only what Home Assistant uses")
-        elif "#" in topic and not (access == "read" and topic == "homeassistant/#"):
-            r.error(where, f"the homeassistant account must not get a wildcard grant ({access} {topic})",
-                    "grant only what Home Assistant uses (state, set/get commands, permit_join)")
+        parts = line.split()
+        if parts[0] == "user":
+            user = " ".join(parts[1:])
+            continue
+        if parts[0] == "pattern":
+            r.error(where, "pattern lines are not allowed in the bundled broker's ACL (they apply to every user)", HA_ACL_HINT)
+            continue
+        if parts[0] != "topic":
+            r.error(where, f"unexpected ACL line {line!r}", HA_ACL_HINT)
+            continue
+        if user is None:
+            r.error(where, "topic line before any user (it would apply to every client)", HA_ACL_HINT)
+            continue
+        if user != "homeassistant":
+            continue
+        access, topic = (parts[1], parts[2]) if len(parts) == 3 else ("readwrite", parts[1] if len(parts) > 1 else "")
+        ha.add((access, topic))
+        levels = topic.split("/")
+        if access in ("write", "readwrite") and topic.startswith("zigbee2mqtt/bridge/") \
+                and topic != "zigbee2mqtt/bridge/request/permit_join":
+            r.error(where, f"homeassistant may write under zigbee2mqtt/bridge/ only to request/permit_join (got {access} {topic})", HA_ACL_HINT)
+        elif len(levels) > 1 and levels[0] == "zigbee2mqtt" and levels[1] == "bridge" and any(x in ("+", "#") for x in levels[1:]):
+            r.error(where, f"no wildcard at or after the bridge level (got {access} {topic})", HA_ACL_HINT)
+        elif access == "deny" and (access, topic) not in HA_ACL_ALLOWED:
+            r.error(where, f"the homeassistant account must be an allowlist, not deny lines ({topic})", HA_ACL_HINT)
+        elif (access, topic) not in HA_ACL_ALLOWED:
+            r.error(where, f"{access} {topic} is not in the reviewed homeassistant allowlist (wildcard grant or new topic)", HA_ACL_HINT)
+    if ("read", "zigbee2mqtt/+/+") in ha and ("deny", "zigbee2mqtt/bridge/logging") not in ha:
+        r.error(f"{t.id}/{os.path.basename(path)}", "read zigbee2mqtt/+/+ needs topic deny zigbee2mqtt/bridge/logging "
+                "(Zigbee2MQTT logs every MQTT publish with its payload there)", HA_ACL_HINT)
 
 def check_signin_test(t: Template, r: Report) -> None:
     m = t.manifest or {}

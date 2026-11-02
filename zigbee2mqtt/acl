@@ -9,28 +9,29 @@ topic readwrite homeassistant/#
 
 # homeassistant: Home Assistant's MQTT integration, an allowlist (no
 # zigbee2mqtt/# grant). Zigbee2MQTT 2.14 matches bridge requests
-# case-insensitively (lib/extension/bridge.ts lowercases the key), so no
-# denylist: whatever isn't listed is refused in every casing. Never
-# granted: bridge requests other than permit_join (extensions / converters
-# = code in the container, options, backup, restart, ...), bridge
-# responses (the backup response holds the network key) and
-# bridge/logging (Zigbee2MQTT logs every MQTT publish with its payload,
-# lib/mqtt.ts, and forwards its log there).
+# case-insensitively (lib/extension/bridge.ts lowercases the key), so
+# writes are never denylisted: whatever isn't listed is refused in every
+# casing. Never granted: bridge requests other than permit_join
+# (extensions / converters = code in the container, options, backup,
+# restart, OTA updates, ...), bridge responses (the backup response holds
+# the network key) and bridge/logging (read deny below).
 user homeassistant
 # MQTT discovery: Zigbee2MQTT's discovery configs; HA's birth message.
 topic read homeassistant/#
 topic write homeassistant/status
-# Device and group state and availability (friendly names without "/";
-# zigbee2mqtt/+ never matches a bridge topic, nothing is published at
-# zigbee2mqtt/bridge itself).
+# Device and group state, endpoint state, availability and device-trigger
+# actions (friendly names without "/"), plus the bridge's two-level status
+# topics (state, info, devices, groups, event, ...). The one exception:
+# bridge/logging, where Zigbee2MQTT forwards its log of every MQTT publish
+# with the payload (lib/mqtt.ts); Mosquitto matches topics case-sensitively
+# and Zigbee2MQTT publishes exactly this topic, so this deny is exact.
+# Bridge responses (bridge/response/<x>) are three levels below the base
+# topic: no read entry here reaches them.
+topic deny zigbee2mqtt/bridge/logging
 topic read zigbee2mqtt/+
+topic read zigbee2mqtt/+/+
 topic read zigbee2mqtt/+/availability
-# Bridge status for Home Assistant's Zigbee2MQTT bridge entities.
-topic read zigbee2mqtt/bridge/state
-topic read zigbee2mqtt/bridge/info
-topic read zigbee2mqtt/bridge/devices
-topic read zigbee2mqtt/bridge/groups
-topic read zigbee2mqtt/bridge/event
+topic read zigbee2mqtt/+/action
 # Device and group commands: <name>/set|get[/<attribute>] and, with an
 # endpoint, <name>/<endpoint>/set|get[/<attribute>] (Zigbee2MQTT's
 # discovery command topics). None of these shapes is a bridge request

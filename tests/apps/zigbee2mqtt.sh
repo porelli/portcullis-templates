@@ -106,7 +106,8 @@ mq_deliver() {  # <publisher z2m|ha> <subscriber z2m|ha> <topic>: 0 if delivered
 for spec in "z2m ha zigbee2mqtt/ci_lamp" "z2m ha zigbee2mqtt/ci_lamp/availability" "z2m ha zigbee2mqtt/bridge/state" \
             "z2m ha homeassistant/light/0x00ci/light/config" "ha z2m homeassistant/status" \
             "ha z2m zigbee2mqtt/ci_lamp/set" "ha z2m zigbee2mqtt/ci_lamp/set/state" "ha z2m zigbee2mqtt/ci_lamp/l1/set" \
-            "ha z2m zigbee2mqtt/ci_lamp/get" "ha z2m zigbee2mqtt/bridge/request/permit_join"; do
+            "ha z2m zigbee2mqtt/ci_lamp/get" "ha z2m zigbee2mqtt/bridge/request/permit_join" \
+            "z2m ha zigbee2mqtt/ci_lamp/action" "z2m ha zigbee2mqtt/ci_lamp/l1" "z2m ha zigbee2mqtt/bridge/devices"; do
   # shellcheck disable=SC2086
   set -- $spec
   if mq_deliver "$1" "$2" "$3"; then pass "ACL allows $1 -> $2 on $3"; else fail "ACL refuses $1 -> $2 on $3"; docker exec "$MQ" cat /tmp/sub.err || true; fi
@@ -119,11 +120,13 @@ for topic in zigbee2mqtt/bridge/request/extension/save zigbee2mqtt/bridge/reques
              zigbee2mqtt/bridge/request/converter/save zigbee2mqtt/bridge/request/Converter/Save \
              zigbee2mqtt/bridge/request/backup zigbee2mqtt/bridge/request/Backup zigbee2mqtt/bridge/request/BACKUP \
              zigbee2mqtt/bridge/request/options zigbee2mqtt/bridge/request/Options zigbee2mqtt/bridge/request/restart \
-             zigbee2mqtt/bridge/request/Permit_Join zigbee2mqtt/bridge/request/device/remove zigbee2mqtt/ci/other other/ci; do
+             zigbee2mqtt/bridge/request/Permit_Join zigbee2mqtt/bridge/request/device/remove \
+             zigbee2mqtt/bridge/request/device/ota_update/update homeassistant/light/0x00ci/light/config \
+             zigbee2mqtt/ci/other other/ci; do
   if mq_deliver ha z2m "$topic"; then fail "homeassistant may publish $topic"; else pass "ACL: homeassistant can't publish $topic"; fi
 done
 for topic in zigbee2mqtt/bridge/response/backup zigbee2mqtt/bridge/response/Backup zigbee2mqtt/bridge/logging \
-             zigbee2mqtt/bridge/request/backup zigbee2mqtt/kitchen/lamp other/ci; do
+             zigbee2mqtt/bridge/request/backup zigbee2mqtt/a/b/c other/ci; do
   if mq_deliver z2m ha "$topic"; then fail "homeassistant receives $topic"; else pass "ACL: homeassistant can't read $topic"; fi
 done
 docker exec "$MQ" rm -rf /tmp/mq-z2m /tmp/mq-ha /tmp/mq-bad /tmp/got /tmp/sub.err
@@ -220,6 +223,12 @@ if echo "$out" | grep -qF 'auth=[] xfat=[] xarat=[] cookie=[a=1; b=2]' && ! echo
   pass "gate forwards no Authorization, access-token header or forward-auth cookie (others kept)"
 else
   fail "gate forwards Portcullis credentials: $(echo "$out" | tail -1)"
+fi
+out=$(gt_get 10.254.77.10 --header "Cookie: a=1;_oauth2_proxy=$FAKE;$(printf '\t')__Host-portcullis_ext=$FAKE; b=2")
+if echo "$out" | grep -qF 'cookie=[a=1; b=2]' && ! echo "$out" | grep -qF "$FAKE"; then
+  pass "gate strips forward-auth cookies after ';' without a space or with a tab"
+else
+  fail "gate kept a forward-auth cookie behind ';' / tab: $(echo "$out" | tail -1)"
 fi
 many="Cookie: a=1"
 for i in 0 1 2 3 4 5 6; do many="$many; _oauth2_proxy_$i=$FAKE"; done
