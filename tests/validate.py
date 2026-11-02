@@ -987,10 +987,13 @@ def check_signin_test(t: Template, r: Report) -> None:
     if auth.get("group_admin") and not si.get("admin"):
         r.error(t.m_where, "auth.group_admin is true but tests.signin has no admin check",
                 f"add tests.signin.admin: how to recognise the admin rights admin_group grants; {SIGNIN_HINT}")
-    # A native-oidc app with group_access: false lets outsiders in until the
-    # Hub restricts Keycloak clients per app (Task 4b): those mark
-    # expected_fail.outsider (a marker that starts passing fails the run).
-    open_oidc = method == "native-oidc" and auth.get("group_access") is False
+    # A native-oidc app that can't restrict sign-in by group itself relies on
+    # the Hub's Keycloak access role (keycloak_access_role; the Hub applies it
+    # to group_access: false too). CI has no Hub (app_signin.py registers
+    # plain clients), so those may mark expected_fail.outsider (a marker that
+    # starts passing fails the run).
+    open_oidc = method == "native-oidc" and (auth.get("group_access") is False
+                                             or auth.get("keycloak_access_role") is True)
     if method in SIGNIN_GATED_METHODS and xfail.get("outsider"):
         r.error(t.m_where, f"tests.signin.expected_fail.outsider on a {method} app",
                 "group-gate refuses users outside access_group; fix the gate instead of marking it")

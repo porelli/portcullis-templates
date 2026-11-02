@@ -107,5 +107,5 @@ tests:
     # approves them, so the outsider is refused by NetBird itself.
     expected_fail:
       member:
-        reason: "NetBird puts every user after the owner in pending approval until the owner approves them in the dashboard; the test doesn't approve e2emember (outsiders get the same pending state, nothing restricts them by group until the Hub's per-app Keycloak client access, Task 4b)"
+        reason: "NetBird puts every user after the owner in pending approval until the owner approves them in the dashboard; the test doesn't approve e2emember (outsiders get the same pending state in CI; with the Hub, its Keycloak access role (keycloak_access_role) refuses them at Keycloak)"
         match: "pending approval"
