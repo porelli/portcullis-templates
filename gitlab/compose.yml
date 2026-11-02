@@ -23,6 +23,10 @@ services:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
       - gitlab-data:/var/opt/gitlab
+      # System CAs + Portcullis' internal CA (Hub-provided bundle) as the CA
+      # list of GitLab's embedded OpenSSL: the OIDC discovery and token calls
+      # to auth.<domain> must verify its certificate, ACME or internal.
+      - ./certs/ca-bundle.crt:/opt/gitlab/embedded/ssl/certs/cacert.pem:ro
     networks:
       - default
       - portcullis-proxy

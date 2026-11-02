@@ -73,3 +73,12 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_SCRUTINY}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /web/dashboard
+    # No identity reaches Scrutiny (no user system): the dashboard itself.
+    signed_in:
+      html: "scrutiny"
+      wait: 20

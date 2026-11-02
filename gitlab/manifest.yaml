@@ -50,3 +50,13 @@ config_files: []
 urls:
   - label: GitLab
     url: "https://{{HOST_GITLAB}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /users/sign_in
+    boot_timeout: 1200
+    login: ["button:has-text('Portcullis SSO')", "a:has-text('Portcullis SSO')"]
+    signed_in:
+      json: {url: /api/v4/user, field: username}
+    password: "GitLab's password form stays for the root break-glass account (GITLAB_ROOT_PASSWORD, auth.notes)"

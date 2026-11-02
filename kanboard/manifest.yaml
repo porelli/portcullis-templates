@@ -42,3 +42,10 @@ config_files: []
 urls:
   - label: Kanboard
     url: "https://{{HOST_KANBOARD}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    signed_in:
+      text: "{username}"

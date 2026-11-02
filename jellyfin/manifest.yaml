@@ -65,3 +65,23 @@ config_files: []
 urls:
   - label: Jellyfin
     url: "https://{{HOST_JELLYFIN}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /web/
+    login: ["button:has-text('Sign in with SSO')"]
+    password: "Jellyfin's own login form stays next to the SSO button (local accounts such as the setup admin; Jellyfin apps sign in with it)"
+    signed_in:
+      js: >-
+        (async () => { const c = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+        const s = (c.Servers || [])[0]; if (!s || !s.AccessToken) return null;
+        const r = await fetch('/Users/Me', {headers: {Authorization: 'MediaBrowser Token="' + s.AccessToken + '"'}});
+        return r.ok ? (await r.json()).Name : null; })()
+      wait: 20
+    admin:
+      js: >-
+        (async () => { const s = JSON.parse(localStorage.getItem('jellyfin_credentials')).Servers[0];
+        const r = await fetch('/Users/Me', {headers: {Authorization: 'MediaBrowser Token="' + s.AccessToken + '"'}});
+        return (await r.json()).Policy.IsAdministrator; })()
+      equals: true

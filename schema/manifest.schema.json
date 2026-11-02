@@ -37,6 +37,7 @@
       "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]{0,31}$"}
     },
     "auth": {"$ref": "#/$defs/auth"},
+    "tests": {"$ref": "#/$defs/tests"},
     "settings": {
       "description": "User-configurable settings shown in the Hub; each key becomes a per-app .env key.",
       "type": "array",
@@ -402,6 +403,266 @@
       "properties": {
         "label": {"$ref": "#/$defs/singleLine", "minLength": 1},
         "url": {"type": "string", "pattern": "^https?://[^\\s]+$"}
+      }
+    },
+    "signinCheck": {
+      "description": "How the sign-in e2e recognises a state (tests/e2e/app_signin.py): one of text, html, json, js, reach (reach may add text). Strings may use {username}, {email}, {access_group}, {admin_group}.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Visible page text that must appear (case-insensitive); with reach: text on that page"
+        },
+        "html": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Page source that must contain this (case-insensitive)"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "text/html: open this path first"
+        },
+        "json": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "field"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "field": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Dotted path into the JSON answer"
+            },
+            "equals": {
+              "description": "Expected value (default {username})"
+            },
+            "contains": {
+              "type": "string",
+              "description": "The field is a list containing this"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "js": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Expression (may be a promise) evaluated in the app's page"
+        },
+        "reach": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "Path that must answer 2xx on the app host"
+        },
+        "equals": {
+          "description": "js: expected value (default {username})"
+        },
+        "absent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text that must NOT be on the page (the app's own denial, e.g. a session without rights)"
+        },
+        "url_contains": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wait": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600,
+          "description": "Seconds to poll (default 10)"
+        }
+      },
+      "anyOf": [{"required": ["text"]}, {"required": ["html"]}, {"required": ["json"]}, {"required": ["js"]}, {"required": ["reach"]}],
+      "not": {"anyOf": [{"required": ["html", "json"]}, {"required": ["html", "js"]}, {"required": ["html", "reach"]}, {"required": ["json", "js"]}, {"required": ["json", "reach"]}, {"required": ["js", "reach"]}, {"required": ["text", "html"]}, {"required": ["text", "json"]}, {"required": ["text", "js"]}]}
+    },
+    "tests": {
+      "description": "Test metadata read by CI only (the Hub ignores it).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signin"
+      ],
+      "properties": {
+        "signin": {
+          "description": "Full sign-in e2e (tests/e2e/app_signin.py; CONTRIBUTING.md 'Sign-in test').",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skip": {
+              "type": "string",
+              "minLength": 10,
+              "description": "Why the app can't be signed into in CI (public / custom / mtls apps only)"
+            },
+            "host": {
+              "type": "string",
+              "pattern": "^\\{\\{HOST_[A-Z0-9_]+\\}\\}$",
+              "description": "Host to sign in on (default: the first urls entry)"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/",
+              "description": "Page to open on the host (the setup link lands there)"
+            },
+            "login": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Playwright selectors of the app's own sign-in buttons, clicked when visible"
+            },
+            "fill": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "selector",
+                  "value"
+                ],
+                "properties": {
+                  "selector": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "setup": {
+              "type": "array",
+              "description": "Documented post-start steps: run a command in a service, save its last output line as an env value, restart the app",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "oneOf": [
+                  {"required": ["service", "command"]},
+                  {"required": ["restart"], "not": {"anyOf": [{"required": ["service"]}, {"required": ["command"]}]}}
+                ],
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "command": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "save_env": {
+                    "$ref": "#/$defs/envKey"
+                  },
+                  "restart": {
+                    "const": true,
+                    "description": "Restart the app (stop + start), e.g. a documented restart after the first start"
+                  },
+                  "after_log": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["service", "text"],
+                    "properties": {"service": {"type": "string", "minLength": 1}, "text": {"type": "string", "minLength": 1}},
+                    "description": "restart: first wait until this service's log contains text"
+                  },
+                  "user": {
+                    "type": "string",
+                    "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                    "description": "User to run the command as (docker exec -u)"
+                  }
+                }
+              }
+            },
+            "signed_in": {
+              "$ref": "#/$defs/signinCheck"
+            },
+            "admin": {
+              "$ref": "#/$defs/signinCheck"
+            },
+            "password": {
+              "type": "string",
+              "minLength": 10,
+              "description": "Why a password field on the app's pages is expected (a documented own login / break-glass)"
+            },
+            "expected_fail": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "member": {
+                  "type": "string",
+                  "minLength": 10
+                },
+                "admin": {
+                  "type": "string",
+                  "minLength": 10
+                },
+                "outsider": {
+                  "type": "string",
+                  "minLength": 10
+                }
+              }
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 1800
+            },
+            "boot_timeout": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            },
+            "refused_after": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 600
+            }
+          },
+          "if": {
+            "required": [
+              "skip"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "signed_in"
+                  ]
+                },
+                {
+                  "required": [
+                    "path"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "path",
+              "signed_in"
+            ]
+          }
+        }
       }
     }
   }

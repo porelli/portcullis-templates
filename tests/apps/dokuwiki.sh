@@ -104,8 +104,10 @@ fi
 # ACL: anonymous nothing, access group edits
 ACL=$(docker exec "$C" cat /config/dokuwiki/conf/acl.auth.php 2>/dev/null || true)
 TAB=$'\t'
-if echo "$ACL" | grep -q "^\*${TAB}@ALL${TAB}0${TAB}" && echo "$ACL" | grep -q "^\*${TAB}@${PORTCULLIS_ACCESS_GROUP}${TAB}8${TAB}"; then
-  pass "ACL: * @ALL 0, * @${PORTCULLIS_ACCESS_GROUP} 8"
+# DokuWiki matches ACL groups in auth_nameencode() form: "_" is %5f.
+ACL_GROUP=${PORTCULLIS_ACCESS_GROUP//_/%5f}
+if echo "$ACL" | grep -q "^\*${TAB}@ALL${TAB}0${TAB}" && echo "$ACL" | grep -qF "*${TAB}@${ACL_GROUP}${TAB}8${TAB}"; then
+  pass "ACL: * @ALL 0, * @${ACL_GROUP} 8"
 else
   fail "ACL not as expected: $ACL"
 fi

@@ -12,12 +12,33 @@ auth:
   group_admin: false
   access_group: users_cloudbeaver
   admin_group: admin_cloudbeaver
-  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User (the immutable LLDAP username; the provider has no email header) and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User or X-Forwarded-Email from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name and X-Forwarded-Email headers. Accounts created when the header carried the email are named after it; rename them to the LLDAP username in CloudBeaver's admin UI. Roles and connections are managed in CloudBeaver.
+  notes: Access gated by forward-auth + group-gate. CloudBeaver's reverseProxy auth provider logs users in from X-Forwarded-User (the immutable LLDAP username; the provider has no email header) and trusts team/role headers from any peer with no allowlist, so CloudBeaver is kept off portcullis-proxy behind a small nginx gate (cloudbeaver-gate) that rejects (403) X-Forwarded-User or X-Forwarded-Email from anything but Traefik (PORTCULLIS_TRAEFIK_IP) and strips the X-User/X-Team/X-Role/X-Role-TE/name and X-Forwarded-Email headers. Accounts created when the header carried the email are named after it; rename them to the LLDAP username in CloudBeaver's admin UI. Roles and connections are managed in CloudBeaver. The server is configured automatically at first start (CB_SERVER_* / CB_ADMIN_*), so nobody gets the initial-configuration wizard; its local administrator cbadmin-<CLOUDBEAVER_ADMIN_SUFFIX> (password CLOUDBEAVER_ADMIN_PASSWORD, both generated per instance) is break-glass only. reverseProxy logs a user in as the CloudBeaver account named like X-Forwarded-User, so the administrator's name is per instance and non-guessable, and cloudbeaver-gate refuses (403) any X-Forwarded-User starting with "cbadmin" (case-insensitive), so no LLDAP user can become the local administrator. Before every start, cloudbeaver-config (a one-shot, JSON-aware patch of workspace/.data/.cloudbeaver.runtime.conf) re-enables the reverseProxy provider with X-Forwarded-User, and CloudBeaver doesn't start if that fails. On the very first start (automatic configuration) users past the gate are anonymous CloudBeaver sessions; restart the app once after enabling it so they sign in as their LLDAP username.
 
-env: []
+env:
+  - key: CLOUDBEAVER_ADMIN_PASSWORD
+    description: Password of CloudBeaver's local administrator cbadmin-<suffix> (break-glass; set by the automatic server configuration)
+    generate: random
+  - key: CLOUDBEAVER_ADMIN_SUFFIX
+    description: Generated suffix of the local administrator's name (cbadmin-<suffix>), so no LLDAP user can match it
+    generate: random
 keycloak_clients: []
 config_files: []
 
 urls:
   - label: Database Manager
     url: "https://{{HOST_CLOUDBEAVER}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # The automatic server configuration runs on the first start and leaves
+    # users anonymous; cloudbeaver-config enables reverseProxy from the
+    # second start on (auth.notes): restart once, as an admin would.
+    setup:
+      - restart: true
+        # Jetty starts after the automatic configuration saved its runtime config.
+        after_log: {service: cloudbeaver, text: "Started oejs.Server"}
+    signed_in:
+      text: "{username}"
+      wait: 30

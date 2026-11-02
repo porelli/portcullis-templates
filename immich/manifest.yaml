@@ -143,3 +143,13 @@ config_files: []
 urls:
   - label: Photos
     url: "https://{{HOST_IMMICH}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /auth/login
+    login: ["button:has-text('Login with SSO')"]
+    signed_in:
+      json: {url: /api/users/me, field: storageLabel}
+    expected_fail:
+      outsider: "group_access: false: Immich has no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"

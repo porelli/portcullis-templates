@@ -55,3 +55,11 @@ urls:
     url: "https://{{HOST_LITELLM}}"
   - label: Admin UI
     url: "https://{{HOST_LITELLM}}/ui"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /ui/
+    signed_in:
+      html: "{username}"
+      wait: 30

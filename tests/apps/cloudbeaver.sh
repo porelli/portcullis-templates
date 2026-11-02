@@ -53,6 +53,20 @@ else
   fail "cloudbeaver networks: expected 'default', got '$CB_NETS'"
 fi
 
+# The local administrator (automatic server configuration) has a generated
+# per-instance name, and the gate never lets a header login use it.
+if grep -q 'CB_ADMIN_NAME: cbadmin-${CLOUDBEAVER_ADMIN_SUFFIX:?' "$COMPOSE" \
+    && grep -A2 'key: CLOUDBEAVER_ADMIN_SUFFIX' "$(dirname "$COMPOSE")/manifest.yaml" | grep -q 'generate: random'; then
+  pass "local administrator name is cbadmin-<generated suffix>"
+else
+  fail "CB_ADMIN_NAME must be cbadmin-\${CLOUDBEAVER_ADMIN_SUFFIX} with a generated suffix"
+fi
+if grep -qF 'if (\$$http_x_forwarded_user ~* "^cbadmin") { return 403; }' "$COMPOSE"; then
+  pass "gate refuses X-Forwarded-User starting with cbadmin (static)"
+else
+  fail "gate does not refuse X-Forwarded-User cbadmin*"
+fi
+
 GATE_IP=$(app_container_ip "$APP_ID" cloudbeaver-gate)
 assert_http_code "http://${GATE_IP}:8978/" 200
 assert_spoofed_identity_rejected "http://${GATE_IP}:8978/" 403

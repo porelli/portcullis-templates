@@ -56,3 +56,12 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_PIHOLE}}/admin"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /admin/
+    # No identity reaches Pi-hole (no SSO, no password): the dashboard itself.
+    signed_in:
+      html: "Pi-hole"
+      wait: 20

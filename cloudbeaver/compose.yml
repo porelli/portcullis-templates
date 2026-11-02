@@ -1,18 +1,45 @@
 services:
   cloudbeaver:
     image: dbeaver/cloudbeaver:26.2.3@sha256:0c875296f85ffd7c0ffaaaeff678cd2f383890050297585318d7cf8f49024d1f
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    # Automatic server configuration: without it CloudBeaver serves its
+    # initial-configuration wizard (server settings + an administrator
+    # password) to whoever opens it first. The local administrator is
+    # break-glass only; users sign in through the reverseProxy provider.
+    environment:
+      CB_SERVER_NAME: CloudBeaver
+      CB_SERVER_URL: https://${PORTCULLIS_HOST_CLOUDBEAVER:-db.portcullis.local}
+      # Per-instance, non-guessable: a reverseProxy login with the same name
+      # would be that local administrator (cloudbeaver-gate also refuses
+      # X-Forwarded-User starting with "cbadmin").
+      CB_ADMIN_NAME: cbadmin-${CLOUDBEAVER_ADMIN_SUFFIX:?CLOUDBEAVER_ADMIN_SUFFIX must be set}
+      CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:?CLOUDBEAVER_ADMIN_PASSWORD must be set}
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
       - ./templates/cloudbeaver/cloudbeaver-runtime.conf:/opt/cloudbeaver/workspace/GlobalConfiguration/.cloudbeaver.runtime.conf:ro
-      - ./templates/cloudbeaver/entrypoint.sh:/entrypoint.sh:ro
     # Default network only: CloudBeaver's reverseProxy auth provider trusts
     # X-Forwarded-User (and X-Team/X-Role/... team and role headers) from any
     # peer and has no proxy allowlist, so it is not attached to the shared
     # portcullis-proxy network. Traefik reaches it through cloudbeaver-gate.
     networks:
       - default
+    depends_on:
+      cloudbeaver-config:
+        condition: service_completed_successfully
     restart: unless-stopped
+
+  # One-shot before every start: CloudBeaver's persisted runtime config
+  # (written by the automatic server configuration or the admin UI) gets
+  # the reverseProxy provider re-enabled with X-Forwarded-User. A JSON edit,
+  # so any layout of the file works; a file that doesn't parse stops the
+  # start (CloudBeaver never runs with a half-patched config).
+  cloudbeaver-config:
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    command: ["python3", "/patch-runtime-conf.py", "/opt/cloudbeaver/workspace/.data/.cloudbeaver.runtime.conf"]
+    volumes:
+      - cloudbeaver-data:/opt/cloudbeaver/workspace
+      - ./templates/cloudbeaver/patch-runtime-conf.py:/patch-runtime-conf.py:ro
+    network_mode: none
+    restart: "no"
 
   # Only service on portcullis-proxy. Answers 403 to any request carrying
   # X-Forwarded-User or X-Forwarded-Email that does not come from Traefik,
@@ -41,6 +68,9 @@ services:
           if (\$$remote_addr != "$$PORTCULLIS_TRAEFIK_IP") { set \$$portcullis_reject 1; }
           if (\$$portcullis_ident = "") { set \$$portcullis_reject ""; }
           if (\$$portcullis_reject) { return 403; }
+          # Never a header login as CloudBeaver's local administrator
+          # (cbadmin-<generated suffix>), whatever the LLDAP user is called.
+          if (\$$http_x_forwarded_user ~* "^cbadmin") { return 403; }
           location / {
             proxy_pass http://cloudbeaver:8978;
             proxy_http_version 1.1;

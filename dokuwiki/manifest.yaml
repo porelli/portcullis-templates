@@ -65,3 +65,17 @@ config_files: []
 urls:
   - label: Wiki
     url: "https://{{HOST_DOKUWIKI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /doku.php?do=login
+    login: ["a:has-text('Portcullis')", "button:has-text('Portcullis')"]
+    signed_in:
+      text: "{username}"
+      # DokuWiki signs everyone in; the ACL gives users outside the access
+      # group no rights at all.
+      absent: "Permission Denied"
+    admin:
+      reach: /doku.php?do=admin
+      text: "Access Control List"

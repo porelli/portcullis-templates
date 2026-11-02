@@ -16,7 +16,7 @@ auth:
     Dashboard uses OIDC. Management API validates JWT audience. No group-based
     access restriction — all OIDC users can access dashboard. Identity:
     management keys users on the token's sub (AuthUserIDClaim; no IdP
-    manager, so nothing is matched by email).
+    manager, so nothing is matched by email). The dashboard sends the ID token to the management API (NETBIRD_TOKEN_SOURCE=idToken): its audience is the client id management checks; Keycloak access tokens would carry aud "account".
     Upgrades: netbird-management and netbird-signal are pinned to the same
     release and must move together (the dashboard has its own version line);
     follow the upstream upgrade notes and do not skip releases with migrations.
@@ -82,3 +82,27 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_NETBIRD_DASH}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # e2eadmin signs in first and becomes the owner (onboarding first).
+    login: ["text=Skip to Dashboard"]
+    signed_in:
+      # The dashboard's own session: its ID token (oidc-client storage)
+      # accepted by the management API.
+      js: >-
+        (async () => { const tok = (v) => v && typeof v === 'object' ? (v.id_token || v.idToken ||
+        tok(v.tokens) || null) : null;
+        for (const s of [sessionStorage, localStorage]) for (let i = 0; i < s.length; i++) {
+        let v; try { v = JSON.parse(s.getItem(s.key(i))); } catch (e) { continue; }
+        const t = tok(v); if (!t) continue;
+        const r = await fetch('/api/users/current', {headers: {Authorization: 'Bearer ' + t}});
+        return r.ok ? (await r.json()).email : 'HTTP ' + r.status; } return null; })()
+      equals: "{email}"
+      wait: 30
+    # NetBird holds every later user in "pending approval" until the owner
+    # approves them, so the outsider is refused by NetBird itself.
+    expected_fail:
+      member: "NetBird puts every user after the owner in pending approval until the owner approves them in the dashboard; the test doesn't approve e2emember (outsiders get the same pending state, nothing restricts them by group until the Hub's per-app Keycloak client access, Task 4b)"

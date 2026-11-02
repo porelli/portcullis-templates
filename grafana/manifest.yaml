@@ -63,3 +63,10 @@ config_files: []
 urls:
   - label: Dashboard
     url: "https://{{HOST_GRAFANA}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    signed_in:
+      json: {url: /api/user, field: login}

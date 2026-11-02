@@ -76,3 +76,26 @@ config_files: []
 urls:
   - label: Wiki
     url: "https://{{HOST_WIKI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # The Portcullis strategy's start URL (what the login page's only button opens).
+    path: /login/portcullis
+    login: ["text=Portcullis"]
+    signed_in:
+      js: >-
+        fetch('/graphql', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: '{ users { profile { email groups } } }'})})
+        .then(r => r.json()).then(j => j.data.users.profile)
+        .then(p => p && (p.groups || []).length ? p.email : null)
+      # Wiki.js signs everyone in; rights come only from the mapped groups,
+      # so a session without any group is the outsider's refusal.
+      equals: "{email}"
+      wait: 20
+    admin:
+      js: >-
+        fetch('/graphql', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: '{ users { profile { groups } } }'})})
+        .then(r => r.json()).then(j => (j.data.users.profile.groups || []).includes('{admin_group}'))
+      equals: true

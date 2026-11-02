@@ -41,6 +41,13 @@ env:
 urls:
   - label: Demo
     url: "{url}"
+tests:
+  signin:
+    path: /
+    signed_in:
+      text: "{{username}}"
+    admin:
+      reach: /admin
 """
 
 ROUTER = """\
@@ -423,6 +430,70 @@ class TestCross(Case):
 class TestRealTemplates(unittest.TestCase):
     def test_all_templates_in_repo_validate(self) -> None:
         self.assertEqual(v.main([]), 0)
+
+
+class SigninTest(Case):
+    """tests.signin (sign-in e2e) rules."""
+
+    def test_fixture_is_clean(self) -> None:
+        errors, warnings = self.run_template()
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+
+    def test_missing_block(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("tests:\n  signin:\n    path: /\n", "x_tests:\n  signin:\n    path: /\n")
+        errs = self.recheck()
+        self.assertTrue(any("no tests.signin block" in e for e in errs), errs)
+
+    def test_signin_requires_path_and_signed_in(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("    signed_in:\n      text: \"{username}\"\n", "")
+        errs = self.recheck()
+        self.assertTrue(any("tests.signin" in e and "signed_in" in e for e in errs), errs)
+
+    def test_skip_only_for_public_custom_mtls(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("    path: /\n    signed_in:\n      text: \"{username}\"\n    admin:\n      reach: /admin\n",
+                              "    skip: \"cannot be signed into in CI\"\n")
+        errs = self.recheck()
+        self.assertTrue(any("tests.signin.skip is only for" in e for e in errs), errs)
+
+    def test_group_admin_needs_admin_check(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("    admin:\n      reach: /admin\n", "")
+        errs = self.recheck()
+        self.assertTrue(any("no admin check" in e for e in errs), errs)
+
+    def test_gated_app_cannot_expect_outsider_failure(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: \"some long enough reason\"\n    admin:\n")
+        errs = self.recheck()
+        self.assertTrue(any("expected_fail.outsider on a header-auth app" in e for e in errs), errs)
+
+    def test_open_native_oidc_may_expect_outsider_failure(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("  method: header-auth\n", "  method: native-oidc\n")
+        self.rewrite_manifest("  group_access: true\n", "  group_access: false\n")
+        self.rewrite_manifest("    admin:\n", "    expected_fail:\n      outsider: \"no OIDC group restriction yet\"\n    admin:\n")
+        errs = self.recheck()
+        self.assertFalse(any("expected_fail" in e for e in errs), errs)
+
+    def test_host_must_be_a_host_router(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("    path: /\n", "    host: \"{{HOST_OTHER}}\"\n    path: /\n")
+        errs = self.recheck()
+        self.assertTrue(any("tests.signin.host {{HOST_OTHER}}" in e for e in errs), errs)
+
+    def test_signed_in_without_username_warns(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("      text: \"{username}\"\n", "      text: \"Dashboard\"\n")
+        t = v.Template("demo")
+        r = v.Report()
+        v.check_manifest_schema(t, self.validator, r)
+        v.check_manifest_rules(t, r)
+        v.check_compose(t, r)
+        self.assertTrue(any("does not check the username" in w for w in r.warnings), r.warnings)
 
 
 if __name__ == "__main__":

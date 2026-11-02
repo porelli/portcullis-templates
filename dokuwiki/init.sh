@@ -67,7 +67,13 @@ foreach (is_file($file) ? file($file, FILE_IGNORE_NEW_LINES) : [] as $line) {
 }
 if (!$keep) $keep = ["# acl.auth.php", "# <?php exit()?>"];
 $keep[] = "*\t@ALL\t0\t# Portcullis (managed, re-applied at every start)";
-$keep[] = "*\t@" . rawurlencode(getenv("PORTCULLIS_ACCESS_GROUP")) . "\t8\t# Portcullis (managed, re-applied at every start)";
+// Group names are written the way DokuWiki matches them: auth_nameencode()
+// (inc/auth.php) turns every ASCII punctuation character, "_" included,
+// into %xx (lowercase hex); rawurlencode() would leave "users_<id>" as is
+// and the rule would never match.
+$enc = preg_replace_callback("#([\\x00-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\x7f])#",
+  static fn ($m) => "%" . dechex(ord($m[1])), getenv("PORTCULLIS_ACCESS_GROUP"));
+$keep[] = "*\t@" . $enc . "\t8\t# Portcullis (managed, re-applied at every start)";
 file_put_contents($file . ".new", implode("\n", $keep) . "\n");
 rename($file . ".new", $file);
 ' "$CONF/acl.auth.php"

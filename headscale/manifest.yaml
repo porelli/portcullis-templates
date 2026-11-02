@@ -72,3 +72,23 @@ urls:
     url: "https://{{HOST_HEADSCALE}}"
   - label: Admin UI
     url: "https://{{HOST_HEADPLANE}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    host: "{{HOST_HEADPLANE}}"
+    path: /admin
+    # The documented post-start step (auth.notes): Headplane needs a
+    # Headscale API key.
+    setup:
+      - service: headscale
+        command: [headscale, apikeys, create, --expiration, 1d]
+        save_env: HEADSCALE_API_KEY
+    login: ["a:has-text('Single Sign-On')", "button:has-text('Single Sign-On')", "a:has-text('OpenID')"]
+    signed_in:
+      # The signed-in user is in the page's loader data (avatar menu).
+      html: "{username}"
+      wait: 20
+    password: "Headplane's login page also takes a Headscale API key (a password-type field), its break-glass login"
+    expected_fail:
+      outsider: "group_access: false: Headscale/Headplane have no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"
