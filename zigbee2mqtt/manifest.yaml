@@ -43,9 +43,11 @@ auth:
     allowlist only (Zigbee2MQTT matches bridge requests case-insensitively,
     so writes are never denylisted): discovery (read homeassistant/#,
     write homeassistant/status), device and group state, endpoint state,
-    availability and device-trigger actions, the bridge's status topics
-    (all two-level topics except bridge/logging, where Zigbee2MQTT logs
-    every MQTT publish with its payload), <name>[/<endpoint>]/set|get
+    availability and device-trigger actions, the bridge's state, info
+    (its configuration without the network key, MQTT password and frontend
+    token), devices, groups and event topics (never bridge/logging, where
+    Zigbee2MQTT logs every MQTT publish with its payload, the extension /
+    converter JavaScript source, definitions or health), <name>[/<endpoint>]/set|get
     commands and the permit_join request; never other bridge requests
     (extensions, converters, options, backup, restart, OTA updates, ...)
     nor bridge responses. So in Home Assistant the bridge's log level

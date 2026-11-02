@@ -836,8 +836,11 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.edit("zigbee2mqtt", "acl", "user zigbee2mqtt\n", "topic readwrite #\nuser zigbee2mqtt\n")
         self.assertFails("before any user")
         self.setUp()
-        self.edit("zigbee2mqtt", "acl", "topic deny zigbee2mqtt/bridge/logging\n", "")
-        self.assertFails("needs topic deny zigbee2mqtt/bridge/logging")
+        for x in v.HA_ACL_BRIDGE_DENY:
+            with self.subTest(deny=x):
+                self.setUp()
+                self.edit("zigbee2mqtt", "acl", f"topic deny zigbee2mqtt/bridge/{x}\n", "")
+                self.assertFails(f"needs topic deny zigbee2mqtt/bridge/{x}")
 
     def test_gate_caps_are_a_subset(self) -> None:
         self.edit("esphome", "compose.yml", "    cap_add: [CHOWN, SETGID, SETUID]\n", "    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]\n")

@@ -1147,8 +1147,9 @@ def check_mosquitto(t: Template, services: Dict[str, Any], r: Report) -> None:
 # matches case-sensitively, Zigbee2MQTT publishes exactly that).
 HA_ACL_ALLOWED = {
     ("read", "homeassistant/#"), ("write", "homeassistant/status"),
-    ("deny", "zigbee2mqtt/bridge/logging"),
     ("read", "zigbee2mqtt/+"), ("read", "zigbee2mqtt/+/+"),
+    ("read", "zigbee2mqtt/bridge/state"), ("read", "zigbee2mqtt/bridge/info"), ("read", "zigbee2mqtt/bridge/devices"),
+    ("read", "zigbee2mqtt/bridge/groups"), ("read", "zigbee2mqtt/bridge/event"),
     ("read", "zigbee2mqtt/+/availability"), ("read", "zigbee2mqtt/+/action"),
     ("write", "zigbee2mqtt/+/set"), ("write", "zigbee2mqtt/+/set/+"),
     ("write", "zigbee2mqtt/+/get"), ("write", "zigbee2mqtt/+/get/+"),
@@ -1156,6 +1157,12 @@ HA_ACL_ALLOWED = {
     ("write", "zigbee2mqtt/+/+/get"), ("write", "zigbee2mqtt/+/+/get/+"),
     ("write", "zigbee2mqtt/bridge/request/permit_join"),
 }
+# Two-level bridge topics Zigbee2MQTT 2.14.3 publishes that Home Assistant
+# doesn't use or that carry code / logged payloads: read zigbee2mqtt/+/+
+# would reach them, so each needs its read deny (exact: Mosquitto matches
+# case-sensitively, Zigbee2MQTT publishes exactly these).
+HA_ACL_BRIDGE_DENY = ("logging", "extensions", "converters", "definitions", "health")
+HA_ACL_ALLOWED |= {("deny", f"zigbee2mqtt/bridge/{x}") for x in HA_ACL_BRIDGE_DENY}
 HA_ACL_HINT = ("Zigbee2MQTT matches bridge requests case-insensitively: the homeassistant account is a reviewed "
                "allowlist (validate.py HA_ACL_ALLOWED); grant only what Home Assistant's integration uses")
 
@@ -1199,9 +1206,12 @@ def check_ha_acl(t: Template, path: str, r: Report) -> None:
             r.error(where, f"the homeassistant account must be an allowlist, not deny lines ({topic})", HA_ACL_HINT)
         elif (access, topic) not in HA_ACL_ALLOWED:
             r.error(where, f"{access} {topic} is not in the reviewed homeassistant allowlist (wildcard grant or new topic)", HA_ACL_HINT)
-    if ("read", "zigbee2mqtt/+/+") in ha and ("deny", "zigbee2mqtt/bridge/logging") not in ha:
-        r.error(f"{t.id}/{os.path.basename(path)}", "read zigbee2mqtt/+/+ needs topic deny zigbee2mqtt/bridge/logging "
-                "(Zigbee2MQTT logs every MQTT publish with its payload there)", HA_ACL_HINT)
+    if ("read", "zigbee2mqtt/+/+") in ha:
+        missing = [x for x in HA_ACL_BRIDGE_DENY if ("deny", f"zigbee2mqtt/bridge/{x}") not in ha]
+        if missing:
+            r.error(f"{t.id}/{os.path.basename(path)}", "read zigbee2mqtt/+/+ also reaches the two-level bridge topics: "
+                    "it needs topic deny zigbee2mqtt/bridge/" + ", zigbee2mqtt/bridge/".join(missing) +
+                    " (logged payloads, JavaScript source, unused bridge data)", HA_ACL_HINT)
 
 def check_signin_test(t: Template, r: Report) -> None:
     m = t.manifest or {}

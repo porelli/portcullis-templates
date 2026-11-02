@@ -125,6 +125,24 @@ for topic in zigbee2mqtt/bridge/request/extension/save zigbee2mqtt/bridge/reques
              zigbee2mqtt/ci/other other/ci; do
   if mq_deliver ha z2m "$topic"; then fail "homeassistant may publish $topic"; else pass "ACL: homeassistant can't publish $topic"; fi
 done
+# Retained bridge topics: what Home Assistant would get on subscribing.
+mq_retained() {  # <topic>: 0 if a retained message zigbee2mqtt published reaches homeassistant
+  local topic="$1" rc=0
+  docker exec "$MQ" sh -c "
+    XDG_CONFIG_HOME=/tmp/mq-z2m mosquitto_pub -r -t '$topic' -m portcullis-ci-retained
+    rm -f /tmp/got
+    XDG_CONFIG_HOME=/tmp/mq-ha mosquitto_sub -t '$topic' -C 1 -W 5 > /tmp/got 2>/dev/null || true
+    grep -qx portcullis-ci-retained /tmp/got" || rc=1
+  docker exec "$MQ" sh -c "XDG_CONFIG_HOME=/tmp/mq-z2m mosquitto_pub -r -n -t '$topic'" || true
+  return $rc
+}
+for topic in zigbee2mqtt/bridge/info zigbee2mqtt/bridge/devices; do
+  if mq_retained "$topic"; then pass "homeassistant gets retained $topic (control)"; else fail "homeassistant doesn't get retained $topic"; fi
+done
+for topic in zigbee2mqtt/bridge/extensions zigbee2mqtt/bridge/converters zigbee2mqtt/bridge/definitions \
+             zigbee2mqtt/bridge/health zigbee2mqtt/bridge/logging; do
+  if mq_retained "$topic"; then fail "homeassistant gets retained $topic"; else pass "ACL: homeassistant can't read retained $topic"; fi
+done
 for topic in zigbee2mqtt/bridge/response/backup zigbee2mqtt/bridge/response/Backup zigbee2mqtt/bridge/logging \
              zigbee2mqtt/bridge/request/backup zigbee2mqtt/a/b/c other/ci; do
   if mq_deliver z2m ha "$topic"; then fail "homeassistant receives $topic"; else pass "ACL: homeassistant can't read $topic"; fi
