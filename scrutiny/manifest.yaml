@@ -3,7 +3,7 @@ description: Hard drive S.M.A.R.T monitoring with web dashboard and alerts
 icon: "\U0001F4BE"
 category: monitoring
 tags: [disk, smart, health, monitoring, hardware]
-instances: single
+instances: multi
 
 auth:
   method: forward-auth
@@ -15,9 +15,56 @@ auth:
   notes: >
     No SSO or user system. Access gated by group-gate middleware. All
     authenticated users have full access.
-    Single instance (instances: single): the collector runs privileged with
-    the host's /dev and /run/udev and monitors the host's physical disks, so a
-    second instance would only duplicate SMART polling of the same devices.
+    Disks: list the host disks this instance monitors in the Disk 1-8
+    settings (e.g. /dev/sda, /dev/nvme0); only those are passed into the
+    container, read-only, so several instances can each monitor their own
+    disks. The container is not privileged: it gets SYS_RAWIO for SATA/SAS
+    SMART passthrough, plus SYS_ADMIN only if "NVMe capability" is set to
+    SYS_ADMIN (NVMe SMART logs need it). With no disk listed the dashboard
+    stays empty. A listed path that doesn't exist on the host stops the
+    container from starting.
+
+settings:
+  - key: SCRUTINY_DISK_1
+    label: Disk 1
+    description: Device path of a disk to monitor, e.g. /dev/sda or /dev/nvme0 (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_2
+    label: Disk 2
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_3
+    label: Disk 3
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_4
+    label: Disk 4
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_5
+    label: Disk 5
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_6
+    label: Disk 6
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_7
+    label: Disk 7
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_DISK_8
+    label: Disk 8
+    description: Another disk to monitor (empty = unused).
+    type: text
+  - key: SCRUTINY_NVME_CAPABILITY
+    label: NVMe capability
+    description: >
+      SYS_RAWIO (default) is enough for SATA/SAS disks. Choose SYS_ADMIN if
+      a listed disk is NVMe: the kernel only allows NVMe SMART reads with it.
+    type: select
+    options: [SYS_RAWIO, SYS_ADMIN]
+    default: SYS_RAWIO
 
 env: []
 keycloak_clients: []

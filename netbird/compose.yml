@@ -3,21 +3,48 @@
 services:
   coturn:
     image: coturn/coturn:4.18.0@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3
+    # Host networking: a TURN relay allocates its relay ports dynamically
+    # from the media range and advertises them to peers as
+    # <external IP>:<port>, so they must be the host's own ports (no NAT
+    # remapping), and publishing a range of thousands of ports through
+    # Docker is impractical. The listening ports and the relay range are
+    # per-instance port settings (manifest ports:, network_mode_host): the
+    # Hub's port collision check refuses a second instance until it uses
+    # free ones.
     network_mode: host
     volumes:
       - coturn-data:/var/lib/coturn
-    command: >
-      --listening-port=3478
-      --tls-listening-port=5349
-      --min-port=49152
-      --max-port=65535
-      --realm=${PORTCULLIS_DOMAIN:-portcullis.local}
-      --external-ip=${COTURN_EXTERNAL_IP:-}
-      --use-auth-secret
-      --static-auth-secret=${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
-      --no-cli
-      --fingerprint
-      --log-file=stdout
+    # $$VAR: expanded by the container shell from the environment below.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        range="$${COTURN_MEDIA_RANGE}"
+        case "$$range" in
+          [0-9]*-[0-9]*) ;;
+          *) echo "COTURN_MEDIA_RANGE must be low-high, got '$$range'" >&2; exit 1 ;;
+        esac
+        case "$$range" in
+          *[!0-9-]*|*-*-*) echo "COTURN_MEDIA_RANGE must be low-high, got '$$range'" >&2; exit 1 ;;
+        esac
+        exec docker-entrypoint.sh \
+          --listening-port="$${COTURN_STUN_PORT}" \
+          --tls-listening-port="$${COTURN_TURNS_PORT}" \
+          --min-port="$${range%-*}" \
+          --max-port="$${range#*-}" \
+          --realm="$${PORTCULLIS_DOMAIN}" \
+          --external-ip="$${COTURN_EXTERNAL_IP}" \
+          --use-auth-secret \
+          --static-auth-secret="$${COTURN_AUTH_SECRET}" \
+          --no-cli \
+          --fingerprint \
+          --log-file=stdout
+    environment:
+      COTURN_STUN_PORT: ${COTURN_STUN_PORT:-3478}
+      COTURN_TURNS_PORT: ${COTURN_TURNS_PORT:-5349}
+      COTURN_MEDIA_RANGE: ${COTURN_MEDIA_RANGE:-49152-65535}
+      PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      COTURN_EXTERNAL_IP: ${COTURN_EXTERNAL_IP:-}
+      COTURN_AUTH_SECRET: ${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
 
   netbird-management:
     image: netbirdio/management:0.82.0@sha256:07c8f979fcc980678cc64e584cf6b7b27204ceb4c871531b29e2dce39592e9ff
@@ -38,6 +65,7 @@ services:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       NETBIRD_HOST: ${PORTCULLIS_HOST_NETBIRD_DASH:-netbird.portcullis.local}
       NETBIRD_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-netbird-dashboard}
+      COTURN_STUN_PORT: ${COTURN_STUN_PORT:-3478}
       COTURN_EXTERNAL_IP: ${COTURN_EXTERNAL_IP:-}
       COTURN_AUTH_SECRET: ${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
       NETBIRD_OIDC_CLIENT_SECRET: ${NETBIRD_OIDC_CLIENT_SECRET:-}
@@ -106,12 +134,9 @@ services:
     restart: unless-stopped
 
 volumes:
-  coturn-data:
-    name: portcullis_coturn-data
-  netbird-mgmt:
-    name: portcullis_netbird-mgmt
-  netbird-config:
-    name: portcullis_netbird-config
+  coturn-data: {}
+  netbird-mgmt: {}
+  netbird-config: {}
 
 networks:
   portcullis-proxy:

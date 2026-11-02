@@ -3,7 +3,7 @@ description: Mesh VPN + zero-trust networking with TURN relay
 icon: "\U0001F426"
 category: vpn
 tags: [vpn, wireguard, mesh, zero-trust]
-instances: single
+instances: multi
 
 auth:
   method: native-oidc
@@ -20,10 +20,16 @@ auth:
     Upgrades: netbird-management and netbird-signal are pinned to the same
     release and must move together (the dashboard has its own version line);
     follow the upstream upgrade notes and do not skip releases with migrations.
-    Single instance (instances: single): coturn runs with host networking and
-    binds its listening ports and the whole UDP relay range 49152-65535 on the
-    host itself (not through the Hub's port mappings), so a second instance
-    could never start its TURN relay.
+    Instances: coturn runs with host networking (a TURN relay advertises its
+    relay ports to peers, so they must be the host's own ports) and binds the
+    STUN/TURN and TURNS ports and the UDP media relay range itself. All three
+    are per-instance port settings; the defaults (3478, 5349, 49152-65535)
+    are taken by the first instance, so the Hub's port collision check
+    refuses to start another instance until it is given free ports and a
+    range that doesn't overlap (e.g. 3479, 5350, 40000-40999).
+    management.json is generated once (it holds NetBird's
+    DataStoreEncryptionKey); a later hostname, STUN port or
+    COTURN_EXTERNAL_IP change is applied to it in place on the next start.
 
 ports:
   - key: COTURN_STUN_PORT

@@ -1,43 +1,49 @@
 #!/bin/sh
 CONFIG="/etc/netbird/management.json"
 TEMPLATE="/etc/netbird/management.json.tmpl"
-# Hostname the config was generated for (management.json is generated once:
-# NetBird stores its DataStoreEncryptionKey in it).
-HOST_FILE="/etc/netbird/.portcullis-host"
+# What the config was generated for: "<hostname> <turn endpoint>".
+# management.json is generated only once (NetBird stores its
+# DataStoreEncryptionKey in it), so later changes are applied in place.
+STATE_FILE="/etc/netbird/.portcullis-endpoints"
 NETBIRD_DOMAIN="${NETBIRD_HOST:?NETBIRD_HOST must be set}"
+TURN_ENDPOINT="${COTURN_EXTERNAL_IP:-${NETBIRD_DOMAIN}}:${COTURN_STUN_PORT:?COTURN_STUN_PORT must be set}"
+
+# Escape a literal for a sed regex (| is the delimiter).
+re_escape() { printf '%s' "$1" | sed 's/[].[*^$\\|]/\\&/g'; }
 
 if [ ! -f "$CONFIG" ]; then
   echo "Generating management.json from template..."
-  TURN_HOST="${COTURN_EXTERNAL_IP:-${NETBIRD_DOMAIN}}"
   sed \
     -e "s|\${PORTCULLIS_DOMAIN}|${PORTCULLIS_DOMAIN}|g" \
     -e "s|\${NETBIRD_DOMAIN}|${NETBIRD_DOMAIN}|g" \
     -e "s|\${NETBIRD_CLIENT_ID}|${NETBIRD_CLIENT_ID}|g" \
-    -e "s|\${TURN_HOST}|${TURN_HOST}|g" \
+    -e "s|\${TURN_ENDPOINT}|${TURN_ENDPOINT}|g" \
     -e "s|\${COTURN_AUTH_SECRET}|${COTURN_AUTH_SECRET}|g" \
     -e "s|\${NETBIRD_OIDC_CLIENT_SECRET}|${NETBIRD_OIDC_CLIENT_SECRET}|g" \
     "$TEMPLATE" > "$CONFIG"
   chmod 600 "$CONFIG"
-  printf '%s\n' "$NETBIRD_DOMAIN" > "$HOST_FILE"
+  printf '%s %s\n' "$NETBIRD_DOMAIN" "$TURN_ENDPOINT" > "$STATE_FILE"
   # Do not print the generated config: it contains the TURN and OIDC secrets.
   echo "Config generated."
 else
   echo "management.json already exists, skipping generation."
-  [ -f "$HOST_FILE" ] || printf '%s\n' "$NETBIRD_DOMAIN" > "$HOST_FILE"
-  OLD_HOST=$(cat "$HOST_FILE")
-  if [ "$OLD_HOST" != "$NETBIRD_DOMAIN" ]; then
-    # Hostname changed in the Hub: move the URLs that name it (Signal URI,
-    # redirect URLs, STUN/TURN host without COTURN_EXTERNAL_IP).
-    echo "Hostname changed: $OLD_HOST -> $NETBIRD_DOMAIN"
-    old_re=$(printf '%s' "$OLD_HOST" | sed 's/[].[*^$\\|]/\\&/g')
+  [ -f "$STATE_FILE" ] || printf '%s %s\n' "$NETBIRD_DOMAIN" "$TURN_ENDPOINT" > "$STATE_FILE"
+  read -r OLD_HOST OLD_TURN < "$STATE_FILE"
+  if [ "$OLD_HOST" != "$NETBIRD_DOMAIN" ] || [ "$OLD_TURN" != "$TURN_ENDPOINT" ]; then
+    # Hostname, STUN port or external IP changed: move the Signal URI, the
+    # redirect URLs and the STUN/TURN URIs.
+    echo "Endpoints changed: $OLD_HOST $OLD_TURN -> $NETBIRD_DOMAIN $TURN_ENDPOINT"
+    old_host=$(re_escape "$OLD_HOST")
+    old_turn=$(re_escape "$OLD_TURN")
     (umask 077 && sed \
-      -e "s|//${old_re}/|//${NETBIRD_DOMAIN}/|g" \
-      -e "s|\"${old_re}:443\"|\"${NETBIRD_DOMAIN}:443\"|g" \
-      -e "s|:${old_re}:3478\"|:${NETBIRD_DOMAIN}:3478\"|g" \
+      -e "s|\"stun:${old_turn}\"|\"stun:${TURN_ENDPOINT}\"|g" \
+      -e "s|\"turn:${old_turn}\"|\"turn:${TURN_ENDPOINT}\"|g" \
+      -e "s|//${old_host}/|//${NETBIRD_DOMAIN}/|g" \
+      -e "s|\"${old_host}:443\"|\"${NETBIRD_DOMAIN}:443\"|g" \
       "$CONFIG" > "$CONFIG.new") \
       && mv "$CONFIG.new" "$CONFIG" \
-      && printf '%s\n' "$NETBIRD_DOMAIN" > "$HOST_FILE" \
-      || { echo "Rewriting management.json for the new hostname failed." >&2; exit 1; }
+      && printf '%s %s\n' "$NETBIRD_DOMAIN" "$TURN_ENDPOINT" > "$STATE_FILE" \
+      || { echo "Rewriting management.json failed." >&2; exit 1; }
   fi
 fi
 

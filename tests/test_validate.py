@@ -121,6 +121,28 @@ class Case(unittest.TestCase):
         self.template = t
         return r.errors, r.warnings
 
+    def _rewrite(self, name: str, old: str, new: str) -> None:
+        path = os.path.join(self.tmp.name, "demo", name)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn(old, text)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new, 1))
+
+    def rewrite_compose(self, old: str, new: str) -> None:
+        self._rewrite("compose.yml", old, new)
+
+    def rewrite_manifest(self, old: str, new: str) -> None:
+        self._rewrite("manifest.yaml", old, new)
+
+    def recheck(self) -> List[str]:
+        t = v.Template("demo")
+        r = v.Report()
+        v.check_manifest_schema(t, self.validator, r)
+        v.check_manifest_rules(t, r)
+        v.check_compose(t, r)
+        return r.errors
+
     def assertClean(self, errors: List[str]) -> None:
         self.assertEqual(errors, [], "\n".join(errors))
 
@@ -316,6 +338,43 @@ class TestV2Refuses(Case):
         v.check_manifest_rules(t, r)
         v.check_compose(t, r)
         self.assertError(r.errors, "is shared by every instance and must be read-only (:ro)")
+
+
+    def test_literal_own_host_outside_the_variable(self) -> None:
+        errors, _ = self.run_template(env="      OVERWRITEHOST: demo.portcullis.local\n")
+        self.assertError(errors, "names its own host demo.portcullis.local literally")
+
+    def test_literal_own_host_in_support_file(self) -> None:
+        errors, _ = self.run_template(extra_files=(("app.conf", "host = https://demo.portcullis.local/\n"),))
+        self.assertError(errors, "demo/app.conf: names its own host demo.portcullis.local literally")
+
+    def test_instance_variable_in_support_file_needs_environment(self) -> None:
+        errors, _ = self.run_template(extra_files=(("app.conf", "group = ${PORTCULLIS_ACCESS_GROUP}\n"),))
+        self.assertError(errors, "demo/app.conf: uses PORTCULLIS_ACCESS_GROUP, which no service gets through environment:")
+
+    def test_instance_variable_in_support_file_passed_through_environment(self) -> None:
+        errors, _ = self.run_template(env="      PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n",
+                                      extra_files=(("app.conf", "group = ${PORTCULLIS_ACCESS_GROUP}\n"),))
+        self.assertClean(errors)
+
+    def test_instance_variable_in_support_file_must_exist(self) -> None:
+        errors, _ = self.run_template(env="      PORTCULLIS_OIDC_CLIENT_ID: x\n",
+                                      extra_files=(("app.conf", "id = ${PORTCULLIS_OIDC_CLIENT_ID}\n"),))
+        self.assertError(errors, "demo/app.conf: ${PORTCULLIS_OIDC_CLIENT_ID} is not set for this template")
+
+    def test_multi_template_cannot_be_privileged(self) -> None:
+        errors, _ = self.run_template(env="")
+        self.assertClean(errors)
+        self.rewrite_compose("    networks:\n      - default\n", "    privileged: true\n    networks:\n      - default\n")
+        self.assertError(self.recheck(), "privileged: true can't be per instance")
+
+    def test_multi_host_network_port_must_be_used(self) -> None:
+        self.run_template()
+        self.rewrite_manifest("env:\n", "ports:\n  - key: DEMO_UDP_PORT\n    label: UDP\n    container: 9999\n"
+                              "    protocol: udp\n    default: 9999\n    service: demo\n    network_mode_host: true\nenv:\n")
+        self.assertError(self.recheck(), "host-network port DEMO_UDP_PORT is not used in compose.yml")
+        self.rewrite_compose("      DEMO_URL:", "      DEMO_PORT: ${DEMO_UDP_PORT:-9999}\n      DEMO_URL:")
+        self.assertFalse(any("DEMO_UDP_PORT" in e for e in self.recheck()))
 
 
 class TestCross(Case):

@@ -75,22 +75,21 @@
 #    these apps use static manifest checks, not container boots, because
 #    the runner's systemd-resolved would fight over 53.
 #
+# 10. STATIC vs CONTAINER TESTS
+#     Two test patterns exist:
+#     - Static: grep compose.yml for labels/env/ports (no Docker needed)
+#     - Container: compose_up + wait_for_url + curl (needs Docker + infra)
+#     Static tests are faster and more reliable. Container tests verify
+#     actual app behavior but are flaky in CI. Prefer static for:
+#     apps with port conflicts, very large images, complex startup, or
+#     apps that need mounted content files (docs site).
+#
 # 11. PER-APP GENERATED ENV
 #     The Hub writes every manifest env var with "generate: random" into a
 #     per-app .env (32 hex chars). Compose files may therefore require them
 #     with ${VAR:?...}. CI only has the core .env, so compose_up/down/logs
 #     call _export_manifest_env to export a random value for each such var
 #     that is not already set (shell env wins over --env-file).
-#
-# 13. INSTANCE VARIABLES (contract v2)
-#     The Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_<ROUTER>,
-#     PORTCULLIS_OIDC_CLIENT_ID(_<KEY>), PORTCULLIS_ACCESS_GROUP and
-#     PORTCULLIS_ADMIN_GROUP into every instance's .env. CI runs the default
-#     instance: compose_up/down/logs call _export_instance_env, which exports
-#     the default instance's values (<sub>.$DOMAIN for each host router, the
-#     manifest's first client_id and groups). Volumes of multi templates have
-#     no name: in compose.yml; the Hub names them portcullis_<key> for the
-#     default instance, which is what "-p portcullis" (QUIRK #7) gives too.
 #
 # 12. PUBLIC EXCEPTIONS (auth.public_access)
 #     compose.yml never carries the public router: the Hub generates it in
@@ -101,14 +100,15 @@
 #     file version 3) its entry with write_public_policy. Keep the header and
 #     extension lists below in sync with the Hub.
 #
-# 10. STATIC vs CONTAINER TESTS
-#     Two test patterns exist:
-#     - Static: grep compose.yml for labels/env/ports (no Docker needed)
-#     - Container: compose_up + wait_for_url + curl (needs Docker + infra)
-#     Static tests are faster and more reliable. Container tests verify
-#     actual app behavior but are flaky in CI. Prefer static for:
-#     apps with port conflicts, very large images, complex startup, or
-#     apps that need mounted content files (docs site).
+# 13. INSTANCE VARIABLES (contract v2)
+#     The Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_<ROUTER>,
+#     PORTCULLIS_OIDC_CLIENT_ID(_<KEY>), PORTCULLIS_ACCESS_GROUP and
+#     PORTCULLIS_ADMIN_GROUP into every instance's .env. CI runs the default
+#     instance: compose_up/down/logs call _export_instance_env, which exports
+#     the default instance's values (<sub>.$DOMAIN for each host router, the
+#     manifest's first client_id and groups). Volumes of multi templates have
+#     no name: in compose.yml; the Hub names them portcullis_<key> for the
+#     default instance, which is what "-p portcullis" (QUIRK #7) gives too.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 

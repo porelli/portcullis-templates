@@ -27,6 +27,9 @@ auth:
     (`portcullis-headscale-headscale-1` for the default instance),
     paste it into the "Headscale API key" setting, then restart the app.
     Renew it before it expires.
+    config.yaml is regenerated from the template on every start (so hostname
+    and client changes apply), which means manual edits to it in the
+    headscale-config volume are lost; change the template instead.
     Upgrades: Headscale is pinned; upgrade one minor release at a time (its
     database migrations do not support skipping) and pick the Headplane release
     that supports that Headscale version.

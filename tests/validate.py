@@ -585,6 +585,19 @@ def check_compose(t: Template, r: Report) -> None:
                     "the default instance's volumes are portcullis_<volume key> (contracts §11.2)")
         t.volume_names[str(vol_name)] = vname
 
+    if t.multi:
+        for sname, svc in services.items():
+            if isinstance(svc, dict) and svc.get("privileged"):
+                r.error(f"{t.c_where}: services.{sname}", "privileged: true can't be per instance (every instance gets the whole host)",
+                        "pass only the devices the instance needs (devices:, from per-instance settings) with the capabilities they need; "
+                        "see scrutiny/")
+        for p in m.get("ports") or []:
+            if isinstance(p, dict) and p.get("network_mode_host") and isinstance(p.get("key"), str) \
+                    and not any(n == p["key"] for n, _, _ in iter_var_refs(t.compose_values)):
+                r.error(t.c_where, f"host-network port {p['key']} is not used in compose.yml",
+                        "with network_mode: host the app binds the port itself; read the per-instance value, e.g. "
+                        f"--listen=${{{p['key']}:-{p.get('default') or p.get('range')}}}, so each instance can use its own")
+
     if top_nets.get(PROXY_NET) is None and any(PROXY_NET in networks_of(s or {}) for s in services.values()):
         r.error(t.c_where, f"a service joins {PROXY_NET} but networks.{PROXY_NET} (external: true) is not declared")
 
@@ -701,6 +714,23 @@ def check_instance_vars(t: Template, r: Report) -> None:
     for var, sub in t.host_vars.items():
         expected[var] = f"{sub}.portcullis.local"
     reported: Set[Tuple[str, str]] = set()
+    # Support files see instance variables only through a service's
+    # environment: (the Hub writes them into the instance's .env, which
+    # compose reads; nothing expands them inside a file).
+    passed: Set[str] = set()
+    for svc in ((t.compose or {}).get("services") or {}).values():
+        if isinstance(svc, dict):
+            passed.update(env_of(svc))
+    for where, text in _template_texts(t)[1:]:
+        for name in sorted(set(INSTANCE_VAR_TEXT_RE.findall(text))):
+            if name not in expected:
+                r.error(where, f"${{{name}}} is not set for this template",
+                        "PORTCULLIS_HOST_<ROUTER> needs a host router <router>, PORTCULLIS_OIDC_CLIENT_ID* a keycloak_clients entry, "
+                        "PORTCULLIS_ACCESS_GROUP / PORTCULLIS_ADMIN_GROUP auth.access_group / admin_group")
+            elif name not in passed:
+                r.error(where, f"uses {name}, which no service gets through environment:",
+                        f"pass it in compose.yml, e.g. environment: {{{name}: ${{{name}:-{expected[name]}}}}} "
+                        "(or under the app's own name), and substitute it when the file is rendered")
     for where, text in [(t.c_where, t.compose_values)]:
         for name, op, rest in iter_var_refs(text):
             if not is_instance_var(name):
@@ -723,6 +753,9 @@ def check_instance_vars(t: Template, r: Report) -> None:
                 r.error(where, *msg)
 
 
+INSTANCE_VAR_TEXT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(PORTCULLIS_(?:INSTANCE|HOST_[A-Z0-9_]+|OIDC_CLIENT_ID(?:_[A-Z0-9_]+)?|ACCESS_GROUP|ADMIN_GROUP))(?![A-Za-z0-9_])")
+_HOST_VAR_REF_RE = re.compile(r"\$\{PORTCULLIS_HOST_[A-Z0-9_]+:-[^}]*\}")
 _OWN_HOST_SUFFIX = r"\.(?:\$+\{?PORTCULLIS_DOMAIN\b|PORTCULLIS_DOMAIN_PLACEHOLDER)"
 
 
@@ -748,10 +781,14 @@ def check_own_hosts(t: Template, services: Dict[str, Any], r: Report) -> None:
                 r.error(t.m_where, f"{u}: use {{{{HOST_{by_sub[sub][len('PORTCULLIS_HOST_'):]}}}}} for its own host",
                         "{{DOMAIN}} is the main domain; the instance's hostname can be anywhere; " + V2_HINT)
     for where, text in _template_texts(t):
+        literal = _HOST_VAR_REF_RE.sub("", text)
         for sub, var in sorted(by_sub.items()):
             if re.search(rf"(?<![A-Za-z0-9.-]){re.escape(sub)}{_OWN_HOST_SUFFIX}", text):
                 r.error(where, f"names its own host {sub}.${{PORTCULLIS_DOMAIN}}",
                         f"use ${{{var}:-{sub}.portcullis.local}} (env URLs, hostname:, middleware values); " + V2_HINT)
+            if re.search(rf"(?<![A-Za-z0-9.-]){re.escape(sub)}\.portcullis\.local(?![A-Za-z0-9-])", literal):
+                r.error(where, f"names its own host {sub}.portcullis.local literally",
+                        f"use ${{{var}:-{sub}.portcullis.local}}: the instance's hostname is whatever the admin chose; " + V2_HINT)
     if not t.multi:
         return
     auth = m.get("auth") or {}

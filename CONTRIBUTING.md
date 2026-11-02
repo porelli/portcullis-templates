@@ -216,9 +216,14 @@ stripped). Rules, all checked by `tests/validate.py`:
 - **Instances** (contract v2). Set `instances: multi` in the manifest: the Hub
   can then run several independent instances of the template, each with its
   own project, volumes, secrets, Keycloak clients, groups and hostnames. Use
-  `instances: single` only when the app needs host-level uniqueness (fixed
-  host devices, host networking with fixed ports) and say why in
-  `auth.notes`. Host ports are no reason: they are per-instance settings.
+  `instances: single` only when the app needs host-level uniqueness and say
+  why in `auth.notes`. Host resources are usually per-instance settings
+  instead: host ports (manifest `ports:`; with `network_mode: host` the app
+  must read each port's key, e.g. `--listening-port=${COTURN_STUN_PORT:-3478}`,
+  see `netbird/`) and host devices (list them in settings and pass them as
+  `devices:` with the capabilities they need, see `scrutiny/`; `privileged`
+  is refused for `multi`). Support files get instance variables only through
+  a service's `environment:`.
 - **Routers.** Every rule is exactly
   ``Host(`${PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}`)``, optionally
   followed by `` && PathPrefix(`/x`) ``, `` && Path(`/x`) `` or a parenthesised
