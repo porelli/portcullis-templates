@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Test: Pi-hole (forward-auth + group-gate)
-# Static config check only — no container startup needed.
+# Test: Pi-hole (forward-auth + group-gate; no Pi-hole password, web ACL)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
@@ -9,12 +8,7 @@ section "Pi-hole"
 
 APP_ID=pihole
 
-COMPOSE=$(_find_compose "$APP_ID")
-if [ -n "$COMPOSE" ]; then
-  pass "compose.yml found: $COMPOSE"
-else
-  fail "compose.yml not found for $APP_ID"
-fi
+COMPOSE=$(_find_compose "$APP_ID") || { fail "compose.yml not found for $APP_ID"; exit 1; }
 
 # Traefik routing enabled
 if grep -q 'traefik.enable.*true' "$COMPOSE"; then
@@ -30,6 +24,16 @@ else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
 
+# No second login: empty password, web server only for Traefik + loopback,
+# Host check against the instance hostname
+assert_compose_setting "$COMPOSE" FTLCONF_webserver_api_password '""'
+if grep -Eq '^[[:space:]]*FTLCONF_webserver_acl:[[:space:]]*\+\$\{PORTCULLIS_TRAEFIK_IP:-[0-9.]+\},\+127\.0\.0\.1,\+\[::1\][[:space:]]*$' "$COMPOSE"; then
+  pass "FTLCONF_webserver_acl allows only \${PORTCULLIS_TRAEFIK_IP} and loopback"
+else
+  fail "FTLCONF_webserver_acl must be +\${PORTCULLIS_TRAEFIK_IP:-...},+127.0.0.1,+[::1]"
+fi
+assert_compose_setting "$COMPOSE" FTLCONF_webserver_domain '\$\{PORTCULLIS_HOST_PIHOLE:-pihole\.portcullis\.local\}'
+
 # Service port matches Traefik label
 if grep -q 'loadbalancer.server.port.*80' "$COMPOSE"; then
   pass "Traefik loadbalancer port is 80"
@@ -44,3 +48,24 @@ if grep -q 'PIHOLE_DNS_TCP_HOST' "$MANIFEST" && grep -q 'PIHOLE_DNS_UDP_HOST' "$
 else
   fail "DNS ports not declared in manifest"
 fi
+
+compose_up "$APP_ID"
+IP=$(app_container_ip "$APP_ID")
+C=portcullis-pihole-1
+
+# Wait until FTL answers inside the container (loopback is allowed)
+for _ in $(seq 1 60); do
+  docker exec "$C" curl -sf -o /dev/null http://127.0.0.1/api/info/version 2>/dev/null && break
+  sleep 2
+done
+if docker exec "$C" curl -sf http://127.0.0.1/api/info/version 2>/dev/null | grep -q '"version"'; then
+  pass "API answers on loopback without a password"
+else
+  fail "API does not answer on loopback without a password"
+fi
+
+# Any peer but Traefik (here: the CI host) is refused by the web server ACL
+assert_http_code "http://${IP}/api/info/version" 403
+assert_http_code "http://${IP}/admin/" 403
+
+compose_down "$APP_ID"

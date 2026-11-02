@@ -49,11 +49,12 @@ bash tests/compose-config.sh       # docker compose config for every template
 
 | Method | Apps |
 |--------|------|
-| **Native OIDC** | Actual Budget, GitLab\*, Headscale, Immich, Jellyfin, LiteLLM\*, NetBird, Vaultwarden\* |
-| **Forward Auth** | AdGuard, DokuWiki, Nextcloud, Pi-hole, Scrutiny, Wiki.js |
+| **Native OIDC** | Actual Budget, DokuWiki, GitLab\*, Headscale, Immich, Jellyfin, LiteLLM\*, NetBird, Nextcloud\*, Vaultwarden\*, Wiki.js\* |
+| **Forward Auth** | AdGuard, Pi-hole, Scrutiny |
 | **Header Auth** | CloudBeaver, Firefly III, Grafana, Guacamole, Kanboard |
 | **Custom/Public** | Plex (plex.tv accounts), Docs (public), Vault UI (mTLS, placeholder) |
 
-\* Native OIDC plus forward-auth + group-gate on specific paths: GitLab and
-LiteLLM gate their login paths by group (`users_<app>`), Vaultwarden's `/admin`
-requires `admin_vaultwarden` (`auth.admin_paths`).
+\* Native OIDC plus forward-auth + group-gate on specific paths: GitLab,
+LiteLLM, Vaultwarden and Wiki.js gate their login paths by group
+(`users_<app>`), Nextcloud its break-glass password form (`/login`),
+Vaultwarden's `/admin` requires `admin_vaultwarden` (`auth.admin_paths`).

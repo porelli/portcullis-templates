@@ -1,7 +1,22 @@
 services:
   nextcloud:
     image: nextcloud:34.0.5-apache@sha256:515c072ea1cf82ece3503f301fdf75dd5a7148abcc8fa10aaefd5ec56643b703
+    # The image runs executable *.sh files in
+    # /docker-entrypoint-hooks.d/before-starting as www-data after its
+    # install/upgrade step, at every start. Install a 0755 copy of the
+    # read-only template file there (template file modes are not guaranteed)
+    # and hand over to the image's own entrypoint and command.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        install -D -m 0755 /portcullis/setup.sh /docker-entrypoint-hooks.d/before-starting/50-portcullis.sh
+        exec /entrypoint.sh "$$@"
+      - sh
+    command: ["apache2-foreground"]
     environment:
+      # Break-glass local admin (created at install; password login only via
+      # /login?direct=1, which sits behind the Portcullis gateway).
       NEXTCLOUD_ADMIN_USER: admin
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?NEXTCLOUD_ADMIN_PASSWORD must be set}
       NEXTCLOUD_TRUSTED_DOMAINS: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
@@ -10,18 +25,55 @@ services:
       # Only Traefik (static IP on portcullis-proxy, set by core) may supply
       # X-Forwarded-For.
       TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      # Read by setup.sh at every start (hostname, OIDC client, groups).
+      PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      PORTCULLIS_HOST_NEXTCLOUD: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
+      PORTCULLIS_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-nextcloud}
+      PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_nextcloud}
+      PORTCULLIS_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_nextcloud}
+      NEXTCLOUD_OIDC_SECRET: ${NEXTCLOUD_OIDC_SECRET:?NEXTCLOUD_OIDC_SECRET must be set}
     volumes:
       - nextcloud-data:/var/www/html
+      - ./templates/nextcloud/setup.sh:/portcullis/setup.sh:ro
+      - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
     networks:
       - default
       - portcullis-proxy
     labels:
       traefik.enable: "true"
+      # Native OIDC (user_oidc): the host is not behind forward-auth, so sync
+      # clients, WebDAV, OCS and share links work.
       traefik.http.routers.nextcloud.rule: Host(`${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}`)
       traefik.http.routers.nextcloud.entrypoints: websecure
       traefik.http.routers.nextcloud.tls.options: authaware@file
-      traefik.http.routers.nextcloud.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.nextcloud.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.nextcloud.service: nextcloud
+      # The login page (GET redirects to Portcullis; POST is the password
+      # form of the break-glass admin) behind forward-auth + group-gate, so
+      # the password form never faces the internet. Exact paths only: the
+      # Login Flow v2 poll endpoint (/login/v2/poll) stays reachable for the
+      # sync clients.
+      traefik.http.routers.nextcloud-login.rule: Host(`${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}`) && (Path(`/login`) || Path(`/index.php/login`))
+      traefik.http.routers.nextcloud-login.priority: "100"
+      traefik.http.routers.nextcloud-login.entrypoints: websecure
+      traefik.http.routers.nextcloud-login.tls.options: authaware@file
+      traefik.http.routers.nextcloud-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.nextcloud-login.service: nextcloud
       traefik.http.services.nextcloud.loadbalancer.server.port: "80"
+    restart: unless-stopped
+
+  nextcloud-cron:
+    image: nextcloud:34.0.5-apache@sha256:515c072ea1cf82ece3503f301fdf75dd5a7148abcc8fa10aaefd5ec56643b703
+    # Background jobs + admin group mapping (see cron.sh).
+    user: www-data
+    entrypoint: ["/bin/sh", "/portcullis/cron.sh"]
+    environment:
+      PORTCULLIS_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_nextcloud}
+    volumes:
+      - nextcloud-data:/var/www/html
+      - ./templates/nextcloud/cron.sh:/portcullis/cron.sh:ro
+    depends_on:
+      - nextcloud
     restart: unless-stopped
 
 volumes:

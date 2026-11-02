@@ -377,6 +377,37 @@ class TestV2Refuses(Case):
         self.assertFalse(any("DEMO_UDP_PORT" in e for e in self.recheck()))
 
 
+class TestIdentityRules(Case):
+    def test_nextcloud_uid_mapping_must_not_be_email(self) -> None:
+        errors, _ = self.run_template(extra_files=(("setup.sh", "occ user_oidc:provider P --mapping-uid=email\n"),))
+        self.assertError(errors, "user_oidc keys users on email")
+        errors, _ = self.run_template(extra_files=(("setup.sh", "occ user_oidc:provider P --mapping-uid=preferred_username\n"),))
+        self.assertClean(errors)
+
+    def test_nextcloud_soft_auto_provision_must_stay_off(self) -> None:
+        errors, _ = self.run_template(extra_files=(("setup.sh", "occ config:system:set user_oidc soft_auto_provision --type=boolean --value=true\n"),))
+        self.assertError(errors, "soft auto-provisioning")
+        errors, _ = self.run_template(extra_files=(("setup.sh", "occ config:system:set user_oidc soft_auto_provision --type=boolean --value=false\n"),))
+        self.assertClean(errors)
+
+    def test_dokuwiki_oauth_mail_claim_must_not_be_email(self) -> None:
+        errors, _ = self.run_template(extra_files=(("init.sh", '  "json-mail" => "email",\n'),))
+        self.assertError(errors, "json-mail")
+
+    def test_pihole_without_password_needs_acl_and_domain(self) -> None:
+        errors, _ = self.run_template(env='      FTLCONF_webserver_api_password: ""\n')
+        self.assertError(errors, "FTLCONF_webserver_acl")
+        self.assertError(errors, "FTLCONF_webserver_domain")
+        errors, _ = self.run_template(env='      FTLCONF_webserver_api_password: ""\n'
+                                          "      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2},+127.0.0.1,+[::1]\n"
+                                          "      FTLCONF_webserver_domain: ${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n")
+        self.assertClean(errors)
+        errors, _ = self.run_template(env='      FTLCONF_webserver_api_password: ""\n'
+                                          "      FTLCONF_webserver_acl: +172.31.250.0/24\n"
+                                          "      FTLCONF_webserver_domain: ${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n")
+        self.assertError(errors, "FTLCONF_webserver_acl")
+
+
 class TestCross(Case):
     def test_multi_volume_keys_must_be_unique_across_templates(self) -> None:
         self.run_template(app_id="demo")

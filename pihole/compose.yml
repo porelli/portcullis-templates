@@ -2,8 +2,21 @@ services:
   pihole:
     image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
     environment:
-      # Pi-hole v6: WEBPASSWORD/VIRTUAL_HOST were removed in favour of FTLCONF_*.
-      FTLCONF_webserver_api_password: ${PIHOLE_WEBPASSWORD:?PIHOLE_WEBPASSWORD must be set}
+      # Pi-hole v6 (FTLCONF_* override pihole.toml and are read-only in the
+      # UI, so this is re-applied at every start). No second login behind
+      # the gateway: the web server and API only answer Traefik (static IP
+      # on portcullis-proxy, set by core) and the container itself
+      # (healthcheck, `pihole` CLI); every other peer, e.g. another app
+      # container on portcullis-proxy, gets 403. Traefik serves the host only
+      # through forward-auth + group-gate.
+      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2},+127.0.0.1,+[::1]
+      # Empty password = API and web UI without Pi-hole's own login. FTL then
+      # still refuses browser requests sent by other sites (Fetch Metadata /
+      # Origin, same-site sibling hosts included) and requests for a Host it
+      # doesn't know (DNS rebinding): webserver.domain must be the instance's
+      # hostname (re-applied at every start).
+      FTLCONF_webserver_api_password: ""
+      FTLCONF_webserver_domain: ${PORTCULLIS_HOST_PIHOLE:-pihole.portcullis.local}
     volumes:
       - pihole-data:/etc/pihole
       - pihole-dnsmasq:/etc/dnsmasq.d

@@ -115,6 +115,11 @@ LOGIN_GATES = {
     "gitlab": ["/users"],
     "litellm": ["/ui", "/sso", "/login", "/v2/login", "/fallback/login", "/onboarding"],
     "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
+    # The break-glass admin's password form (Nextcloud restricts OIDC logins
+    # by group itself; the gate keeps the password form off the internet).
+    "nextcloud": ["/login", "/index.php/login"],
+    # Wiki.js can't restrict OIDC logins by group; /finalize is the wizard.
+    "wiki": ["/login", "/finalize"],
 }
 
 
@@ -181,6 +186,13 @@ IDENTITY_ENV_REQUIRED = [
      "Vaultwarden SSO must set SIGNUPS_ALLOWED: \"false\" (accounts only via the group-gated SSO login)"),
     ("AUTHENTICATION_GUARD", r"^remote_user_guard$", "AUTHENTICATION_GUARD_HEADER", r"^HTTP_X_FORWARDED_USER$",
      "Firefly III remote_user_guard must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
+    ("FTLCONF_webserver_api_password", r"^$", "FTLCONF_webserver_acl",
+     r"^\+\$\{PORTCULLIS_TRAEFIK_IP:-[0-9.]+\}(,\+127\.0\.0\.1)?(,\+\[::1\])?$",
+     "Pi-hole without a password must set FTLCONF_webserver_acl to +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2} "
+     "(optionally +127.0.0.1,+[::1]): otherwise every container on portcullis-proxy gets the admin API"),
+    ("FTLCONF_webserver_api_password", r"^$", "FTLCONF_webserver_domain", r"^\$\{PORTCULLIS_HOST_[A-Z0-9_]+:-[^}]+\}$",
+     "Pi-hole without a password must set FTLCONF_webserver_domain to its PORTCULLIS_HOST_<ROUTER> "
+     "(FTL refuses unknown Host names then)"),
     ("REVERSE_PROXY_AUTH", r"(?i)^true$", "REVERSE_PROXY_USER_HEADER", r"^HTTP_X_FORWARDED_USER$",
      "Kanboard reverse proxy auth must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
     ("GENERIC_CLIENT_ID", r".", "GENERIC_USER_EMAIL_ATTRIBUTE", r"^(?!email$).+",
@@ -195,6 +207,11 @@ IDENTITY_TEXT_FORBIDDEN = [
     (r"\"DefaultUsernameClaim\"\s*:\s*\"email\"", "Jellyfin SSO plugin keys users on email"),
     (r"\"AuthUserIDClaim\"\s*:\s*\"email\"", "NetBird keys users on email"),
     (r"uid_field:\s*'email'", "GitLab OIDC uid_field is the email"),
+    (r"--mapping-uid[= ]['\"]?email\b", "Nextcloud user_oidc keys users on email"),
+    (r"soft_auto_provision\b.*--value[= ]['\"]?(true|1)\b",
+     "Nextcloud user_oidc soft auto-provisioning attaches SSO logins to existing local accounts"),
+    (r"[\"']json-mail[\"']\s*=>\s*[\"']email[\"']",
+     "the DokuWiki oauth plugin finds accounts by the json-mail claim; map it to preferred_username"),
 ]
 
 
@@ -1076,7 +1093,8 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     for p in LOGIN_GATES.get(t.id, []):
         if not any(any(prefix_covers(q, p) for q in ps) for _, ps in gated):
             r.error(t.c_where, f"security regression: {p} must be served by a router with {AUTH_MW},{GROUPS_MW}",
-                    "without it any Keycloak realm user can sign in; see the auth notes in manifest.yaml")
+                    "without it any Keycloak realm user can sign in (or a password form faces the internet); "
+                    "see the auth notes in manifest.yaml")
     if t.id in LOGIN_GATES and not auth.get("group_access"):
         r.error(t.m_where, "security regression: login is gated by group-gate, so group_access must be true")
 

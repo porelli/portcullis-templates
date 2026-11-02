@@ -8,19 +8,82 @@ services:
       DB_USER: wiki
       DB_PASS: ${WIKI_DB_PASSWORD:?WIKI_DB_PASSWORD must be set}
       DB_NAME: wiki
+      # Keycloak may use the internal PKI.
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
+    volumes:
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro
     depends_on:
-      - wiki-db
+      wiki-init:
+        condition: service_completed_successfully
     networks:
       - default
       - portcullis-proxy
     labels:
       traefik.enable: "true"
+      # Native OIDC: the host is not behind forward-auth (the API and the
+      # wiki's own sessions work as usual).
       traefik.http.routers.wiki.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`)
       traefik.http.routers.wiki.entrypoints: websecure
       traefik.http.routers.wiki.tls.options: authaware@file
-      traefik.http.routers.wiki.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.wiki.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.wiki.service: wiki
+      # Wiki.js can't restrict OIDC logins by group: the login pages (also
+      # /login/portcullis and its callback) and the setup wizard's /finalize
+      # sit behind forward-auth + group-gate.
+      traefik.http.routers.wiki-login.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`) && (PathPrefix(`/login`) || Path(`/finalize`))
+      traefik.http.routers.wiki-login.priority: "100"
+      traefik.http.routers.wiki-login.entrypoints: websecure
+      traefik.http.routers.wiki-login.tls.options: authaware@file
+      traefik.http.routers.wiki-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.wiki-login.service: wiki
       traefik.http.services.wiki.loadbalancer.server.port: "3000"
     restart: unless-stopped
+
+  # Before Wiki.js boots, at every start (existing installs only; a fresh
+  # database has no tables yet): the site URL follows the instance's
+  # hostname (Wiki.js reads it at boot, also for the OIDC callback URL), and
+  # the Guests group has no permissions, so nothing is readable anonymously
+  # even for a moment.
+  wiki-init:
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until pg_isready -q -h wiki-db -U wiki -d wiki; do sleep 2; done
+        if [ "$$(psql -h wiki-db -U wiki -d wiki -tAc "SELECT to_regclass('public.settings') IS NOT NULL AND to_regclass('public.groups') IS NOT NULL")" != t ]; then
+          echo "wiki-init: fresh database, nothing to do"
+          exit 0
+        fi
+        psql -v ON_ERROR_STOP=1 -q -h wiki-db -U wiki -d wiki -v host="https://$${PORTCULLIS_HOST_WIKI}" <<'SQL'
+        UPDATE settings SET value = json_build_object('v', :'host'::text), "updatedAt" = now()::text WHERE key = 'host';
+        UPDATE groups SET permissions = '[]', "pageRules" = '[]', "updatedAt" = now()::text WHERE id = 2;
+        SQL
+        echo "wiki-init: site URL https://$${PORTCULLIS_HOST_WIKI}, guests locked out"
+    environment:
+      PGPASSWORD: ${WIKI_DB_PASSWORD:?WIKI_DB_PASSWORD must be set}
+      PORTCULLIS_HOST_WIKI: ${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}
+    depends_on:
+      - wiki-db
+    restart: "no"
+
+  wiki-setup:
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    entrypoint: ["python3", "/setup.py"]
+    environment:
+      PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      PORTCULLIS_HOST_WIKI: ${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}
+      PORTCULLIS_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-wiki}
+      PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_wiki}
+      PORTCULLIS_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_wiki}
+      WIKI_OIDC_SECRET: ${WIKI_OIDC_SECRET:?WIKI_OIDC_SECRET must be set}
+      # Break-glass local admin (Wiki.js signs local users in by email).
+      WIKI_ADMIN_EMAIL: admin@wiki.invalid
+      WIKI_ADMIN_PASSWORD: ${WIKI_ADMIN_PASSWORD:?WIKI_ADMIN_PASSWORD must be set}
+    volumes:
+      - ./templates/wiki/setup.py:/setup.py:ro
+    depends_on:
+      - wiki
+    restart: "no"
 
   wiki-db:
     image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab

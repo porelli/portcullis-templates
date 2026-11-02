@@ -272,7 +272,9 @@ assert_http_code() {
   local actual
   # QUIRK #4: RESOLVE_OPTS uses a glob that curl doesn't actually expand.
   # Use container IPs for reliable CI testing instead of Traefik routing.
-  actual=$(curl -sf -o /dev/null -w "%{http_code}" $RESOLVE_OPTS "$@" "$url" 2>/dev/null || echo "000")
+  # No -f: with it curl exits non-zero on 4xx/5xx and "000" would be
+  # appended to the code it already printed.
+  actual=$(curl -s -o /dev/null -w "%{http_code}" $RESOLVE_OPTS "$@" "$url" 2>/dev/null) || actual="000"
   if [ "$actual" = "$expected" ]; then
     pass "$url → HTTP $actual"
   else

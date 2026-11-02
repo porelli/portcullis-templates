@@ -1,25 +1,64 @@
 name: Wiki.js
-description: Modern wiki — mTLS if cert present, WebAuthn fallback
+description: Modern wiki with Portcullis sign-in (OpenID Connect) and group-based rights
 icon: "\U0001F4D6"
 category: productivity
 tags: [wiki, docs, knowledge-base]
 instances: multi
 
 auth:
-  method: forward-auth
-  sso: false
+  method: native-oidc
+  sso: true
   group_access: true
-  group_admin: false
+  group_admin: true
   access_group: users_wiki
   admin_group: admin_wiki
-  notes: No SSO configured yet. Access gated by group-gate middleware. Wiki.js supports OIDC natively but needs manual setup after wizard.
+  notes: >
+    Native OIDC through Wiki.js' generic OpenID Connect strategy (key
+    "portcullis"), configured by the wiki-setup sidecar at every start
+    (GraphQL API, as the break-glass local admin). One Portcullis login:
+    users pick "Portcullis" on the login page. Identity: Wiki.js keys
+    accounts on the OIDC subject (the Keycloak id of the LLDAP user, never
+    the email; Wiki.js has no username-claim option). It requires an email
+    claim and only uses it for the profile; it would link a login to a user
+    an admin pre-created for this strategy with the same email, so never
+    pre-create users for the Portcullis strategy (LLDAP emails are
+    user-editable). Rights come only from groups: new accounts get no
+    group, and at each login Wiki.js sets the user's membership of the
+    Wiki.js groups users_wiki (editors, created once; adjust its rights in
+    Wiki.js) and admin_wiki (manage:system, re-applied every start) from the
+    groups claim. The Guests group has no permissions (re-applied before
+    every boot by wiki-init), so nothing is readable anonymously. Wiki.js
+    can't restrict OIDC logins by group, so /login (also /login/portcullis
+    and its callback) and the setup wizard's /finalize sit behind
+    forward-auth + group-gate (users_wiki); a realm user outside the groups
+    who still got an account has no rights. Removing a user from the groups
+    takes effect at their next login (Wiki.js sessions last up to 14 days).
+    Break-glass: the local admin admin@wiki.invalid with WIKI_ADMIN_PASSWORD
+    (set by the sidecar's setup wizard on a fresh install); its password
+    login goes through the GraphQL API, rate-limited by Wiki.js (5 per
+    minute). Existing installs whose admin has another email or password:
+    the sidecar logs that Portcullis sign-in is not configured; create that
+    local admin (or give an admin those credentials) and restart. Hostname:
+    wiki-init writes the site URL from the instance's hostname before Wiki.js
+    boots, so a hostname change only needs a restart.
 
 env:
   - key: WIKI_DB_PASSWORD
     description: Wiki.js database password
     generate: random
+  - key: WIKI_ADMIN_PASSWORD
+    description: Password of the break-glass local Wiki.js admin (admin@wiki.invalid)
+    generate: random
+  - key: WIKI_OIDC_SECRET
+    description: Wiki.js OIDC client secret
+    generate: random
 
-keycloak_clients: []
+keycloak_clients:
+  - client_id: wiki
+    secret_env: WIKI_OIDC_SECRET
+    redirect_uri: "https://{{HOST_WIKI}}/login/portcullis/callback"
+    name: Wiki.js
+
 config_files: []
 
 urls:
