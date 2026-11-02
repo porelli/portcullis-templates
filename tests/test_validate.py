@@ -941,6 +941,36 @@ class TestGatedHomeTemplates(unittest.TestCase):
                       "mirror.example.org/hub/mattermost/mattermost-team-edition:12.0.1"):
             self.assertTrue(any(v.repo_is(image, repo) for repo in v.GATED_BACKENDS), image)
 
+    def test_gate_upstream_names(self) -> None:
+        # Another template's container answering to a gate's upstream name on
+        # portcullis-proxy would receive that gate's traffic (Docker DNS).
+        z2m_gate = "    networks:\n      - default\n      - portcullis-proxy\n    labels:\n"
+        self.edit("zigbee2mqtt", "compose.yml", z2m_gate,
+                  "    networks:\n      default: {}\n      portcullis-proxy:\n        aliases: [mattermost-internal]\n    labels:\n")
+        self.assertFails("ends in -internal but is on network 'portcullis-proxy'")
+        self.assertFails("is mattermost's gate upstream (here on network 'portcullis-proxy')")
+        for key in ("hostname", "container_name"):
+            with self.subTest(key=key):
+                self.setUp()
+                self.edit("zigbee2mqtt", "compose.yml", z2m_gate, f"    {key}: esphome-internal\n" + z2m_gate)
+                self.assertFails("is esphome's gate upstream")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", z2m_gate,
+                  "    networks:\n      default: {}\n      portcullis-proxy:\n        aliases: [anything-internal]\n    labels:\n")
+        self.assertFails("'anything-internal' ends in -internal")
+        for old, new, needle in (
+                ("GATE_UPSTREAM: http://mattermost-internal:8065", "GATE_UPSTREAM: http://mattermost:8065",
+                 "must name a <app>-internal alias"),
+                ("GATE_UPSTREAM: http://mattermost-internal:8065", "GATE_UPSTREAM: http://other-internal:8065",
+                 "must be a default-network alias of the gated backend"),
+                ("    shm_size: 128mb\n", "    shm_size: 128mb\n    networks:\n      default:\n        aliases: [mattermost-internal]\n",
+                 "is also services.mattermost-db on 'default'"),
+        ):
+            with self.subTest(needle=needle):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", old, new)
+                self.assertFails(needle)
+
     def test_homeassistant_acl_is_an_allowlist(self) -> None:
         for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),
                               ("topic readwrite zigbee2mqtt/#\n", "not in the reviewed"),

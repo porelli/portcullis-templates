@@ -794,6 +794,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
     check_identity(t, services, r)
+    check_internal_names(t, services, r)
     check_gated_backends(t, services, r)
     check_mosquitto(t, services, r)
     check_signin_test(t, r)
@@ -1124,6 +1125,52 @@ def _has_healthcheck(svc: Dict[str, Any]) -> bool:
     return bool(test)
 
 
+# Names the gate resolves its upstream by (Docker DNS, on every network the
+# gate joins, portcullis-proxy included): they end in -internal and are
+# declared on the template's own default network only, and no service of any
+# template may answer to such a name on another network (it would receive the
+# proxied requests). Docker's DNS answers service names, container names and
+# network aliases; hostname is included to be safe.
+INTERNAL_SUFFIX = "-internal"
+DNS_HINT = ("names ending in -internal (a gate's upstream) are declared as aliases on the default network only; "
+            "a name on portcullis-proxy could catch another app's gated traffic")
+
+
+def dns_names(sname: str, svc: Dict[str, Any]) -> Dict[str, Set[str]]:
+    """network -> the names other containers on it resolve to this service."""
+    if str(svc.get("network_mode", "")):
+        return {}
+    nets = svc.get("networks")
+    if nets is None:
+        nets = {"default": None}
+    if not isinstance(nets, dict):
+        nets = {str(n): None for n in nets}
+    common = {sname} | {str(svc[k]) for k in ("container_name", "hostname") if svc.get(k)}
+    out: Dict[str, Set[str]] = {}
+    for net, conf in nets.items():
+        aliases = (conf or {}).get("aliases") if isinstance(conf, dict) else None
+        out[str(net)] = {n.lower() for n in common | {str(a) for a in as_list(aliases)}}
+    return out
+
+
+def gate_upstream_host(svc: Dict[str, Any]) -> Optional[str]:
+    m = re.match(r"^https?://([^/:]+)", env_of(svc).get("GATE_UPSTREAM", ""))
+    return m.group(1).lower() if m else None
+
+
+def check_internal_names(t: Template, services: Dict[str, Any], r: Report) -> None:
+    for sname, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        for net, names in dns_names(str(sname), svc).items():
+            if net == "default":
+                continue
+            for n in sorted(names):
+                if n.endswith(INTERNAL_SUFFIX):
+                    r.error(f"{t.c_where}: services.{sname}",
+                            f"name {n!r} ends in {INTERNAL_SUFFIX} but is on network {net!r}", DNS_HINT)
+
+
 def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> None:
     backends = {}
     for sname, svc in services.items():
@@ -1168,6 +1215,20 @@ def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> No
             r.error(where, f"the gate must run /portcullis/{GATE_SH} (entrypoint)", GATE_HINT)
         if env_of(svc).get("PORTCULLIS_TRAEFIK_IP") != "${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}":
             r.error(where, "the gate needs PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}", GATE_HINT)
+        up = gate_upstream_host(svc)
+        if not up or not up.endswith(INTERNAL_SUFFIX):
+            r.error(where, f"GATE_UPSTREAM must name a <app>{INTERNAL_SUFFIX} alias (got {up!r})", DNS_HINT)
+        else:
+            owners = [b for b in backends
+                      if up in (dns_names(b, services[b]).get("default") or set()) and up != b.lower()]
+            if not owners:
+                r.error(where, f"GATE_UPSTREAM host {up!r} must be a default-network alias of the gated backend", DNS_HINT)
+            for o, osvc in services.items():
+                if not isinstance(osvc, dict):
+                    continue
+                for net, names in dns_names(str(o), osvc).items():
+                    if up in names and (net != "default" or o not in backends):
+                        r.error(where, f"GATE_UPSTREAM host {up!r} is also services.{o} on {net!r}", DNS_HINT)
         caps_drop = [str(c).upper().removeprefix("CAP_") for c in as_list(svc.get("cap_drop"))]
         caps_add = [str(c).upper().removeprefix("CAP_") for c in as_list(svc.get("cap_add"))]
         if "ALL" not in caps_drop or not set(caps_add) <= GATE_CAPS:
@@ -1801,6 +1862,24 @@ def check_cross(templates: List[Template], r: Report) -> None:
             if vn in vol_owner and vol_owner[vn] != t.id:
                 r.error(t.c_where, f"volume name {vn!r} is also used by {vol_owner[vn]} (apps would share data)")
             vol_owner.setdefault(vn, t.id)
+    # No template answers to a gate's upstream name outside its own default
+    # network (Docker DNS on portcullis-proxy would hand it the gate's traffic).
+    upstreams: Dict[str, str] = {}
+    for t in templates:
+        for svc in ((t.compose or {}).get("services") or {}).values():
+            if isinstance(svc, dict) and f"/portcullis/{GATE_SH}" in " ".join(str(x) for x in as_list(svc.get("entrypoint"))):
+                up = gate_upstream_host(svc)
+                if up:
+                    upstreams.setdefault(up, t.id)
+    for t in templates:
+        for sname, svc in ((t.compose or {}).get("services") or {}).items():
+            if not isinstance(svc, dict):
+                continue
+            for net, names in dns_names(str(sname), svc).items():
+                for n in sorted(names & set(upstreams)):
+                    if net != "default":
+                        r.error(f"{t.c_where}: services.{sname}",
+                                f"name {n!r} is {upstreams[n]}'s gate upstream (here on network {net!r})", DNS_HINT)
     # Every template's gate.sh is the same file (one reviewed gate).
     gate_ref: Optional[Tuple[str, bytes]] = None
     for t in templates:
