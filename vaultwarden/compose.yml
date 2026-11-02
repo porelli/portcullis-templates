@@ -12,6 +12,10 @@ services:
       # false: orgs can only add users who already have an account.
       INVITATIONS_ALLOWED: "false"
       SSO_ENABLED: "true"
+      # SSO is the only sign-in: the email + master password login (web vault,
+      # clients, grant_type=password) is refused. The master password only
+      # decrypts the vault after the SSO login.
+      SSO_ONLY: "true"
       SSO_AUTHORITY: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
       SSO_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-vaultwarden}
       SSO_CLIENT_SECRET: ${VAULTWARDEN_OIDC_SECRET:?VAULTWARDEN_OIDC_SECRET must be set}

@@ -36,6 +36,8 @@ else
   fail "vaultwarden keycloak client must set email_verified_claim: false"
 fi
 assert_compose_setting "$COMPOSE" SSO_SCOPES profile
+# SSO is the only sign-in (no email + master password login)
+assert_compose_setting "$COMPOSE" SSO_ONLY true
 # No email invitations (claimable placeholder accounts), no non-SSO signups
 assert_compose_setting "$COMPOSE" INVITATIONS_ALLOWED false
 assert_compose_setting "$COMPOSE" SIGNUPS_ALLOWED false
@@ -71,6 +73,21 @@ if [ "$SSO_ENABLED" = "true" ]; then
   pass "SSO_ENABLED=true"
 else
   fail "SSO_ENABLED expected 'true', got '$SSO_ENABLED'"
+fi
+
+# SSO_ONLY at runtime: the password grant is refused before any credential
+# check, with Vaultwarden's "SSO sign-in is required"
+TOKEN_RESP=$(curl -s -X POST "http://${IP}:80/identity/connect/token" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode grant_type=password --data-urlencode username=nobody@example.invalid \
+  --data-urlencode password=x --data-urlencode scope='api offline_access' \
+  --data-urlencode client_id=web --data-urlencode deviceType=10 \
+  --data-urlencode deviceIdentifier=00000000-0000-0000-0000-000000000000 \
+  --data-urlencode deviceName=ci 2>/dev/null || echo "")
+if echo "$TOKEN_RESP" | grep -qi "SSO sign-in is required"; then
+  pass "password grant refused (SSO_ONLY)"
+else
+  fail "password grant not refused by SSO_ONLY: ${TOKEN_RESP:0:200}"
 fi
 
 compose_down "$APP_ID"
