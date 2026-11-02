@@ -23,3 +23,19 @@ versioned individually; entries are dated by the commit that lands on `main`.
   to the plugin's provider).
 - Guacamole: header logins as `guacadmin*` are refused (403); new databases
   name the built-in administrator `guacadmin-<generated suffix>`.
+
+### New templates
+
+- **ESPHome** (`esphome`): ESPHome Device Builder (ESPHome 2026.10.1) behind
+  forward-auth + group-gate and a Traefik-only gate; no dashboard password,
+  bridge networking (no mDNS: give devices a fixed address), optional serial
+  port setting for flashing from the server.
+- **Zigbee2MQTT** (`zigbee2mqtt`): Zigbee2MQTT 2.14.3 and its frontend behind
+  the same gate; USB coordinator (device setting) or network coordinator;
+  onboarding wizard off; external JS off by default; bundled Mosquitto 2.1
+  (no anonymous clients, generated `zigbee2mqtt` / `homeassistant` users,
+  allowlist ACL for Home Assistant) with an optional host MQTT port (default
+  127.0.0.1), or an existing broker.
+- **motionEye** (`motioneye`): motionEye 0.44.0 behind the same gate; its own
+  admin/user login stays as a second step with generated passwords (never
+  the empty default); up to four local cameras, a storage-folder setting.
