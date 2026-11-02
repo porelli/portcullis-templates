@@ -117,6 +117,9 @@ LOGIN_GATES = {
     "paperless": ["/accounts/oidc", "/api/auth/headless/browser/v1/auth/provider",
                   "/api/auth/headless/app/v1/auth/provider"],
     "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
+    # OxiCloud can't restrict OIDC logins by group; the authorize endpoint
+    # mints the login state its callback requires.
+    "oxicloud": ["/api/auth/oidc/authorize"],
 }
 # Native-OIDC templates whose separately hosted static web client is gated
 # as a whole (forward-auth + group-gate on its host router) while the app's
@@ -225,11 +228,44 @@ IDENTITY_ENV_REQUIRED = [
      "Mealie with OIDC must set ALLOW_PASSWORD_LOGIN: \"false\""),
     ("OIDC_AUTH_ENABLED", r"(?i)^true$", "OIDC_USER_CLAIM", r"^preferred_username$",
      "Mealie with OIDC must set OIDC_USER_CLAIM: preferred_username"),
+    ("OXICLOUD_OIDC_ENABLED", r"(?i)^true$", "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH", r"(?i)^false$",
+     "OxiCloud with OIDC must set OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH: \"false\" (the default true links SSO logins to accounts by email)"),
+    ("OXICLOUD_OIDC_ENABLED", r"(?i)^true$", "OXICLOUD_AUTH_METHODS", r"^oidc$",
+     "OxiCloud with OIDC must set OXICLOUD_AUTH_METHODS: oidc (no password or magic-link login next to SSO)"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_AUTH_LOCAL_ENABLED", r"(?i)^false$",
      "Vikunja with OIDC must set VIKUNJA_AUTH_LOCAL_ENABLED: \"false\" (local accounts: password login, sign-up, invite links)"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS", r"(?i)^false$",
      "Vikunja must set VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: \"false\" (user-supplied URLs must not reach "
      "portcullis-proxy or the host's private networks)"),
+]
+
+# image prefix -> (env key, required value regex, message): settings an image
+# needs whatever else its environment says.
+IMAGE_ENV_REQUIRED = [
+    ("mattermost/mattermost-team-edition:", "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL", r"(?i)^false$",
+     "Mattermost must set MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: \"false\" (self sign-up, the first account "
+     "becomes system admin; also closes invite-link sign-up)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_ENABLEUPLOADS", r"(?i)^false$",
+     "Mattermost must set MM_PLUGINSETTINGS_ENABLEUPLOADS: \"false\" (a plugin upload is server-side code from any "
+     "system-admin session; ship pinned plugins through the file store instead)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE", r"(?i)^true$",
+     "Mattermost must set MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: \"true\" (otherwise any bundle in the file store "
+     "is installed unsigned)"),
+    ("mattermost/mattermost-team-edition:", "MM_FILESETTINGS_DRIVERNAME", r"^local$",
+     "Mattermost must set MM_FILESETTINGS_DRIVERNAME: local (the file store, which plugins install from, stays on the data volume)"),
+    ("mattermost/mattermost-team-edition:", "MM_FILESETTINGS_DIRECTORY", r"^/mattermost/data/?$",
+     "Mattermost must set MM_FILESETTINGS_DIRECTORY: /mattermost/data/ (locks the file store to the data volume)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_DIRECTORY", r"^/mattermost/plugins/?$",
+     "Mattermost must set MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins (locks the server plugin directory)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_CLIENTDIRECTORY", r"^/mattermost/client/plugins/?$",
+     "Mattermost must set MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins (locks the webapp plugin directory)"),
+]
+
+# image prefix -> (dotted manifest key, required value, message)
+IMAGE_MANIFEST_REQUIRED = [
+    ("ghcr.io/home-assistant/home-assistant:", "auth.keycloak_access_role", True,
+     "Home Assistant needs auth.keycloak_access_role: true (auth_oidc admits admin_group members without "
+     "access_group; Keycloak must restrict the client to access_group)"),
 ]
 
 # image prefix -> (one-shot service that must exist in the same compose file, message)
@@ -242,6 +278,13 @@ REQUIRED_INIT_JOBS = [
      "Mealie's password endpoint, seeded admin and username/email account matching are only closed by the mealie-init guard"),
     ("ghcr.io/motioneye-project/motioneye:", "motioneye-init",
      "motionEye's admin and user accounts have empty passwords until the motioneye-init job sets generated ones"),
+    ("diocrafts/oxicloud:", "oxicloud-init",
+     "OxiCloud's first-run setup endpoint (a password owner for whoever calls it first) is only closed by the oxicloud-init job"),
+    ("ghcr.io/home-assistant/home-assistant:", "homeassistant-init",
+     "Home Assistant's onboarding (a password owner), the pinned auth_oidc install and the Traefik-only proxy trust "
+     "come from the homeassistant-init job"),
+    ("mattermost/mattermost-team-edition:", "mattermost-init",
+     "Mattermost's bootstrap system admin (pinned by user id, never granted by name) comes from the mattermost-init job"),
     ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
      "Firefox Sync's tokenserver takes any Mozilla account; only the firefox-sync-init allowlist trigger keeps other accounts off"),
 ]
@@ -270,6 +313,8 @@ IDENTITY_TEXT_FORBIDDEN = [
     (r"[\"'](localpart|subject|email)_template[\"']\s*:\s*[\"']\{\{\s*user\.email",
      "Synapse keys users on email"),
     (r"[\"']subject_claim[\"']\s*:\s*[\"']email[\"']", "Synapse keys users on email"),
+    (r"(?m)^\s*automatic_user_linking:\s*true\b",
+     "Home Assistant auth_oidc automatic_user_linking hands an existing account to the OIDC user with that username"),
 ]
 
 
@@ -950,6 +995,16 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
                 if not re.search(req_re, env.get(req_key, "")):
                     r.error(where, msg, EMAIL_HINT)
         image = str(svc.get("image", ""))
+        for prefix, key, req_re, msg in IMAGE_ENV_REQUIRED:
+            if image.startswith(prefix) and not re.search(req_re, env.get(key, "")):
+                r.error(where, msg, EMAIL_HINT)
+        for prefix, mkey, want, msg in IMAGE_MANIFEST_REQUIRED:
+            if image.startswith(prefix):
+                val: Any = t.manifest or {}
+                for part in mkey.split("."):
+                    val = val.get(part) if isinstance(val, dict) else None
+                if val != want:
+                    r.error(t.m_where, msg)
         for prefix, job, msg in REQUIRED_INIT_JOBS:
             if image.startswith(prefix) and job not in services:
                 r.error(where, msg, EMAIL_HINT)

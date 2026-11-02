@@ -1,0 +1,47 @@
+# Home Assistant configuration (Portcullis template, read-only).
+#
+# Sign-in is OpenID Connect only, through the auth_oidc custom integration
+# (christiaangoossens/hass-oidc-auth), which homeassistant-init installs
+# from its pinned release before every start. Instance values come from the
+# container environment (!env_var), never from this shared file.
+
+homeassistant:
+  name: Home
+  external_url: !env_var HA_EXTERNAL_URL
+  # No local username/password provider: auth_oidc is the only way in.
+  # (Onboarding, which would create a password owner, is marked done by
+  # homeassistant-init.)
+  auth_providers: []
+
+# No http: section: Home Assistant 2026.10 keeps the HTTP server config in
+# .storage/http (YAML is migrated once as an unconfirmed trial that reverts
+# after 5 minutes). homeassistant-init writes it before every start:
+# X-Forwarded-For trusted from Traefik's address only (HA_TRUSTED_PROXY).
+
+default_config:
+
+auth_oidc:
+  client_id: !env_var HA_OIDC_CLIENT_ID
+  client_secret: !env_var HA_OIDC_CLIENT_SECRET
+  discovery_url: !env_var HA_OIDC_DISCOVERY_URL
+  display_name: Portcullis
+  claims:
+    # Keycloak omits "name" for users without a first/last name.
+    display_name: preferred_username
+    username: preferred_username
+    groups: groups
+  roles:
+    # Only access_group members may sign in; admin_group members become
+    # Home Assistant administrators (set when the account is created).
+    user: !env_var HA_ACCESS_GROUP
+    admin: !env_var HA_ADMIN_GROUP
+  features:
+    automatic_user_linking: false
+    force_https: true
+  network:
+    tls_verify: true
+    tls_ca_path: /portcullis/ca-bundle.crt
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml

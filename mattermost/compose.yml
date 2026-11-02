@@ -1,0 +1,166 @@
+services:
+  mattermost:
+    image: mattermost/mattermost-team-edition:12.0.1@sha256:8ca1050cb8a2ec1ec0be5aff90ee40aa03e134f48443f7526b7b2b18872cf31b
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mattermost:${MATTERMOST_DB_PASSWORD:?MATTERMOST_DB_PASSWORD must be set}@mattermost-db:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: https://${PORTCULLIS_HOST_MATTERMOST:-chat.portcullis.local}
+      MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
+      # Accounts are created by a system admin only: no self sign-up (also
+      # no first-user sign-up), no open server, no invite-link sign-up
+      # (both go through the same check). Set here, they are locked in the
+      # System Console.
+      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_GITLABSETTINGS_ENABLE: "false"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
+      # Plugins: only the pinned bundles mattermost-plugins verifies, signs
+      # with a fresh key and writes into the file store before every
+      # compose-managed start (Mattermost installs from there). Signatures required;
+      # the public key comes from a volume mounted read-only here. No
+      # uploads (server-side code from any admin session), no marketplace.
+      MM_PLUGINSETTINGS_ENABLE: "true"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+      MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "true"
+      MM_PLUGINSETTINGS_SIGNATUREPUBLICKEYFILES: /portcullis/keys/portcullis-plugins.gpg
+      # The file store is locked to the data volume (the System Console
+      # can't point it elsewhere).
+      MM_FILESETTINGS_DRIVERNAME: local
+      MM_FILESETTINGS_DIRECTORY: /mattermost/data/
+      # Server and webapp plugin directories pinned to the image's paths
+      # (no System Console change can move them).
+      MM_PLUGINSETTINGS_DIRECTORY: /mattermost/plugins
+      MM_PLUGINSETTINGS_CLIENTDIRECTORY: /mattermost/client/plugins
+      MM_SERVICESETTINGS_ENABLETUTORIAL: "false"
+      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
+      # Local mode (mmctl --local): the socket lives in the data volume so
+      # the one-shot mattermost-init can create the bootstrap admin.
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: /mattermost/data/mattermost_local.socket
+      MMCTL_LOCAL_SOCKET_PATH: /mattermost/data/mattermost_local.socket
+      # Client address only from X-Real-Ip, which Traefik always overwrites
+      # with the peer it accepted the connection from (X-Forwarded-For can
+      # carry client-supplied entries).
+      MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: X-Real-Ip
+      MM_LOGSETTINGS_ENABLEFILE: "false"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+    volumes:
+      - mattermost-data:/mattermost/data
+      - mattermost-config:/mattermost/config
+      - mattermost-plugin-keys:/portcullis/keys:ro
+    depends_on:
+      mattermost-db:
+        condition: service_healthy
+      mattermost-plugins:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.mattermost.rule: Host(`${PORTCULLIS_HOST_MATTERMOST:-chat.portcullis.local}`)
+      traefik.http.routers.mattermost.entrypoints: websecure
+      traefik.http.routers.mattermost.tls.options: authaware@file
+      traefik.http.routers.mattermost.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.mattermost.service: mattermost
+      traefik.http.services.mattermost.loadbalancer.server.port: "8065"
+    restart: unless-stopped
+
+  # One-shot: once Mattermost listens, creates the bootstrap system admin
+  # mmadmin-<MATTERMOST_ADMIN_SUFFIX[:12]> (password MATTERMOST_ADMIN_PASSWORD)
+  # over the local-mode socket, pinned by user ID in the data volume; never
+  # grants system_admin to an account found by name (init.py). The password
+  # is read from the environment and sent in the request body, never on argv
+  # or in logs. Then enables the pinned plugins (plugins.py). Default
+  # network only (it talks to the socket, not TCP).
+  mattermost-init:
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    user: "2000:2000"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 64m
+    pids_limit: 16
+    entrypoint: ["python3", "/portcullis/init.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      MATTERMOST_SOCKET: /mattermost/data/mattermost_local.socket
+      MATTERMOST_ADMIN_SUFFIX: ${MATTERMOST_ADMIN_SUFFIX:?MATTERMOST_ADMIN_SUFFIX must be set}
+      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD:?MATTERMOST_ADMIN_PASSWORD must be set}
+    volumes:
+      - mattermost-data:/mattermost/data
+      - ./templates/mattermost/init.py:/portcullis/init.py:ro
+      - ./templates/mattermost/plugins.py:/portcullis/plugins.py:ro
+    depends_on:
+      mattermost:
+        condition: service_started
+    restart: "no"
+
+  # One-shot, before every compose-managed Mattermost start (a plain Docker
+  # restart reuses the last signatures): the pinned plugin bundles
+  # (plugins.py: GitHub release asset + SHA-256) into the file store, each
+  # signed with a fresh OpenPGP key generated in tmpfs (the private key
+  # never touches a volume and is gone when the job exits); only the public
+  # key is written, to the plugin-keys volume. A digest mismatch fails it
+  # and Mattermost doesn't start. Default network only (downloads from
+  # GitHub). This image ships gpg.
+  mattermost-plugins:
+    image: python:3.15.2-trixie@sha256:b9dc13dd9e9c69543a3a8ae44ecae5f6a17ddd45f52ac335315de0ff1d9a67ae
+    # root only to hand a fresh data volume (and the bundles) to uid 2000.
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 256m
+    pids_limit: 32
+    entrypoint: ["python3", "/portcullis/plugins.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-mattermost}
+    volumes:
+      - mattermost-data:/mattermost/data
+      - mattermost-plugin-keys:/portcullis/keys
+      - ./templates/mattermost/plugins.py:/portcullis/plugins.py:ro
+    restart: "no"
+
+  mattermost-db:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: mattermost
+      POSTGRES_PASSWORD: ${MATTERMOST_DB_PASSWORD:?MATTERMOST_DB_PASSWORD must be set}
+      POSTGRES_DB: mattermost
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - mattermost-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mattermost -d mattermost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mattermost-data: {}
+  mattermost-config: {}
+  mattermost-plugin-keys: {}
+  mattermost-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

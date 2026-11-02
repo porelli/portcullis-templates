@@ -18,6 +18,17 @@ versioned individually; entries are dated by the commit that lands on `main`.
   password login, sign-up or invite links). Sign-in restricted to
   `users_vikunja` by the Hub's Keycloak access role. Link sharing is a
   setting, off by default.
+- **Home Assistant** (`homeassistant`): native OIDC through the pinned
+  auth_oidc integration, restricted to `users_homeassistant` in Keycloak
+  (`keycloak_access_role: true`); the `homeassistant-init` job closes
+  onboarding, installs auth_oidc and trusts only Traefik as proxy.
+- **OxiCloud** (`oxicloud`): native OIDC only (`OXICLOUD_AUTH_METHODS=oidc`,
+  no email account linking), login gated to `users_oxicloud`; the
+  `oxicloud-init` job closes the first-run setup endpoint.
+- **Mattermost** (`mattermost`, Team Edition): forward-auth gated to
+  `users_mattermost` (Team Edition has no usable SSO); e-mail sign-up and
+  plugin uploads off, plugin signatures required (pinned bundles signed per
+  start by `mattermost-plugins`), bootstrap admin set by `mattermost-init`.
 
 - **ESPHome** (`esphome`): ESPHome Device Builder (ESPHome 2026.10.1) behind
   forward-auth + group-gate and a Traefik-only gate; no dashboard password,

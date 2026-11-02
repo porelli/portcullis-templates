@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: OxiCloud
+description: Lightweight self-hosted file storage and sync with WebDAV, CalDAV and CardDAV
+icon: "\U0001F5C2"
+category: productivity
+tags: [files, storage, sync, webdav, caldav, carddav, rust]
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: true
+  keycloak_access_role: true
+  access_group: users_oxicloud
+  admin_group: admin_oxicloud
+  notes: >
+    Native OpenID Connect (OxiCloud 0.10.0) and nothing else:
+    OXICLOUD_AUTH_METHODS=oidc turns password login, sign-up and the OPAQUE
+    endpoints off, and OIDC hard-disables magic links. The login page
+    redirects straight to Portcullis. OxiCloud has no OIDC group
+    restriction of its own, so the authorize endpoint
+    (/api/auth/oidc/authorize, which mints the login state the callback
+    requires) is behind Portcullis sign-in + group-gate (access_group), and
+    the Hub's Keycloak access role restricts the client to access_group as
+    well. Accounts are created on the first SSO login and keyed on the
+    OIDC issuer + sub; the OxiCloud username is the LLDAP username
+    (preferred_username, lowercased; OxiCloud appends a suffix if it is
+    taken). SSO logins are never linked to existing accounts by email
+    (OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH=false); a login whose email matches
+    another account is refused instead, so two LLDAP users with the same
+    email can't both sign in. admin_oxicloud members become OxiCloud admins
+    when their account is created (first login); OxiCloud does not
+    re-evaluate the role later, so promote or demote existing users in its
+    admin panel. Nobody is the instance owner (OxiCloud never derives
+    ownership from an IdP); an operator can name one with `oxicloud user
+    promote-to-owner <username>` in the container. The first-run setup
+    endpoint (POST /api/setup, a password owner account for whoever calls
+    it first) is closed by the oxicloud-init one-shot before OxiCloud
+    starts (it marks the instance initialized), and the app is routed only
+    while it reports itself initialized.
+    Sessions: Keycloak calls OxiCloud's back-channel logout
+    (/api/auth/oidc/backchannel-logout) whenever a Keycloak session ends;
+    the Hub signs a user out of Keycloak when they leave the group, so their
+    OxiCloud sessions (7 d rotating refresh tokens) are revoked then. What
+    remains until it expires or is revoked in OxiCloud: an access token
+    already issued (at most 1 h) and app passwords (WebDAV/CalDAV/CardDAV,
+    no expiry); deactivate the user in OxiCloud to cut those. Device sign-in
+    (RFC 8628, /api/auth/device) is approved by a signed-in user: a member
+    can be tricked into approving a code an outsider started, which signs
+    the outsider in as that member (approve only codes you started).
+    Public share links (/api/s/{token}, the share page and its assets) are
+    answered by OxiCloud without Portcullis sign-in by design: the host
+    router has no forward-auth (native OIDC). On a host whose policy
+    requires a client certificate they are refused at the TLS layer like
+    everything else; this template declares no auth.public_access, so no
+    exception can be opened for them there. WebDAV, CalDAV and
+    CardDAV clients use app passwords (created by the signed-in user under
+    Settings); the Nextcloud-compatible API for Nextcloud desktop/mobile
+    apps is off (it would add another login flow). Upgrades: read the
+    OxiCloud release notes; don't bump the PostgreSQL major.
+
+env:
+  - key: OXICLOUD_DB_PASSWORD
+    description: OxiCloud database password
+    generate: random
+  - key: OXICLOUD_JWT_SECRET
+    description: OxiCloud session token signing key
+    generate: random
+  - key: OXICLOUD_OIDC_SECRET
+    description: OxiCloud OIDC client secret
+    generate: random
+
+keycloak_clients:
+  - client_id: oxicloud
+    secret_env: OXICLOUD_OIDC_SECRET
+    redirect_uri: "https://{{HOST_OXICLOUD}}/api/auth/oidc/callback"
+    backchannel_logout_url: "https://{{HOST_OXICLOUD}}/api/auth/oidc/backchannel-logout"
+    name: OxiCloud
+
+config_files: []
+
+urls:
+  - label: Files
+    url: "https://{{HOST_OXICLOUD}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    # GET /login redirects to /api/auth/oidc/authorize (group-gated), then Keycloak.
+    path: /login
+    signed_in:
+      json: {url: /api/auth/me, field: full.user.username}
+      wait: 30
+    admin:
+      json: {url: /api/auth/me, field: full.user.role, equals: admin}
