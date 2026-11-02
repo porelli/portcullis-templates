@@ -71,10 +71,10 @@ urls:
 tests:
   signin:
     path: /#/sso
-    login: ["button:has-text('Use single sign-on')", "a:has-text('Use single sign-on')", "button:has-text('Log in')", "button:has-text('Continue')"]
+    login: ["button:has-text('Use single sign-on')", "button:has-text('Continue')"]
+    # Vaultwarden has no organisations behind SSO: its fixed SSO identifier.
     fill:
-      - {selector: "input[type=email]", value: "{email}"}
-      - {selector: "input[formcontrolname=identifier]", value: "portcullis"}
+      - {selector: "input[formcontrolname=identifier]", value: "00000000-01DC-01DC-01DC-000000000000"}
     # After the first SSO login Vaultwarden asks the new user to set a
     # master password (vault encryption, not a login).
     signed_in:

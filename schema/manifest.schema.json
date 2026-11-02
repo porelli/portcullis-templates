@@ -470,6 +470,11 @@
         "equals": {
           "description": "js: expected value (default {username})"
         },
+        "absent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text that must NOT be on the page (the app's own denial, e.g. a session without rights)"
+        },
         "url_contains": {
           "type": "string",
           "minLength": 1

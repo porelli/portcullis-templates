@@ -73,6 +73,9 @@ tests:
     login: ["a:has-text('Portcullis')", "button:has-text('Portcullis')"]
     signed_in:
       text: "{username}"
+      # DokuWiki signs everyone in; the ACL gives users outside the access
+      # group no rights at all.
+      absent: "Permission Denied"
     admin:
       reach: /doku.php?do=admin
       text: "Access Control List"

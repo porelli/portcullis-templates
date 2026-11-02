@@ -395,6 +395,20 @@ def shot(page: Page, name: str) -> None:
         pass
 
 
+def goto(page: Page, url: str, attempts: int = 6):
+    """page.goto, retried on transient network errors (Chromium reports
+    ERR_NETWORK_CHANGED while Docker creates the app's networks)."""
+    for i in range(attempts):
+        try:
+            return page.goto(url, wait_until="domcontentloaded")
+        except PWError as e:
+            if i == attempts - 1 or not re.search(r"ERR_(NETWORK_CHANGED|CONNECTION_|NAME_NOT_RESOLVED|EMPTY_RESPONSE)", str(e)):
+                raise
+            log(f"  goto {url.split('?')[0]}: {str(e).splitlines()[0]}; retrying")
+            page.wait_for_timeout(3000)
+    return None
+
+
 def host_of(url: str) -> str:
     return (urllib.parse.urlsplit(url).hostname or "").lower()
 
@@ -429,6 +443,8 @@ class Flow:
         self.nav: List[Tuple[int, str]] = []    # main-frame navigations on the app's hosts
         self.passwords: List[str] = []
         self.denied = ""
+        self.landed = False                     # reached the app's host after the setup link
+        self.aborted = False                    # stopped by a test failure (password field), not a refusal
         self.page.on("response", self._on_response)
 
     def _on_response(self, resp) -> None:
@@ -454,6 +470,15 @@ class Flow:
         return subst(want, self.user) if isinstance(want, str) else want
 
     def _check_once(self, spec: Dict[str, Any], host: str) -> Tuple[bool, str]:
+        ok, ev = self._check_core(spec, host)
+        if ok and spec.get("absent"):
+            # The app's own denial page (e.g. a session without any rights).
+            no = subst(spec["absent"], self.user)
+            if no.lower() in body_text(self.page).lower():
+                return False, f"{ev}, but the page says {no!r}"
+        return ok, ev
+
+    def _check_core(self, spec: Dict[str, Any], host: str) -> Tuple[bool, str]:
         page = self.page
         if spec.get("url_contains") and spec["url_contains"] not in page.url:
             return False, f"URL {page.url.split('?')[0]} lacks {spec['url_contains']!r}"
@@ -532,7 +557,7 @@ class Flow:
         """Drive the setup link, Keycloak and the app's own sign-in until
         `signed_in` holds. Returns (signed_in, evidence)."""
         page = self.page
-        page.goto(link, wait_until="domcontentloaded")
+        goto(page, link)
         shot(page, f"{self.role}-setup-link")
         if self.user not in page.content():
             return False, "the setup link page does not name the user"
@@ -547,8 +572,20 @@ class Flow:
             except PWError:
                 pass
             url = page.url
+            if url.startswith("chrome-error://") and not landed_at:
+                shot(page, f"{self.role}-browser-error")
+                return False, f"browser error page before reaching the app (after {self.nav[-1][1] if self.nav else 'the setup link'})"
+            if url.startswith("chrome-error://"):
+                last = f"browser error page after {self.nav[-1][1].split('?')[0] if self.nav else link.split('/invite/')[0]}"
+                page.wait_for_timeout(3000)
+                try:
+                    goto(page, f"https://{host}{SIGNIN.get('path', '/')}")
+                except PWError as e:
+                    last = f"{last}; {str(e).splitlines()[0]}"
+                continue
             if on_login_pages(page):
                 if self.password_visible():
+                    self.aborted = True
                     return False, f"password field on the sign-in pages ({url.split('?')[0]})"
                 for sel in ("#invite-continue", "#registerWebAuthn", "#authenticateWebAuthnButton"):
                     if visible(page, sel):
@@ -561,6 +598,8 @@ class Flow:
                     try:
                         if err.count() and err.first.is_visible():
                             shot(page, f"{self.role}-keycloak-error")
+                            if landed_at:
+                                self.denied = f"refused at {url.split('?')[0]}: {err.first.inner_text()[:200]!r}"
                             return False, f"Keycloak/enroll error at {url.split('?')[0]}: {err.first.inner_text()[:200]!r}"
                     except PWError:
                         pass
@@ -571,8 +610,10 @@ class Flow:
                 continue
             if not landed_at:
                 landed_at = time.time()
+                self.landed = True
                 shot(page, f"{self.role}-landed")
             if self.password_visible() and not SIGNIN.get("password"):
+                self.aborted = True
                 return False, f"password field at {url.split('?')[0]} (no tests.signin.password documents one)"
             status = self.nav[-1][0] if self.nav else 0
             if status == 403:
@@ -584,7 +625,7 @@ class Flow:
                 last = f"HTTP {status} at {url.split('?')[0]}"
                 page.wait_for_timeout(3000)
                 try:
-                    page.goto(f"https://{host}{SIGNIN.get('path', '/')}", wait_until="domcontentloaded")
+                    goto(page, f"https://{host}{SIGNIN.get('path', '/')}")
                 except PWError:
                     pass
                 continue
@@ -642,10 +683,15 @@ def run_role(browser, role: str, host: str) -> None:
             ev += f" (passkeys registered: {flow.key.registered})"
         pw_note = f"; password field at {', '.join(flow.passwords)} ({SIGNIN.get('password')})" if flow.passwords else ""
         if role == "outsider":
-            refused = not ok
+            # Refused = it got through the setup link to the app (or to the
+            # app's sign-in at Keycloak) and was never signed in; anything
+            # that stops earlier is a broken test, not a refusal.
+            refused = not ok and not flow.aborted and (flow.landed or bool(flow.denied))
             how = flow.denied or ev
-            record("outsider", refused, (f"{user} refused: {how}" if refused else f"{user} signed in: {ev}") + pw_note,
-                   XFAIL.get("outsider"))
+            if not ok and not refused:
+                how = f"test stopped: {ev}" if flow.aborted else f"never reached the app: {ev}"
+            record("outsider", refused, (f"{user} refused: {how}" if refused else (f"{user} signed in: {ev}" if ok else f"{user}: {how}")) + pw_note,
+                   XFAIL.get("outsider") if (ok or refused) else None)
             failed = not refused and not XFAIL.get("outsider")
             return
         if role == "member":
@@ -676,6 +722,25 @@ def run_role(browser, role: str, host: str) -> None:
             ctx.tracing.stop(path=os.path.join(ART, f"trace-{role}.zip"))
         finally:
             ctx.close()
+
+
+def warm_up(browser) -> None:
+    """Chromium reports ERR_NETWORK_CHANGED for a while after Docker created
+    the app's networks: load Keycloak until three loads in a row succeed."""
+    ctx = browser.new_context()
+    page = ctx.new_page()
+    ok = 0
+    deadline = time.time() + 90
+    while ok < 3 and time.time() < deadline:
+        try:
+            r = page.goto(f"https://{AUTH_HOST}/realms/{REALM}/.well-known/openid-configuration",
+                          wait_until="domcontentloaded", timeout=15_000)
+            ok = ok + 1 if r and r.ok else 0
+        except PWError as e:
+            log(f"  warm-up: {str(e).splitlines()[0]}")
+            ok = 0
+        page.wait_for_timeout(2000)
+    ctx.close()
 
 
 def dump_logs() -> None:
@@ -728,6 +793,7 @@ def main() -> int:
         return summary()
     with sync_playwright() as pw:
         browser = pw.chromium.launch(args=["--disable-features=WebAuthenticationConditionalUI"])
+        warm_up(browser)
         for role in ROLES:
             run_role(browser, role, host)
         browser.close()

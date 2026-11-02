@@ -46,7 +46,9 @@ Reference docs:
    starts reliably in CI. Header-auth apps must use
    `assert_traefik_only_trust` and `assert_spoofed_identity_rejected`
    from `tests/lib.sh`.
-9. **Run the local checks** (next section) and open a pull request. Fill in
+9. **Add `tests.signin` to `manifest.yaml`** so CI signs real users in
+   (see [Sign-in test](#sign-in-test)).
+10. **Run the local checks** (next section) and open a pull request. Fill in
    the checklist in the PR template.
 
 ## Local checks
@@ -77,7 +79,7 @@ let CI run them for you (see below).
 | Workflow | When | Secrets | What |
 |----------|------|---------|------|
 | **Lint** (`lint.yml`) | every push and PR, including forks | none | `tests/validate.py`, `docker compose config` for every template, shellcheck, actionlint |
-| **Test Apps** (`test-apps.yml`) | push to `main`, every PR **including forks**, manual runs | none | boots core at the ref in `.core-ref`, then runs `tests/apps/<app>.sh` for every changed template |
+| **Test Apps** (`test-apps.yml`) | push to `main`, every PR **including forks**, manual runs | none | boots core at the ref in `.core-ref`, then for every changed template runs `tests/apps/<app>.sh` and the [sign-in test](#sign-in-test) |
 | **Notify docs** (`docs-dispatch.yml`) | push to `main` | `DOCS_DISPATCH_TOKEN` | asks the docs site to regenerate the app pages |
 
 Core ([porelli/portcullis](https://github.com/porelli/portcullis)) is public
@@ -97,7 +99,11 @@ a write token. Inside Test Apps, the trust boundary is per job:
 - `app-images` runs only on pushes to `main` (never for PRs or manual runs).
   It reads each tested app's `compose.yml` (`tests/app-images.sh`), pulls its
   pinned images and writes that app's image cache. It starts no container.
-- `test` runs your `tests/apps/<app>.sh` and compose file. It references no
+- `e2e-browser` runs only on pushes to `main`: it installs the hash-pinned
+  `tests/e2e/requirements.txt` and Playwright's Chromium and writes their
+  cache. It runs no template code.
+- `test` runs your `tests/apps/<app>.sh`, then `tests/e2e/app_signin.py`, and
+  your compose file. It references no
   secret, writes no cache, downloads core by artifact id with digest
   verification, and treats every image cache as untrusted: after
   `docker load` it removes any name the tarball set, then binds every image
@@ -107,9 +113,91 @@ a write token. Inside Test Apps, the trust boundary is per job:
   layer) is the one that manifest names; otherwise it downloads it fresh.
 - Every job has a read-only `contents: read` token.
 
+Dependabot image bumps are ordinary PRs, so each one runs the shell test and
+the sign-in test of the app it touches. **Run workflow** with `apps = all`
+tests every template (shell test + sign-in test); `apps = <id> <id>` only
+those.
+
 `.core-ref` holds the core version the templates are tested against: a tag
 such as `v1.4.0`, or `main` during development. Changing it re-tests every
 template. (For PRs the base branch's `.core-ref` is used.)
+
+## Sign-in test
+
+`tests/e2e/app_signin.py` proves that a real person can sign in to your app
+through Portcullis and gets the right role. CI runs it after
+`tests/apps/<app>.sh` on the same core stack. It creates three LLDAP users
+without passwords — `e2eadmin` (in `access_group` and `admin_group`),
+`e2emember` (in `access_group`) and `e2eoutsider` (in no group) — does what
+the Hub would (registers the manifest's `keycloak_clients` with the app's
+generated secret, writes group-gate's policy file with `access_group` and
+`auth.admin_paths`), starts the app, and for each user opens a one-time setup
+link (`portcullis invite <user> --to https://<host><path>`) in Chromium with a
+virtual security key: passkey registration, then the app's own sign-in
+(native OIDC / SAML round trip, or forward-auth headers). It checks:
+
+| check | passes when |
+|-------|-------------|
+| `member` | `e2emember` is signed in (`signed_in`), with its username; with an `admin` check, it is **not** admin |
+| `admin` | `e2eadmin` is signed in and `admin` holds |
+| `outsider` | `e2eoutsider` never gets signed in (group-gate's 403, or the app's own denial) |
+
+Any visible password field fails the run (Keycloak is passkey-only), unless
+`password` documents why the app shows one.
+
+```yaml
+tests:
+  signin:
+    path: /login                 # page to open on the app's host (the setup link lands there)
+    host: "{{HOST_HEADPLANE}}"   # optional: another host router (default: the first urls entry)
+    login: ["button:has-text('Sign in with SSO')"]   # optional: the app's SSO buttons, clicked when visible
+    fill:                        # optional: inputs to fill first ({username}, {email})
+      - {selector: "input[type=email]", value: "{email}"}
+    signed_in:                   # how to recognise a signed-in user, one of:
+      text: "{username}"         #   visible text (case-insensitive; url: /path to open first)
+      # html: "{username}"       #   page source
+      # json: {url: /api/user, field: login}          # an API answer (cookies of the session; default equals {username})
+      # js: "fetch('/api/me').then(r => r.json()).then(j => j.name)"   # evaluated in the app's page
+      wait: 20                   # seconds to poll (default 10)
+    admin:                       # required with auth.group_admin: true
+      json: {url: /api/user, field: isGrafanaAdmin, equals: true}
+      # reach: /admin            #   the path answers 2xx (members get 403 / the app's denial)
+    password: "why a password field is expected"   # e.g. a documented break-glass login
+    setup:                       # optional: documented post-start steps (e.g. an API key setting)
+      - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}
+    expected_fail:               # optional: known failures, reported but not fatal
+      outsider: "why"            # if the check passes, the run fails: remove the marker
+    boot_timeout: 600            # seconds for the containers to be ready (default 600)
+    timeout: 240                 # seconds per user sign-in (default 240)
+```
+
+Strings may use `{username}`, `{email}`, `{access_group}`, `{admin_group}`;
+URLs are paths on the app host. Prefer checks that prove the identity
+(`{username}` in text, or a `json` / `js` answer): `validate.py` warns
+otherwise for header-auth and native-OIDC apps. Forward-auth apps with no
+user system (Pi-hole, Scrutiny) check the app page itself.
+
+Rules (`validate.py`): every template has `tests.signin`; `skip: "<reason>"`
+is only for `public`, `custom` and `mtls` apps (no Portcullis user sign-in to
+drive — docs, Plex via plex.tv, Vault UI's client-certificate tier);
+`group_admin: true` needs `admin`; a native-OIDC app with `group_access: false`
+must set `expected_fail.outsider` (it can't refuse outsiders until the Hub
+restricts Keycloak clients per app), and gated (forward-auth / header-auth)
+apps never may.
+
+Run it yourself against a stack like CI's (core booted as in
+`test-apps.yml`, app hosts in `/etc/hosts`, core's root CA trusted by
+Chromium):
+
+```bash
+python3 -m venv /tmp/e2e && /tmp/e2e/bin/pip install --require-hashes -r tests/e2e/requirements.txt
+/tmp/e2e/bin/playwright install chromium
+PROJECT_DIR=/path/to/core /tmp/e2e/bin/python tests/e2e/app_signin.py my-app
+```
+
+On failure CI uploads `e2e-<app>`: a screenshot and the page HTML of every
+step, a Playwright trace per user (`playwright show-trace trace-member.zip`),
+the app's container logs and core's logs.
 
 ## Choosing an auth method
 

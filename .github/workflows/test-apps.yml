@@ -779,6 +779,8 @@ jobs:
           TEMPLATES_DIR: ${{ github.workspace }}
           APP: ${{ matrix.app }}
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+          # Playwright's API requests (json checks) run in Node: trust core's CA there too.
+          NODE_EXTRA_CA_CERTS: ${{ github.workspace }}/core/certs/ca-chain.crt
         run: /tmp/e2e-venv/bin/python tests/e2e/app_signin.py "$APP"
 
       - name: Collect logs on failure

@@ -71,6 +71,7 @@ tests:
   signin:
     path: /web/
     login: ["button:has-text('Sign in with SSO')"]
+    password: "Jellyfin's own login form stays next to the SSO button (local accounts such as the setup admin; Jellyfin apps sign in with it)"
     signed_in:
       js: >-
         (async () => { const c = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');

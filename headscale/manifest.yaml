@@ -88,5 +88,6 @@ tests:
     signed_in:
       text: "{username}"
       wait: 20
+    password: "Headplane's login page also takes a Headscale API key (a password-type field), its break-glass login"
     expected_fail:
       outsider: "group_access: false: Headscale/Headplane have no OIDC group restriction, every Portcullis user can sign in until the Hub's per-app Keycloak client access (Task 4b) lands"

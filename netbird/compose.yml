@@ -120,6 +120,11 @@ services:
       USE_AUTH0: "false"
       AUTH_SUPPORTED_SCOPES: openid profile email
       AUTH_AUDIENCE: ${PORTCULLIS_OIDC_CLIENT_ID:-netbird-dashboard}
+      # Send the ID token to the management API: its aud is the client id,
+      # which management checks (AuthAudience). Keycloak access tokens carry
+      # aud "account" unless the client has an audience mapper, which the
+      # Hub doesn't add.
+      NETBIRD_TOKEN_SOURCE: idToken
     networks:
       - default
       - portcullis-proxy

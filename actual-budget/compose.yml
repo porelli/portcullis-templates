@@ -8,6 +8,10 @@ services:
       ACTUAL_OPENID_CLIENT_SECRET: ${ACTUAL_OIDC_SECRET:-}
       ACTUAL_OPENID_SERVER_HOSTNAME: https://${PORTCULLIS_HOST_ACTUAL:-budget.portcullis.local}
       ACTUAL_OPENID_ENFORCE: "true"
+      # Create the account on a user's first OpenID login (default "manual":
+      # only the first user, the owner, gets in; everyone else is refused
+      # with openid-grant-failed until the owner adds them by hand).
+      ACTUAL_USER_CREATION_MODE: login
       NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-bundle.crt
     volumes:
       - actual-data:/data
