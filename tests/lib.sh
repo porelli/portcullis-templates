@@ -635,6 +635,15 @@ write_public_override() {
     rule="${rule:+$rule || }$(_public_matchers "$e")"
   done
   rule="Host(\`$host\`) && ($rule)"
+  # The Traefik service the public router targets: the template's only one
+  # (as the Hub's PublicPlan picks it), else one named like the compose service.
+  local tsvc
+  tsvc=$(grep -oE 'traefik\.http\.services\.[^.]+\.' "$compose" | sort -u)
+  if [ "$(printf '%s\n' "$tsvc" | grep -c .)" = 1 ]; then
+    tsvc=$(printf '%s' "$tsvc" | sed -E 's/^traefik\.http\.services\.([^.]+)\.$/\1/')
+  else
+    tsvc="$svc"
+  fi
   {
     echo "services:"
     echo "  $svc:"
@@ -648,7 +657,7 @@ write_public_override() {
     echo "      traefik.http.routers.portcullis-public-$app.tls.options: $tier"
     echo "      traefik.http.routers.portcullis-public-$app.priority: \"10000\""
     echo "      traefik.http.routers.portcullis-public-$app.middlewares: portcullis-public-guard@docker,portcullis-public-strip-$app@docker,rate-limit@file,security-headers@file"
-    echo "      traefik.http.routers.portcullis-public-$app.service: \"$svc\""
+    echo "      traefik.http.routers.portcullis-public-$app.service: \"$tsvc\""
     _public_strip_headers "$manifest" | while read -r hdr; do
       echo "      traefik.http.middlewares.portcullis-public-strip-$app.headers.customrequestheaders.$hdr: \"\""
     done
