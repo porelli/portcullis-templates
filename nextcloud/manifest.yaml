@@ -168,6 +168,9 @@ urls:
 tests:
   signin:
     path: /login
+    expected_fail:
+      member: "Nextcloud's HTTP client refuses private addresses (allow_local_remote_servers off), and in CI auth.<domain> resolves to Traefik's private address on portcullis-proxy, so user_oidc answers 'Could not reach the OpenID Connect provider'; the same happens wherever auth.<domain> resolves to a private address (split DNS / LAN-only). Not relaxed here (SSRF trade-off): template decision needed"
+      admin: "Nextcloud's HTTP client refuses private addresses (allow_local_remote_servers off), and in CI auth.<domain> resolves to Traefik's private address on portcullis-proxy, so user_oidc answers 'Could not reach the OpenID Connect provider'; the same happens wherever auth.<domain> resolves to a private address (split DNS / LAN-only). Not relaxed here (SSRF trade-off): template decision needed"
     signed_in:
       json: {url: "/ocs/v2.php/cloud/user?format=json", field: ocs.data.id, headers: {OCS-APIRequest: "true"}}
     admin:

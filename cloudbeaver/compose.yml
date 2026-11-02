@@ -8,7 +8,10 @@ services:
     environment:
       CB_SERVER_NAME: CloudBeaver
       CB_SERVER_URL: https://${PORTCULLIS_HOST_CLOUDBEAVER:-db.portcullis.local}
-      CB_ADMIN_NAME: cbadmin
+      # Per-instance, non-guessable: a reverseProxy login with the same name
+      # would be that local administrator (cloudbeaver-gate also refuses
+      # X-Forwarded-User starting with "cbadmin").
+      CB_ADMIN_NAME: cbadmin-${CLOUDBEAVER_ADMIN_SUFFIX:?CLOUDBEAVER_ADMIN_SUFFIX must be set}
       CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:?CLOUDBEAVER_ADMIN_PASSWORD must be set}
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
@@ -65,6 +68,9 @@ services:
           if (\$$remote_addr != "$$PORTCULLIS_TRAEFIK_IP") { set \$$portcullis_reject 1; }
           if (\$$portcullis_ident = "") { set \$$portcullis_reject ""; }
           if (\$$portcullis_reject) { return 403; }
+          # Never a header login as CloudBeaver's local administrator
+          # (cbadmin-<generated suffix>), whatever the LLDAP user is called.
+          if (\$$http_x_forwarded_user ~* "^cbadmin") { return 403; }
           location / {
             proxy_pass http://cloudbeaver:8978;
             proxy_http_version 1.1;

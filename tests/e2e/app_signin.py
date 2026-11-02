@@ -80,6 +80,7 @@ USERS = {"admin": "e2eadmin", "member": "e2emember", "outsider": "e2eoutsider"}
 PROBLEM_CODES = {404, 502, 503, 504}
 
 results: List[Dict[str, str]] = []
+SIGNED_IN: List[str] = []   # roles that got signed in (an outsider refusal needs one)
 _shot = 0
 
 
@@ -325,6 +326,8 @@ def wait_containers(timeout: int) -> None:
     """Every service of the app runs (healthy, if it has a healthcheck);
     one-shot init containers may have exited 0."""
     services = list((COMPOSE.get("services") or {}).keys())
+    # One-shot helpers (restart: "no") must have finished successfully.
+    oneshot = {n for n, svc in (COMPOSE.get("services") or {}).items() if str((svc or {}).get("restart", "")) == "no"}
     deadline = time.time() + timeout
     state: Dict[str, str] = {}
     while time.time() < deadline:
@@ -333,14 +336,19 @@ def wait_containers(timeout: int) -> None:
             st = docker("inspect", "-f", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}} "
                         "{{.State.ExitCode}} {{.RestartCount}}", f"portcullis-{s}-1")
             state[s] = st
-        def ready(st: str) -> bool:
+        def ready(svc: str, st: str) -> bool:
             parts = st.split()
             if not parts:
                 return False
+            if svc in oneshot:
+                return parts[0] == "exited" and parts[-2] == "0"
             if parts[0] == "running":
                 return len(parts) == 3 or parts[1] == "healthy"
             return parts[0] == "exited" and parts[-2] == "0"
-        if all(ready(st) for st in state.values()):
+        broken = [s for s in oneshot if state.get(s, "").startswith("exited") and state[s].split()[-2] != "0"]
+        if broken:
+            raise RuntimeError(f"one-shot service(s) {', '.join(broken)} failed: {state}")
+        if all(ready(svc, st) for svc, st in state.items()):
             log(f"containers ready: {state}")
             return
         time.sleep(5)
@@ -649,7 +657,9 @@ class Flow:
             spec = SIGNIN["signed_in"]
             # A check that opens its own page waits while the app's sign-in
             # steps are on screen (navigating away would cancel them).
-            busy = bool(spec.get("url")) and any(
+            at_check = bool(spec.get("url")) and page.url.split("://", 1)[-1].endswith(
+                host + subst(spec["url"], self.user))
+            busy = bool(spec.get("url")) and not at_check and any(
                 visible(page, sel) for sel in list(SIGNIN.get("login") or []) +
                 [f["selector"] for f in SIGNIN.get("fill") or []])
             ok, last = (False, f"sign-in steps on {page.url.split('?')[0]}") if busy else self._check_once(spec, host)
@@ -713,10 +723,18 @@ def run_role(browser, role: str, host: str) -> None:
             how = flow.denied or ev
             if not ok and not refused:
                 how = f"test stopped: {ev}" if flow.aborted else f"never reached the app: {ev}"
+            if refused and not SIGNED_IN:
+                # Nobody got in: the refusal proves nothing about the group.
+                results.append({"app": APP, "check": "outsider", "status": "inconclusive",
+                                "detail": f"{user} not signed in, but neither was anyone else: {how}"})
+                log(f"INCONCLUSIVE: {APP} outsider: nobody could sign in ({how})")
+                return
             record("outsider", refused, (f"{user} refused: {how}" if refused else (f"{user} signed in: {ev}" if ok else f"{user}: {how}")) + pw_note,
                    XFAIL.get("outsider") if (ok or refused) else None)
             failed = not refused and not XFAIL.get("outsider")
             return
+        if ok:
+            SIGNED_IN.append(role)
         if role == "member":
             record("member", ok, f"{user}: {ev}{pw_note}", XFAIL.get("member"))
             failed = not ok and not XFAIL.get("member")

@@ -90,7 +90,17 @@ tests:
     # e2eadmin signs in first and becomes the owner (onboarding first).
     login: ["text=Skip to Dashboard"]
     signed_in:
-      text: "{username}"
+      # The dashboard's own session: its ID token (oidc-client storage)
+      # accepted by the management API.
+      js: >-
+        (async () => { const tok = (v) => v && typeof v === 'object' ? (v.id_token || v.idToken ||
+        tok(v.tokens) || null) : null;
+        for (const s of [sessionStorage, localStorage]) for (let i = 0; i < s.length; i++) {
+        let v; try { v = JSON.parse(s.getItem(s.key(i))); } catch (e) { continue; }
+        const t = tok(v); if (!t) continue;
+        const r = await fetch('/api/users/current', {headers: {Authorization: 'Bearer ' + t}});
+        return r.ok ? (await r.json()).email : 'HTTP ' + r.status; } return null; })()
+      equals: "{email}"
       wait: 30
     # NetBird holds every later user in "pending approval" until the owner
     # approves them, so the outsider is refused by NetBird itself.
