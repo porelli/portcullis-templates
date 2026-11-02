@@ -122,7 +122,11 @@ services:
             pid=$$!
           fi
           if curl -sf -o /dev/null http://localhost:8000/__heartbeat__; then
-            kill $$pid; wait $$pid
+            kill $$pid
+            # as porelli/firefox-sync: killed if still up 30 s after SIGTERM
+            (sleep 30; kill -0 $$pid 2> /dev/null && echo "portcullis: syncstorage-rs still running 30 s after SIGTERM, killed" && kill -9 $$pid) &
+            wait $$pid
+            kill $$! 2> /dev/null
             echo "portcullis: migrations done"
             exit 0
           fi

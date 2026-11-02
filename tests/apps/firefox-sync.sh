@@ -123,6 +123,9 @@ for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
             "UPDATE nodes SET capacity = 0" \
             "INSERT INTO nodes (service, node, available, current_load, capacity, downed, backoff) VALUES (1, 'https://evil.example', 1, 0, 1, 0, 0)" \
             "DELETE FROM users" \
+            "UPDATE users SET uid = uid + 1000" \
+            "UPDATE users SET email = 'x@api.accounts.firefox.com'" \
+            "UPDATE users SET nodeid = 0" \
             "DELETE FROM __diesel_schema_migrations" \
             "INSERT INTO services (service, pattern) VALUES ('x', 'y')" \
             "SELECT setval('users_uid_seq', 1)" \
@@ -138,11 +141,11 @@ for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
     fail "firefoxsync_app could: $stmt -> $OUT"
   fi
 done
-OUT=$(app_sql "UPDATE nodes SET current_load = current_load, available = available WHERE node = 'https://$HOST'" || true)
+OUT=$(app_sql "UPDATE nodes SET current_load = current_load, available = available WHERE node = 'https://$HOST'; UPDATE users SET generation = generation, keys_changed_at = keys_changed_at, replaced_at = replaced_at WHERE false" || true)
 if echo "$OUT" | grep -qi 'error'; then
   fail "firefoxsync_app can't update a node's load: $OUT"
 else
-  pass "firefoxsync_app may update a node's load (add_user_to_node)"
+  pass "firefoxsync_app may update a node's load and a user's generation / keys_changed_at / replaced_at"
 fi
 OUT=$(app_sql "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (version VARCHAR(50) PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)" || true)
 if echo "$OUT" | grep -qi 'error'; then
