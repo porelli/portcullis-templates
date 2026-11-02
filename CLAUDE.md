@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Default app marketplace for Portcullis. Contains 40 app templates with manifest.yaml + compose.yml.
+Default app marketplace for Portcullis. Contains 41 app templates with manifest.yaml + compose.yml.
 
 ## Layout & tooling
 
