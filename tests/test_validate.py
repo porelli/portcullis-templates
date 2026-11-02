@@ -971,6 +971,35 @@ class TestGatedHomeTemplates(unittest.TestCase):
                 self.edit("mattermost", "compose.yml", old, new)
                 self.assertFails(needle)
 
+    def test_shared_default_network_is_not_private(self) -> None:
+        # networks.default renamed / external = a shared network: refused, and
+        # its -internal names count as being on a shared network.
+        for spec in ("    name: portcullis-proxy\n    external: true\n", "    name: portcullis_esphome_default\n",
+                     "    external: true\n"):
+            with self.subTest(spec=spec.strip()):
+                self.setUp()
+                self.edit("mattermost", "compose.yml", "networks:\n  portcullis-proxy:\n",
+                          "networks:\n  default:\n" + spec + "  portcullis-proxy:\n")
+                self.assertFails("networks.default must stay the project's own network")
+                self.assertFails("needs the project's own default network")
+                self.assertFails("'mattermost-internal' ends in -internal but is on network 'default'")
+                self.assertFails("must be a default-network alias of the gated backend")
+
+    def test_network_mode_names_a_network(self) -> None:
+        # network_mode <network> joins that network: refused, and its names
+        # are checked like any other network's.
+        self.edit("zigbee2mqtt", "compose.yml", "services:\n",
+                  "services:\n  sneaky:\n    image: nginx:1.31.8-alpine@sha256:" + "0" * 64 + "\n"
+                  "    hostname: esphome-internal\n    network_mode: portcullis-proxy\n    restart: unless-stopped\n")
+        self.assertFails("network_mode 'portcullis-proxy': only none, host or service:")
+        self.assertFails("'esphome-internal' ends in -internal but is on network 'portcullis-proxy'")
+        self.assertFails("is esphome's gate upstream (here on network 'portcullis-proxy')")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", "services:\n",
+                  "services:\n  quiet:\n    image: nginx:1.31.8-alpine@sha256:" + "0" * 64 + "\n"
+                  "    hostname: esphome-internal\n    network_mode: none\n    restart: unless-stopped\n")
+        self.assertFalse([e for e in self.errors() if "-internal" in e or "network_mode" in e])
+
     def test_homeassistant_acl_is_an_allowlist(self) -> None:
         for extra, needle in (("topic deny zigbee2mqtt/bridge/request/options\n", "not deny lines"),
                               ("topic readwrite zigbee2mqtt/#\n", "not in the reviewed"),
