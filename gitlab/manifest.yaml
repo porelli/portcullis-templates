@@ -9,6 +9,9 @@ auth:
   method: native-oidc
   sso: true
   group_access: true
+  # Defence in depth: Keycloak also refuses sign-in without access_group
+  # (the Hub's access role), on top of the login-path gate in compose.yml.
+  keycloak_access_role: true
   group_admin: false
   access_group: users_gitlab
   admin_group: admin_gitlab
@@ -22,6 +25,16 @@ auth:
     removal from the group until they expire; block the user in GitLab to cut
     access immediately. Admin rights are granted in GitLab (root account uses
     GITLAB_ROOT_PASSWORD); admin_gitlab is not mapped.
+    Password logins outside the gated /users paths: GitLab's "password
+    authentication for Git over HTTP(S)" and the OAuth password grant
+    (/oauth/token, grant_type=password) are application settings, not
+    gitlab.rb options, so the template can't switch them off. SSO-created
+    accounts have no password (GitLab generates one nobody knows; resetting
+    it goes through the gated /users/password); the root account's is
+    GITLAB_ROOT_PASSWORD (generated). After the first start, turn off
+    Admin > Settings > General > Sign-in restrictions > "Allow password
+    authentication for Git over HTTP(S)" and enable two-factor
+    authentication for root (GitLab refuses both for 2FA accounts).
     Identity: OIDC identities are keyed on preferred_username (uid_field, the
     immutable LLDAP username) and omniauth_auto_link_user is false, so an
     email match never attaches an OIDC login to an existing GitLab account

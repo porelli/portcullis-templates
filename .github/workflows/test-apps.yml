@@ -173,9 +173,9 @@ jobs:
           echo "Changed files:"
           git diff --name-only "$BASE...HEAD"
 
-          # Test infra (incl. the sign-in e2e), workflows or the core pin
-          # changed — test all apps
-          if git diff --name-only "$BASE...HEAD" | grep -qE '^tests/lib\.sh$|^tests/e2e/|^\.github/|^\.core-ref$'; then
+          # Test infra (incl. the sign-in e2e and the image lists), workflows
+          # or the core pin changed — test all apps
+          if git diff --name-only "$BASE...HEAD" | grep -qE '^tests/lib\.sh$|^tests/app-images\.sh$|^tests/e2e/|^\.github/|^\.core-ref$'; then
             echo "Test infra or core ref changed — testing all apps"
             all_apps | emit
             exit 0

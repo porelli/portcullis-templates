@@ -39,6 +39,28 @@ else
   fail "RewriteValve guarding X-Forwarded-User is missing"
 fi
 
+# Static: the built-in administrator is guacadmin-<generated suffix>, and the
+# valve refuses any X-Forwarded-User starting with guacadmin (the runtime
+# check is the sign-in e2e's refused_users: [guacadmin-x])
+if grep -q 'GUACAMOLE_ADMIN_SUFFIX:?' "$COMPOSE" \
+    && grep -A2 'key: GUACAMOLE_ADMIN_SUFFIX' "$(dirname "$COMPOSE")/manifest.yaml" | grep -q 'generate: random'; then
+  pass "local administrator name is guacadmin-<generated suffix>"
+else
+  fail "the built-in administrator must be renamed guacadmin-\${GUACAMOLE_ADMIN_SUFFIX} (generated)"
+fi
+if grep -qF "echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin.* [NC]'" "$COMPOSE"; then
+  pass "valve refuses X-Forwarded-User starting with guacadmin (static)"
+else
+  fail "valve does not refuse X-Forwarded-User guacadmin*"
+fi
+
+# Static: the DB healthcheck takes the password from the env, not argv
+if grep -q 'MYSQL_PWD=' "$COMPOSE" && ! grep -qE '"-p\$\{?GUACAMOLE_DB_PASSWORD' "$COMPOSE"; then
+  pass "DB healthcheck passes the password via MYSQL_PWD"
+else
+  fail "DB healthcheck must not put the password on argv"
+fi
+
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID")

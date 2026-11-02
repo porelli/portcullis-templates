@@ -104,7 +104,7 @@ for compose in */compose.yml; do
     commit -q -m "templates: bump $app web release to $ver" \
     -m "storytold/$app $tag: $zip sha256 $sha (GitHub asset digest, SHA256SUMS.txt and download agree)."
   git push -q origin "HEAD:refs/heads/$branch"
-  gh pr create --base "$BASE" --head "$branch" \
+  pr_url=$(gh pr create --base "$BASE" --head "$branch" \
     --title "templates: bump $app web release to $ver" \
     --body "$(cat <<EOF
 Bumps the pinned web release of \`$app\` from $cur to $ver (https://github.com/$repo/releases/tag/$tag).
@@ -112,9 +112,32 @@ Bumps the pinned web release of \`$app\` from $cur to $ver (https://github.com/$
 - \`CRAFT_VERSION\`: $cur -> $ver
 - \`CRAFT_SHA256\`: \`$sha\` (the GitHub asset digest of \`$zip\`, its line in \`SHA256SUMS.txt\` and the downloaded file agree)
 
-Opened by the Craft releases workflow with GITHUB_TOKEN, so CI does not start on its own: run **Test Apps** with \`apps=$app\` on this branch (or close and reopen the PR) before merging, and read the release notes for changes to the web packaging (MIME types, isolation headers, file layout).
+Opened by the Craft releases workflow with GITHUB_TOKEN, so pull_request CI does not start on its own: the workflow dispatches **Test Apps** (\`pr=<this PR>\`, \`apps=$app\`, core ref from the base; linked below, its check attaches to the base commit) and **Lint** on this branch. If either is missing, dispatch it by hand (or close and reopen the PR) before merging, and read the release notes for changes to the web packaging (MIME types, isolation headers, file layout).
 EOF
-)"
+)")
+  pr_num="${pr_url##*/}"
+  # workflow_dispatch is the one event GITHUB_TOKEN may start (actions: write).
+  # The Test Apps run is dispatched on the base branch, so its check attaches
+  # to the base commit, not to the PR: link it in the PR body instead.
+  if [[ "$pr_num" =~ ^[0-9]+$ ]] \
+      && run_out=$(gh workflow run test-apps.yml --ref "$BASE" -f pr="$pr_num" -f apps="$app" 2>&1) \
+      && gh workflow run lint.yml --ref "$branch"; then
+    run_url=$(grep -oE "https://github\.com/[^ ]+/actions/runs/[0-9]+" <<<"$run_out" | head -1 || true)
+    if [ -z "$run_url" ]; then
+      # Older gh prints no URL: the newest dispatch of the workflow on BASE.
+      sleep 5
+      run_url=$(gh run list --workflow test-apps.yml --event workflow_dispatch --branch "$BASE" \
+        --limit 1 --json url --jq '.[0].url // ""' 2>/dev/null || true)
+    fi
+    body=$(gh pr view "$pr_num" --json body --jq .body || true)
+    printf '%s\n\n**Test Apps** (apps=%s, dispatched by the workflow; its check shows on the base commit, not here): %s\n' \
+      "$body" "$app" "${run_url:-https://github.com/${GITHUB_REPOSITORY:-porelli/portcullis-templates}/actions/workflows/test-apps.yml?query=event%3Aworkflow_dispatch}" > "$tmp/body.md"
+    gh pr edit "$pr_num" --body-file "$tmp/body.md" >/dev/null \
+      || err "$app: could not add the Test Apps run link to PR #$pr_num"
+    log "$app: PR #$pr_num opened, Test Apps (apps=$app, ${run_url:-run URL unknown}) + Lint dispatched"
+  else
+    err "$app: PR ${pr_url:-?} opened, but dispatching Test Apps / Lint failed: ${run_out:-}"
+  fi
   git checkout -q "origin/$BASE"
 done
 

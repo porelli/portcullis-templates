@@ -9,6 +9,9 @@ auth:
   method: native-oidc
   sso: true
   group_access: true
+  # Defence in depth: Keycloak also refuses sign-in without access_group
+  # (the Hub's access role), on top of the login-path gate in compose.yml.
+  keycloak_access_role: true
   group_admin: false
   access_group: users_vaultwarden
   admin_group: admin_vaultwarden
@@ -18,8 +21,11 @@ auth:
     the web vault at / with root-level hashed assets and the password-login
     token endpoint /identity/connect/token (grant_type=send_access), which
     no narrow path list can express.
-    Native SSO via OpenID Connect. Users still need a master password for vault
-    encryption. The SSO start and callback paths (/identity/connect/authorize,
+    Native SSO via OpenID Connect, and SSO only (SSO_ONLY): the email +
+    master password login is disabled in the web vault and for the clients,
+    so every sign-in goes through Keycloak. The master password never signs
+    anyone in; it only decrypts the vault after the SSO login (Bitwarden's
+    end-to-end encryption), so users still set one. The SSO start and callback paths (/identity/connect/authorize,
     /identity/connect/oidc-signin) sit behind forward-auth + group-gate, so
     only members of users_vaultwarden can sign in or get an account by SSO
     (Vaultwarden has no OIDC group restriction); the API, the token exchange
@@ -35,8 +41,8 @@ auth:
     are user-editable). The Keycloak client uses email_verified_claim: false
     (scope email-unverified: email claim, no email_verified), which
     Vaultwarden accepts with SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION, so new
-    users sign up with SSO on their first login and then set a master
-    password. SIGNUPS_ALLOWED is false (accounts only via SSO) and
+    users sign up with SSO on their first login and then set the master
+    password that encrypts their vault. SIGNUPS_ALLOWED is false (accounts only via SSO) and
     INVITATIONS_ALLOWED is false: an email invitation would create a
     placeholder account that Vaultwarden hands to the first SSO user
     presenting that email. Organisations can therefore only add users who

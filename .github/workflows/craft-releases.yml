@@ -5,8 +5,9 @@ name: Craft releases
 # which Dependabot can't track. Weekly, tests/craft-releases.sh compares each
 # pin with the repo's latest release and opens one PR per newer release,
 # after the GitHub asset digest, SHA256SUMS.txt and the download agree.
-# PRs opened with GITHUB_TOKEN start no workflows: run Test Apps with
-# apps=<app> on the branch (the PR body says so) before merging.
+# PRs opened with GITHUB_TOKEN start no pull_request workflows, so the job
+# (actions: write) dispatches Test Apps (pr=<PR>, apps=<app>; core ref from
+# the PR base) and Lint (on the branch) for each PR it opens.
 on:
   schedule:
     - cron: "23 5 * * 1"
@@ -25,6 +26,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
