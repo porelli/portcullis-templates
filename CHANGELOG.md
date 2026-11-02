@@ -7,6 +7,17 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ### New templates
 
+- **Firefox Sync** (`firefox-sync`): Mozilla's syncstorage-rs 0.24.0 (the
+  porelli/firefox-sync PostgreSQL build) for Mozilla accounts. The host is
+  open (Firefox's Sync requests carry no cookie or client certificate), and
+  only the Mozilla account ids in the "Allowed accounts" setting can sync
+  (empty = nobody). The public server runs as a database role that can't
+  touch the allowlist. Planned: each access-group member enters their own
+  account id on their People page.
+- **Vikunja** (`vikunja`): to-do lists and kanban boards, OIDC only (no
+  password login, sign-up or invite links). Sign-in restricted to
+  `users_vikunja` by the Hub's Keycloak access role. Link sharing is a
+  setting, off by default.
 - **Home Assistant** (`homeassistant`): native OIDC through the pinned
   auth_oidc integration, restricted to `users_homeassistant` in Keycloak
   (`keycloak_access_role: true`); the `homeassistant-init` job closes

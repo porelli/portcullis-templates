@@ -525,6 +525,39 @@ class TestIdentityRules(Case):
                 # (the job service has the app image, so image rules apply to it too: not this check)
                 self.assertFalse([e for e in self.recheck() if job in e and " must set " not in e])
 
+    def test_vikunja_oidc_only_and_no_linking(self) -> None:
+        ok = ('      VIKUNJA_AUTH_OPENID_ENABLED: "true"\n      VIKUNJA_AUTH_LOCAL_ENABLED: "false"\n'
+              '      VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: "false"\n')
+        errors, _ = self.run_template(env=ok)
+        self.assertClean(errors)
+        for line, needle in (('      VIKUNJA_AUTH_LOCAL_ENABLED: "false"\n', "VIKUNJA_AUTH_LOCAL_ENABLED"),
+                             ('      VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: "false"\n',
+                              "VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS")):
+            with self.subTest(dropped=needle):
+                errors, _ = self.run_template(env=ok.replace(line, ""))
+                self.assertError(errors, needle)
+        for key in ("EMAILFALLBACK", "USERNAMEFALLBACK"):
+            for val in ("true", "TRUE", "1", "t", "T"):
+                with self.subTest(key=key, val=val):
+                    errors, _ = self.run_template(env=ok + f'      VIKUNJA_AUTH_OPENID_PROVIDERS_MY_IDP_{key}: "{val}"\n')
+                    self.assertError(errors, "Vikunja links OIDC logins")
+
+    def test_firefox_sync_routed_service_waits_for_the_allowlist(self) -> None:
+        image = "ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0"
+        init = (f"  firefox-sync-init:\n    image: postgres:17.11-alpine@sha256:{'0' * 64}\n    restart: \"no\"\n")
+        self.run_template()
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.assertError(self.recheck(), "only the firefox-sync-init allowlist trigger")
+        self.rewrite_compose("services:\n", "services:\n" + init)
+        self.assertFalse([e for e in self.recheck() if "allowlist trigger" in e])
+        self.assertError(self.recheck(), "only after firefox-sync-init")
+        self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy\n",
+                             "    depends_on:\n      firefox-sync-init:\n        condition: service_started\n"
+                             "    networks:\n      - default\n      - portcullis-proxy\n")
+        self.assertError(self.recheck(), "only after firefox-sync-init")
+        self.rewrite_compose("condition: service_started", "condition: service_completed_successfully")
+        self.assertFalse([e for e in self.recheck() if "firefox-sync-init" in e])
+
 
 class TestGatedClientRouters(unittest.TestCase):
     HOST = "Host(`${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}`)"
