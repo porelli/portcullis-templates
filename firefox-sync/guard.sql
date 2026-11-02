@@ -57,16 +57,29 @@ BEGIN
 END $$;
 
 -- The allowlist, replaced on every start: the setting is authoritative.
-CREATE TABLE IF NOT EXISTS portcullis_allowed_accounts (
-    uid VARCHAR(32) PRIMARY KEY CHECK (uid ~ '^[0-9a-f]{32}$')
+-- Table as porelli/firefox-sync's invite-only Sync has it (db/postgres/init/
+-- allowlist.sql: sync_allowed_accounts uid, note, added_at, added_by), so
+-- its admin UI and a later per-person list (added_by = the LLDAP user who
+-- entered the id, see auth.notes) read and write the same rows.
+CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
+    uid VARCHAR(32) PRIMARY KEY CHECK (uid ~ '^[0-9a-f]{32}$'),
+    note VARCHAR(255) NOT NULL DEFAULT '',
+    added_at BIGINT NOT NULL,
+    added_by VARCHAR(255) NOT NULL
 );
-DELETE FROM portcullis_allowed_accounts;
-INSERT INTO portcullis_allowed_accounts (uid) SELECT uid FROM portcullis_wanted;
+DELETE FROM sync_allowed_accounts;
+INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by)
+SELECT uid, '', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT, 'Allowed accounts setting'
+FROM portcullis_wanted;
 
 -- Every row the tokenserver writes must belong to a listed account. Raising
 -- makes post_user fail: the tokenserver answers 500 and issues no token (the
--- same path as the upstream MAX_USERS trigger of porelli/firefox-sync). The
--- uid of a refused account shows in the database log, for the admin to list.
+-- same path as the MAX_USERS trigger of porelli/firefox-sync). Stricter than
+-- firefox-sync's own invite-only trigger (ffs_check_allowed_account), which
+-- skips the row (RETURN NULL) to keep a record of the refusal and relies on
+-- the tokenserver failing on the missing RETURNING row; it is also off with
+-- an empty list, ours refuses everybody then. The uid of a refused account
+-- shows in the database log, for the admin to list.
 -- Runs as the caller (the app role). search_path is pg_catalog only and
 -- the table is schema-qualified: the app role may create objects in public
 -- (below), so an unqualified call could resolve to a function it planted
@@ -76,7 +89,7 @@ LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
     account pg_catalog.text := pg_catalog.lower(pg_catalog.split_part(NEW.email::pg_catalog.text, '@', 1));
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM public.portcullis_allowed_accounts a WHERE a.uid::pg_catalog.text = account) THEN
+    IF NOT EXISTS (SELECT 1 FROM public.sync_allowed_accounts a WHERE a.uid::pg_catalog.text = account) THEN
         RAISE EXCEPTION 'portcullis: Firefox account % is not in the Allowed accounts setting: refused', pg_catalog.left(account, 64)
             USING ERRCODE = 'insufficient_privilege';
     END IF;
@@ -97,7 +110,7 @@ FOR EACH ROW EXECUTE FUNCTION public.portcullis_check_allowed_account();
 -- again later, the account starts with empty storage and Firefox uploads its
 -- local data again.
 DELETE FROM users
-WHERE lower(split_part(email, '@', 1)) NOT IN (SELECT uid FROM portcullis_allowed_accounts);
+WHERE lower(split_part(email, '@', 1)) NOT IN (SELECT uid FROM sync_allowed_accounts);
 
 -- One sync node, this instance's hostname. After a hostname change
 -- firefox-sync-migrate added a node for the new one (INIT_NODE_URL): move the
@@ -173,8 +186,8 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM firefoxsync_app;
 GRANT USAGE, CREATE ON SCHEMA public TO firefoxsync_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO firefoxsync_app;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO firefoxsync_app;
-REVOKE ALL ON public.portcullis_allowed_accounts FROM firefoxsync_app;
-GRANT SELECT ON public.portcullis_allowed_accounts TO firefoxsync_app;
+REVOKE ALL ON public.sync_allowed_accounts FROM firefoxsync_app;
+GRANT SELECT ON public.sync_allowed_accounts TO firefoxsync_app;
 
-SELECT 'portcullis-guard: ' || (SELECT count(*) FROM portcullis_allowed_accounts) || ' allowed account(s), '
+SELECT 'portcullis-guard: ' || (SELECT count(*) FROM sync_allowed_accounts) || ' allowed account(s), '
        || (SELECT count(DISTINCT email) FROM users) || ' with Sync data on this server' AS status;

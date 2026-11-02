@@ -59,6 +59,22 @@ auth:
     syncs, by uid. Sync data is end-to-end encrypted with keys derived from
     the Mozilla account: this server, and whoever controls it, can't read
     it.
+    Planned: each person enters their own Mozilla account id on their
+    People page (a person-entered value, a Hub feature being designed), and
+    the allowlist becomes the ids entered by the current members of the
+    access group (rows added_by = their LLDAP username, removed when they
+    leave the group). Until then the admin maintains the Allowed accounts
+    setting.
+    Self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono option)
+    are not offered: they need an SMTP server, MySQL and Redis, three more
+    public hosts, a 5 GB image and 3-4 GB of RAM, and they are a second,
+    password-based account system on the internet that Portcullis can't
+    gate (Firefox calls the accounts API anonymously too). A separate
+    template may add them later.
+    The allowlist uses firefox-sync's table (sync_allowed_accounts) with a
+    stricter trigger: it raises (no row, no token) instead of skipping the
+    row, and an empty list refuses everybody instead of turning the
+    allowlist off.
     Finding a uid: in a Firefox signed in to the account, Browser Console
     (devtools.chrome.enabled = true) -
     (await ChromeUtils.importESModule("resource://gre/modules/FxAccounts.sys.mjs").getFxAccountsSingleton().getSignedInUser()).uid

@@ -93,9 +93,12 @@ insert_user() {
       WHERE s.service = 'sync-1.5' AND n.node = 'https://$HOST' RETURNING uid"
 }
 
-LIST=$(db "SELECT string_agg(uid, ',' ORDER BY uid) FROM portcullis_allowed_accounts")
+LIST=$(db "SELECT string_agg(uid, ',' ORDER BY uid) FROM sync_allowed_accounts")
 if [ "$LIST" = "$ALLOWED_A,$ALLOWED_B" ]; then
   pass "allowlist = the setting (lowercased)"
+  BY=$(db "SELECT DISTINCT added_by FROM sync_allowed_accounts")
+  [ "$BY" = "Allowed accounts setting" ] && pass "rows in firefox-sync's sync_allowed_accounts layout (added_by)" \
+    || fail "added_by: $BY"
 else
   fail "allowlist: $LIST"
 fi
@@ -109,8 +112,8 @@ app_sql() {
 for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
             "ALTER TABLE users DISABLE TRIGGER ALL" \
             "SET session_replication_role = replica" \
-            "INSERT INTO portcullis_allowed_accounts (uid) VALUES ('$OUTSIDER')" \
-            "DELETE FROM portcullis_allowed_accounts" \
+            "INSERT INTO sync_allowed_accounts (uid, added_at, added_by) VALUES ('$OUTSIDER', 1, 'x')" \
+            "DELETE FROM sync_allowed_accounts" \
             "DROP EVENT TRIGGER portcullis_app_no_ddl" \
             "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$" \
             "CREATE TABLE public.portcullis_x (a int)"; do
@@ -148,7 +151,7 @@ if echo "$OUT" | grep -q 'portcullis: Allowed accounts: not-a-uid is not a Mozil
 else
   fail "invalid value not refused: $OUT"
 fi
-[ "$(db "SELECT count(*) FROM portcullis_allowed_accounts")" = 2 ] && pass "refused run changed nothing" \
+[ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 2 ] && pass "refused run changed nothing" \
   || fail "refused run changed the allowlist"
 
 # Removal: a start without the account deletes its rows; empty = nobody.
