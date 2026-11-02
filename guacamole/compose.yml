@@ -18,7 +18,12 @@ services:
       PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
     # The header extension has no proxy allowlist, so only Traefik may send
     # X-Forwarded-User: a Tomcat RewriteValve answers 403 to any request that
-    # carries the header from another peer on portcullis-proxy. This replays
+    # carries the header from another peer on portcullis-proxy. It also
+    # answers 403 to any X-Forwarded-User starting with "guacadmin"
+    # (case-insensitive): the extension logs a user in as the DB account of
+    # that name, so no LLDAP user may become the local administrator
+    # (guacadmin-<GUACAMOLE_ADMIN_SUFFIX>, or guacadmin on databases
+    # initialized before the suffix existed). This replays
     # the image's entrypoint (source every /opt/guacamole/entrypoint.d/*.sh)
     # and adds the valve to the generated CATALINA_BASE just before Tomcat
     # starts.
@@ -36,6 +41,8 @@ services:
             {
               echo 'RewriteCond %{HTTP:X-Forwarded-User} !^$$'
               echo "RewriteCond %{REMOTE_ADDR} !^$${TRAEFIK_IP_RE}\$$"
+              echo 'RewriteRule .* - [F]'
+              echo 'RewriteCond %{HTTP:X-Forwarded-User} ^guacadmin [NC]'
               echo 'RewriteRule .* - [F]'
             } > "$$CATALINA_BASE/conf/Catalina/localhost/rewrite.config"
             xmlstarlet edit --inplace \
@@ -77,14 +84,20 @@ services:
     # Builds the MySQL init script (only executed by MySQL on first boot of
     # an empty data volume). The upstream schema creates guacadmin with the
     # well-known password "guacadmin"; the appended SQL replaces it with
-    # GUACAMOLE_ADMIN_PASSWORD and, if GUACAMOLE_ADMIN_USER is set, renames
-    # the account so that SSO user (via header auth) is the administrator.
+    # GUACAMOLE_ADMIN_PASSWORD and renames the account: to GUACAMOLE_ADMIN_USER
+    # if set (that SSO user, via header auth, is the administrator), otherwise
+    # to guacadmin-<GUACAMOLE_ADMIN_SUFFIX> (generated per instance; break-glass
+    # only, header logins as guacadmin* are refused by the valve above).
     command:
       - |
         set -eu
         SCHEMA=/opt/guacamole/extensions/guacamole-auth-jdbc/mysql/schema
         case "$${GUACAMOLE_ADMIN_USER}" in
           *[!A-Za-z0-9._@-]*) echo "GUACAMOLE_ADMIN_USER contains invalid characters" >&2; exit 1 ;;
+          [Gg][Uu][Aa][Cc][Aa][Dd][Mm][Ii][Nn]*) echo "GUACAMOLE_ADMIN_USER must not start with guacadmin (header logins as guacadmin* are refused)" >&2; exit 1 ;;
+        esac
+        case "$${GUACAMOLE_ADMIN_SUFFIX}" in
+          ""|*[!A-Za-z0-9]*) echo "GUACAMOLE_ADMIN_SUFFIX must be non-empty alphanumeric" >&2; exit 1 ;;
         esac
         case "$${GUACAMOLE_ADMIN_PASSWORD}" in
           ""|*[!A-Za-z0-9]*) echo "GUACAMOLE_ADMIN_PASSWORD must be non-empty alphanumeric" >&2; exit 1 ;;
@@ -97,14 +110,14 @@ services:
           echo "      u.password_hash = UNHEX(SHA2(CONCAT('$${GUACAMOLE_ADMIN_PASSWORD}', HEX(@salt)), 256)),"
           echo "      u.password_date = NOW()"
           echo "  WHERE e.name = 'guacadmin' AND e.type = 'USER';"
-          if [ -n "$${GUACAMOLE_ADMIN_USER}" ]; then
-            echo "UPDATE guacamole_entity SET name = '$${GUACAMOLE_ADMIN_USER}' WHERE name = 'guacadmin' AND type = 'USER';"
-          fi
+          ADMIN_NAME="$${GUACAMOLE_ADMIN_USER:-guacadmin-$${GUACAMOLE_ADMIN_SUFFIX}}"
+          echo "UPDATE guacamole_entity SET name = '$${ADMIN_NAME}' WHERE name = 'guacadmin' AND type = 'USER';"
         } > /initdb/001-init.sql
         echo "Schema files ready."
     environment:
       GUACAMOLE_ADMIN_PASSWORD: ${GUACAMOLE_ADMIN_PASSWORD:?GUACAMOLE_ADMIN_PASSWORD must be set}
       GUACAMOLE_ADMIN_USER: ${GUACAMOLE_ADMIN_USER:-}
+      GUACAMOLE_ADMIN_SUFFIX: ${GUACAMOLE_ADMIN_SUFFIX:?GUACAMOLE_ADMIN_SUFFIX must be set}
     volumes:
       - guacamole-initdb:/initdb
 
@@ -119,7 +132,8 @@ services:
       MYSQL_USER: guacamole
       MYSQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uguacamole", "-p${GUACAMOLE_DB_PASSWORD:?GUACAMOLE_DB_PASSWORD must be set}"]
+      # Password via MYSQL_PWD (from the container env), never on argv.
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysqladmin ping -h localhost -uguacamole"]
       interval: 10s
       timeout: 5s
       retries: 10
