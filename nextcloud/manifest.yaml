@@ -1,6 +1,6 @@
 name: Nextcloud
 description: Self-hosted productivity platform — files, calendar, contacts, office
-icon: "\u2601"
+icon: "\u2601\uFE0F"
 category: productivity
 tags: [files, calendar, office, collaboration]
 instances: multi
