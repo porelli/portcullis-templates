@@ -339,8 +339,8 @@ stripped). Rules, all checked by `tests/validate.py`:
 - **Immutable hostnames.** If the app bakes a hostname into its data at the
   first start (Synapse's `server_name` is part of every user and room id),
   list that host router under `hosts: {immutable: [<router>]}` in the
-  manifest: the Hub then refuses to change that hostname once the instance
-  has been enabled (see `matrix/`; validate.py `IMMUTABLE_HOSTS` keeps it
+  manifest: the admin picks it when creating the instance and the Hub
+  refuses to change it afterwards (see `matrix/`; validate.py `IMMUTABLE_HOSTS` keeps it
   declared).
 - **Own hostnames** use the same variable and default everywhere (env URLs,
   `hostname:`, middleware values), e.g.

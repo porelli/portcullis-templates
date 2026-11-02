@@ -73,7 +73,7 @@
       "additionalProperties": false,
       "properties": {
         "immutable": {
-          "description": "Host routers whose hostname must never change once the instance has started (e.g. Synapse's server_name, which every user and room id contains). The Hub accepts any hostname while the instance has never been enabled and refuses to change it afterwards; moving it means a new instance.",
+          "description": "Host routers whose hostname is fixed once the instance exists (e.g. Synapse's server_name, which every user and room id contains). The admin chooses it when creating the instance; the Hub refuses to change it afterwards (409); moving it means a new instance.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,

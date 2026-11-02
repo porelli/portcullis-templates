@@ -767,7 +767,7 @@ def check_immutable_hosts(t: Template, r: Report) -> None:
     for name, why in sorted(IMMUTABLE_HOSTS.get(t.id, {}).items()):
         if name not in listed:
             r.error(t.m_where, f"hosts.immutable must list {name}",
-                    f"{why}: the Hub must refuse to change that hostname once the instance has started")
+                    f"{why}: the Hub must refuse to change that hostname once the instance exists")
 
 
 def check_instance_vars(t: Template, r: Report) -> None:
