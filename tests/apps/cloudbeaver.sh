@@ -29,9 +29,10 @@ else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
 
-# Static: CloudBeaver logs in by username (X-Forwarded-User), never email
-CONF="$(dirname "$COMPOSE")/cloudbeaver-runtime.conf"
-if grep -q '"user-header": "X-Forwarded-User"' "$CONF" && ! grep -qi 'X-Forwarded-Email' "$CONF"; then
+# Static: CloudBeaver logs in by username (X-Forwarded-User), never email.
+# cloudbeaver-config writes the runtime config CloudBeaver reads.
+PATCH="$(dirname "$COMPOSE")/patch-runtime-conf.py"
+if grep -q '"user-header": "X-Forwarded-User"' "$PATCH" && ! grep -qi 'X-Forwarded-Email' "$PATCH"; then
   pass "reverseProxy user-header is X-Forwarded-User (LLDAP username)"
 else
   fail "reverseProxy must use user-header X-Forwarded-User and no email header"
@@ -67,12 +68,44 @@ else
   fail "gate does not refuse X-Forwarded-User cbadmin*"
 fi
 
-# Fail closed: no anonymous CloudBeaver sessions (shipped config and the
-# runtime-config patch both say so).
-if grep -q 'anonymousAccessEnabled: false' "$CONF" && grep -q 'app\["anonymousAccessEnabled"\] = False' "$(dirname "$COMPOSE")/patch-runtime-conf.py"; then
-  pass "anonymous access off (GlobalConfiguration + cloudbeaver-config)"
+# Runtime (what CloudBeaver serves, not what a file says): configured (no
+# setup wizard), anonymous access off, reverseProxy enabled.
+gql() { curl -s --max-time 10 -H 'Content-Type: application/json' -d "{\"query\":\"$1\"}" "http://${IP}:8978/api/gql" 2>/dev/null || true; }
+CFG=""
+for _ in $(seq 1 40); do
+  CFG=$(gql '{ serverConfig { configurationMode anonymousAccessEnabled enabledAuthProviders } }')
+  jq -e '.data.serverConfig.configurationMode == false' <<< "$CFG" >/dev/null 2>&1 && break
+  sleep 3
+done
+if jq -e '.data.serverConfig.configurationMode == false' <<< "$CFG" >/dev/null 2>&1; then
+  pass "server configured automatically (configurationMode false: no setup wizard)"
 else
-  fail "CloudBeaver anonymous access must be off in cloudbeaver-runtime.conf and patch-runtime-conf.py"
+  fail "CloudBeaver is in configuration mode (setup wizard): $CFG"
+fi
+if jq -e '.data.serverConfig.anonymousAccessEnabled == false' <<< "$CFG" >/dev/null 2>&1; then
+  pass "anonymous access off (serverConfig)"
+else
+  fail "anonymous access is not off: $CFG"
+fi
+if jq -e '.data.serverConfig.enabledAuthProviders | index("reverseProxy")' <<< "$CFG" >/dev/null 2>&1; then
+  pass "reverseProxy auth provider enabled (serverConfig)"
+else
+  fail "reverseProxy auth provider not enabled: $CFG"
+fi
+if grep -q 'app\["anonymousAccessEnabled"\] = False' "$PATCH"; then
+  pass "cloudbeaver-config forces anonymous access off at every start"
+else
+  fail "patch-runtime-conf.py must force anonymousAccessEnabled off"
+fi
+# The gate is healthy (= routed by Traefik) only in that state.
+for _ in $(seq 1 60); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' portcullis-cloudbeaver-gate-1 2>/dev/null)" = healthy ] && break
+  sleep 3
+done
+if [ "$(docker inspect -f '{{.State.Health.Status}}' portcullis-cloudbeaver-gate-1 2>/dev/null)" = healthy ]; then
+  pass "cloudbeaver-gate healthy (CloudBeaver configured, no anonymous access)"
+else
+  fail "cloudbeaver-gate not healthy: $(docker inspect -f '{{json .State.Health}}' portcullis-cloudbeaver-gate-1 2>/dev/null | head -c 600)"
 fi
 
 GATE_IP=$(app_container_ip "$APP_ID" cloudbeaver-gate)

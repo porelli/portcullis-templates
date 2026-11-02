@@ -141,12 +141,14 @@ app from fresh volumes. It checks:
 |-------|-------------|
 | `member` | `e2emember` is signed in (`signed_in`), with its username; with an `admin` check, it is **not** admin |
 | `admin` | `e2eadmin` is signed in and `admin` holds |
-| `outsider` | `e2eoutsider` never gets signed in: group-gate's HTTP 403 for forward-auth / header-auth apps (nothing else counts), the app's own denial otherwise |
+| `outsider` | `e2eoutsider` never gets signed in: where group-gate decides (forward-auth, header-auth, login-path gates) only group-gate's refusal counts (HTTP 403, its page and its `DENIED` log line); the app's own denial otherwise |
 
 Each setup link must register exactly one passkey. A marked expected failure
-must fail the way its `match` regex says (searched in the check's evidence,
-the page and the app's logs); any other failure, and any exception, fails the
-run. Any visible password field fails the run (Keycloak is passkey-only), unless
+must fail the way its `match` regex says, and not as `not_match` says,
+searched only in that check's evidence (its detail, the pages its flow saw,
+the app's logs since its flow started); a flow the test broke (password
+field, Keycloak/enroll or browser error, never on the app) and any exception
+fail the run. Any visible password field fails the run (Keycloak is passkey-only), unless
 `password` documents why the app shows one. If nobody could sign in, the
 outsider's refusal proves nothing and is reported `inconclusive`. One-shot
 helper services (`restart: "no"`) must have exited 0 before the browser

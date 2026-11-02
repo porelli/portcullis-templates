@@ -15,7 +15,6 @@ services:
       CB_ADMIN_PASSWORD: ${CLOUDBEAVER_ADMIN_PASSWORD:?CLOUDBEAVER_ADMIN_PASSWORD must be set}
     volumes:
       - cloudbeaver-data:/opt/cloudbeaver/workspace
-      - ./templates/cloudbeaver/cloudbeaver-runtime.conf:/opt/cloudbeaver/workspace/GlobalConfiguration/.cloudbeaver.runtime.conf:ro
     # Default network only: CloudBeaver's reverseProxy auth provider trusts
     # X-Forwarded-User (and X-Team/X-Role/... team and role headers) from any
     # peer and has no proxy allowlist, so it is not attached to the shared
@@ -94,6 +93,23 @@ services:
         exec nginx -g 'daemon off;'
     depends_on:
       - cloudbeaver
+    # Fail closed: healthy only while CloudBeaver is configured (no setup
+    # wizard) and anonymous access is off. Traefik routes no container
+    # whose healthcheck isn't healthy, so a failed automatic configuration
+    # never serves the wizard.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          r=$$(wget -q -O - --header 'Content-Type: application/json'
+          --post-data '{"query":"{ serverConfig { configurationMode anonymousAccessEnabled } }"}'
+          http://cloudbeaver:8978/api/gql) &&
+          printf '%s' "$$r" | grep -Eq '"configurationMode" *: *false' &&
+          printf '%s' "$$r" | grep -Eq '"anonymousAccessEnabled" *: *false'
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
     networks:
       - default
       - portcullis-proxy

@@ -45,6 +45,9 @@ tests:
     login: ["button:has-text('Start using OpenID')", "button:has-text('Sign in with OpenID')"]
     # Actual rate-limits /account/login: two SSO starts per button are enough.
     max_clicks: 2
+    # Actual allows 500 requests a minute per client address (its frontend
+    # loads hundreds of files); in CI every user shares one address.
+    pause_between_users: 65
     signed_in:
       text: "{username}"
       wait: 20
@@ -55,6 +58,8 @@ tests:
       member:
         reason: "Actual admits only the first OpenID user (the owner) and users the owner adds by hand; the test doesn't add e2emember, and auto-creating accounts would let every Portcullis user in until the Hub's per-app Keycloak client access (Task 4b)"
         # Actual answers the refused grant with 400 {"reason":"openid-grant-failed"}
-        # (the page is sometimes replaced by its rate limiter's 429, so its
-        # access log line counts too).
+        # (its access log line in this flow's window counts too).
         match: "openid-grant-failed|GET 400 /openid/callback"
+        # Searched in the member's own flow only; a rate-limited login (429)
+        # is a different failure, not the refused grant.
+        not_match: "Too many requests"

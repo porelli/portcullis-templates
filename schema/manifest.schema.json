@@ -610,6 +610,12 @@
                 "outsider": {"$ref": "#/$defs/signinExpectedFail"}
               }
             },
+            "pause_between_users": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 900,
+              "description": "Seconds to wait between the users' sign-ins (apps whose per-client rate limits CI's single client address would trip)"
+            },
             "max_clicks": {
               "type": "integer",
               "minimum": 1,
@@ -684,7 +690,8 @@
       "required": ["reason", "match"],
       "properties": {
         "reason": {"type": "string", "minLength": 10},
-        "match": {"type": "string", "minLength": 3, "description": "Regex (case-insensitive) that must be found in the check's evidence, the page or the app's logs"}
+        "match": {"type": "string", "minLength": 3, "description": "Regex (case-insensitive) that must be found in the check's own evidence: its detail, the pages its flow saw, the app's logs since its flow started"},
+        "not_match": {"type": "string", "minLength": 3, "description": "Regex that must NOT be found there (a different failure that also matches)"}
       }
     }
   }

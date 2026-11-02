@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Portcullis: re-enable CloudBeaver's reverseProxy sign-in before every start.
 
-CloudBeaver applies GlobalConfiguration/.cloudbeaver.runtime.conf (shipped by
-the template) only while the server is unconfigured. Once the automatic
-server configuration (CB_SERVER_* / CB_ADMIN_*) or the admin UI has written
-workspace/.data/.cloudbeaver.runtime.conf, that file wins, and it may lack
-the reverseProxy provider or its X-Forwarded-User parameter. This edits it
+CloudBeaver (26.2) reads its runtime configuration from
+workspace/.data/.cloudbeaver.runtime.conf, which the automatic server
+configuration (CB_SERVER_* / CB_ADMIN_*) and the admin UI write. This seeds
+it before the first start and re-applies it before every start, editing it
 as JSON (stdlib only; on the first start it seeds it): anonymous access
 off, enableReverseProxyAuth on, "reverseProxy" in
 enabledAuthProviders, the portcullis-proxy auth configuration present with
