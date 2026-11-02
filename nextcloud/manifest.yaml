@@ -9,6 +9,10 @@ auth:
   method: native-oidc
   sso: true
   group_access: true
+  # Defence in depth: Keycloak also refuses sign-in without access_group
+  # (the Hub's access role), on top of user_oidc's group whitelist; admin_group
+  # members sign in only if they are in access_group too.
+  keycloak_access_role: true
   group_admin: true
   access_group: users_nextcloud
   admin_group: admin_nextcloud

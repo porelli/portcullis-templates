@@ -6,7 +6,7 @@ set -e
 
 IMMICH_URL="http://immich-server:2283"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@portcullis.local}"
-ADMIN_PASSWORD="${IMMICH_ADMIN_PASSWORD:-changeme}"
+ADMIN_PASSWORD="${IMMICH_ADMIN_PASSWORD:?IMMICH_ADMIN_PASSWORD must be set}"
 ADMIN_NAME="${ADMIN_NAME:-Admin}"
 
 echo "setup: Waiting for Immich..."
@@ -25,9 +25,16 @@ if [ "$INITIALIZED" = "true" ]; then
 fi
 
 echo "setup: Creating admin user..."
-RESULT=$(wget -qO- --post-data="{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\",\"name\":\"$ADMIN_NAME\"}" \
+# The request body (with the password) goes through a private temp file
+# (--post-file), never on wget's argv (visible in ps / /proc to the host).
+umask 077
+BODY=$(mktemp)
+trap 'rm -f "$BODY"' EXIT
+printf '{"email":"%s","password":"%s","name":"%s"}' "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_NAME" > "$BODY"
+RESULT=$(wget -qO- --post-file="$BODY" \
   --header="Content-Type: application/json" \
   "$IMMICH_URL/api/auth/admin-sign-up" 2>&1) || true
+rm -f "$BODY"
 
 if echo "$RESULT" | grep -q '"isAdmin":true'; then
   echo "setup: Admin created successfully."

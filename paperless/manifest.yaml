@@ -10,6 +10,9 @@ auth:
   method: native-oidc
   sso: true
   group_access: true
+  # Defence in depth: Keycloak also refuses sign-in without access_group
+  # (the Hub's access role), on top of the login-path gate in compose.yml.
+  keycloak_access_role: true
   group_admin: true
   access_group: users_paperless
   admin_group: admin_paperless
