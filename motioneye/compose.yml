@@ -1,0 +1,89 @@
+services:
+  # motionEye (web UI on 8765) with the motion daemon inside. Its own login
+  # (accounts admin and user) stays as a second factor behind forward-auth +
+  # group-gate; motioneye-init gives both accounts generated passwords.
+  # Default network only: network cameras (RTSP/HTTP/MJPEG URLs) are reached
+  # outbound, local cameras are the /dev/video* devices listed in the
+  # instance settings; motion's stream and control ports stay inside the
+  # instance's private network.
+  motioneye:
+    image: ghcr.io/motioneye-project/motioneye:0.44.0@sha256:7da31d62e6c46ee8b61280f872801e429ec6f3db81bb23aca11c83863939cade
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${MOTIONEYE_TIMEZONE:-UTC}
+    volumes:
+      - motioneye-config:/etc/motioneye
+      # Recordings and pictures; the "Storage folder" setting replaces this
+      # volume with a host folder (same mount point).
+      - motioneye-media:/var/lib/motioneye
+      - ./templates/motioneye/healthcheck.sh:/portcullis/healthcheck.sh:ro
+    # Local (USB/V4L2) cameras listed in this instance's settings, nothing
+    # else. Empty slots map /dev/null under unused names.
+    devices:
+      - "${MOTIONEYE_VIDEO_1:-/dev/null}:${MOTIONEYE_VIDEO_1:-/dev/portcullis-unused-1}"
+      - "${MOTIONEYE_VIDEO_2:-/dev/null}:${MOTIONEYE_VIDEO_2:-/dev/portcullis-unused-2}"
+      - "${MOTIONEYE_VIDEO_3:-/dev/null}:${MOTIONEYE_VIDEO_3:-/dev/portcullis-unused-3}"
+      - "${MOTIONEYE_VIDEO_4:-/dev/null}:${MOTIONEYE_VIDEO_4:-/dev/portcullis-unused-4}"
+    # Healthy only while both accounts have a password and the UI answers.
+    healthcheck:
+      test: ["CMD", "sh", "/portcullis/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      motioneye-init:
+        condition: service_completed_successfully
+    networks:
+      default:
+        aliases: [motioneye-internal]
+    restart: unless-stopped
+
+  # One-shot before every start: no account without a password.
+  motioneye-init:
+    image: ghcr.io/motioneye-project/motioneye:0.44.0@sha256:7da31d62e6c46ee8b61280f872801e429ec6f3db81bb23aca11c83863939cade
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["python3", "/portcullis/init.py"]
+    environment:
+      MOTIONEYE_ADMIN_PASSWORD: ${MOTIONEYE_ADMIN_PASSWORD:?MOTIONEYE_ADMIN_PASSWORD must be set}
+      MOTIONEYE_USER_PASSWORD: ${MOTIONEYE_USER_PASSWORD:?MOTIONEYE_USER_PASSWORD must be set}
+    volumes:
+      - motioneye-config:/etc/motioneye
+      - ./templates/motioneye/init.py:/portcullis/init.py:ro
+    network_mode: none
+    restart: "no"
+
+  # The only service on portcullis-proxy: answers Traefik's address alone.
+  motioneye-gate:
+    image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
+    security_opt: [no-new-privileges:true]
+    environment:
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GATE_UPSTREAM: http://motioneye-internal:8765
+      GATE_LISTEN: "8765"
+    entrypoint: ["/bin/sh", "/portcullis/gate.sh"]
+    volumes:
+      - ./templates/motioneye/gate.sh:/portcullis/gate.sh:ro
+    depends_on:
+      motioneye:
+        condition: service_healthy
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.motioneye.rule: Host(`${PORTCULLIS_HOST_MOTIONEYE:-cameras.portcullis.local}`)
+      traefik.http.routers.motioneye.entrypoints: websecure
+      traefik.http.routers.motioneye.tls.options: authaware@file
+      traefik.http.routers.motioneye.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.motioneye.service: motioneye
+      traefik.http.services.motioneye.loadbalancer.server.port: "8765"
+    restart: unless-stopped
+
+volumes:
+  motioneye-config: {}
+  motioneye-media: {}
+
+networks:
+  portcullis-proxy:
+    external: true

@@ -21,6 +21,7 @@ updates:
       - "/docs"
       - "/dokuwiki"
       - "/effectcraft"
+      - "/esphome"
       - "/figcraft"
       - "/filmcraft"
       - "/firefly-iii"
@@ -37,6 +38,7 @@ updates:
       - "/litellm"
       - "/matrix"
       - "/mealie"
+      - "/motioneye"
       - "/netbird"
       - "/nextcloud"
       - "/paperless"
@@ -51,6 +53,7 @@ updates:
       - "/vectorcraft"
       - "/wiki"
       - "/wordcraft"
+      - "/zigbee2mqtt"
     schedule:
       interval: weekly
       day: monday

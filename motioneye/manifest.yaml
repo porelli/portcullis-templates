@@ -1,0 +1,102 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: motionEye
+description: Video surveillance for network and USB cameras — motion detection, recording, live view
+icon: "\U0001F4F9"
+category: home-automation
+tags: [home-automation, cameras, surveillance, cctv, motion-detection]
+instances: multi
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_motioneye
+  admin_group: admin_motioneye
+  notes: >
+    motionEye 0.44 (motioneye-project, maintained: 0.44.0 in June 2026)
+    has no SSO; its own login has two local accounts, "admin" (full
+    configuration) and "user" (view only), whose passwords are empty after
+    a fresh install. Access is gated by forward-auth + group-gate on the
+    whole host, and motionEye's login stays as a second step:
+    motioneye-init sets each account with an empty password to a generated
+    one before every start (MOTIONEYE_ADMIN_PASSWORD /
+    MOTIONEYE_USER_PASSWORD in this instance's .env, Hub data
+    env/<instance>.env; hashed by motionEye, argon2), so motionEye never
+    runs with its well-known empty default, and the healthcheck fails while
+    either is empty. Share the admin password with your camera
+    administrators and the user password with viewers; a password changed
+    in motionEye's settings is kept (clearing one sets the generated value
+    again at the next start). motionEye doesn't read any identity header,
+    so no LLDAP user name maps to these accounts. The admin account can do
+    everything motionEye can, including commands run on motion events
+    inside the container. The UI is on the instance's private network
+    only; the gate in front of it (nginx, the only container on
+    portcullis-proxy) answers Traefik's address alone. Cameras: network
+    cameras by URL (RTSP, HTTP/MJPEG; added in motionEye, reached outbound
+    from the container) and up to four local V4L2 cameras listed in the
+    Camera 1-4 settings (e.g. /dev/video0; only those are passed in, not
+    privileged, so several instances can each use their own; a path that
+    doesn't exist on the host stops the container from starting). Live
+    view goes through motionEye's own UI; motion's direct streaming ports
+    (8081+, "Video Streaming" in the camera settings) are not published,
+    so direct stream URLs only work inside the instance. Storage: set
+    "Storage folder" to a host path (e.g. /srv/cctv) to record there
+    instead of the instance's media volume; keep an eye on its size
+    (motionEye's own "Preserve" settings delete old media). Not available
+    in a container: shutdown/reboot, and SMB share mounts.
+
+settings:
+  - key: MOTIONEYE_MEDIA_PATH
+    label: Storage folder
+    description: Host folder for recordings and pictures (empty = the instance's own volume).
+    type: path
+    target:
+      service: motioneye
+      mount: /var/lib/motioneye
+  - key: MOTIONEYE_TIMEZONE
+    label: Time zone
+    description: IANA time zone for timestamps and schedules, e.g. Europe/Rome (default UTC).
+    type: text
+  - key: MOTIONEYE_VIDEO_1
+    label: Camera 1
+    description: Device path of a local (USB/V4L2) camera, e.g. /dev/video0 (empty = unused).
+    type: text
+  - key: MOTIONEYE_VIDEO_2
+    label: Camera 2
+    description: Another local camera (empty = unused).
+    type: text
+  - key: MOTIONEYE_VIDEO_3
+    label: Camera 3
+    description: Another local camera (empty = unused).
+    type: text
+  - key: MOTIONEYE_VIDEO_4
+    label: Camera 4
+    description: Another local camera (empty = unused).
+    type: text
+
+env:
+  - key: MOTIONEYE_ADMIN_PASSWORD
+    description: Initial password of motionEye's admin account
+    generate: random
+  - key: MOTIONEYE_USER_PASSWORD
+    description: Initial password of motionEye's view-only user account
+    generate: random
+
+keycloak_clients: []
+config_files: []
+
+urls:
+  - label: Cameras
+    url: "https://{{HOST_MOTIONEYE}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # Past the gateway the browser reaches motionEye itself: its own login
+    # dialog (no identity reaches motionEye).
+    signed_in:
+      html: "motionEye"
+      wait: 20
+    password: "motionEye keeps its own admin/user login behind the gateway as a second step (auth.notes)"

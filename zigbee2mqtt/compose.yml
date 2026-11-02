@@ -1,0 +1,113 @@
+services:
+  # Zigbee2MQTT and its frontend (websocket API at /api). No frontend
+  # auth_token: forward-auth + group-gate in front of the whole host is the
+  # sign-in, and only zigbee2mqtt-gate (Traefik's address only) can reach
+  # the frontend. Default network only: the coordinator is a host USB device
+  # (devices:) or a network coordinator reached outbound, neither needs host
+  # networking. z2m-start.sh applies the instance settings at every start.
+  zigbee2mqtt:
+    image: ghcr.io/koenkk/zigbee2mqtt:2.14.3@sha256:fb4a6b0f6868ad1cd6a9996479802b2420e599c3463b62bbff8c8cd9a908f43a
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "/portcullis/z2m-start.sh"]
+    environment:
+      # Never Zigbee2MQTT's onboarding wizard (it would configure the
+      # instance for whoever opens it first) nor its failure page.
+      Z2M_ONBOARD_NO_SERVER: "1"
+      Z2M_NETWORK_COORDINATOR: ${Z2M_NETWORK_COORDINATOR:-}
+      Z2M_SERIAL_DEVICE: ${Z2M_SERIAL_DEVICE:-}
+      Z2M_ADAPTER: ${Z2M_ADAPTER:-auto}
+      Z2M_MQTT_SERVER: ${Z2M_MQTT_SERVER:-}
+      Z2M_MQTT_USER: ${Z2M_MQTT_USER:-}
+      Z2M_MQTT_PASSWORD: ${Z2M_MQTT_PASSWORD:-}
+      Z2M_BROKER_PASSWORD: ${Z2M_BROKER_PASSWORD:?Z2M_BROKER_PASSWORD must be set}
+      # The ACL of the bundled broker allows this base topic only.
+      ZIGBEE2MQTT_CONFIG_MQTT_BASE_TOPIC: zigbee2mqtt
+      ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED: "true"
+      ZIGBEE2MQTT_CONFIG_FRONTEND_PORT: "8080"
+      ZIGBEE2MQTT_CONFIG_FRONTEND_URL: https://${PORTCULLIS_HOST_ZIGBEE2MQTT:-zigbee.portcullis.local}
+      ZIGBEE2MQTT_CONFIG_HOMEASSISTANT_ENABLED: ${Z2M_HOMEASSISTANT:-true}
+      ZIGBEE2MQTT_CONFIG_ADVANCED_LOG_OUTPUT: '["console"]'
+    volumes:
+      - zigbee2mqtt-data:/app/data
+      - ./templates/zigbee2mqtt/z2m-start.sh:/portcullis/z2m-start.sh:ro
+      # Adapter auto-detection reads udev metadata of the listed device.
+      - /run/udev:/run/udev:ro
+    # The USB coordinator listed in this instance's settings, nothing else.
+    # Empty: /dev/null (z2m-start.sh then doesn't use /dev/zigbee).
+    devices:
+      - "${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee"
+    depends_on:
+      - mosquitto
+    networks:
+      default:
+        aliases: [zigbee2mqtt-internal]
+    restart: unless-stopped
+
+  # Bundled broker on the instance's private network: no anonymous clients,
+  # users zigbee2mqtt and homeassistant with generated passwords, ACL on
+  # zigbee2mqtt/# and homeassistant/#. Reachable from the host only through
+  # the optional MQTT port (manifest ports, for Home Assistant).
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine@sha256:860aeb5d63ce509508f6dcfb2bc8a1c1dd2bc60555b562b45ce90e52d8dabb0f
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-auth:/mosquitto/auth:ro
+      - ./templates/zigbee2mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
+    networks:
+      - default
+    restart: unless-stopped
+
+  # One-shot before every broker start: hashed password file + ACL.
+  mosquitto-init:
+    image: eclipse-mosquitto:2.1.2-alpine@sha256:860aeb5d63ce509508f6dcfb2bc8a1c1dd2bc60555b562b45ce90e52d8dabb0f
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    entrypoint: ["/bin/sh", "/portcullis/mosquitto-init.sh"]
+    environment:
+      Z2M_BROKER_PASSWORD: ${Z2M_BROKER_PASSWORD:?Z2M_BROKER_PASSWORD must be set}
+      Z2M_BROKER_HA_PASSWORD: ${Z2M_BROKER_HA_PASSWORD:?Z2M_BROKER_HA_PASSWORD must be set}
+    volumes:
+      - mosquitto-auth:/mosquitto/auth
+      - ./templates/zigbee2mqtt/mosquitto-init.sh:/portcullis/mosquitto-init.sh:ro
+      - ./templates/zigbee2mqtt/acl:/portcullis/acl:ro
+    network_mode: none
+    restart: "no"
+
+  # The only service on portcullis-proxy: answers Traefik's address alone and
+  # passes the frontend and its websocket (/api) through.
+  zigbee2mqtt-gate:
+    image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
+    security_opt: [no-new-privileges:true]
+    environment:
+      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GATE_UPSTREAM: http://zigbee2mqtt-internal:8080
+      GATE_LISTEN: "8080"
+    entrypoint: ["/bin/sh", "/portcullis/gate.sh"]
+    volumes:
+      - ./templates/zigbee2mqtt/gate.sh:/portcullis/gate.sh:ro
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.zigbee2mqtt.rule: Host(`${PORTCULLIS_HOST_ZIGBEE2MQTT:-zigbee.portcullis.local}`)
+      traefik.http.routers.zigbee2mqtt.entrypoints: websecure
+      traefik.http.routers.zigbee2mqtt.tls.options: authaware@file
+      traefik.http.routers.zigbee2mqtt.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.zigbee2mqtt.service: zigbee2mqtt
+      traefik.http.services.zigbee2mqtt.loadbalancer.server.port: "8080"
+    restart: unless-stopped
+
+volumes:
+  zigbee2mqtt-data: {}
+  mosquitto-data: {}
+  mosquitto-auth: {}
+
+networks:
+  portcullis-proxy:
+    external: true

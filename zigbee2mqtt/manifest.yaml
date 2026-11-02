@@ -1,0 +1,157 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Zigbee2MQTT
+description: Zigbee to MQTT bridge with its web frontend and a bundled, password-protected Mosquitto broker
+icon: "\U0001F41D"
+category: home-automation
+tags: [home-automation, zigbee, mqtt, iot, smart-home]
+instances: multi
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_zigbee2mqtt
+  admin_group: admin_zigbee2mqtt
+  notes: >
+    Zigbee2MQTT 2.14 has no user system: its frontend's only protection is an
+    optional shared auth_token. It runs without one here: forward-auth +
+    group-gate on the whole host is the sign-in, and every member of the
+    access group has full control (pairing, device settings, OTA, the
+    network key in Settings). The frontend is on the instance's private
+    network only; the gate in front of it (nginx, the only container on
+    portcullis-proxy) answers Traefik's address alone, so no other
+    container reaches it unauthenticated. Zigbee2MQTT's onboarding wizard
+    and failure page never open (Z2M_ONBOARD_NO_SERVER): they would
+    configure the instance for whoever reaches them first; the instance
+    settings are applied at every start instead (they override edits made
+    in the frontend's Settings for the same keys). Coordinator: set either
+    "Serial device" (the host path of a USB coordinator, best a stable
+    /dev/serial/by-id/... path; only that device is passed into the
+    container, not privileged, so several instances can each drive their
+    own coordinator; a path that doesn't exist on the host stops the
+    container from starting) or "Network coordinator" (tcp://host:port of
+    an Ethernet/Wi-Fi coordinator such as an SLZB-06 or a ser2net bridge,
+    reached outbound, with its Adapter type); with neither, Zigbee2MQTT is
+    not started and its log says what to set. No host networking is
+    needed: mDNS discovery of network coordinators isn't available, give
+    their address. MQTT: by default the bundled Mosquitto 2.1 on the
+    instance's private network, anonymous clients refused, two accounts with
+    generated passwords (zigbee2mqtt for the bridge, homeassistant for Home
+    Assistant), ACL limited to zigbee2mqtt/# and homeassistant/# (the base
+    topic is fixed to zigbee2mqtt). Passwords are written hashed by
+    mosquitto-init at every start; Zigbee2MQTT stores its own MQTT password
+    in configuration.yaml in its data volume (upstream behaviour). Or set
+    "MQTT server" (+ user and password) to use an existing broker, e.g. the
+    one Home Assistant uses (the bundled broker then idles). Home
+    Assistant: with "Home Assistant discovery" on, Zigbee2MQTT publishes
+    discovery messages; in Home Assistant add the MQTT integration with the
+    broker address host:<MQTT port>, user homeassistant and the password
+    Z2M_BROKER_HA_PASSWORD from this instance's .env (Hub data
+    env/<instance>.env). The MQTT port (default 1883) is bound to 127.0.0.1
+    by default; set its bind address to the host's LAN address (or
+    0.0.0.0) for a Home Assistant on another machine or in a container,
+    or clear the port to keep the broker private. It is plain MQTT
+    without TLS, protected by the password: use it on a trusted network
+    only. Each instance needs its own MQTT port (the Hub's port collision
+    check). The frontend's "Open in Home Assistant" links and device pages
+    link to this instance's hostname.
+
+settings:
+  - key: Z2M_SERIAL_DEVICE
+    label: Serial device
+    description: >
+      Host path of a USB Zigbee coordinator, e.g.
+      /dev/serial/by-id/usb-ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_...-if00-port0
+      or /dev/ttyUSB0 (empty = none).
+    type: text
+  - key: Z2M_NETWORK_COORDINATOR
+    label: Network coordinator
+    description: >
+      tcp://<host>:<port> of a network (Ethernet/Wi-Fi) coordinator, e.g.
+      tcp://192.168.1.50:6638; used instead of the serial device when set.
+      Needs the Adapter type.
+    type: text
+  - key: Z2M_ADAPTER
+    label: Adapter type
+    description: >
+      Coordinator firmware type: ember (Silicon Labs EFR32, e.g. Sonoff
+      ZBDongle-E, SLZB-06M), zstack (Texas Instruments CC2652/CC1352, e.g.
+      Sonoff ZBDongle-P), deconz (ConBee/RaspBee), zigate, zboss, zoh; auto
+      lets Zigbee2MQTT detect a USB adapter.
+    type: select
+    options: [auto, ember, zstack, deconz, zigate, zboss, zoh]
+    default: auto
+  - key: Z2M_HOMEASSISTANT
+    label: Home Assistant discovery
+    description: Publish Home Assistant MQTT discovery messages (homeassistant/#).
+    type: boolean
+    default: "true"
+  - key: Z2M_MQTT_SERVER
+    label: MQTT server
+    description: >
+      An existing broker instead of the bundled one, e.g.
+      mqtt://192.168.1.10:1883 or mqtts://broker.lan:8883 (empty = the
+      bundled Mosquitto).
+    type: text
+  - key: Z2M_MQTT_USER
+    label: MQTT user
+    description: User for the MQTT server above (ignored for the bundled broker).
+    type: text
+  - key: Z2M_MQTT_PASSWORD
+    label: MQTT password
+    description: Password for the MQTT server above (ignored for the bundled broker).
+    type: text
+
+ports:
+  - key: Z2M_MQTT_PORT
+    label: MQTT (bundled broker)
+    description: >
+      Host port of the bundled Mosquitto, for Home Assistant's MQTT
+      integration (user homeassistant). Bound to 127.0.0.1 by default;
+      clear it to keep the broker private.
+    container: 1883
+    protocol: tcp
+    default: 1883
+    bind: 127.0.0.1
+    required: false
+    service: mosquitto
+
+env:
+  - key: Z2M_BROKER_PASSWORD
+    description: Bundled Mosquitto password of the zigbee2mqtt user (the bridge)
+    generate: random
+  - key: Z2M_BROKER_HA_PASSWORD
+    description: Bundled Mosquitto password of the homeassistant user (Home Assistant's MQTT integration)
+    generate: random
+
+keycloak_clients: []
+config_files: []
+
+urls:
+  - label: Frontend
+    url: "https://{{HOST_ZIGBEE2MQTT}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+tests:
+  signin:
+    path: /
+    # No identity reaches Zigbee2MQTT (no user system): the frontend itself.
+    signed_in:
+      html: "Zigbee2MQTT"
+      wait: 20
+    # Short: members only ever see the gate's 502 in CI (below).
+    timeout: 120
+    expected_fail:
+      member:
+        reason: >-
+          CI has no Zigbee coordinator: Zigbee2MQTT serves its frontend only
+          after the adapter started (lib/controller.ts), so past group-gate
+          the instance's gate answers 502 (tests/apps/zigbee2mqtt.sh checks
+          the configuration up to the adapter and the broker)
+        match: "HTTP 502"
+      admin:
+        reason: >-
+          CI has no Zigbee coordinator: the frontend never starts, the gate
+          answers 502 past group-gate
+        match: "HTTP 502"

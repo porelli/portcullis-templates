@@ -1,0 +1,10 @@
+# Bundled broker ACL (copied by mosquitto-init next to the password file).
+# zigbee2mqtt: the bridge; homeassistant: Home Assistant's MQTT integration.
+# Both need the base topic and Home Assistant's discovery prefix; nothing else.
+user zigbee2mqtt
+topic readwrite zigbee2mqtt/#
+topic readwrite homeassistant/#
+
+user homeassistant
+topic readwrite zigbee2mqtt/#
+topic readwrite homeassistant/#
