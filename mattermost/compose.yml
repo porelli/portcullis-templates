@@ -24,6 +24,10 @@ services:
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: /mattermost/data/mattermost_local.socket
       MMCTL_LOCAL_SOCKET_PATH: /mattermost/data/mattermost_local.socket
+      # Client address only from X-Real-Ip, which Traefik always overwrites
+      # with the peer it accepted the connection from (X-Forwarded-For can
+      # carry client-supplied entries).
+      MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: X-Real-Ip
       MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
       MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
@@ -41,15 +45,16 @@ services:
       traefik.http.routers.mattermost.rule: Host(`${PORTCULLIS_HOST_MATTERMOST:-chat.portcullis.local}`)
       traefik.http.routers.mattermost.entrypoints: websecure
       traefik.http.routers.mattermost.tls.options: authaware@file
-      traefik.http.routers.mattermost.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.mattermost.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.mattermost.service: mattermost
       traefik.http.services.mattermost.loadbalancer.server.port: "8065"
     restart: unless-stopped
 
   # One-shot: once Mattermost listens, creates the bootstrap system admin
-  # (mmadmin, password MATTERMOST_ADMIN_PASSWORD) over the local-mode socket
-  # if it doesn't exist, and keeps its system_admin role. The password is
-  # read from the environment and sent in the request body, never on argv
+  # mmadmin-<MATTERMOST_ADMIN_SUFFIX[:12]> (password MATTERMOST_ADMIN_PASSWORD)
+  # over the local-mode socket, pinned by user ID in the data volume; never
+  # grants system_admin to an account found by name (init.py). The password
+  # is read from the environment and sent in the request body, never on argv
   # or in logs. Default network only (it talks to the socket, not TCP).
   mattermost-init:
     image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
@@ -62,7 +67,7 @@ services:
     entrypoint: ["python3", "/portcullis/init.py"]
     environment:
       MATTERMOST_SOCKET: /mattermost/data/mattermost_local.socket
-      MATTERMOST_ADMIN_USER: mmadmin
+      MATTERMOST_ADMIN_SUFFIX: ${MATTERMOST_ADMIN_SUFFIX:?MATTERMOST_ADMIN_SUFFIX must be set}
       MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD:?MATTERMOST_ADMIN_PASSWORD must be set}
     volumes:
       - mattermost-data:/mattermost/data

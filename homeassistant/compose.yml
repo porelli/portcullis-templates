@@ -6,7 +6,6 @@ services:
     pids_limit: 1024
     environment:
       HA_EXTERNAL_URL: https://${PORTCULLIS_HOST_HOMEASSISTANT:-home.portcullis.local}
-      HA_TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
       HA_OIDC_DISCOVERY_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration
       HA_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-homeassistant}
       HA_OIDC_CLIENT_SECRET: ${HOMEASSISTANT_OIDC_SECRET:?HOMEASSISTANT_OIDC_SECRET must be set}
@@ -52,6 +51,8 @@ services:
     mem_limit: 256m
     pids_limit: 64
     entrypoint: ["python3", "/portcullis/init.py"]
+    environment:
+      HA_TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
     volumes:
       - homeassistant-config:/config
       - ./templates/homeassistant/init.py:/portcullis/init.py:ro

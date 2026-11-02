@@ -30,10 +30,15 @@ else
   fail "configuration.yaml must set auth_providers: []"
 fi
 if grep -Eq '^    automatic_user_linking: false$' "$CONF" && grep -Eq '^    user: !env_var HA_ACCESS_GROUP$' "$CONF" \
-  && grep -Eq '^    admin: !env_var HA_ADMIN_GROUP$' "$CONF" && grep -Eq '^    - !env_var HA_TRUSTED_PROXY$' "$CONF"; then
-  pass "configuration.yaml: group roles, no user linking, Traefik-only proxy trust"
+  && grep -Eq '^    admin: !env_var HA_ADMIN_GROUP$' "$CONF"; then
+  pass "configuration.yaml: group roles, no user linking"
 else
-  fail "configuration.yaml: auth_oidc roles / linking / trusted_proxies not as expected"
+  fail "configuration.yaml: auth_oidc roles / linking not as expected"
+fi
+if grep -Eq '^http:' "$CONF"; then
+  fail "configuration.yaml has an http: section (HA 2026.10 migrates it as a trial that reverts)"
+else
+  pass "no http: YAML (homeassistant-init owns .storage/http)"
 fi
 assert_compose_setting "$COMPOSE" HA_TRUSTED_PROXY '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
 assert_compose_setting "$COMPOSE" HA_ACCESS_GROUP '\$\{PORTCULLIS_ACCESS_GROUP:-users_homeassistant\}'
@@ -63,6 +68,16 @@ docker logs "portcullis-homeassistant-init-1" 2>&1 | tail -6 || true
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
 wait_for_url "http://${IP}:8123/manifest.json" 600 "$APP_ID" || docker logs "portcullis-${SERVICE}-1" 2>&1 | tail -60
 
+# Through Traefik, once healthy
+for _ in $(seq 1 60); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ] && break
+  sleep 5
+done
+if [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ]; then
+  pass "homeassistant healthy (OIDC only, onboarding closed)"
+else
+  fail "homeassistant not healthy: $(docker inspect -f '{{json .State.Health}}' "portcullis-${SERVICE}-1" 2>/dev/null | tail -c 400)"
+fi
 PROV=$(curl -s "http://${IP}:8123/auth/providers" 2>/dev/null || echo "")
 if echo "$PROV" | grep -q '"type":"auth_oidc"' && ! echo "$PROV" | grep -q '"type":"homeassistant"' \
   && ! echo "$PROV" | grep -q '"type":"trusted_networks"'; then
@@ -97,24 +112,31 @@ if [ "$OIDC" = 1.2.1 ]; then
 else
   fail "auth_oidc version: $OIDC"
 fi
-JOSE=$(docker exec "portcullis-${SERVICE}-1" sh -c 'ls /config/deps/lib/*/site-packages 2>/dev/null | grep joserfc-' 2>&1 || true)
-info "joserfc in /config/deps: ${JOSE:-none}"
+HTTPCONF=$(docker exec "portcullis-${SERVICE}-1" python3 -c 'import json;d=json.load(open("/config/.storage/http"))["data"];print(d["stable"]["trusted_proxies"], d["stable"]["use_x_forwarded_for"], d["pending"])' 2>&1 || true)
+if [ "$HTTPCONF" = "['${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32'] True None" ]; then
+  pass ".storage/http: X-Forwarded-For from Traefik only, nothing pending"
+else
+  fail ".storage/http: $HTTPCONF"
+fi
+if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -q 'Using pending HTTP config'; then
+  fail "Home Assistant runs a pending (auto-reverting) HTTP config"
+else
+  pass "Home Assistant uses the stable HTTP config"
+fi
+# joserfc comes from the pinned wheel in /config/deps, never from a runtime pip install
+JOSE=$(docker exec -e PYTHONUSERBASE=/config/deps "portcullis-${SERVICE}-1" python3 -c 'import importlib.metadata as m, joserfc; print(m.version("joserfc"), joserfc.__file__)' 2>&1 || true)
+SYS=$(docker exec -e PYTHONNOUSERSITE=1 "portcullis-${SERVICE}-1" python3 -c 'import importlib.util; print(importlib.util.find_spec("joserfc"))' 2>&1 || true)
+if echo "$JOSE" | grep -q '^1\.7\.7 /config/deps/' && [ "$SYS" = None ]; then
+  pass "joserfc 1.7.7 from /config/deps only ($JOSE)"
+else
+  fail "joserfc: deps=$JOSE system=$SYS"
+fi
 if docker logs "portcullis-${SERVICE}-1" 2>&1 | grep -qi 'Registered OIDC provider'; then
   pass "auth_oidc registered its provider"
 else
   info "no 'Registered OIDC provider' log line (log level)"
 fi
 
-# Through Traefik, once healthy
-for _ in $(seq 1 60); do
-  [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ] && break
-  sleep 5
-done
-if [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ]; then
-  pass "homeassistant healthy (OIDC only, onboarding closed)"
-else
-  fail "homeassistant not healthy: $(docker inspect -f '{{json .State.Health}}' "portcullis-${SERVICE}-1" 2>/dev/null | tail -c 400)"
-fi
 out=$(via_traefik "$HOST" /manifest.json)
 if [ "${out%% *}" = 200 ]; then
   pass "https://$HOST/manifest.json -> 200 via Traefik (X-Forwarded-For accepted from Traefik)"

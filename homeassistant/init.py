@@ -12,7 +12,12 @@
    Assistant) is installed the same way, as a pinned wheel, into
    /config/deps, which Home Assistant puts on sys.path, so Home Assistant
    never installs an unpinned copy at runtime.
-3. automations.yaml / scripts.yaml / scenes.yaml exist (configuration.yaml
+3. The HTTP server config (.storage/http, which Home Assistant 2026.10 uses
+   instead of the deprecated http: YAML) is rewritten as the confirmed
+   ("stable") config with nothing pending: X-Forwarded-For trusted from
+   Traefik's address only (HA_TRUSTED_PROXY), IP bans on. A config changed
+   in the UI is discarded at the next start.
+4. automations.yaml / scripts.yaml / scenes.yaml exist (configuration.yaml
    includes them).
 
 Any failure exits non-zero, and Home Assistant doesn't start (fail closed).
@@ -20,8 +25,10 @@ Downloads are cached in /config/.portcullis and re-verified every start.
 No secret is read or written here.
 """
 
+import datetime
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import shutil
@@ -171,6 +178,32 @@ def install_joserfc() -> None:
     log(f"joserfc {JOSERFC_VERSION} installed into {site} (sha256 verified)")
 
 
+def http_config() -> None:
+    raw = os.environ.get("HA_TRUSTED_PROXY", "")
+    try:
+        proxy = ipaddress.ip_address(raw)
+    except ValueError:
+        die(f"HA_TRUSTED_PROXY {raw!r} is not an IP address")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    stable = {
+        "server_port": 8123,
+        "cors_allowed_origins": ["https://cast.home-assistant.io"],
+        "use_x_forwarded_for": True,
+        "trusted_proxies": [str(ipaddress.ip_network(f"{proxy}/{proxy.max_prefixlen}"))],
+        "login_attempts_threshold": 10,
+        "ip_ban_enabled": True,
+        "ssl_profile": "modern",
+        "use_x_frame_options": True,
+        "created_at": now,
+        "error": None,
+        "error_message": None,
+    }
+    doc = {"version": 2, "minor_version": 2, "key": "http",
+           "data": {"stable": stable, "pending": None, "yaml_migration_done": True}}
+    atomic_write(os.path.join(CONFIG, ".storage", "http"), json.dumps(doc, indent=2).encode())
+    log(f"http config: X-Forwarded-For trusted from {proxy} only, nothing pending")
+
+
 def include_files() -> None:
     for name, empty in (("automations.yaml", "[]\n"), ("scripts.yaml", ""), ("scenes.yaml", "[]\n")):
         p = os.path.join(CONFIG, name)
@@ -185,6 +218,7 @@ def main() -> None:
     onboarding_done()
     install_auth_oidc()
     install_joserfc()
+    http_config()
     include_files()
     log("done")
 

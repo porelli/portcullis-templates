@@ -48,7 +48,9 @@ auth:
     on Docker bridge networks only (never host networking, which would
     publish port 8123 past the gateway), so mDNS/SSDP/DHCP discovery,
     Bluetooth and USB radios are not available; use IP-based integrations
-    (or MQTT / a network radio bridge). That is also why several instances
+    (or MQTT / a network radio bridge). The HTTP server settings (Traefik
+    as the only trusted proxy) are rewritten by homeassistant-init at every
+    start; changes made in the UI don't persist. That is also why several instances
     can run side by side (instances: multi). Upgrades: read the Home
     Assistant and hass-oidc-auth release notes; bump auth_oidc (version and
     SHA-256 in init.py) together with Home Assistant when upstream requires
@@ -78,6 +80,9 @@ tests:
     # web client stores its tokens (storeToken), read by the checks below
     # through the websocket API (auth/current_user).
     path: /
+    # auth_oidc's finish page: continue in this browser (the other option
+    # approves a Companion app's device code).
+    login: ["#continue-on-this-device"]
     signed_in:
       js: >-
         new Promise((resolve) => {

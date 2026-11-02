@@ -26,17 +26,24 @@ auth:
     the System Console): accounts are created by a system admin (System
     Console > Users, or mmctl --local user create inside the container).
     Give each account the person's LLDAP username, since Mattermost doesn't
-    know who passed the gateway. The bootstrap system admin is mmadmin with
-    the generated password MATTERMOST_ADMIN_PASSWORD (created by the
-    mattermost-init one-shot over the local-mode socket); change it after
-    the first sign-in. GitLab SSO, personal access tokens and plugin
+    know who passed the gateway. The bootstrap system admin is
+    mmadmin-<first 12 characters of MATTERMOST_ADMIN_SUFFIX> with the
+    generated password MATTERMOST_ADMIN_PASSWORD, created once by the
+    mattermost-init one-shot over the local-mode socket and pinned by its
+    user ID in the data volume: system_admin is never granted to an account
+    found by name, and if the bootstrap name later maps to another account
+    the one-shot fails and the app doesn't start until that is resolved.
+    Change its password after the first sign-in. Team Edition can't lock
+    usernames (LockProfileFieldsForEmailUsers is Enterprise-only), so users
+    can rename themselves; Mattermost usernames are not an identity
+    Portcullis vouches for. GitLab SSO, personal access tokens and plugin
     uploads are off. What doesn't work through the gateway: the Mattermost
     desktop and mobile apps and anything else that talks to the API
     directly (bots, incoming/outgoing webhooks, slash-command callbacks,
     personal or bot access tokens), because every request needs a
-    Portcullis browser session first; use the web app. Mattermost reads
-    the client address from X-Forwarded-For without a proxy allowlist (only
-    used for logs and rate limits; Traefik sets it). Upgrades: follow
+    Portcullis browser session first; use the web app. Mattermost takes the
+    client address (logs, rate limits) from X-Real-Ip, which Traefik
+    overwrites. Upgrades: follow
     Mattermost's upgrade path (extended support releases, one major at a
     time); don't bump the PostgreSQL major.
 
@@ -44,8 +51,11 @@ env:
   - key: MATTERMOST_DB_PASSWORD
     description: Mattermost database password
     generate: random
+  - key: MATTERMOST_ADMIN_SUFFIX
+    description: Random suffix of the bootstrap system admin's username (mmadmin-<first 12 characters>)
+    generate: random
   - key: MATTERMOST_ADMIN_PASSWORD
-    description: Password of the bootstrap system admin mmadmin
+    description: Password of the bootstrap system admin
     generate: random
 
 config_files: []

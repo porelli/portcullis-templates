@@ -13,14 +13,10 @@ homeassistant:
   # homeassistant-init.)
   auth_providers: []
 
-http:
-  # Requests come through Traefik only; X-Forwarded-For is trusted from
-  # Traefik's address alone.
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - !env_var HA_TRUSTED_PROXY
-  ip_ban_enabled: true
-  login_attempts_threshold: 10
+# No http: section: Home Assistant 2026.10 keeps the HTTP server config in
+# .storage/http (YAML is migrated once as an unconfirmed trial that reverts
+# after 5 minutes). homeassistant-init writes it before every start:
+# X-Forwarded-For trusted from Traefik's address only (HA_TRUSTED_PROXY).
 
 default_config:
 

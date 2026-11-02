@@ -12,7 +12,7 @@ SERVICE=mattermost
 COMPOSE=$(_find_compose "$APP_ID") || { fail "compose.yml not found for $APP_ID"; exit 1; }
 
 # Static: the whole host is gated, never by path
-if grep -E '^[[:space:]]*traefik\.http\.routers\.mattermost\.middlewares:' "$COMPOSE" | grep -q 'portcullis-auth@docker,portcullis-groups@docker'; then
+if grep -E '^[[:space:]]*traefik\.http\.routers\.mattermost\.middlewares:' "$COMPOSE" | grep -q 'client-headers@file,portcullis-auth@docker,portcullis-groups@docker'; then
   pass "host router behind portcullis-auth + portcullis-groups"
 else
   fail "host router must use portcullis-auth@docker,portcullis-groups@docker"
@@ -26,6 +26,7 @@ assert_compose_setting "$COMPOSE" MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL false
 assert_compose_setting "$COMPOSE" MM_TEAMSETTINGS_ENABLEOPENSERVER false
 assert_compose_setting "$COMPOSE" MM_GITLABSETTINGS_ENABLE false
 assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS false
+assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER X-Real-Ip
 
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_MATTERMOST"
@@ -55,27 +56,105 @@ case "$CODE" in
   *) pass "POST /api/v4/users (sign-up) -> $CODE" ;;
 esac
 
-# The bootstrap admin logs in with the generated password, and is system admin
-LOGIN=$(curl -s -D - -o /tmp/mm-login.json -H 'Content-Type: application/json' \
-  --data-binary @- "http://${IP}:8065/api/v4/users/login" 2>/dev/null <<EOF || true
-{"login_id":"mmadmin","password":"$MATTERMOST_ADMIN_PASSWORD"}
-EOF
-)
-if echo "$LOGIN" | head -1 | grep -q ' 200' && grep -q 'system_admin' /tmp/mm-login.json; then
-  pass "mmadmin signs in with MATTERMOST_ADMIN_PASSWORD and is system admin"
+ADMIN="mmadmin-${MATTERMOST_ADMIN_SUFFIX:0:12}"
+mm_login() {  # mm_login <login_id> <password>: prints the HTTP status, body in /tmp/mm-login.json
+  printf '{"login_id":"%s","password":"%s"}' "$1" "$2" \
+    | curl -s -o /tmp/mm-login.json -w '%{http_code}' -H 'Content-Type: application/json' \
+      --data-binary @- "http://${IP}:8065/api/v4/users/login" 2>/dev/null || echo 000
+}
+mmctl_local() { docker exec "portcullis-${SERVICE}-1" mmctl --local "$@"; }
+# The mattermost image is distroless: read/remove the state file through the
+# init image (same uid) with the data volume mounted.
+state_file() {
+  docker run --rm --user 2000:2000 -v "portcullis_mattermost-data:/d" --entrypoint "$1" \
+    python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211 \
+    "${@:2}" 2>/dev/null || true
+}
+run_init() {  # run_init <log file>: re-runs the one-shot, prints its exit code
+  local rc=0
+  docker start -a "portcullis-mattermost-init-1" >"$1" 2>&1 || rc=$?
+  echo "$rc"
+}
+
+# The bootstrap admin logs in with the generated password and is system admin
+CODE=$(mm_login "$ADMIN" "$MATTERMOST_ADMIN_PASSWORD")
+if [ "$CODE" = 200 ] && grep -q 'system_admin' /tmp/mm-login.json; then
+  pass "$ADMIN signs in with MATTERMOST_ADMIN_PASSWORD and is system admin"
 else
-  fail "mmadmin login: $(echo "$LOGIN" | head -1) $(head -c 200 /tmp/mm-login.json 2>/dev/null)"
+  fail "$ADMIN login: HTTP $CODE $(head -c 200 /tmp/mm-login.json 2>/dev/null)"
 fi
+ADMIN_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' /tmp/mm-login.json 2>/dev/null || true)
 rm -f /tmp/mm-login.json
-CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-  -d '{"login_id":"mmadmin","password":"wrong-password-123"}' "http://${IP}:8065/api/v4/users/login" 2>/dev/null || echo 000)
+PINNED=$(state_file cat /d/.portcullis-bootstrap-admin.json)
+if [ -n "$ADMIN_ID" ] && echo "$PINNED" | grep -q "\"id\": \"$ADMIN_ID\""; then
+  pass "bootstrap admin pinned by user ID ($ADMIN_ID)"
+else
+  fail "pinned state does not name the bootstrap admin's ID: $PINNED"
+fi
+CODE=$(mm_login "$ADMIN" wrong-password-123); rm -f /tmp/mm-login.json
 if [ "$CODE" = 401 ]; then
   pass "wrong password -> 401"
 else
   fail "wrong password -> $CODE"
 fi
 
-# Through Traefik: forward-auth on every path (web, API, websocket)
+# A second run grants nothing and accepts the pinned account
+RC=$(run_init /dev/null)
+if [ "$RC" = 0 ]; then
+  pass "mattermost-init re-run with the pinned admin -> exit 0"
+else
+  fail "mattermost-init re-run -> exit $RC"
+fi
+
+# Takeover attempt: the bootstrap admin is renamed and another account
+# takes its name. The one-shot must fail closed and grant nothing.
+TAKER_PW="$(openssl rand -hex 16)"
+# (test-only throwaway password on mmctl's argv)
+mmctl_local user create --username e2etaker --email e2etaker@mattermost.invalid --password "$TAKER_PW" >/dev/null 2>&1 || true
+mmctl_local user username "$ADMIN" "${ADMIN}-old" >/dev/null 2>&1 || true
+mmctl_local user username e2etaker "$ADMIN" >/dev/null 2>&1 || true
+RC=$(run_init /tmp/mm-init.log)
+if [ "$RC" != 0 ] && grep -q 'not the pinned bootstrap admin' /tmp/mm-init.log; then
+  pass "name taken by another account -> mattermost-init fails closed"
+else
+  fail "takeover not refused (rc=$RC): $(tail -3 /tmp/mm-init.log)"
+fi
+rm -f /tmp/mm-init.log
+CODE=$(mm_login "$ADMIN" "$TAKER_PW")
+if [ "$CODE" = 200 ] && ! grep -q 'system_admin' /tmp/mm-login.json; then
+  pass "the account now named $ADMIN did not get system_admin"
+else
+  fail "renamed account: HTTP $CODE $(grep -o '"roles":"[^"]*"' /tmp/mm-login.json 2>/dev/null)"
+fi
+rm -f /tmp/mm-login.json
+
+# No state file but the name exists: refused, never granted by name
+state_file rm -f /d/.portcullis-bootstrap-admin.json
+RC=$(run_init /tmp/mm-init.log)
+if [ "$RC" != 0 ] && grep -q 'was not created by this job' /tmp/mm-init.log; then
+  pass "pre-existing account with the bootstrap name and no pinned ID -> refused"
+else
+  fail "pre-existing name not refused (rc=$RC): $(tail -3 /tmp/mm-init.log)"
+fi
+rm -f /tmp/mm-init.log
+CODE=$(mm_login "$ADMIN" "$TAKER_PW")
+if [ "$CODE" = 200 ] && ! grep -q 'system_admin' /tmp/mm-login.json; then
+  pass "still no system_admin for the account found by name"
+else
+  fail "account found by name: HTTP $CODE"
+fi
+rm -f /tmp/mm-login.json
+
+# Through Traefik (routed once healthy): forward-auth on every path
+for _ in $(seq 1 60); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ] && break
+  sleep 3
+done
+if [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ]; then
+  pass "mattermost healthy"
+else
+  fail "mattermost not healthy"
+fi
 for p in / /login /api/v4/system/ping /api/v4/websocket /api/v4/users/login /hooks/x; do
   assert_gated_path "$HOST" "$p"
 done
