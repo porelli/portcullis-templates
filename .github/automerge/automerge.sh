@@ -21,7 +21,8 @@
 #   - only PRs opened by dependabot[bot] from this repo, one commit, signed,
 #     authored by Dependabot, head SHA = the SHA the required workflows tested;
 #   - pre-releases (alpha/beta/rc/dev/..., PEP 440 a1/b2/rc3, Go
-#     pseudo-versions) are closed with a comment;
+#     pseudo-versions) are closed with a comment, unless the dependency is
+#     already on one (then it's left open like a major);
 #   - patch, minor and digest-only updates merge once EVERY required workflow
 #     succeeded on the head SHA (`gh pr merge --squash --match-head-commit`);
 #   - majors (and anything whose type can't be derived) are labelled
@@ -182,7 +183,14 @@ decide() {
                            | map(rank) | max | unrank)]
           end)
     | flatten
-    | map(.prerelease = (((.to // "") | prerelease) or ((.["dependency-version"] // "") | prerelease)))' <<<"$msg")
+    # A pre-release target is closed, unless the dependency already was on a
+    # pre-release (e.g. a Go pseudo-version pinned on purpose): then it is
+    # left to a human (type unknown = handled like a major).
+    | map(.from_prerelease = ((.from // "") | prerelease))
+    | map(. as $d | ((($d.to // "") | prerelease) or (($d["dependency-version"] // "") | prerelease)) as $p
+        | .prerelease = ($p and ($d.from_prerelease | not))
+        | if $p and $d.from_prerelease then .type = "unknown" else . end
+        | del(.from_prerelease))' <<<"$msg")
   [ "$(jq length <<<"$deps")" -gt 0 ] || deps='[{"name":"(unparsed)","from":null,"to":null,"type":"unknown","prerelease":false}]'
 
   files=$(api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" | jq -sc 'add // []')
