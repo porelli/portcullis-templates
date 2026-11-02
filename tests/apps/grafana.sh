@@ -22,11 +22,11 @@ export COMPOSE_OVERRIDE
 # policy-file entry the Hub would publish (at the version core's group-gate serves, tests/lib.sh policy_version).
 write_public_policy grafana "$MANIFEST" listed
 # shellcheck disable=SC2016 # ${PORTCULLIS_HOST_GRAFANA} is for compose to expand
-write_public_override "$APP_ID" grafana '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
+write_public_override "$APP_ID" dashboards '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
 
 compose_up "$APP_ID"
 
-IP=$(app_container_ip "$APP_ID")
+IP=$(app_container_ip "$APP_ID" dashboards)
 wait_for_url "http://${IP}:3000" 60 "$APP_ID"
 
 # Grafana login page should return HTML
@@ -40,7 +40,7 @@ else
 fi
 
 # Verify proxy auth is enabled in the container environment
-GF_PROXY=$(docker exec "portcullis-${APP_ID}-1" printenv GF_AUTH_PROXY_ENABLED 2>/dev/null || echo "")
+GF_PROXY=$(docker exec "portcullis-dashboards-1" printenv GF_AUTH_PROXY_ENABLED 2>/dev/null || echo "")
 if [ "$GF_PROXY" = "true" ]; then
   pass "GF_AUTH_PROXY_ENABLED=true"
 else
@@ -74,7 +74,7 @@ for _ in $(seq 1 30); do
   out=$(via_traefik "$HOST" /)
   case "${out%% *}" in 000|404|502) sleep 1 ;; *) break ;; esac
 done
-if docker inspect "portcullis-${APP_ID}-1" --format '{{json .Config.Labels}}' | grep -q 'portcullis-public-strip-grafana.headers.customrequestheaders.X-Forwarded-User'; then
+if docker inspect "portcullis-dashboards-1" --format '{{json .Config.Labels}}' | grep -q 'portcullis-public-strip-grafana.headers.customrequestheaders.X-Forwarded-User'; then
   pass "public router strips X-Forwarded-User (GF_AUTH_PROXY_HEADER_NAME)"
 else
   fail "public router lacks the X-Forwarded-User strip"

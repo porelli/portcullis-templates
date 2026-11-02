@@ -732,6 +732,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_public_access(t, services, routers, r)
     check_identity(t, services, r)
     check_signin_test(t, r)
+    check_hub_rules(t, r)
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -1491,6 +1492,307 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
         if app not in dirs:
             r.error(".github/dependabot.yml", f"template {app} is missing from the docker-compose directories list",
                     f'add  - "/{app}"  under directories: so Dependabot keeps its images up to date')
+
+
+# ── Hub template rules (mirror of the Hub's templates/coreref.go) ───
+# The Hub refuses a template at discovery when any of these fail (contract
+# §3, "Core names are off limits"); checking them here keeps a template
+# that CI accepts from being skipped by the Hub. Keep in sync with
+# portcullis-hub internal/templates/coreref.go.
+
+HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
+CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
+                 "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana"}
+CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
+                "prometheus_data", "alertmanager_data", "grafana_data"}
+CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
+                 "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting"}
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-")
+CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
+HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
+HUB_SERVICE_KEYS = {
+    "image", "volumes", "restart", "environment", "networks", "security_opt", "cap_drop", "cap_add",
+    "pids_limit", "mem_limit", "mem_reservation", "memswap_limit", "cpus", "cpu_shares", "labels", "command", "read_only",
+    "depends_on", "tmpfs", "entrypoint", "user", "group_add", "healthcheck", "shm_size", "network_mode", "working_dir",
+    "hostname", "devices", "container_name", "ports", "expose", "ulimits", "stop_grace_period", "stop_signal", "init",
+    "privileged", "sysctls", "logging", "tty", "stdin_open", "dns", "dns_search", "extra_hosts", "platform", "pull_policy",
+    "pid", "ipc", "volumes_from", "domainname", "mac_address", "oom_score_adj", "storage_opt", "userns_mode",
+    "device_cgroup_rules", "gpus", "runtime", "isolation", "blkio_config", "cgroup", "cgroup_parent", "cpuset"}
+CORE_TRAEFIK_NAMES = {
+    "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
+                "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal"},
+    "middlewares": {"directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
+                    "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
+    "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
+                 "keycloak", "lldap"},
+}
+APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
+FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers"}
+LABEL_SEG_RE = re.compile(r"^[A-Za-z0-9_-]+(\[[0-9]+\])?$")
+LABEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+ROUTER_ATTR_RE = re.compile(r"^(rule|entrypoints|middlewares|service|priority|tls|tls\.options|observability\.(accesslogs|metrics|tracing))$")
+SERVICE_ATTR_RE = re.compile(r"^loadbalancer\.(server\.(port|scheme)|passhostheader|responseforwarding\.flushinterval|"
+                             r"sticky\.cookie(\.(name|secure|httponly|samesite|maxage|path))?)$")
+_SOURCE_CRITERION = r"sourcecriterion\.(requesthost|requestheadername|ipstrategy\.(depth|excludedips|ipv6subnet))"
+MIDDLEWARE_ATTR_RE = {
+    "addprefix": re.compile(r"^prefix$"),
+    "stripprefix": re.compile(r"^(prefixes|forceslash)$"),
+    "stripprefixregex": re.compile(r"^regex$"),
+    "replacepath": re.compile(r"^path$"),
+    "replacepathregex": re.compile(r"^(regex|replacement)$"),
+    "redirectregex": re.compile(r"^(regex|replacement|permanent)$"),
+    "redirectscheme": re.compile(r"^(scheme|port|permanent)$"),
+    "headers": re.compile(r"^[a-z0-9_-]+(\[[0-9]+\])?(\.[a-z0-9_-]+)?$"),
+    "compress": re.compile(r"^(|excludedcontenttypes|includedcontenttypes|minresponsebodybytes|encodings|defaultencoding)$"),
+    "contenttype": re.compile(r"^(|autodetect)$"),
+    "chain": re.compile(r"^middlewares$"),
+    "ratelimit": re.compile(rf"^(average|period|burst|{_SOURCE_CRITERION})$"),
+    "inflightreq": re.compile(rf"^(amount|{_SOURCE_CRITERION})$"),
+    "ipallowlist": re.compile(r"^(sourcerange|rejectstatuscode|ipstrategy\.(depth|excludedips|ipv6subnet))$"),
+    "buffering": re.compile(r"^(maxrequestbodybytes|memrequestbodybytes|maxresponsebodybytes|memresponsebodybytes|retryexpression)$"),
+    "retry": re.compile(r"^(attempts|initialinterval)$"),
+    "circuitbreaker": re.compile(r"^(expression|checkperiod|fallbackduration|recoveryduration|responsecode)$"),
+    "grpcweb": re.compile(r"^alloworigins$"),
+}
+_INTERP_RE = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$")
+_OWN_HOSTVAR_RE = re.compile(r"\$\{(PORTCULLIS_HOST_[A-Z0-9_]+):-([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.portcullis\.local\}")
+_ROUTER_KEY_RE = re.compile(r"^traefik\.(http|tcp|udp)\.routers\.([^.]+)\.(.+)$")
+_CHAIN_KEY_RE = re.compile(r"^traefik\.http\.middlewares\.[^.]+\.chain\.middlewares$")
+
+
+def fold_key(s: str) -> str:
+    """Lowercase s the way Traefik compares label segments (EqualFold):
+    a character whose case orbit holds an ASCII letter becomes that letter."""
+    out = []
+    for c in s:
+        if c.isascii():
+            out.append(c.lower())
+            continue
+        for alt in (c.lower(), c.upper(), c.casefold()):
+            if len(alt) == 1 and alt.isascii() and alt.isalpha():
+                out.append(alt.lower())
+                break
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def _without_interp(s: str) -> str:
+    return _INTERP_RE.sub("", s.replace("$$", ""))
+
+
+def _interpolated(s: str) -> bool:
+    return bool(_INTERP_RE.search(s.replace("$$", "")))
+
+
+def reserved_dns_name(name: str) -> bool:
+    n = fold_key(name.strip()).rstrip(".")
+    for c in (n, n.split(".", 1)[0]):
+        if c in CORE_SERVICES:
+            return True
+        m = CORE_CONTAINER_RE.match(c)
+        if m and m.group(1) in CORE_SERVICES:
+            return True
+    return False
+
+
+def _walk_strings(v: Any) -> Iterable[str]:
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            yield str(k)
+            yield from _walk_strings(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from _walk_strings(x)
+
+
+def check_hub_rules(t: Template, r: Report) -> None:
+    """What the Hub's discovery refuses, statically (coreref.go)."""
+    data = t.compose or {}
+    where = t.c_where
+    # A second YAML document (compose merges them) already fails to load
+    # (yaml.load expects a single document); explicit tags other than the
+    # core !! ones (!reset / !override) fail SafeLoader too.
+    for k in data:
+        if k not in HUB_TOP_KEYS and not str(k).startswith("x-"):
+            r.error(where, f"top-level key {k!r} is not allowed", HUB_HINT)
+    for s in _walk_strings(data):
+        low, bare = fold_key(s), fold_key(_without_interp(s))
+        for ref in RESERVED_REFS:
+            if ref in low or ref in bare:
+                r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
+                break
+
+    def literal(what: str, val: Any) -> bool:
+        if isinstance(val, str) and _interpolated(val):
+            r.error(where, f"{what} {val!r} must be a literal (no ${{...}} / $VAR; $$ is a literal $)", HUB_HINT)
+            return False
+        return True
+
+    shared: Set[str] = set()
+    for k, n in (data.get("networks") or {}).items():
+        n = n if isinstance(n, dict) else {}
+        if n.get("name") is not None or n.get("external") not in (None, False):
+            shared.add(k)
+        names = [n.get("name")]
+        ext = n.get("external")
+        if isinstance(ext, dict):
+            names.append(ext.get("name"))
+        for nm in names:
+            if nm is None:
+                continue
+            if literal(f"networks.{k}: name", nm) and str(nm).removeprefix("portcullis_") in CORE_NETWORKS:
+                r.error(where, f"networks.{k} joins the core network {nm}", HUB_HINT)
+        if ext and not any(names) and str(k).removeprefix("portcullis_") in CORE_NETWORKS:
+            r.error(where, f"networks.{k} is a core network (templates join only portcullis-proxy)", HUB_HINT)
+
+    for k, v in (data.get("volumes") or {}).items():
+        literal("volume key", k)
+        if fold_key(str(k).strip()) in CORE_VOLUMES:
+            r.error(where, f"volumes.{k} is core's (portcullis_{k})", HUB_HINT)
+        v = v if isinstance(v, dict) else {}
+        name = v.get("name")
+        ext = v.get("external")
+        if isinstance(ext, dict) and ext.get("name"):
+            name = ext.get("name")
+        if name is not None:
+            literal(f"volumes.{k}: name", name)
+        eff = fold_key(str(name if name else k).strip())
+        if eff.startswith("portcullis_") and eff[len("portcullis_"):] in CORE_VOLUMES:
+            r.error(where, f"volumes.{k} is named {eff}, core's volume", HUB_HINT)
+        if ext and eff.startswith("portcullis"):
+            r.error(where, f"volumes.{k}: external volume {eff} is core's or another instance's data", HUB_HINT)
+
+    services = data.get("services") or {}
+    own_services: Set[str] = set()
+    own_middlewares: Set[str] = set()
+    for svc in services.values():
+        for k in labels_of(svc if isinstance(svc, dict) else {}):
+            segs = fold_key(k.strip()).split(".", 4)
+            if len(segs) == 5 and segs[0] == "traefik" and segs[1] == "http":
+                if segs[2] == "services":
+                    own_services.add(segs[3])
+                elif segs[2] == "middlewares":
+                    own_middlewares.add(segs[3])
+    # The template's own hostname variables: those its router rules use.
+    host_vars = {m for m, _ in _OWN_HOSTVAR_RE.findall(
+        " ".join(v for svc in services.values() if isinstance(svc, dict)
+                 for k, v in labels_of(svc).items() if k.endswith(".rule")))}
+
+    for sname, svc in services.items():
+        sw = f"{where}: services.{sname}"
+        if not isinstance(svc, dict):
+            continue
+        for k in svc:
+            if k not in HUB_SERVICE_KEYS:
+                r.error(sw, f"compose key {k!r} is not allowed in templates (the Hub can't check what it does)", HUB_HINT)
+        if reserved_dns_name(str(sname)):
+            r.error(sw, f"the DNS name {sname!r} is core's (reserved)", HUB_HINT)
+        for field in ("container_name", "hostname", "network_mode", "pid", "ipc"):
+            val = svc.get(field)
+            if not isinstance(val, str):
+                continue
+            if field == "hostname" and _interpolated(val):
+                m = _OWN_HOSTVAR_RE.fullmatch(val.strip())
+                if not m or m.group(1) not in host_vars or reserved_dns_name(m.group(2) + ".portcullis.local"):
+                    r.error(sw, f"hostname {val!r}: only the template's own ${{PORTCULLIS_HOST_<ROUTER>:-<sub>.portcullis.local}} may be interpolated", HUB_HINT)
+            else:
+                literal(field, val)
+            if field in ("container_name", "hostname") and reserved_dns_name(val):
+                r.error(sw, f"{field}: the DNS name {val!r} is core's (reserved)", HUB_HINT)
+            if field in ("network_mode", "pid", "ipc") and val.strip().lower().startswith("container:"):
+                r.error(sw, f"{field} {val} joins another container's namespace", HUB_HINT)
+        for x in as_list(svc.get("volumes_from")):
+            if literal("volumes_from", x) and str(x).strip().lower().startswith("container:"):
+                r.error(sw, f"volumes_from {x} mounts another container's volumes", HUB_HINT)
+        nets = svc.get("networks")
+        for net in (nets if isinstance(nets, (list, dict)) else []):
+            literal("network", net)
+        if isinstance(nets, dict):
+            for net, cfg in nets.items():
+                cfg = cfg if isinstance(cfg, dict) else {}
+                if net in shared:
+                    for f in ("ipv4_address", "ipv6_address", "link_local_ips"):
+                        if f in cfg:
+                            r.error(sw, f"networks.{net}: {f} is not allowed on a network shared with core", HUB_HINT)
+                for a in as_list(cfg.get("aliases")):
+                    if literal(f"networks.{net}: alias", a) and reserved_dns_name(str(a)):
+                        r.error(sw, f"network alias {a!r} is core's DNS name (reserved)", HUB_HINT)
+        for k, v in labels_of(svc).items():
+            check_hub_label(sw, k, v, host_vars, own_services, own_middlewares, r)
+
+
+def check_hub_label(where: str, k: str, v: str, host_vars: Set[str], own_services: Set[str],
+                    own_middlewares: Set[str], r: Report) -> None:
+    if not k.isascii():
+        r.error(where, f"label key {k!r} has non-ASCII characters (Traefik's decoder case-folds them)", HUB_HINT)
+        return
+    if _interpolated(k):
+        r.error(where, f"label key {k!r} must be a literal", HUB_HINT)
+        return
+    lk = k.strip().lower()
+    if not lk.startswith("traefik"):
+        return
+    fk = fold_key(k)
+    if fk not in ("traefik.enable", "traefik.docker.network"):
+        bad = [s for s in k.split(".") if not LABEL_SEG_RE.match(s)]
+        if bad:
+            r.error(where, f"Traefik label {k!r}: segment {bad[0]!r} is not [A-Za-z0-9_-] (+[n]); it could crash Traefik's label decoder", HUB_HINT)
+            return
+        segs = fk.split(".", 4)
+        if len(segs) < 5 or segs[0] != "traefik":
+            r.error(where, f"Traefik label {k!r} has an unsupported shape", HUB_HINT)
+            return
+        if segs[1] != "http" or segs[2] not in ("routers", "services", "middlewares"):
+            r.error(where, f"Traefik label {k!r}: only traefik.http.<routers|services|middlewares> (no TCP/UDP, no serverstransports)", HUB_HINT)
+            return
+        if not LABEL_NAME_RE.match(segs[3]):
+            r.error(where, f"Traefik label {k!r}: name {segs[3]!r} must match {LABEL_NAME_RE.pattern}", HUB_HINT)
+        if segs[3] in CORE_TRAEFIK_NAMES[segs[2]]:
+            r.error(where, f"Traefik label {k!r}: {segs[2][:-1]} {segs[3]!r} is core's (reserved)", HUB_HINT)
+        attr = segs[4]
+        if segs[2] == "routers" and not ROUTER_ATTR_RE.match(attr):
+            r.error(where, f"Traefik label {k!r}: unsupported router attribute {attr!r}", HUB_HINT)
+        elif segs[2] == "services" and not SERVICE_ATTR_RE.match(attr):
+            r.error(where, f"Traefik label {k!r}: unsupported service attribute {attr!r} (a service balances over its own container)", HUB_HINT)
+        elif segs[2] == "middlewares":
+            typ, _, rest = attr.partition(".")
+            rx = MIDDLEWARE_ATTR_RE.get(typ)
+            if rx is None:
+                r.error(where, f"Traefik label {k!r}: middleware type {typ!r} is not allowed in templates", HUB_HINT)
+            elif not rx.match(rest):
+                r.error(where, f"Traefik label {k!r}: unsupported {typ} attribute {rest!r}", HUB_HINT)
+        structural = ".".join(k.split(".", 4)[:4])
+        if k != k.strip() or structural != structural.lower() or (segs[2] == "routers" and k != lk):
+            r.error(where, f"Traefik label key {k!r} must be lowercase (router keys entirely, others up to the name)", HUB_HINT)
+    m = _ROUTER_KEY_RE.match(fk)
+    is_ref = (m is not None and m.group(3) in ("service", "middlewares")) or bool(_CHAIN_KEY_RE.match(fk))
+    if is_ref:
+        if v != v.lower() or not v.isascii():
+            r.error(where, f"label {k}: {v!r} must be lowercase (references are renamed per instance)", HUB_HINT)
+        if m is not None and m.group(3) == "service":
+            base, _, prov = v.strip().partition("@")
+            if (prov not in ("", "docker")) or base not in own_services or base in CORE_TRAEFIK_NAMES["services"]:
+                r.error(where, f"label {k}: router service {v!r} is not one this template defines", HUB_HINT)
+        else:
+            for mw in v.split(","):
+                base, _, prov = mw.strip().partition("@")
+                if not base and not prov:
+                    continue
+                ok = (prov == "file" and base in FILE_MIDDLEWARES) or (prov in ("", "docker") and (
+                    base in APP_MIDDLEWARES or (base in own_middlewares and base not in CORE_TRAEFIK_NAMES["middlewares"])))
+                if not ok:
+                    r.error(where, f"label {k}: middleware {mw.strip()!r} is not allowed (own middlewares, "
+                                   f"portcullis-auth@docker, portcullis-groups@docker, core's @file "
+                                   f"{', '.join(sorted(FILE_MIDDLEWARES))})", HUB_HINT)
+    if m is not None and m.group(1) == "http" and m.group(3) == "rule":
+        return
+    rest = _OWN_HOSTVAR_RE.sub(lambda mm: "h" if mm.group(1) in host_vars else mm.group(0), v)
+    if _interpolated(rest):
+        r.error(where, f"label {k}: {v!r} must be a literal (only HTTP router rules and the template's own host variables are interpolated)", HUB_HINT)
 
 
 # ── Main ────────────────────────────────────────────────────────────

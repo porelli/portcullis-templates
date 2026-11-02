@@ -1,5 +1,5 @@
 services:
-  grafana:
+  dashboards:
     image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
     environment:
       GF_AUTH_PROXY_ENABLED: "true"

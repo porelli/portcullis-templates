@@ -604,5 +604,77 @@ class TestImmutableHosts(Case):
         self.assertError(errors, "hosts.immutable must list demo")
 
 
+
+class TestHubRules(Case):
+    """The Hub's discovery refusals (templates/coreref.go), mirrored statically."""
+
+    LABELS = '      traefik.http.services.demo.loadbalancer.server.port: "80"\n'
+
+    def label_case(self, extra: str) -> List[str]:
+        self.run_template()
+        self.rewrite_compose(self.LABELS, self.LABELS + extra)
+        return self.recheck()
+
+    def test_clean_template_passes(self) -> None:
+        errors, _ = self.run_template()
+        self.assertClean(errors)
+
+    def test_refusals(self) -> None:
+        cases = {
+            "traefik.tcp.routers.x.rule: HostSNI(`*`)\n": "no TCP/UDP",
+            "traefik.http.middlewares.fa.forwardauth.address: http://hub:8888\n": "middleware type 'forwardauth'",
+            "traefik.http.services.demo.loadbalancer.server.url: http://hub:8888\n": "unsupported service attribute",
+            "traefik.http.routers.demo.tls.certresolver: le\n": "unsupported router attribute",
+            "traefik.http.routers.x.service: hub@docker\n": "router service 'hub@docker'",
+            "traefik.http.routers.x.middlewares: hub-proxy-secret@docker\n": "middleware 'hub-proxy-secret@docker'",
+            "traefik.http.routers.x.middlewares: my@file\n": "middleware 'my@file'",
+            "traefik.http.routers.Demo2.rule: Host(`x`)\n": "must be lowercase",
+            "traefik.http.routers.x.service: Demo\n": "must be lowercase",
+            "traefik.http.routerſ.x.rule: Host(`x`)\n": "non-ASCII",
+            "traefik.http.routers.hub.entrypoints: websecure\n": "router 'hub' is core's",
+            "traefik.http.middlewares.h.headers.customrequestheaders.X: forward-auth-ext\n": "rendered by the Hub only",
+            "traefik.http.middlewares.h.headers.customrequestheaders.X: ${DEMO_SECRET:-x}\n": "must be a literal",
+            "traefik.http.routers.x].rule: Host(`x`)\n": "segment",
+        }
+        for extra, needle in cases.items():
+            with self.subTest(extra=extra):
+                self.assertError(self.label_case("      " + extra), needle)
+
+    def test_reserved_names_and_keys(self) -> None:
+        for old, new, needle in (
+            ("services:\n  demo:", "services:\n  keycloak:", "DNS name 'keycloak' is core's"),
+            ("services:\n  demo:", "services:\n  grafana:", "DNS name 'grafana' is core's"),
+            ("    networks:\n      - default", "    hostname: lldap.local\n    networks:\n      - default", "hostname: the DNS name"),
+            ("    networks:\n      - default", "    label_file: ./l\n    networks:\n      - default", "compose key 'label_file'"),
+            ("    networks:\n      - default", "    pid: container:x\n    networks:\n      - default", "joins another container"),
+            ("volumes:\n  demo-data:", "include: [x.yml]\nvolumes:\n  demo-data:", "top-level key 'include'"),
+            ("volumes:\n  demo-data: {}", "volumes:\n  demo-data: {}\n  hub_data: {}", "volumes.hub_data is core's"),
+        ):
+            with self.subTest(new=new):
+                self.run_template()
+                self.rewrite_compose(old, new)
+                self.assertError(self.recheck(), needle)
+
+    def test_single_document_and_tags(self) -> None:
+        self.run_template()
+        self.rewrite_compose("    labels:\n", "    labels: !override\n")
+        self.assertError(self.recheck(), "could not determine a constructor")
+        self.run_template()
+        path = os.path.join(self.tmp.name, "demo", "compose.yml")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("---\n")
+        self.assertError(self.recheck(), "expected a single document")
+
+    def test_allowed_references(self) -> None:
+        errors = self.label_case(
+            "      traefik.http.middlewares.c.chain.middlewares: h,rate-limit@file\n"
+            "      traefik.http.middlewares.h.headers.customrequestheaders.X-App: demo\n"
+            "      traefik.http.routers.demo-api.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/api`)\n"
+            "      traefik.http.routers.demo-api.service: demo\n"
+            "      traefik.http.routers.demo-api.middlewares: portcullis-auth@docker,portcullis-groups@docker,c@docker\n"
+            "      traefik.http.middlewares.r.redirectregex.replacement: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}/\n"
+            "      traefik.http.middlewares.r.redirectregex.regex: ^/$$\n")
+        self.assertEqual([e for e in errors if "Hub refuses" in e], [], "\n".join(errors))
+
 if __name__ == "__main__":
     unittest.main()
