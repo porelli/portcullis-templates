@@ -51,14 +51,16 @@ auth:
     (LockProfileFieldsForEmailUsers is Enterprise-only), so users can
     rename themselves; Mattermost usernames are not an identity
     Portcullis vouches for. GitLab SSO, personal access tokens and the
-    plugin marketplace are off. Plugins: mattermost-init installs and
-    enables a pinned list (init.py PLUGINS, each a GitHub release asset
-    checked against its SHA-256; a mismatch fails the one-shot): freemium
+    plugin marketplace are off, and so are plugin uploads (server-side code
+    from any system-admin session). Plugins: a pinned list (plugins.py,
+    each a GitHub release asset checked against its SHA-256): freemium
     2.0.0 (dy0gu/mattermost-plugin-freemium, hides Team Edition's upsell
-    UI) and Matterpoll 1.9.2 (/poll). Plugin uploads are on for that, so
-    system admins can also upload plugins, which run code inside the
-    Mattermost container. Bump a plugin by editing its version, URL and
-    SHA-256 there (Dependabot doesn't see them). SSO, re-checked: the free
+    UI) and Matterpoll 1.9.2 (/poll). The mattermost-plugins one-shot
+    writes them into Mattermost's file store before every start
+    (Mattermost installs from there at startup; a digest mismatch fails the
+    one-shot and Mattermost doesn't start), and mattermost-init enables
+    them. Bump a plugin by editing its version, URL and SHA-256 in
+    plugins.py (Dependabot doesn't see them). SSO, re-checked: the free
     GitLab provider can't use Keycloak today. Team Edition switches to the
     licensed OpenID provider whenever the GitLab scope contains "openid",
     while Keycloak's userinfo refuses tokens without the openid scope

@@ -27,6 +27,8 @@ assert_compose_setting "$COMPOSE" MM_TEAMSETTINGS_ENABLEOPENSERVER false
 assert_compose_setting "$COMPOSE" MM_GITLABSETTINGS_ENABLE false
 assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS false
 assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER X-Real-Ip
+assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEUPLOADS false
+assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEMARKETPLACE false
 
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_MATTERMOST"
@@ -79,18 +81,37 @@ import http.client, json, socket
 class C(http.client.HTTPConnection):
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX); self.sock.connect("/mattermost/data/mattermost_local.socket")
-c = C("localhost"); c.request("GET", "/api/v4/plugins"); d = json.loads(c.getresponse().read())
+def get(p):
+    c = C("localhost"); c.request("GET", p); return json.loads(c.getresponse().read())
+d = get("/api/v4/plugins")
 print(" ".join(sorted(f"{m['id']}={m['version']}" for m in d.get("active") or [])))
+ps = get("/api/v4/config")["PluginSettings"]
+print(f"uploads={ps['EnableUploads']} marketplace={ps['EnableMarketplace']}")
+# An upload (even through local mode, i.e. as system admin) is refused.
+b = "e2eboundary"
+body = (f"--{b}\r\nContent-Disposition: form-data; name=\"plugin\"; filename=\"x.tar.gz\"\r\n\r\nx\r\n--{b}--\r\n").encode()
+c = C("localhost"); c.request("POST", "/api/v4/plugins", body, {"Content-Type": f"multipart/form-data; boundary={b}"})
+r = c.getresponse(); print(f"upload={r.status} {json.loads(r.read() or b'{}').get('id', '')}")
 PY
 )
 for want in freemium=2.0.0 com.github.matterpoll.matterpoll=1.9.2; do
-  if echo " $PLUGINS " | grep -q " $want "; then
+  if echo " $(echo "$PLUGINS" | head -1) " | grep -q " $want "; then
     pass "plugin $want active"
   else
     fail "plugin $want not active: $PLUGINS"
   fi
 done
-if grep -Eq '"[0-9a-f]{64}"\)' "$(dirname "$COMPOSE")/init.py" && ! grep -q 'releases/latest' "$(dirname "$COMPOSE")/init.py"; then
+if echo "$PLUGINS" | grep -q '^uploads=False marketplace=False$'; then
+  pass "plugin uploads and marketplace off at runtime"
+else
+  fail "plugin settings at runtime: $(echo "$PLUGINS" | sed -n 2p)"
+fi
+if echo "$PLUGINS" | grep -q '^upload=501 app.plugin.upload_disabled.app_error$'; then
+  pass "plugin upload refused even in local mode (501 upload_disabled)"
+else
+  fail "plugin upload: $(echo "$PLUGINS" | sed -n 3p)"
+fi
+if grep -Eq '"[0-9a-f]{64}"\)' "$(dirname "$COMPOSE")/plugins.py" && ! grep -q 'releases/latest' "$(dirname "$COMPOSE")/plugins.py"; then
   pass "plugins pinned by release and SHA-256"
 else
   fail "plugins must be pinned by release and SHA-256"

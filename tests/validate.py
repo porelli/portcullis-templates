@@ -238,6 +238,9 @@ IMAGE_ENV_REQUIRED = [
     ("mattermost/mattermost-team-edition:", "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL", r"(?i)^false$",
      "Mattermost must set MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: \"false\" (self sign-up, the first account "
      "becomes system admin; also closes invite-link sign-up)"),
+    ("mattermost/mattermost-team-edition:", "MM_PLUGINSETTINGS_ENABLEUPLOADS", r"(?i)^false$",
+     "Mattermost must set MM_PLUGINSETTINGS_ENABLEUPLOADS: \"false\" (a plugin upload is server-side code from any "
+     "system-admin session; ship pinned plugins through the file store instead)"),
 ]
 
 # image prefix -> (one-shot service that must exist in the same compose file, message)

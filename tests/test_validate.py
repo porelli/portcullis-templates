@@ -463,11 +463,13 @@ class TestIdentityRules(Case):
         self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
         self.rewrite_compose("services:\n", job)
         self.assertError(self.recheck(), "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL")
-        self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n')
+        self.assertError(self.recheck(), "MM_PLUGINSETTINGS_ENABLEUPLOADS")
+        self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n')
         self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
         self.rewrite_compose("services:\n", job.replace('restart: "no"\n', 'restart: "no"\n    environment:\n'
-                                                         '      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n'))
-        self.assertFalse([e for e in self.recheck() if "MM_EMAILSETTINGS" in e])
+                                                         '      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n'
+                                                         '      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"\n'))
+        self.assertFalse([e for e in self.recheck() if "MM_EMAILSETTINGS" in e or "MM_PLUGINSETTINGS" in e])
 
     def test_auth_oidc_never_links_users(self) -> None:
         errors, _ = self.run_template(extra_files=(("configuration.yaml", "auth_oidc:\n  features:\n    automatic_user_linking: true\n"),))

@@ -18,15 +18,14 @@ services:
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
       MM_GITLABSETTINGS_ENABLE: "false"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
-      # Plugins: only the pinned list mattermost-init installs over the
-      # local-mode socket (uploads must be on for that; system admins can
-      # then also upload plugins, which run inside this container). No
-      # marketplace (unpinned downloads).
+      # Plugins: only the pinned bundles mattermost-plugins writes into the
+      # file store before every start (Mattermost installs from there); no
+      # uploads (server-side code from any admin session), no marketplace.
       MM_PLUGINSETTINGS_ENABLE: "true"
-      MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
       MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
       MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
-      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_PLUGINSETTINGS_REQUIREPLUGINSIGNATURE: "false"
       MM_SERVICESETTINGS_ENABLETUTORIAL: "false"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       # Local mode (mmctl --local): the socket lives in the data volume so
@@ -47,6 +46,8 @@ services:
     depends_on:
       mattermost-db:
         condition: service_healthy
+      mattermost-plugins:
+        condition: service_completed_successfully
     networks:
       - default
       - portcullis-proxy
@@ -65,29 +66,52 @@ services:
   # over the local-mode socket, pinned by user ID in the data volume; never
   # grants system_admin to an account found by name (init.py). The password
   # is read from the environment and sent in the request body, never on argv
-  # or in logs. Then installs the pinned plugins (release asset + SHA-256,
-  # init.py PLUGINS) and enables them. Default network only: it talks to
-  # the socket, and downloads the plugin releases from GitHub.
+  # or in logs. Then enables the pinned plugins (plugins.py). Default
+  # network only (it talks to the socket, not TCP).
   mattermost-init:
     image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
     user: "2000:2000"
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    # Plugin bundles (~70 MB each) are verified in memory.
-    mem_limit: 384m
+    mem_limit: 64m
     pids_limit: 16
     entrypoint: ["python3", "/portcullis/init.py"]
     environment:
+      PYTHONDONTWRITEBYTECODE: "1"
       MATTERMOST_SOCKET: /mattermost/data/mattermost_local.socket
       MATTERMOST_ADMIN_SUFFIX: ${MATTERMOST_ADMIN_SUFFIX:?MATTERMOST_ADMIN_SUFFIX must be set}
       MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD:?MATTERMOST_ADMIN_PASSWORD must be set}
     volumes:
       - mattermost-data:/mattermost/data
       - ./templates/mattermost/init.py:/portcullis/init.py:ro
+      - ./templates/mattermost/plugins.py:/portcullis/plugins.py:ro
     depends_on:
       mattermost:
         condition: service_started
+    restart: "no"
+
+  # One-shot, before every Mattermost start: the pinned plugin bundles
+  # (plugins.py: GitHub release asset + SHA-256) into the file store, where
+  # Mattermost installs plugins from at startup. A digest mismatch fails it
+  # and Mattermost doesn't start. Default network only (downloads from
+  # GitHub).
+  mattermost-plugins:
+    image: python:3.15.2-alpine@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+    # root only to hand a fresh data volume (and the bundles) to uid 2000.
+    user: "0:0"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 64m
+    pids_limit: 16
+    entrypoint: ["python3", "/portcullis/plugins.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - mattermost-data:/mattermost/data
+      - ./templates/mattermost/plugins.py:/portcullis/plugins.py:ro
     restart: "no"
 
   mattermost-db:
