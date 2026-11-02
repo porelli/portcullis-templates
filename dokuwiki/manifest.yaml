@@ -9,6 +9,7 @@ auth:
   method: native-oidc
   sso: true
   group_access: true
+  keycloak_access_role: true
   group_admin: true
   access_group: users_dokuwiki
   admin_group: admin_dokuwiki
@@ -37,8 +38,8 @@ auth:
     "* @users_dokuwiki 8"; rules for @ALL, @user and @generic are replaced,
     others kept), members of users_dokuwiki read, edit and upload, and members
     of admin_dokuwiki are superusers. Groups follow the groups claim at each
-    login (overwrite-groups); a realm user outside the groups who signs in
-    gets an account without rights. Removing a user from the groups takes
+    login (overwrite-groups); a realm user outside access_group can't sign
+    in (Keycloak denies it, see below) and would get no rights anyway. Removing a user from the groups takes
     effect at their next login. Break-glass: there is no password form
     (singleService); with shell access, add a local user with bin/plugin.php
     usermanager and set singleService to 0 in conf/local.protected.php (until
@@ -48,6 +49,10 @@ auth:
     init.sh). Existing local accounts keep their pages but can't sign in
     with a password; an LLDAP user whose name is taken by a local account
     gets a numbered account name (e.g. admin1).
+    Sign-in is restricted to access_group in Keycloak (keycloak_access_role,
+    contract §8 Access role): only access_group members can sign in, so a
+    member of admin_group who is not also in access_group is denied — put
+    the wiki's admins in both groups.
 
 env:
   - key: DOKUWIKI_OIDC_SECRET

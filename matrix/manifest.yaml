@@ -107,6 +107,8 @@ keycloak_clients:
   - client_id: matrix
     secret_env: MATRIX_OIDC_SECRET
     redirect_uri: "https://{{HOST_MATRIX}}/_synapse/client/oidc/callback"
+    # backchannel_logout_enabled is on in the oidc provider (synapse-start.py).
+    backchannel_logout_url: "https://{{HOST_MATRIX}}/_synapse/client/oidc/backchannel_logout"
     name: Matrix (Synapse)
 
 config_files: []

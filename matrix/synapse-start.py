@@ -170,6 +170,9 @@ def main() -> None:
                 # No email_template: the (user-editable) email is not imported.
             }},
             "attribute_requirements": [{"attribute": "groups", "value": access_group}],
+            # Keycloak sign-outs (the Hub signs users out when they leave a
+            # group) end the Synapse sessions too (manifest backchannel_logout_url).
+            "backchannel_logout_enabled": True,
         }],
         "sso": {
             # Element on its own host skips Synapse's "continue to your

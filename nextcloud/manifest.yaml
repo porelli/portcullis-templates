@@ -162,6 +162,8 @@ keycloak_clients:
     redirect_uris:
       - "https://{{HOST_NEXTCLOUD}}/apps/user_oidc/code"
       - "https://{{HOST_NEXTCLOUD}}/index.php/apps/user_oidc/code"
+    # user_oidc provider identifier "Portcullis" (setup.sh); session required.
+    backchannel_logout_url: "https://{{HOST_NEXTCLOUD}}/index.php/apps/user_oidc/backchannel-logout/Portcullis"
     name: Nextcloud
 
 config_files: []

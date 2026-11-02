@@ -8,7 +8,8 @@ instances: multi
 auth:
   method: native-oidc
   sso: true
-  group_access: false
+  group_access: true
+  keycloak_access_role: true
   group_admin: false
   access_group: users_netbird
   admin_group: admin_netbird

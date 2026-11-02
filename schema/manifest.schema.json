@@ -144,6 +144,10 @@
         },
         "access_group": {"$ref": "#/$defs/group"},
         "admin_group": {"$ref": "#/$defs/group"},
+        "keycloak_access_role": {
+          "description": "native-oidc only, needs access_group. The Hub restricts sign-in to access_group in Keycloak (contract §8 Access role): every client of the instance gets the client role access, the instance's access group gets it, and the client's browser flow denies sign-in without it (also on the SSO-cookie path). Set it for apps that can't restrict sign-in to a group themselves or that let outsiders create accounts without rights. The Hub does the same for every native-oidc template with group_access: false (which must therefore declare access_group). Fails closed: without the group or the role nobody signs in. Only access_group members sign in, admin_group members included only if they are in access_group too. Every client of such an app has direct access grants, implicit flow, service accounts, device and CIBA grants and standard token exchange switched off (only the browser flow signs in): don't use it for an app whose client needs one of them.",
+          "type": "boolean"
+        },
         "notes": {"type": "string"},
         "public_access": {"$ref": "#/$defs/publicAccess"},
         "native_login": {"$ref": "#/$defs/nativeLogin"},
@@ -189,6 +193,14 @@
         {
           "if": {"properties": {"method": {"enum": ["mtls", "custom", "public"]}}, "required": ["method"]},
           "then": {"not": {"required": ["public_access"]}}
+        },
+        {
+          "if": {"properties": {"method": {"const": "native-oidc"}, "group_access": {"not": {"const": true}}}, "required": ["method"]},
+          "then": {"required": ["access_group"]}
+        },
+        {
+          "if": {"properties": {"keycloak_access_role": {"const": true}}, "required": ["keycloak_access_role"]},
+          "then": {"required": ["access_group"], "properties": {"method": {"const": "native-oidc"}}}
         },
         {
           "if": {"required": ["native_login"]},
@@ -385,6 +397,11 @@
         "email_verified_claim": {
           "description": "Default true. false: the Hub attaches the realm's email-unverified client scope (email claim, no email_verified) instead of email, for apps that refuse email_verified=false but accept it absent. The app must then not request the email scope.",
           "type": "boolean"
+        },
+        "backchannel_logout_url": {
+          "description": "The app's OIDC back-channel logout endpoint on one of its own hosts, https://{{HOST_<ROUTER>}}/<path> (single templates may use https://<sub>.{{DOMAIN}}/<path>). The Hub sets it as the client's backchannel logout URL with 'session required' (logout tokens carry sid), so a Keycloak sign-out (the Hub signs users out when they leave a group) ends the app's session too; it follows hostname changes. The path must be routed without forward-auth (Keycloak posts to it server-to-server).",
+          "type": "string",
+          "pattern": "^https://(\\{\\{HOST_[A-Z0-9_]+\\}\\}|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.\\{\\{DOMAIN\\}\\})(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$"
         }
       },
       "oneOf": [
