@@ -117,6 +117,9 @@ LOGIN_GATES = {
     "paperless": ["/accounts/oidc", "/api/auth/headless/browser/v1/auth/provider",
                   "/api/auth/headless/app/v1/auth/provider"],
     "vaultwarden": ["/identity/connect/authorize", "/identity/connect/oidc-signin"],
+    # OxiCloud can't restrict OIDC logins by group; the authorize endpoint
+    # mints the login state its callback requires.
+    "oxicloud": ["/api/auth/oidc/authorize"],
 }
 # Native-OIDC templates whose separately hosted static web client is gated
 # as a whole (forward-auth + group-gate on its host router) while the app's
@@ -223,6 +226,18 @@ IDENTITY_ENV_REQUIRED = [
      "Mealie with OIDC must set ALLOW_PASSWORD_LOGIN: \"false\""),
     ("OIDC_AUTH_ENABLED", r"(?i)^true$", "OIDC_USER_CLAIM", r"^preferred_username$",
      "Mealie with OIDC must set OIDC_USER_CLAIM: preferred_username"),
+    ("OXICLOUD_OIDC_ENABLED", r"(?i)^true$", "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH", r"(?i)^false$",
+     "OxiCloud with OIDC must set OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH: \"false\" (the default true links SSO logins to accounts by email)"),
+    ("OXICLOUD_OIDC_ENABLED", r"(?i)^true$", "OXICLOUD_AUTH_METHODS", r"^oidc$",
+     "OxiCloud with OIDC must set OXICLOUD_AUTH_METHODS: oidc (no password or magic-link login next to SSO)"),
+]
+
+# image prefix -> (env key, required value regex, message): settings an image
+# needs whatever else its environment says.
+IMAGE_ENV_REQUIRED = [
+    ("mattermost/mattermost-team-edition:", "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL", r"(?i)^false$",
+     "Mattermost must set MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: \"false\" (self sign-up, the first account "
+     "becomes system admin; also closes invite-link sign-up)"),
 ]
 
 # image prefix -> (one-shot service that must exist in the same compose file, message)
@@ -233,6 +248,13 @@ REQUIRED_INIT_JOBS = [
      "Paperless password logins (Basic auth, /api/token/) and the fresh-install signup are only closed by the paperless-init job"),
     ("ghcr.io/mealie-recipes/mealie:", "mealie-init",
      "Mealie's password endpoint, seeded admin and username/email account matching are only closed by the mealie-init guard"),
+    ("diocrafts/oxicloud:", "oxicloud-init",
+     "OxiCloud's first-run setup endpoint (a password owner for whoever calls it first) is only closed by the oxicloud-init job"),
+    ("ghcr.io/home-assistant/home-assistant:", "homeassistant-init",
+     "Home Assistant's onboarding (a password owner), the pinned auth_oidc install and the Traefik-only proxy trust "
+     "come from the homeassistant-init job"),
+    ("mattermost/mattermost-team-edition:", "mattermost-init",
+     "Mattermost's bootstrap system admin (pinned by user id, never granted by name) comes from the mattermost-init job"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -252,6 +274,8 @@ IDENTITY_TEXT_FORBIDDEN = [
     (r"[\"'](localpart|subject|email)_template[\"']\s*:\s*[\"']\{\{\s*user\.email",
      "Synapse keys users on email"),
     (r"[\"']subject_claim[\"']\s*:\s*[\"']email[\"']", "Synapse keys users on email"),
+    (r"(?m)^\s*automatic_user_linking:\s*true\b",
+     "Home Assistant auth_oidc automatic_user_linking hands an existing account to the OIDC user with that username"),
 ]
 
 
@@ -930,6 +954,9 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
                 if not re.search(req_re, env.get(req_key, "")):
                     r.error(where, msg, EMAIL_HINT)
         image = str(svc.get("image", ""))
+        for prefix, key, req_re, msg in IMAGE_ENV_REQUIRED:
+            if image.startswith(prefix) and not re.search(req_re, env.get(key, "")):
+                r.error(where, msg, EMAIL_HINT)
         for prefix, job, msg in REQUIRED_INIT_JOBS:
             if image.startswith(prefix) and job not in services:
                 r.error(where, msg, EMAIL_HINT)

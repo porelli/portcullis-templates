@@ -444,6 +444,37 @@ class TestIdentityRules(Case):
                                           "      OIDC_USER_CLAIM: preferred_username\n")
         self.assertClean(errors)
 
+    def test_oxicloud_oidc_needs_no_email_linking_and_oidc_only(self) -> None:
+        errors, _ = self.run_template(env='      OXICLOUD_OIDC_ENABLED: "true"\n')
+        self.assertError(errors, "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH")
+        self.assertError(errors, "OXICLOUD_AUTH_METHODS: oidc")
+        errors, _ = self.run_template(env='      OXICLOUD_OIDC_ENABLED: "true"\n      OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH: "true"\n'
+                                          "      OXICLOUD_AUTH_METHODS: password,oidc\n")
+        self.assertError(errors, "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH")
+        self.assertError(errors, "OXICLOUD_AUTH_METHODS: oidc")
+        errors, _ = self.run_template(env='      OXICLOUD_OIDC_ENABLED: "true"\n      OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH: "false"\n'
+                                          "      OXICLOUD_AUTH_METHODS: oidc\n")
+        self.assertClean(errors)
+
+    def test_mattermost_image_needs_email_signup_off(self) -> None:
+        image = "mattermost/mattermost-team-edition:12.0.1"
+        job = f"services:\n  mattermost-init:\n    image: {image}@sha256:{'0' * 64}\n    restart: \"no\"\n"
+        self.run_template()
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.rewrite_compose("services:\n", job)
+        self.assertError(self.recheck(), "MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL")
+        self.run_template(env='      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n')
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.rewrite_compose("services:\n", job.replace('restart: "no"\n', 'restart: "no"\n    environment:\n'
+                                                         '      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "false"\n'))
+        self.assertFalse([e for e in self.recheck() if "MM_EMAILSETTINGS" in e])
+
+    def test_auth_oidc_never_links_users(self) -> None:
+        errors, _ = self.run_template(extra_files=(("configuration.yaml", "auth_oidc:\n  features:\n    automatic_user_linking: true\n"),))
+        self.assertError(errors, "automatic_user_linking")
+        errors, _ = self.run_template(extra_files=(("configuration.yaml", "auth_oidc:\n  features:\n    automatic_user_linking: false\n"),))
+        self.assertClean(errors)
+
     def test_synapse_never_attaches_existing_users(self) -> None:
         errors, _ = self.run_template(extra_files=(("start.py", '"allow_existing_users": True,\n'),))
         self.assertError(errors, "Synapse would attach SSO logins")
@@ -456,7 +487,9 @@ class TestIdentityRules(Case):
     def test_required_init_jobs(self) -> None:
         for image, job in (("ghcr.io/paperless-ngx/paperless-ngx:3.4.1", "paperless-init"),
                            ("ghcr.io/mealie-recipes/mealie:v3.30.0", "mealie-init"),
-                           ("ghcr.io/immich-app/immich-server:v2.0.0", "immich-lock-local-users")):
+                           ("ghcr.io/immich-app/immich-server:v2.0.0", "immich-lock-local-users"),
+                           ("diocrafts/oxicloud:0.10.0", "oxicloud-init"),
+                           ("ghcr.io/home-assistant/home-assistant:2026.10.4", "homeassistant-init")):
             with self.subTest(job=job):
                 self.run_template()
                 self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
