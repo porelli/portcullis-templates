@@ -233,6 +233,8 @@ REQUIRED_INIT_JOBS = [
      "Paperless password logins (Basic auth, /api/token/) and the fresh-install signup are only closed by the paperless-init job"),
     ("ghcr.io/mealie-recipes/mealie:", "mealie-init",
      "Mealie's password endpoint, seeded admin and username/email account matching are only closed by the mealie-init guard"),
+    ("ghcr.io/motioneye-project/motioneye:", "motioneye-init",
+     "motionEye's admin and user accounts have empty passwords until the motioneye-init job sets generated ones"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -731,6 +733,8 @@ def check_compose(t: Template, r: Report) -> None:
     check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
     check_identity(t, services, r)
+    check_gated_backends(t, services, r)
+    check_mosquitto(t, services, r)
     check_signin_test(t, r)
     check_hub_rules(t, r)
 
@@ -965,6 +969,152 @@ SIGNIN_SKIP_METHODS = {"public", "custom", "mtls"}
 SIGNIN_GATED_METHODS = {"forward-auth", "header-auth"}
 
 
+# Apps with no access control of their own (ESPHome Device Builder,
+# Zigbee2MQTT) or whose own login is only a second step (motionEye): the app
+# service stays on the instance's default network, and the only routed
+# service is the Traefik-only nginx gate running the template's gate.sh
+# (byte-identical in every template, check_cross). Value: extra
+# requirements ("healthy": the gate waits for the app's healthcheck;
+# "init": the app waits for that one-shot job).
+GATED_BACKENDS = {
+    "ghcr.io/esphome/esphome:": {},
+    "ghcr.io/koenkk/zigbee2mqtt:": {},
+    "ghcr.io/motioneye-project/motioneye:": {"healthy": True, "init": "motioneye-init"},
+}
+GATE_SH = "gate.sh"
+GATE_SH_REQUIRED = [
+    (r"(?m)^\s*allow \$\{ip\};$", "allow ${ip}; (Traefik's address only)"),
+    (r"(?m)^\s*deny all;$", "deny all;"),
+    (r'(?m)^\s*proxy_set_header Authorization "";$', 'proxy_set_header Authorization ""; (the Keycloak bearer token)'),
+    (r'(?m)^\s*proxy_set_header X-Forwarded-Access-Token "";$', 'proxy_set_header X-Forwarded-Access-Token "";'),
+    (r"(?m)^\s*proxy_set_header Cookie \\\$pc_cookie;$", "proxy_set_header Cookie $pc_cookie; (forward-auth cookies stripped)"),
+    (r"_oauth2_proxy\|__Host-portcullis_ext", "the forward-auth cookie names in the Cookie maps"),
+    (r"(?m)^\s*if \(\\\$pc_cookie_left\) \{ return 400; \}$", "the 400 for a Cookie header it can't fully strip"),
+]
+GATE_SH_FORBIDDEN = [
+    (r"\b(set_real_ip_from|real_ip_header|real_ip_recursive)\b",
+     "the realip module (set_real_ip_from / real_ip_header: a forwarded header would decide the peer address)"),
+]
+GATE_HINT = ("the app of a gated template stays on the default network; the only routed service is the nginx gate "
+             "running ./templates/<id>/gate.sh (copy it from esphome/) with PORTCULLIS_TRAEFIK_IP")
+
+
+def _nets(svc: Dict[str, Any]) -> List[str]:
+    return sorted(str(n) for n in networks_of(svc))
+
+
+def _depends(svc: Dict[str, Any], other: str) -> Optional[str]:
+    dep = svc.get("depends_on")
+    if isinstance(dep, dict) and other in dep:
+        return str((dep[other] or {}).get("condition", "service_started"))
+    if isinstance(dep, list) and other in dep:
+        return "service_started"
+    return None
+
+
+def _has_healthcheck(svc: Dict[str, Any]) -> bool:
+    hc = svc.get("healthcheck")
+    if not isinstance(hc, dict) or hc.get("disable"):
+        return False
+    test = hc.get("test")
+    if isinstance(test, list):
+        return bool(test) and str(test[0]).upper() != "NONE"
+    return bool(test)
+
+
+def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> None:
+    backends = {}
+    for sname, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        image = str(svc.get("image", ""))
+        for prefix, extra in GATED_BACKENDS.items():
+            if image.startswith(prefix) and str(svc.get("network_mode", "")) != "none":
+                backends[sname] = extra
+    if not backends:
+        return
+    for sname, extra in backends.items():
+        svc = services[sname]
+        where = f"{t.c_where}: services.{sname}"
+        if any(k.startswith("traefik.") for k in labels_of(svc)):
+            r.error(where, "an unauthenticated backend must have no traefik labels", GATE_HINT)
+        if str(svc.get("network_mode", "")).lower() == "host":
+            r.error(where, "an unauthenticated backend must not use host networking", GATE_HINT)
+        if _nets(svc) != ["default"]:
+            r.error(where, f"an unauthenticated backend must be on the default network only (got {_nets(svc)})", GATE_HINT)
+        if extra.get("init") and _depends(svc, extra["init"]) != "service_completed_successfully":
+            r.error(where, f"must depend on {extra['init']} with condition service_completed_successfully",
+                    "the one-shot job closes the app's default login before it starts")
+        if extra.get("healthy") and not _has_healthcheck(svc):
+            r.error(where, "needs its healthcheck (the gate is routed only while it is healthy)")
+    gates = [n for n, svc in services.items()
+             if isinstance(svc, dict) and labels_of(svc).get("traefik.enable", "").lower() == "true"]
+    if not gates:
+        r.error(t.c_where, "a gated template needs its gate service (traefik.enable)", GATE_HINT)
+    want_mount = f"./templates/{t.id}/{GATE_SH}:/portcullis/{GATE_SH}:ro"
+    for g in gates:
+        svc = services[g]
+        where = f"{t.c_where}: services.{g}"
+        if want_mount not in [str(v) for v in as_list(svc.get("volumes"))]:
+            r.error(where, f"the routed service of a gated template must be the gate: mount {want_mount}", GATE_HINT)
+        if f"/portcullis/{GATE_SH}" not in " ".join(str(x) for x in as_list(svc.get("entrypoint"))):
+            r.error(where, f"the gate must run /portcullis/{GATE_SH} (entrypoint)", GATE_HINT)
+        if env_of(svc).get("PORTCULLIS_TRAEFIK_IP") != "${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}":
+            r.error(where, "the gate needs PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}", GATE_HINT)
+        caps_drop = [str(c).upper() for c in as_list(svc.get("cap_drop"))]
+        caps_add = [str(c).upper() for c in as_list(svc.get("cap_add"))]
+        if "ALL" not in caps_drop or "NET_RAW" in caps_add:
+            r.error(where, "the gate must drop all capabilities (cap_drop: [ALL]; add back only CHOWN, SETGID, SETUID)")
+        for b, extra in backends.items():
+            if extra.get("healthy") and _depends(svc, b) != "service_healthy":
+                r.error(where, f"the gate must depend on {b} with condition service_healthy",
+                        "Traefik must not route the app before its healthcheck passes")
+            if extra.get("healthy") and not _has_healthcheck(svc):
+                r.error(where, "the gate needs its healthcheck (the app's default login refused)")
+    path = os.path.join(t.dir, GATE_SH)
+    if not os.path.isfile(path):
+        r.error(t.c_where, f"{t.id}/{GATE_SH} is missing", GATE_HINT)
+        return
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    for rx, what in GATE_SH_REQUIRED:
+        if not re.search(rx, text):
+            r.error(f"{t.id}/{GATE_SH}", f"the gate must keep {what}", GATE_HINT)
+    for rx, what in GATE_SH_FORBIDDEN:
+        if re.search(rx, text):
+            r.error(f"{t.id}/{GATE_SH}", f"the gate must not use {what}", GATE_HINT)
+
+
+def check_mosquitto(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """A bundled Mosquitto refuses anonymous clients and checks a password
+    file that its one-shot mosquitto-init wrote before it started."""
+    for sname, svc in services.items():
+        if not isinstance(svc, dict) or not str(svc.get("image", "")).startswith("eclipse-mosquitto:"):
+            continue
+        if str(svc.get("network_mode", "")) == "none":
+            continue  # the one-shot init itself
+        where = f"{t.c_where}: services.{sname}"
+        if "mosquitto-init" not in services or _depends(svc, "mosquitto-init") != "service_completed_successfully":
+            r.error(where, "the broker must depend on mosquitto-init with condition service_completed_successfully",
+                    "mosquitto-init writes the hashed password file; without it the broker would start without one")
+        conf = None
+        for vol in as_list(svc.get("volumes")):
+            parts = str(vol).split(":")
+            if len(parts) >= 2 and parts[1] == "/mosquitto/config/mosquitto.conf" and parts[0].startswith(f"./templates/{t.id}/"):
+                conf = os.path.join(t.dir, parts[0][len(f"./templates/{t.id}/"):])
+        if not conf or not os.path.isfile(conf):
+            r.error(where, "the broker must mount the template's mosquitto.conf at /mosquitto/config/mosquitto.conf "
+                    "(the image's default config allows anonymous clients)")
+            continue
+        with open(conf, encoding="utf-8") as f:
+            text = f.read()
+        if not re.search(r"(?m)^allow_anonymous false\s*$", text) or re.search(r"(?m)^\s*allow_anonymous\s+true", text):
+            r.error(f"{t.id}/{os.path.basename(conf)}", "mosquitto.conf must set allow_anonymous false (and never true)")
+        if not re.search(r"(?m)^(plugin_opt_password_file|password_file)\s+\S", text):
+            r.error(f"{t.id}/{os.path.basename(conf)}", "mosquitto.conf must check a password file "
+                    "(plugin_opt_password_file of mosquitto_password_file.so)")
+
+
 def check_signin_test(t: Template, r: Report) -> None:
     m = t.manifest or {}
     auth = m.get("auth") or {}
@@ -1075,7 +1225,16 @@ DEFAULT_CREDENTIAL_RULES = {
         ("GF_AUTH_BASIC_ENABLED", lambda v: str(v).lower() == "false", 'must be "false" (no password logins)'),
         ("GF_SECURITY_ADMIN_PASSWORD", lambda v: isinstance(v, str) and ":?" in v, "must come from a generated secret (${VAR:?...}), not Grafana's default admin password"),
     ],
+    # Zigbee2MQTT's onboarding wizard (and failure page) would configure the
+    # instance for whoever reaches it first; the frontend must listen where
+    # the gate expects it (all addresses of its private network).
+    "ghcr.io/koenkk/zigbee2mqtt": [
+        ("Z2M_ONBOARD_NO_SERVER", lambda v: v == "1", 'must be "1" (no onboarding wizard or failure page)'),
+        ("ZIGBEE2MQTT_CONFIG_FRONTEND_HOST", lambda v: v is MISSING, "must not be set (the frontend is reached only through the gate)"),
+    ],
 }
+
+MISSING = object()  # DEFAULT_CREDENTIAL_RULES: the variable is not set
 
 
 def check_default_credentials(image: str, svc: Dict[str, Any], where: str, r: Report) -> None:
@@ -1088,7 +1247,7 @@ def check_default_credentials(image: str, svc: Dict[str, Any], where: str, r: Re
         env = dict(e.split("=", 1) if "=" in e else (e, None) for e in env)
     for key, ok, why in rules:
         file_key = key + "__FILE"
-        if key in env and ok(env[key]):
+        if ok(env[key] if key in env else MISSING):
             continue
         if key.endswith("PASSWORD") and file_key in env:
             continue
@@ -1458,6 +1617,19 @@ def check_cross(templates: List[Template], r: Report) -> None:
             if vn in vol_owner and vol_owner[vn] != t.id:
                 r.error(t.c_where, f"volume name {vn!r} is also used by {vol_owner[vn]} (apps would share data)")
             vol_owner.setdefault(vn, t.id)
+    # Every template's gate.sh is the same file (one reviewed gate).
+    gate_ref: Optional[Tuple[str, bytes]] = None
+    for t in templates:
+        path = os.path.join(t.dir, GATE_SH)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        if gate_ref is None:
+            gate_ref = (t.id, data)
+        elif data != gate_ref[1]:
+            r.error(f"{t.id}/{GATE_SH}", f"differs from {gate_ref[0]}/{GATE_SH}",
+                    "every template's gate.sh must be byte-identical; copy the reviewed one")
 
 
 CORE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")

@@ -18,6 +18,8 @@ check Z2M_BROKER_PASSWORD "${Z2M_BROKER_PASSWORD:-}"
 check Z2M_BROKER_HA_PASSWORD "${Z2M_BROKER_HA_PASSWORD:-}"
 
 dir=/mosquitto/auth
+# Never leave a half-written file behind (the plaintext stage included).
+trap 'rm -f "$dir/passwd.new" "$dir/acl.new"' EXIT
 rm -f "$dir/passwd.new" "$dir/acl.new"
 printf 'zigbee2mqtt:%s\nhomeassistant:%s\n' "$Z2M_BROKER_PASSWORD" "$Z2M_BROKER_HA_PASSWORD" > "$dir/passwd.new"
 mosquitto_passwd -U "$dir/passwd.new"

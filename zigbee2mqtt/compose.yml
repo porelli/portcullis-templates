@@ -27,6 +27,9 @@ services:
       ZIGBEE2MQTT_CONFIG_FRONTEND_URL: https://${PORTCULLIS_HOST_ZIGBEE2MQTT:-zigbee.portcullis.local}
       ZIGBEE2MQTT_CONFIG_HOMEASSISTANT_ENABLED: ${Z2M_HOMEASSISTANT:-true}
       ZIGBEE2MQTT_CONFIG_ADVANCED_LOG_OUTPUT: '["console"]'
+      # External JS (extensions / converters = arbitrary code in this
+      # container): off unless the instance setting turns it on.
+      ZIGBEE2MQTT_CONFIG_ADVANCED_ENABLE_EXTERNAL_JS: ${Z2M_EXTERNAL_JS:-false}
     volumes:
       - zigbee2mqtt-data:/app/data
       - ./templates/zigbee2mqtt/z2m-start.sh:/portcullis/z2m-start.sh:ro
@@ -83,6 +86,9 @@ services:
   zigbee2mqtt-gate:
     image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
     security_opt: [no-new-privileges:true]
+    # nginx's master needs only these (worker user, cache dirs); no NET_RAW.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
     environment:
       PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
       GATE_UPSTREAM: http://zigbee2mqtt-internal:8080

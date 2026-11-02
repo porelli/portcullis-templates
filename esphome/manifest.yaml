@@ -26,6 +26,9 @@ auth:
     instance's private network only; the gate in front of it (nginx, the
     only container on portcullis-proxy) answers Traefik's address alone, so
     no other container can reach the dashboard unauthenticated.
+    The gate never forwards the Portcullis session to the dashboard
+    (Authorization, access-token headers and the forward-auth cookies are
+    removed), since members can run code there (compiles).
     ESPHOME_TRUSTED_DOMAINS is the instance hostname (upstream's websocket
     Host/Origin check). Networking: bridge networks only, never host
     networking (the dashboard would then listen on every host address past

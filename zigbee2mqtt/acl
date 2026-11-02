@@ -1,10 +1,20 @@
 # Bundled broker ACL (copied by mosquitto-init next to the password file).
 # zigbee2mqtt: the bridge; homeassistant: Home Assistant's MQTT integration.
-# Both need the base topic and Home Assistant's discovery prefix; nothing else.
+# Both get the base topic and Home Assistant's discovery prefix, nothing else.
+# Mosquitto 2.1 (plugins/acl-file): "deny" entries are checked before every
+# grant of the user and refuse both read and write, so homeassistant can
+# never install code into Zigbee2MQTT (external extensions / converters),
+# change its options (e.g. the MQTT server), or request / read a backup
+# (the coordinator backup holds the network key).
 user zigbee2mqtt
 topic readwrite zigbee2mqtt/#
 topic readwrite homeassistant/#
 
 user homeassistant
+topic deny zigbee2mqtt/bridge/request/extension/#
+topic deny zigbee2mqtt/bridge/request/converter/#
+topic deny zigbee2mqtt/bridge/request/backup
+topic deny zigbee2mqtt/bridge/request/options
+topic deny zigbee2mqtt/bridge/response/backup
 topic readwrite zigbee2mqtt/#
 topic readwrite homeassistant/#

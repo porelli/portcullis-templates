@@ -57,6 +57,9 @@ services:
   motioneye-gate:
     image: nginx:1.31.8-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
     security_opt: [no-new-privileges:true]
+    # nginx's master needs only these (worker user, cache dirs); no NET_RAW.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
     environment:
       PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
       GATE_UPSTREAM: http://motioneye-internal:8765
@@ -67,6 +70,22 @@ services:
     depends_on:
       motioneye:
         condition: service_healthy
+    # Routed only while motionEye refuses the empty password of both
+    # built-in account names (with motioneye's own healthcheck: both stored
+    # passwords non-empty, whatever the account names).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          for u in admin user; do
+          wget -S -q -O /dev/null --header 'Content-Type: application/json'
+          --post-data "{\"username\":\"$$u\",\"password\":\"\"}"
+          http://motioneye-internal:8765/login/ 2>&1 | grep -q ' 401 ' || exit 1;
+          done
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
     networks:
       - default
       - portcullis-proxy

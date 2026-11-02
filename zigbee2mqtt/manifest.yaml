@@ -39,7 +39,12 @@ auth:
     instance's private network, anonymous clients refused, two accounts with
     generated passwords (zigbee2mqtt for the bridge, homeassistant for Home
     Assistant), ACL limited to zigbee2mqtt/# and homeassistant/# (the base
-    topic is fixed to zigbee2mqtt). Passwords are written hashed by
+    topic is fixed to zigbee2mqtt); homeassistant may not send extension,
+    converter, options or backup requests nor read backups. External
+    JavaScript (extensions and converters, arbitrary code) is off unless
+    the instance setting turns it on. The gate never forwards the
+    Portcullis session (Authorization, access-token headers, forward-auth
+    cookies) to the frontend. Passwords are written hashed by
     mosquitto-init at every start; Zigbee2MQTT stores its own MQTT password
     in configuration.yaml in its data volume (upstream behaviour). Or set
     "MQTT server" (+ user and password) to use an existing broker, e.g. the
@@ -87,6 +92,14 @@ settings:
     description: Publish Home Assistant MQTT discovery messages (homeassistant/#).
     type: boolean
     default: "true"
+  - key: Z2M_EXTERNAL_JS
+    label: External extensions and converters
+    description: >
+      Allow Zigbee2MQTT's external JavaScript (extensions and converters
+      saved from the frontend or over MQTT): arbitrary code that runs in
+      the Zigbee2MQTT container. Off by default.
+    type: boolean
+    default: "false"
   - key: Z2M_MQTT_SERVER
     label: MQTT server
     description: >
@@ -109,7 +122,10 @@ ports:
     description: >
       Host port of the bundled Mosquitto, for Home Assistant's MQTT
       integration (user homeassistant). Bound to 127.0.0.1 by default;
-      clear it to keep the broker private.
+      clear it to keep the broker private. Warning: a non-loopback bind
+      exposes, over plain MQTT without TLS, a password that controls every
+      Zigbee device of this instance (anyone who can see the traffic can
+      take it); use a trusted network only.
     container: 1883
     protocol: tcp
     default: 1883
@@ -143,15 +159,17 @@ tests:
     # Short: members only ever see the gate's 502 in CI (below).
     timeout: 120
     expected_fail:
+      # The gate's own log line for this request: nothing listens on the
+      # frontend port (Zigbee2MQTT idles without a coordinator).
       member:
         reason: >-
           CI has no Zigbee coordinator: Zigbee2MQTT serves its frontend only
           after the adapter started (lib/controller.ts), so past group-gate
           the instance's gate answers 502 (tests/apps/zigbee2mqtt.sh checks
           the configuration up to the adapter and the broker)
-        match: "HTTP 502"
+        match: 'connect\(\) failed \(111: Connection refused\) while connecting to upstream, .*upstream: "http://[0-9.]+:8080/.*host: "zigbee\.'
       admin:
         reason: >-
           CI has no Zigbee coordinator: the frontend never starts, the gate
           answers 502 past group-gate
-        match: "HTTP 502"
+        match: 'connect\(\) failed \(111: Connection refused\) while connecting to upstream, .*upstream: "http://[0-9.]+:8080/.*host: "zigbee\.'

@@ -32,7 +32,10 @@ auth:
     everything motionEye can, including commands run on motion events
     inside the container. The UI is on the instance's private network
     only; the gate in front of it (nginx, the only container on
-    portcullis-proxy) answers Traefik's address alone. Cameras: network
+    portcullis-proxy) answers Traefik's address alone, never forwards the
+    Portcullis session (Authorization, access-token headers, forward-auth
+    cookies), and is healthy (= routed) only while motionEye refuses an
+    empty password for the admin and user account names. Cameras: network
     cameras by URL (RTSP, HTTP/MJPEG; added in motionEye, reached outbound
     from the container) and up to four local V4L2 cameras listed in the
     Camera 1-4 settings (e.g. /dev/video0; only those are passed in, not

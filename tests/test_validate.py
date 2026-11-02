@@ -678,3 +678,138 @@ class TestHubRules(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGatedHomeTemplates(unittest.TestCase):
+    """The real esphome / zigbee2mqtt / motioneye templates, each guard
+    removed in turn: every removal must fail validation."""
+
+    APPS = ("esphome", "zigbee2mqtt", "motioneye")
+    REPO = v.ROOT   # the real repo (setUp runs again per subTest)
+
+    def setUp(self) -> None:
+        import shutil
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = self.REPO
+        for app in self.APPS:
+            shutil.copytree(os.path.join(self.repo, app), os.path.join(self.tmp.name, app))
+        v.ROOT = self.tmp.name
+        self.addCleanup(setattr, v, "ROOT", self.REPO)
+        with open(v.SCHEMA_PATH, encoding="utf-8") as f:
+            self.validator = v.Draft202012Validator(json.load(f))
+
+    def edit(self, app: str, name: str, old: str, new: str = "", count: int = 1) -> None:
+        path = os.path.join(self.tmp.name, app, name)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(text.count(old), count, f"{app}/{name}: {old!r}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new))
+
+    def errors(self) -> List[str]:
+        r = v.Report()
+        templates = []
+        for app in self.APPS:
+            t = v.Template(app)
+            v.check_manifest_schema(t, self.validator, r)
+            v.check_manifest_rules(t, r)
+            v.check_compose(t, r)
+            templates.append(t)
+        v.check_cross(templates, r)
+        return r.errors
+
+    def assertFails(self, needle: str) -> None:
+        errors = self.errors()
+        self.assertTrue(any(needle in e for e in errors), f"no error containing {needle!r} in:\n" + "\n".join(errors))
+
+    def test_real_templates_are_clean(self) -> None:
+        self.assertEqual(self.errors(), [])
+
+    def test_gate_sh_lines(self) -> None:
+        for line, needle in (
+                ("  allow ${ip};\n", "allow ${ip};"),
+                ("  deny all;\n", "deny all;"),
+                ('    proxy_set_header Authorization "";\n', "proxy_set_header Authorization"),
+                ('    proxy_set_header X-Forwarded-Access-Token "";\n', "X-Forwarded-Access-Token"),
+                ("    proxy_set_header Cookie \\$pc_cookie;\n", "proxy_set_header Cookie"),
+                ("  if (\\$pc_cookie_left) { return 400; }\n", "the 400"),
+        ):
+            with self.subTest(line=line.strip()):
+                self.setUp()
+                for app in self.APPS:   # identical copies: the per-template rule must catch it
+                    self.edit(app, "gate.sh", line)
+                self.assertFails(needle)
+
+    def test_gate_sh_realip_refused(self) -> None:
+        for app in self.APPS:
+            self.edit(app, "gate.sh", "  deny all;\n", "  deny all;\n  set_real_ip_from 0.0.0.0/0;\n")
+        self.assertFails("realip")
+
+    def test_gate_sh_copies_identical(self) -> None:
+        self.edit("motioneye", "gate.sh", "  server_tokens off;\n", "  server_tokens off;\n  # local change\n")
+        self.assertFails("differs from")
+
+    def test_gate_service_lines(self) -> None:
+        for app, line, needle in (
+                ("esphome", "      - ./templates/esphome/gate.sh:/portcullis/gate.sh:ro\n", "must be the gate"),
+                ("zigbee2mqtt", '    entrypoint: ["/bin/sh", "/portcullis/gate.sh"]\n', "must run /portcullis/gate.sh"),
+                ("motioneye", "    cap_drop: [ALL]\n", "drop all capabilities"),
+        ):
+            with self.subTest(app=app, line=line.strip()):
+                self.setUp()
+                self.edit(app, "compose.yml", line)
+                self.assertFails(needle)
+        self.setUp()
+        # Only the gate's PORTCULLIS_TRAEFIK_IP is in the compose file.
+        self.edit("esphome", "compose.yml", "      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n")
+        self.assertFails("PORTCULLIS_TRAEFIK_IP")
+
+    def test_backend_isolation(self) -> None:
+        self.edit("esphome", "compose.yml", "        aliases: [esphome-internal]\n",
+                  "        aliases: [esphome-internal]\n      portcullis-proxy: {}\n")
+        self.assertFails("default network only")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", "        aliases: [zigbee2mqtt-internal]\n    restart: unless-stopped\n",
+                  "        aliases: [zigbee2mqtt-internal]\n    labels:\n      traefik.docker.network: x\n    restart: unless-stopped\n")
+        self.assertFails("no traefik labels")
+
+    def test_zigbee2mqtt_lines(self) -> None:
+        self.edit("zigbee2mqtt", "compose.yml", '      Z2M_ONBOARD_NO_SERVER: "1"\n')
+        self.assertFails("Z2M_ONBOARD_NO_SERVER")
+        self.setUp()
+        self.edit("zigbee2mqtt", "compose.yml", '      Z2M_ONBOARD_NO_SERVER: "1"\n',
+                  '      Z2M_ONBOARD_NO_SERVER: "1"\n      ZIGBEE2MQTT_CONFIG_FRONTEND_HOST: 0.0.0.0\n')
+        self.assertFails("ZIGBEE2MQTT_CONFIG_FRONTEND_HOST")
+
+    def test_mosquitto_lines(self) -> None:
+        for name, line, needle in (
+                ("compose.yml", "      mosquitto-init:\n        condition: service_completed_successfully\n", "mosquitto-init"),
+                ("compose.yml", "      - ./templates/zigbee2mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro\n",
+                 "mount the template's mosquitto.conf"),
+                ("mosquitto.conf", "allow_anonymous false\n", "allow_anonymous false"),
+                ("mosquitto.conf", "plugin_opt_password_file /mosquitto/auth/passwd\n", "password file"),
+        ):
+            with self.subTest(name=name, line=line.strip()):
+                self.setUp()
+                self.edit("zigbee2mqtt", name, line)
+                self.assertFails(needle)
+        self.setUp()
+        self.edit("zigbee2mqtt", "mosquitto.conf", "allow_anonymous false\n", "allow_anonymous false\nallow_anonymous true\n")
+        self.assertFails("allow_anonymous false")
+
+    def test_motioneye_lines(self) -> None:
+        for line, needle in (
+                ("        condition: service_healthy\n", "service_healthy"),
+                ('      test: ["CMD", "sh", "/portcullis/healthcheck.sh"]\n', "needs its healthcheck"),
+                ("      motioneye-init:\n        condition: service_completed_successfully\n", "motioneye-init"),
+                ("    healthcheck:\n      test:\n        - CMD-SHELL\n", "the gate needs its healthcheck"),
+        ):
+            with self.subTest(line=line.strip()):
+                self.setUp()
+                self.edit("motioneye", "compose.yml", line,
+                          "    x-removed:\n      test:\n        - CMD-SHELL\n" if "CMD-SHELL" in line else "")
+                self.assertFails(needle)
+        self.setUp()
+        self.edit("motioneye", "compose.yml", "motioneye-init", "motioneye-setup", count=3)
+        self.assertFails("motioneye-init")
