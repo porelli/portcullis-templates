@@ -48,7 +48,9 @@ auth:
     if the instance's homeserver hostname changes after the first start;
     pick it when creating the instance (hosts.immutable: the Hub refuses
     to change it once the instance exists; the Element host can change
-    any time).
+    any time). The default instance's homeserver host is
+    matrix.<main domain>: changing Portcullis's main domain breaks it.
+    A backup restores into the same instance only, never a new id.
     Admins: Synapse has no group-to-admin mapping, so admin_matrix grants
     nothing inside Synapse. Promote the first admin after their first SSO
     login with `UPDATE users SET admin = 1 WHERE name =
