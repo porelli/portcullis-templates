@@ -40,6 +40,8 @@ services:
     volumes:
       - nextcloud-data:/var/www/html
       - ./templates/nextcloud/setup.sh:/portcullis/setup.sh:ro
+      # The Hub's apply-settings hook (manifest hooks[]): occ from stdin JSON.
+      - ./templates/nextcloud/apply-settings.php:/portcullis/apply-settings.php:ro
       - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
     networks:
       - default

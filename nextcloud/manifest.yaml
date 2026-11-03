@@ -158,6 +158,48 @@ auth:
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
     Keep nextcloud and nextcloud-cron on the same image.
+    Settings: the default storage quota and the trash retention are applied
+    live through occ by the apply-settings hook (apply-settings.php, run by
+    the Hub as www-data in the nextcloud container at start and after every
+    save; idempotent, exits non-zero on any occ failure). Quotas set per
+    user in Nextcloud's Users page still win over the default.
+
+hooks:
+  - name: apply-settings
+    service: nextcloud
+    user: www-data
+    command: [php, /portcullis/apply-settings.php]
+    when: [start, settings_change]
+    timeout: 60s
+
+settings:
+  sections: [Files]
+  options:
+    - key: default_quota
+      label: Default storage quota
+      description: >
+        Storage each Nextcloud account gets unless a quota is set for it in
+        Nextcloud's Users page.
+      section: Files
+      type: size
+      step: 1GiB
+      allow_unlimited: true
+      default: 10GiB
+      applies: live
+      delivery: [{hook: apply-settings, render: {unit: GiB, integer: true, unlimited: none}}]
+    - key: trash_retention
+      label: Delete trash after
+      description: >
+        Deleted files are removed from the trash after this long (earlier
+        only when an account runs out of space).
+      section: Files
+      type: duration
+      min: 1d
+      max: 3650d
+      default: 30d
+      applies: live
+      delivery: [{hook: apply-settings, render: {unit: d, integer: true}}]
+
 env:
   - key: NEXTCLOUD_ADMIN_PASSWORD
     description: Install-time password of the local admin nc-breakglass (disabled after install; no password login)

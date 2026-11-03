@@ -149,6 +149,63 @@ else
   info "php not installed: setup.sh local-accounts test skipped"
 fi
 
+# The Hub's apply-settings hook (manifest hooks[]): mounted from the
+# template, run as www-data with an argv (no shell), on start and saves.
+APPLY="$DIR/apply-settings.php"
+if grep -qF -- '- ./templates/nextcloud/apply-settings.php:/portcullis/apply-settings.php:ro' "$COMPOSE" \
+    && [ "$(yq -r '.hooks[] | select(.name == "apply-settings") | [.service, .user, (.command | join(" ")), (.when | join(","))] | join("|")' "$MANIFEST")" \
+       = 'nextcloud|www-data|php /portcullis/apply-settings.php|start,settings_change' ]; then
+  pass "apply-settings hook declared (www-data, php /portcullis/apply-settings.php, start + settings_change) and mounted"
+else
+  fail "apply-settings hook or its mount missing / changed"
+fi
+# Its logic against a stub occ (state in a JSON file): idempotent, applies
+# both options, refuses bad input and fails on an occ failure.
+if command -v php >/dev/null 2>&1; then
+  if php -l "$APPLY" >/dev/null; then pass "apply-settings.php parses"; else fail "apply-settings.php has a syntax error"; fi
+  STUB=$(mktemp -d)
+  cat > "$STUB/occ" <<'PHP'
+<?php
+$st = getenv('STUB_DIR') . '/state.json';
+$s = file_exists($st) ? json_decode(file_get_contents($st), true) : [];
+$a = array_values(array_filter(array_slice($argv, 1), fn($x) => $x !== '--no-interaction' && $x !== '--no-ansi'));
+$set = $a[0] === 'config:app:set' || $a[0] === 'config:system:set';
+if ($set && getenv('STUB_FAIL')) { fwrite(STDERR, "stub failure\n"); exit(2); }
+if ($set) { file_put_contents(getenv('STUB_DIR') . '/sets', $a[0] . "\n", FILE_APPEND); }
+switch ($a[0]) {
+  case 'status': echo json_encode(['installed' => true, 'maintenance' => false, 'needsDbUpgrade' => false]), "\n"; break;
+  case 'config:app:get': if (!isset($s["a.$a[2]"])) exit(1); echo $s["a.$a[2]"], "\n"; break;
+  case 'config:system:get': if (!isset($s["s.$a[1]"])) exit(1); echo $s["s.$a[1]"], "\n"; break;
+  case 'config:app:set': $s["a.$a[2]"] = substr($a[3], 8); break;
+  case 'config:system:set': $s["s.$a[1]"] = substr($a[2], 8); break;
+  default: exit(3);
+}
+file_put_contents($st, json_encode($s));
+PHP
+  sed "s|^const OCC = '/var/www/html/occ';|const OCC = '$STUB/occ';|" "$APPLY" > "$STUB/apply.php"
+  hook() { STUB_DIR="$STUB" php "$STUB/apply.php" <<< "$1" >/dev/null 2>&1; }
+  IN='{"trigger":"settings_change","version":1,"instance":"nextcloud","values":{"default_quota":7,"trash_retention":12},"people":{},"groups":{},"entries":{},"secrets":{}}'
+  if hook "$IN" && [ "$(jq -r '.["a.default_quota"] + "|" + .["s.trashbin_retention_obligation"]' "$STUB/state.json")" = '7 GB|auto, 12' ]; then
+    pass "stub occ: default_quota 7 GiB -> \"7 GB\", trash 12 days -> \"auto, 12\""
+  else
+    fail "stub occ: values not applied"
+  fi
+  : > "$STUB/sets"
+  if hook "$IN" && [ ! -s "$STUB/sets" ]; then pass "stub occ: second run sets nothing (idempotent)"; else fail "stub occ: second run not idempotent"; fi
+  if hook '{"version":1,"values":{"default_quota":"none"}}' && [ "$(jq -r '.["a.default_quota"]' "$STUB/state.json")" = none ]; then
+    pass "stub occ: unlimited -> none"
+  else
+    fail "stub occ: unlimited not applied as none"
+  fi
+  for bad in 'not json' '{"version":2,"values":{}}' '{"version":1,"values":{"default_quota":1.5}}' '{"version":1,"values":{"trash_retention":0}}'; do
+    if hook "$bad"; then fail "stub occ: accepted bad input $bad"; else pass "stub occ: bad input refused ($bad)"; fi
+  done
+  if STUB_FAIL=1 hook '{"version":1,"values":{"default_quota":9}}'; then fail "stub occ: an occ failure exits 0"; else pass "stub occ: an occ failure exits non-zero"; fi
+  rm -rf "$STUB"
+else
+  info "php not installed: apply-settings.php stub test skipped"
+fi
+
 # Shell syntax of the support scripts
 for f in "$SETUP" "$CRON"; do
   if sh -n "$f"; then pass "$(basename "$f") parses"; else fail "$(basename "$f") has a syntax error"; fi
@@ -249,6 +306,36 @@ if occ user:info ci-local --output=json 2>/dev/null | grep -q '"enabled":false';
   pass "new local account disabled by nextcloud-cron"
 else
   fail "new local account still enabled after 150s"
+fi
+
+section "apply-settings hook in the running container"
+# What the Hub does (docker exec as www-data, HookInput on stdin).
+apply() { docker exec -i -u www-data "$C" php /portcullis/apply-settings.php; }
+IN='{"trigger":"settings_change","version":1,"instance":"nextcloud","values":{"default_quota":7,"trash_retention":12},"people":{},"groups":{},"entries":{},"secrets":{}}'
+if out=$(apply <<< "$IN" 2>&1); then
+  pass "apply-settings exited 0"
+else
+  fail "apply-settings failed: $out"
+fi
+got=$(occ config:app:get files default_quota 2>/dev/null || true)
+if [ "$got" = "7 GB" ]; then pass "occ config:app:get files default_quota = 7 GB"; else fail "files default_quota = '$got', expected '7 GB'"; fi
+got=$(occ config:system:get trashbin_retention_obligation 2>/dev/null || true)
+if [ "$got" = "auto, 12" ]; then pass "trashbin_retention_obligation = auto, 12"; else fail "trashbin_retention_obligation = '$got', expected 'auto, 12'"; fi
+if out=$(apply <<< "$IN" 2>&1) && ! grep -q ' set to ' <<< "$out"; then
+  pass "apply-settings again: nothing changed (idempotent)"
+else
+  fail "apply-settings second run: $out"
+fi
+if out=$(apply <<< '{"trigger":"settings_change","version":1,"values":{"default_quota":"none"}}' 2>&1) \
+    && [ "$(occ config:app:get files default_quota 2>/dev/null || true)" = none ]; then
+  pass "unlimited -> files default_quota none"
+else
+  fail "unlimited not applied: $out"
+fi
+if apply <<< '{"version":1,"values":{"default_quota":"7 GB; rm"}}' >/dev/null 2>&1; then
+  fail "apply-settings accepted a malformed quota"
+else
+  pass "apply-settings refuses a malformed quota (non-zero)"
 fi
 
 section "Password login through Traefik"
