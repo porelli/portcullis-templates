@@ -605,6 +605,33 @@ class TestRealTemplates(unittest.TestCase):
     def test_all_templates_in_repo_validate(self) -> None:
         self.assertEqual(v.main([]), 0)
 
+    def test_device_patterns_refuse_dot_segments(self) -> None:
+        # Docker maps every node under a directory source: /dev/. or a ..
+        # segment would hand the app every host device.
+        import yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        good = ["/dev/sda", "/dev/nvme0", "/dev/video0", "/dev/ttyUSB0",
+                "/dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0",
+                "/dev/serial/by-id/usb-ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus-if00-port0"]
+        bad = ["/dev/.", "/dev/..", "/dev/../sda", "/dev/serial/..", "/dev/serial/./x",
+               "/dev/.hidden", "/dev/", "/dev//sda", "/dev/sda/", "/dev/sda:rw", "/etc/passwd"]
+        for app, key in (("esphome", "serial_device"), ("zigbee2mqtt", "serial_device"),
+                         ("motioneye", None), ("scrutiny", None)):
+            with open(os.path.join(root, app, "manifest.yaml"), encoding="utf-8") as f:
+                m = yaml.safe_load(f)
+            pats = []
+            for o in m["settings"]["options"]:
+                p = (o.get("items") or {}).get("pattern") if o.get("type") == "list" else o.get("pattern")
+                if p and p.startswith("^/dev/") and (key is None or o["key"] == key):
+                    pats.append(p)
+            self.assertTrue(pats, app)
+            for p in pats:
+                rx = v._compile_pattern(p)
+                for s in good:
+                    self.assertTrue(rx.fullmatch(s), f"{app}: {s}")
+                for s in bad:
+                    self.assertFalse(rx.fullmatch(s), f"{app}: {s}")
+
 
 class SigninTest(Case):
     """tests.signin (sign-in e2e) rules."""

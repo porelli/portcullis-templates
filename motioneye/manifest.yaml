@@ -78,7 +78,7 @@ settings:
         Device paths of local (USB/V4L2) cameras, e.g. /dev/video0 (up to 4;
         empty = none).
       type: list
-      items: {type: string, pattern: '^/dev/.+$'}
+      items: {type: string, pattern: '^/dev/[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$'}
       max_items: 4
       unique: true
       applies: restart

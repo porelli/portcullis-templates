@@ -65,7 +65,7 @@ settings:
         /dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0 or /dev/ttyUSB0
         (empty = none; flashing from the browser works without it).
       type: string
-      pattern: '^/dev/.+$'
+      pattern: '^/dev/[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$'
       applies: restart
       delivery: [{env: ESPHOME_SERIAL_DEVICE}]
 

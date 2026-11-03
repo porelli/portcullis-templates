@@ -92,7 +92,7 @@ settings:
         or /dev/ttyUSB0 (empty = none).
       section: Coordinator
       type: string
-      pattern: '^/dev/.+$'
+      pattern: '^/dev/[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$'
       applies: restart
       delivery: [{env: Z2M_SERIAL_DEVICE}]
     - key: network_coordinator
