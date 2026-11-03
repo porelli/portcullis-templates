@@ -3,6 +3,10 @@ description: Media server for movies, TV, music with transcoding and client apps
 icon: "\U0001F3AC"
 category: media
 tags: [media, movies, tv, music, streaming]
+links:
+  website: https://www.plex.tv/personal-media-server/
+  source: null
+  source_note: Plex Media Server is proprietary; Plex publishes no source code for it
 instances: multi
 
 auth:

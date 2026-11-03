@@ -4,6 +4,9 @@ description: Explore how software works and craft your own by ArtCraft, running 
 icon: "\U0001F50D"
 category: productivity
 tags: [artcraft, wasm, software, exploration, learning]
+links:
+  website: https://getartcraft.com/apps/craft-anything
+  source: https://github.com/storytold/craft-anything
 instances: multi
 
 auth:

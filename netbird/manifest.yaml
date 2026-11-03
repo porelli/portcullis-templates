@@ -3,6 +3,9 @@ description: Mesh VPN + zero-trust networking with TURN relay
 icon: "\U0001F426"
 category: vpn
 tags: [vpn, wireguard, mesh, zero-trust]
+links:
+  website: https://netbird.io/
+  source: https://github.com/netbirdio/netbird
 instances: multi
 
 auth:

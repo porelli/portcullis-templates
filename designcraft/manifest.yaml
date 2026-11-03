@@ -4,6 +4,9 @@ description: Page layout and design editor by ArtCraft, running entirely in the 
 icon: "\U0001F4D0"
 category: creative
 tags: [artcraft, wasm, layout, publishing, design]
+links:
+  website: https://getartcraft.com/apps/designcraft
+  source: https://github.com/storytold/designcraft
 instances: multi
 
 auth:

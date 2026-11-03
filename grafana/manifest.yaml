@@ -3,6 +3,9 @@ description: Monitoring dashboards — protected by WebAuthn
 icon: "\U0001F4CA"
 category: monitoring
 tags: [monitoring, dashboards, metrics]
+links:
+  website: https://grafana.com/oss/grafana/
+  source: https://github.com/grafana/grafana
 instances: multi
 
 auth:

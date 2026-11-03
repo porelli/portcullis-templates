@@ -4,6 +4,9 @@ description: Team chat with channels, threads, file sharing and integrations (Te
 icon: "\U0001F4AC"
 category: productivity
 tags: [chat, messaging, team, collaboration, slack-alternative]
+links:
+  website: https://mattermost.com/
+  source: https://github.com/mattermost/mattermost
 instances: multi
 
 auth:

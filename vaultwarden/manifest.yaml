@@ -3,6 +3,9 @@ description: Lightweight Bitwarden-compatible password manager
 icon: "\U0001F510"
 category: security
 tags: [passwords, bitwarden, vault, secrets]
+links:
+  website: https://github.com/dani-garcia/vaultwarden
+  source: https://github.com/dani-garcia/vaultwarden
 instances: multi
 
 auth:

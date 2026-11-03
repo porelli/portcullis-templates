@@ -3,6 +3,9 @@ description: Free and open-source media server — movies, TV, music, live TV
 icon: "\U0001F4FA"
 category: media
 tags: [media, movies, tv, music, streaming, opensource]
+links:
+  website: https://jellyfin.org/
+  source: https://github.com/jellyfin/jellyfin
 instances: multi
 
 auth:

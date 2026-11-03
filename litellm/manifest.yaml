@@ -3,6 +3,9 @@ description: Unified LLM proxy — OpenAI-compatible API for 100+ models with au
 icon: "\U0001F916"
 category: ai
 tags: [llm, ai, openai, proxy, api]
+links:
+  website: https://www.litellm.ai/
+  source: https://github.com/BerriAI/litellm
 instances: multi
 
 auth:

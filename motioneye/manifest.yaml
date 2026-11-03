@@ -4,6 +4,9 @@ description: Video surveillance for network and USB cameras — motion detection
 icon: "\U0001F4F9"
 category: home-automation
 tags: [home-automation, cameras, surveillance, cctv, motion-detection]
+links:
+  website: https://github.com/motioneye-project/motioneye
+  source: https://github.com/motioneye-project/motioneye
 instances: multi
 
 auth:

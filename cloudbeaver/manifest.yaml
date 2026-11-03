@@ -3,6 +3,9 @@ description: Web-based database manager — PostgreSQL, MySQL, SQLite and more
 icon: "\U0001F5C3"
 category: devops
 tags: [database, sql, admin, postgresql, mysql]
+links:
+  website: https://dbeaver.com/docs/cloudbeaver/
+  source: https://github.com/dbeaver/cloudbeaver
 instances: multi
 
 auth:

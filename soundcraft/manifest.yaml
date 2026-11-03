@@ -4,6 +4,9 @@ description: Digital audio workstation by ArtCraft, running entirely in the brow
 icon: "\U0001F39A"
 category: creative
 tags: [artcraft, wasm, audio, daw, music]
+links:
+  website: https://getartcraft.com/apps/soundcraft
+  source: https://github.com/storytold/soundcraft
 instances: multi
 
 auth:

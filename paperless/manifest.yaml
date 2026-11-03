@@ -4,6 +4,9 @@ description: Document management with OCR, full-text search and automatic taggin
 icon: "\U0001F4C4"
 category: productivity
 tags: [documents, ocr, scanning, archive, pdf]
+links:
+  website: https://docs.paperless-ngx.com/
+  source: https://github.com/paperless-ngx/paperless-ngx
 instances: multi
 
 auth:

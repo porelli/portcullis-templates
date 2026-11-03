@@ -4,6 +4,9 @@ description: Vector illustration tool by ArtCraft, running entirely in the brows
 icon: "\U0001F58B"
 category: creative
 tags: [artcraft, wasm, vector, illustration, svg]
+links:
+  website: https://getartcraft.com/apps/vectorcraft
+  source: https://github.com/storytold/vectorcraft
 instances: multi
 
 auth:

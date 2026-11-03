@@ -4,6 +4,9 @@ description: Word processor by ArtCraft, running entirely in the browser (Rust/W
 icon: "\U0001F4DD"
 category: productivity
 tags: [artcraft, wasm, word-processor, documents, office]
+links:
+  website: https://getartcraft.com/apps/wordcraft
+  source: https://github.com/storytold/wordcraft
 instances: multi
 
 auth:

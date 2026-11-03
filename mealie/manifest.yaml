@@ -4,6 +4,9 @@ description: Self-hosted recipe manager, meal planner and shopping lists
 icon: "\U0001F37D"
 category: productivity
 tags: [recipes, cooking, meal-planning, shopping-list, food]
+links:
+  website: https://mealie.io/
+  source: https://github.com/mealie-recipes/mealie
 instances: multi
 
 auth:

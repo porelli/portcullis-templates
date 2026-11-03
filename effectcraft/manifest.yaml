@@ -4,6 +4,9 @@ description: Motion graphics and compositing tool by ArtCraft, running entirely 
 icon: "\U0001F3AC"
 category: creative
 tags: [artcraft, wasm, motion-graphics, compositing, video]
+links:
+  website: https://getartcraft.com/apps/effectcraft
+  source: https://github.com/storytold/effectcraft
 instances: multi
 
 auth:

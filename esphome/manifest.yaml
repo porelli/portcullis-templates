@@ -4,6 +4,9 @@ description: ESPHome Device Builder — write, compile and flash ESP32/ESP8266 f
 icon: "\U0001F4DF"
 category: home-automation
 tags: [home-automation, esphome, iot, firmware, esp32, smart-home]
+links:
+  website: https://esphome.io/
+  source: https://github.com/esphome/esphome
 instances: multi
 
 auth:

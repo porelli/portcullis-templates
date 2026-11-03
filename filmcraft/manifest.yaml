@@ -4,6 +4,9 @@ description: Non-linear video editor by ArtCraft, running entirely in the browse
 icon: "\U0001F39E"
 category: creative
 tags: [artcraft, wasm, video, editor, nle]
+links:
+  website: https://getartcraft.com/apps/filmcraft
+  source: https://github.com/storytold/filmcraft
 instances: multi
 
 auth:

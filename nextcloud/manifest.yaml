@@ -3,6 +3,9 @@ description: Self-hosted productivity platform — files, calendar, contacts, of
 icon: "\u2601\uFE0F"
 category: productivity
 tags: [files, calendar, office, collaboration]
+links:
+  website: https://nextcloud.com/
+  source: https://github.com/nextcloud/server
 instances: multi
 
 auth:

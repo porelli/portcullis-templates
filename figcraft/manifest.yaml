@@ -4,6 +4,9 @@ description: Interface design and prototyping tool by ArtCraft, running entirely
 icon: "\U0001F9E9"
 category: creative
 tags: [artcraft, wasm, ui-design, prototyping, design]
+links:
+  website: https://getartcraft.com/apps/figcraft
+  source: https://github.com/storytold/figcraft
 instances: multi
 
 auth:

@@ -39,6 +39,32 @@ Reference docs:
    # yaml-language-server: $schema=../schema/manifest.schema.json
    ```
    Options an admin sets go under `settings:` (see [Settings](#settings)).
+   Fill in `links` (required, both `https://`), shown on the app's docs page
+   and in the docs catalog:
+   ```yaml
+   links:
+     website: https://about.gitea.com/          # the project's own homepage
+     source: https://github.com/go-gitea/gitea   # canonical upstream repository
+   ```
+   - `website`: the project's official homepage, not a mirror, store page,
+     Docker Hub / GHCR page or a blog post about it. If the project has no
+     homepage, use its documentation site or, failing that, its repository.
+   - `source`: the canonical upstream repository on GitHub, GitLab,
+     Codeberg, Gitea, SourceHut, ... (its root, e.g.
+     `https://gitlab.com/gitlab-org/gitlab`, not a `/tree/...` page or a
+     `.git` URL), not a fork, a mirror or the image's packaging repository
+     (for example `dokuwiki/dokuwiki`, not `linuxserver/docker-dokuwiki`).
+     If the image is built from a different repository than upstream's
+     (like `firefox-sync`: `porelli/firefox-sync` builds Mozilla's
+     syncstorage-rs), use the repository the image is built from and name
+     the upstream in `auth.notes`. Craft templates use the
+     `storytold/<app>` repository their compose downloads (checked).
+   - Closed-source apps only: `source: null` plus a `source_note` saying why
+     (`plex`: "Plex Media Server is proprietary; ...").
+
+   Open both URLs before you submit: validate.py checks their form (https,
+   repository-root URLs on known code hosts, no registry pages), not that
+   they are the official ones.
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose
