@@ -33,7 +33,7 @@ auth:
     range that doesn't overlap (e.g. 3479, 5350, 40000-40999).
     management.json is generated once (it holds NetBird's
     DataStoreEncryptionKey); a later hostname, STUN port or
-    COTURN_EXTERNAL_IP change is applied to it in place on the next start.
+    TURN public IP change is applied to it in place on the next start.
 
 ports:
   - key: COTURN_STUN_PORT
@@ -63,14 +63,23 @@ ports:
     service: coturn
     network_mode_host: true
 
+settings:
+  options:
+    - key: coturn_external_ip
+      label: TURN public IP
+      description: >
+        Public IP address of this server for the TURN relay (needed for NAT
+        traversal when peers can't connect directly). Empty = the NetBird
+        hostname.
+      type: string
+      format: ip
+      applies: restart
+      delivery: [{env: COTURN_EXTERNAL_IP}]
+
 env:
   - key: NETBIRD_OIDC_CLIENT_SECRET
     description: OIDC client secret for NetBird dashboard
     generate: random
-  - key: COTURN_EXTERNAL_IP
-    description: Public IP for TURN relay (required for NAT traversal)
-    generate: none
-    required: false
   - key: COTURN_AUTH_SECRET
     description: Shared secret for TURN authentication
     generate: random

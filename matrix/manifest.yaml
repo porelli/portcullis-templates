@@ -84,12 +84,17 @@ auth:
     Element Web is independent of the Synapse version.
 
 settings:
-  - key: MATRIX_FEDERATION_DOMAINS
-    label: Federation peers
-    description: >
-      Comma-separated Matrix server names this homeserver may federate with
-      (e.g. matrix.example.org). Empty = federation off (default).
-    type: text
+  options:
+    - key: federation_domains
+      label: Federation peers
+      description: >
+        Matrix server names this homeserver may federate with (e.g.
+        matrix.example.org). Empty = federation off (default).
+      type: list
+      items: {type: string, format: hostname}
+      unique: true
+      applies: restart
+      delivery: [{env: MATRIX_FEDERATION_DOMAINS, render: {join: ","}}]
 
 env:
   - key: MATRIX_DB_PASSWORD

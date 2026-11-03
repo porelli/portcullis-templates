@@ -38,27 +38,44 @@ auth:
     LLDAP "admin" and the local admin created by setup) is linked to it.
 
 settings:
-  - key: JELLYFIN_MOVIES_PATH
-    label: Movies folder
-    description: Host path to your movies library
-    type: path
-    target:
-      service: jellyfin
-      mount: /data/movies
-  - key: JELLYFIN_TV_PATH
-    label: TV Shows folder
-    description: Host path to your TV shows library
-    type: path
-    target:
-      service: jellyfin
-      mount: /data/tv
-  - key: JELLYFIN_MUSIC_PATH
-    label: Music folder
-    description: Host path to your music library
-    type: path
-    target:
-      service: jellyfin
-      mount: /data/music
+  sections: [Libraries]
+  options:
+    - key: movies_path
+      label: Movies folder
+      description: Host path to your movies library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: 0, gid: 0}
+      target:
+        service: jellyfin
+        mount: /data/movies
+      applies: restart
+    - key: tv_path
+      label: TV Shows folder
+      description: Host path to your TV shows library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: 0, gid: 0}
+      target:
+        service: jellyfin
+        mount: /data/tv
+      applies: restart
+    - key: music_path
+      label: Music folder
+      description: Host path to your music library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: 0, gid: 0}
+      target:
+        service: jellyfin
+        mount: /data/music
+      applies: restart
 
 env:
   - key: JELLYFIN_ADMIN_PASSWORD

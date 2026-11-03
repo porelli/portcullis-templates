@@ -28,46 +28,30 @@ auth:
     container from starting.
 
 settings:
-  - key: SCRUTINY_DISK_1
-    label: Disk 1
-    description: Device path of a disk to monitor, e.g. /dev/sda or /dev/nvme0 (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_2
-    label: Disk 2
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_3
-    label: Disk 3
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_4
-    label: Disk 4
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_5
-    label: Disk 5
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_6
-    label: Disk 6
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_7
-    label: Disk 7
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_DISK_8
-    label: Disk 8
-    description: Another disk to monitor (empty = unused).
-    type: text
-  - key: SCRUTINY_NVME_CAPABILITY
-    label: NVMe capability
-    description: >
-      SYS_RAWIO (default) is enough for SATA/SAS disks. Choose SYS_ADMIN if
-      a listed disk is NVMe: the kernel only allows NVMe SMART reads with it.
-    type: select
-    options: [SYS_RAWIO, SYS_ADMIN]
-    default: SYS_RAWIO
+  options:
+    - key: disks
+      label: Disks
+      description: >
+        Device paths of the disks to monitor, e.g. /dev/sda or /dev/nvme0
+        (up to 8).
+      type: list
+      items: {type: string, pattern: '^/dev/.+$'}
+      max_items: 8
+      unique: true
+      applies: restart
+      delivery: [{env: "SCRUTINY_DISK_{n}"}]
+    - key: nvme_capability
+      label: NVMe capability
+      description: >
+        SYS_RAWIO (default) is enough for SATA/SAS disks. Choose SYS_ADMIN if
+        a listed disk is NVMe: the kernel only allows NVMe SMART reads with it.
+      type: enum
+      options:
+        - {value: SYS_RAWIO, label: SYS_RAWIO}
+        - {value: SYS_ADMIN, label: SYS_ADMIN}
+      default: SYS_RAWIO
+      applies: restart
+      delivery: [{env: SCRUTINY_NVME_CAPABILITY}]
 
 env: []
 keycloak_clients: []

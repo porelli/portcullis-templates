@@ -87,16 +87,30 @@ auth:
     on 8 (no major bumps without a data migration).
 
 settings:
-  - key: PAPERLESS_OCR_LANGUAGE
-    label: OCR language
-    description: "Tesseract language(s) of your documents, e.g. eng, deu or deu+eng (installed: eng, deu, fra, ita, spa)"
-    type: text
-    default: eng
-  - key: PAPERLESS_TIME_ZONE
-    label: Time zone
-    description: IANA time zone for dates, e.g. Europe/Berlin
-    type: text
-    default: UTC
+  options:
+    - key: ocr_language
+      label: OCR languages
+      description: >
+        Tesseract language(s) of your documents (installed: English, German,
+        French, Italian, Spanish). Several are passed joined with "+".
+      type: multi_enum
+      options:
+        - {value: eng, label: English}
+        - {value: deu, label: German}
+        - {value: fra, label: French}
+        - {value: ita, label: Italian}
+        - {value: spa, label: Spanish}
+      default: [eng]
+      applies: restart
+      delivery: [{env: PAPERLESS_OCR_LANGUAGE, render: {join: "+"}}]
+    - key: time_zone
+      label: Time zone
+      description: IANA time zone for dates, e.g. Europe/Berlin
+      type: string
+      format: iana_tz
+      default: UTC
+      applies: restart
+      delivery: [{env: PAPERLESS_TIME_ZONE}]
 
 env:
   - key: PAPERLESS_SECRET_KEY

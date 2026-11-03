@@ -30,33 +30,77 @@ auth:
     (no Portcullis, TLS tier public), which Plex's native apps need. Claim token required for initial setup.
 
 settings:
-  - key: PLEX_MOVIES_PATH
-    label: Movies folder
-    description: Host path to your movies library
-    type: path
-    target:
-      service: plex
-      mount: /data/movies
-  - key: PLEX_TV_PATH
-    label: TV Shows folder
-    description: Host path to your TV shows library
-    type: path
-    target:
-      service: plex
-      mount: /data/tv
-  - key: PLEX_MUSIC_PATH
-    label: Music folder
-    description: Host path to your music library
-    type: path
-    target:
-      service: plex
-      mount: /data/music
+  sections: [Libraries, Server]
+  options:
+    - key: movies_path
+      label: Movies folder
+      description: Host path to your movies library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: puid, gid: pgid}
+      target:
+        service: plex
+        mount: /data/movies
+      applies: restart
+    - key: tv_path
+      label: TV Shows folder
+      description: Host path to your TV shows library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: puid, gid: pgid}
+      target:
+        service: plex
+        mount: /data/tv
+      applies: restart
+    - key: music_path
+      label: Music folder
+      description: Host path to your music library
+      section: Libraries
+      type: path
+      mode: rw
+      needs: read
+      writes_as: {uid: puid, gid: pgid}
+      target:
+        service: plex
+        mount: /data/music
+      applies: restart
+    - key: puid
+      label: Plex user id
+      description: >
+        User id Plex Media Server runs as inside the container (PLEX_UID); it
+        needs read access to the library folders.
+      section: Server
+      type: int
+      min: 0
+      max: 65534
+      default: 1000
+      applies: restart
+      delivery: [{env: PLEX_UID}]
+    - key: pgid
+      label: Plex group id
+      description: Group id Plex Media Server runs as inside the container (PLEX_GID).
+      section: Server
+      type: int
+      min: 0
+      max: 65534
+      default: 1000
+      applies: restart
+      delivery: [{env: PLEX_GID}]
+    - key: claim
+      label: Claim token
+      description: >
+        Plex claim token from https://plex.tv/claim, needed for the initial
+        setup only (it expires a few minutes after it is issued).
+      section: Server
+      type: secret
+      applies: restart
+      delivery: [{env: PLEX_CLAIM}]
 
-env:
-  - key: PLEX_CLAIM
-    description: Plex claim token (get from https://plex.tv/claim)
-    generate: none
-    required: false
+env: []
 
 keycloak_clients: []
 config_files: []

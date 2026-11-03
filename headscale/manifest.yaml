@@ -39,12 +39,15 @@ auth:
     that supports that Headscale version.
 
 settings:
-  - key: HEADSCALE_API_KEY
-    label: Headscale API key
-    description: >
-      API key Headplane uses to talk to Headscale. Create it after the first
-      start with `headscale apikeys create` inside the headscale container.
-    type: text
+  options:
+    - key: api_key
+      label: Headscale API key
+      description: >
+        API key Headplane uses to talk to Headscale. Create it after the first
+        start with `headscale apikeys create` inside the headscale container.
+      type: secret
+      applies: restart
+      delivery: [{env: HEADSCALE_API_KEY}]
 
 env:
   - key: HEADSCALE_OIDC_CLIENT_SECRET

@@ -27,8 +27,8 @@ auth:
     the account named like X-Forwarded-User, so the same valve refuses (403)
     any X-Forwarded-User starting with "guacadmin" (case-insensitive): no LLDAP
     user can become the local administrator (also on databases initialized
-    before the suffix, where the account is still called guacadmin). Set
-    GUACAMOLE_ADMIN_USER before first enable to make that LLDAP user (by
+    before the suffix, where the account is still called guacadmin). Set the
+    Administrator setting before first enable to make that LLDAP user (by
     username, not email; not guacadmin*) the administrator instead. Accounts
     created when the header carried the email
     are named after it; rename them in the Guacamole UI. Connection
@@ -39,14 +39,18 @@ auth:
     upgrade scripts for each release in between before starting the new one.
 
 settings:
-  - key: GUACAMOLE_ADMIN_USER
-    label: Administrator LLDAP username
-    description: >
-      LLDAP username (as sent in X-Forwarded-User; not the email) that becomes
-      the Guacamole administrator. Applied only on first database initialization. Leave empty
-      to keep a local guacadmin-<generated suffix> account with a random password.
-      Must not start with guacadmin.
-    type: text
+  options:
+    - key: admin_user
+      label: Administrator
+      description: >
+        The LLDAP user (username as sent in X-Forwarded-User, not the email)
+        that becomes the Guacamole administrator. Applied only on first
+        database initialization. Leave empty to keep a local
+        guacadmin-<generated suffix> account with a random password. Must not
+        start with guacadmin.
+      type: user
+      applies: restart
+      delivery: [{env: GUACAMOLE_ADMIN_USER}]
 
 env:
   - key: GUACAMOLE_DB_PASSWORD

@@ -72,14 +72,17 @@ auth:
     on the same image.
 
 settings:
-  - key: GITEA_SSH_ENABLED
-    label: Git over SSH
-    description: >-
-      Start Gitea's built-in SSH server (container port 2222) and show SSH
-      clone URLs. Off by default: git over HTTPS with a personal access token
-      works without it.
-    type: boolean
-    default: "false"
+  options:
+    - key: ssh_enabled
+      label: Git over SSH
+      description: >-
+        Start Gitea's built-in SSH server (container port 2222) and show SSH
+        clone URLs. Off by default: git over HTTPS with a personal access token
+        works without it.
+      type: bool
+      default: false
+      applies: restart
+      delivery: [{env: GITEA_SSH_ENABLED}]
 
 ports:
   - key: GITEA_SSH_PORT

@@ -34,22 +34,39 @@ auth:
     start (an unchanged pin skips the download). The host needs outbound
     HTTPS to github.com. The web server (nginx-unprivileged, read-only,
     no directory listing) answers only Traefik and itself.
-    Version: CRAFT_VERSION / CRAFT_SHA256 default to the pin in compose.yml
+    Version: the Release version / Release SHA-256 settings default to the pin in compose.yml
     (bumped with the template); set both together, from the release's
     SHA256SUMS.txt, to pin another release.
 
-env:
-  - key: CRAFT_VERSION
-    description: >
-      LightCraft release to serve (x.y.z, without the "v"). Empty = the version
-      pinned in compose.yml. Set CRAFT_SHA256 with it.
-    generate: none
-  - key: CRAFT_SHA256
-    description: >
-      SHA-256 of lightcraft-web-<CRAFT_VERSION>.zip (lowercase hex, from the
-      release's SHA256SUMS.txt). Empty = the pin in compose.yml. A mismatch
-      stops the start.
-    generate: none
+env: []
+
+settings:
+  sections: [Version]
+  options:
+    - key: craft_version
+      label: Release version
+      description: >
+        LightCraft release to serve (x.y.z, without the "v"). Empty = the version
+        pinned in compose.yml. Set the release SHA-256 with it.
+      section: Version
+      type: string
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+      requires: [craft_sha256]
+      applies: restart
+      delivery: [{env: CRAFT_VERSION}]
+    - key: craft_sha256
+      label: Release SHA-256
+      description: >
+        SHA-256 of lightcraft-web-<version>.zip (lowercase hex, from the
+        release's SHA256SUMS.txt). Empty = the pin in compose.yml. A mismatch
+        stops the start.
+      section: Version
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      requires: [craft_version]
+      applies: restart
+      delivery: [{env: CRAFT_SHA256}]
+
 keycloak_clients: []
 config_files: []
 

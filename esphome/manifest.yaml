@@ -57,13 +57,17 @@ auth:
     reachable only inside the instance's private network.
 
 settings:
-  - key: ESPHOME_SERIAL_DEVICE
-    label: Serial port
-    description: >
-      Optional host USB serial device for flashing from the server, e.g.
-      /dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0 or /dev/ttyUSB0
-      (empty = none; flashing from the browser works without it).
-    type: text
+  options:
+    - key: serial_device
+      label: Serial port
+      description: >
+        Optional host USB serial device for flashing from the server, e.g.
+        /dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0 or /dev/ttyUSB0
+        (empty = none; flashing from the browser works without it).
+      type: string
+      pattern: '^/dev/.+$'
+      applies: restart
+      delivery: [{env: ESPHOME_SERIAL_DEVICE}]
 
 env: []
 keycloak_clients: []

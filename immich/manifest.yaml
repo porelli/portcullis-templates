@@ -114,13 +114,18 @@ auth:
     breaking changes and keep immich-db on the image upstream specifies.
 
 settings:
-  - key: IMMICH_EXTERNAL_PATH
-    label: External photo library
-    description: Host path to existing photos to import (mounted read-only)
-    type: path
-    target:
-      service: immich-server
-      mount: /usr/src/app/external
+  options:
+    - key: external_library
+      label: External photo library
+      description: Host path to existing photos to import (mounted read-only)
+      type: path
+      mode: ro
+      needs: read
+      writes_as: {uid: 0, gid: 0}
+      target:
+        service: immich-server
+        mount: /usr/src/app/external
+      applies: restart
 
 env:
   - key: IMMICH_DB_PASSWORD

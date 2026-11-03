@@ -82,58 +82,93 @@ auth:
     link to this instance's hostname.
 
 settings:
-  - key: Z2M_SERIAL_DEVICE
-    label: Serial device
-    description: >
-      Host path of a USB Zigbee coordinator, e.g.
-      /dev/serial/by-id/usb-ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_...-if00-port0
-      or /dev/ttyUSB0 (empty = none).
-    type: text
-  - key: Z2M_NETWORK_COORDINATOR
-    label: Network coordinator
-    description: >
-      tcp://<host>:<port> of a network (Ethernet/Wi-Fi) coordinator, e.g.
-      tcp://192.168.1.50:6638; used instead of the serial device when set.
-      Needs the Adapter type.
-    type: text
-  - key: Z2M_ADAPTER
-    label: Adapter type
-    description: >
-      Coordinator firmware type: ember (Silicon Labs EFR32, e.g. Sonoff
-      ZBDongle-E, SLZB-06M), zstack (Texas Instruments CC2652/CC1352, e.g.
-      Sonoff ZBDongle-P), deconz (ConBee/RaspBee), zigate, zboss, zoh; auto
-      lets Zigbee2MQTT detect a USB adapter.
-    type: select
-    options: [auto, ember, zstack, deconz, zigate, zboss, zoh]
-    default: auto
-  - key: Z2M_HOMEASSISTANT
-    label: Home Assistant discovery
-    description: Publish Home Assistant MQTT discovery messages (homeassistant/#).
-    type: boolean
-    default: "true"
-  - key: Z2M_EXTERNAL_JS
-    label: External extensions and converters
-    description: >
-      Allow Zigbee2MQTT's external JavaScript (extensions and converters
-      saved from the frontend or over MQTT): arbitrary code that runs in
-      the Zigbee2MQTT container. Off by default.
-    type: boolean
-    default: "false"
-  - key: Z2M_MQTT_SERVER
-    label: MQTT server
-    description: >
-      An existing broker instead of the bundled one, e.g.
-      mqtt://192.168.1.10:1883 or mqtts://broker.lan:8883 (empty = the
-      bundled Mosquitto).
-    type: text
-  - key: Z2M_MQTT_USER
-    label: MQTT user
-    description: User for the MQTT server above (ignored for the bundled broker).
-    type: text
-  - key: Z2M_MQTT_PASSWORD
-    label: MQTT password
-    description: Password for the MQTT server above (ignored for the bundled broker).
-    type: text
+  sections: [Coordinator, MQTT]
+  options:
+    - key: serial_device
+      label: Serial device
+      description: >
+        Host path of a USB Zigbee coordinator, e.g.
+        /dev/serial/by-id/usb-ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_...-if00-port0
+        or /dev/ttyUSB0 (empty = none).
+      section: Coordinator
+      type: string
+      pattern: '^/dev/.+$'
+      applies: restart
+      delivery: [{env: Z2M_SERIAL_DEVICE}]
+    - key: network_coordinator
+      label: Network coordinator
+      description: >
+        tcp://<host>:<port> of a network (Ethernet/Wi-Fi) coordinator, e.g.
+        tcp://192.168.1.50:6638; used instead of the serial device when set.
+        Needs the Adapter type.
+      section: Coordinator
+      type: string
+      pattern: '^tcp://[A-Za-z0-9.:_-]+:[0-9]{1,5}$'
+      applies: restart
+      delivery: [{env: Z2M_NETWORK_COORDINATOR}]
+    - key: adapter
+      label: Adapter type
+      description: >
+        Coordinator firmware type: ember (Silicon Labs EFR32, e.g. Sonoff
+        ZBDongle-E, SLZB-06M), zstack (Texas Instruments CC2652/CC1352, e.g.
+        Sonoff ZBDongle-P), deconz (ConBee/RaspBee), zigate, zboss, zoh; auto
+        lets Zigbee2MQTT detect a USB adapter.
+      section: Coordinator
+      type: enum
+      options:
+        - {value: auto, label: auto}
+        - {value: ember, label: ember}
+        - {value: zstack, label: zstack}
+        - {value: deconz, label: deconz}
+        - {value: zigate, label: zigate}
+        - {value: zboss, label: zboss}
+        - {value: zoh, label: zoh}
+      default: auto
+      applies: restart
+      delivery: [{env: Z2M_ADAPTER}]
+    - key: homeassistant
+      label: Home Assistant discovery
+      description: Publish Home Assistant MQTT discovery messages (homeassistant/#).
+      type: bool
+      default: true
+      applies: restart
+      delivery: [{env: Z2M_HOMEASSISTANT}]
+    - key: external_js
+      label: External extensions and converters
+      description: >
+        Allow Zigbee2MQTT's external JavaScript (extensions and converters
+        saved from the frontend or over MQTT): arbitrary code that runs in
+        the Zigbee2MQTT container. Off by default.
+      type: bool
+      default: false
+      applies: restart
+      delivery: [{env: Z2M_EXTERNAL_JS}]
+    - key: mqtt_server
+      label: MQTT server
+      description: >
+        An existing broker instead of the bundled one, e.g.
+        mqtt://192.168.1.10:1883 or mqtts://broker.lan:8883 (empty = the
+        bundled Mosquitto).
+      section: MQTT
+      type: string
+      pattern: '^mqtts?://\S+$'
+      applies: restart
+      delivery: [{env: Z2M_MQTT_SERVER}]
+    - key: mqtt_user
+      label: MQTT user
+      description: User for the MQTT server above (ignored for the bundled broker).
+      section: MQTT
+      type: string
+      max_len: 256
+      applies: restart
+      delivery: [{env: Z2M_MQTT_USER}]
+    - key: mqtt_password
+      label: MQTT password
+      description: Password for the MQTT server above (ignored for the bundled broker).
+      section: MQTT
+      type: secret
+      applies: restart
+      delivery: [{env: Z2M_MQTT_PASSWORD}]
 
 ports:
   - key: Z2M_MQTT_PORT

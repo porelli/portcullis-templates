@@ -53,33 +53,36 @@ auth:
     in a container: shutdown/reboot, and SMB share mounts.
 
 settings:
-  - key: MOTIONEYE_MEDIA_PATH
-    label: Storage folder
-    description: Host folder for recordings and pictures (empty = the instance's own volume).
-    type: path
-    target:
-      service: motioneye
-      mount: /var/lib/motioneye
-  - key: MOTIONEYE_TIMEZONE
-    label: Time zone
-    description: IANA time zone for timestamps and schedules, e.g. Europe/Rome (default UTC).
-    type: text
-  - key: MOTIONEYE_VIDEO_1
-    label: Camera 1
-    description: Device path of a local (USB/V4L2) camera, e.g. /dev/video0 (empty = unused).
-    type: text
-  - key: MOTIONEYE_VIDEO_2
-    label: Camera 2
-    description: Another local camera (empty = unused).
-    type: text
-  - key: MOTIONEYE_VIDEO_3
-    label: Camera 3
-    description: Another local camera (empty = unused).
-    type: text
-  - key: MOTIONEYE_VIDEO_4
-    label: Camera 4
-    description: Another local camera (empty = unused).
-    type: text
+  options:
+    - key: media_path
+      label: Storage folder
+      description: Host folder for recordings and pictures (empty = the instance's own volume).
+      type: path
+      mode: rw
+      needs: write
+      writes_as: {uid: 0, gid: 0}
+      target:
+        service: motioneye
+        mount: /var/lib/motioneye
+      applies: restart
+    - key: time_zone
+      label: Time zone
+      description: IANA time zone for timestamps and schedules, e.g. Europe/Rome (default UTC).
+      type: string
+      format: iana_tz
+      applies: restart
+      delivery: [{env: MOTIONEYE_TIMEZONE}]
+    - key: cameras
+      label: Local cameras
+      description: >
+        Device paths of local (USB/V4L2) cameras, e.g. /dev/video0 (up to 4;
+        empty = none).
+      type: list
+      items: {type: string, pattern: '^/dev/.+$'}
+      max_items: 4
+      unique: true
+      applies: restart
+      delivery: [{env: "MOTIONEYE_VIDEO_{n}"}]
 
 env:
   - key: MOTIONEYE_ADMIN_PASSWORD

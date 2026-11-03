@@ -49,14 +49,17 @@ auth:
     migrations run when Vikunja starts; don't bump the PostgreSQL major.
 
 settings:
-  - key: VIKUNJA_LINK_SHARING
-    label: Link sharing
-    description: >
-      Let users share a project through a public link (anyone with the link,
-      optionally a password, gets the rights the link grants; no Portcullis
-      sign-in).
-    type: boolean
-    default: "false"
+  options:
+    - key: link_sharing
+      label: Link sharing
+      description: >
+        Let users share a project through a public link (anyone with the link,
+        optionally a password, gets the rights the link grants; no Portcullis
+        sign-in).
+      type: bool
+      default: false
+      applies: restart
+      delivery: [{env: VIKUNJA_LINK_SHARING}]
 
 env:
   - key: VIKUNJA_DB_PASSWORD

@@ -23,20 +23,24 @@ auth:
     LLDAP username, honoured only from Traefik (TRUSTED_PROXY_NETWORKS =
     PORTCULLIS_TRAEFIK_IP). X-Forwarded-Email (user-editable) only fills the
     profile email and is ignored from other peers too. Auto-creates users on
-    first login. The LLDAP user named in "Kanboard admin username"
-    (KANBOARD_ADMIN_USER, default admin = LLDAP's built-in admin) gets the
+    first login. The LLDAP user picked in "Kanboard administrator"
+    (default admin = LLDAP's built-in admin) gets the
     Kanboard admin role; other roles are set in the Kanboard UI. Access gated
     by group-gate. Accounts created when the header carried the email are
     named after it; rename them to the LLDAP username in Kanboard.
 
 settings:
-  - key: KANBOARD_ADMIN_USER
-    label: Kanboard admin username
-    description: >
-      LLDAP username (not email) that Kanboard makes an administrator when it
-      signs in. Default: admin (LLDAP's built-in admin account).
-    type: text
-    default: admin
+  options:
+    - key: admin_user
+      label: Kanboard administrator
+      description: >
+        The LLDAP user (username, not email) that Kanboard makes an
+        administrator when it signs in. Default: admin (LLDAP's built-in
+        admin account).
+      type: user
+      default: admin
+      applies: restart
+      delivery: [{env: KANBOARD_ADMIN_USER}]
 
 env: []
 keycloak_clients: []
