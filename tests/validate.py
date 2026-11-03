@@ -6,7 +6,7 @@ enforces the repository rules a JSON Schema cannot express (they need the
 compose file, the filesystem, or more than one template at once). No Docker
 needed.
 
-    pip install pyyaml jsonschema
+    pip install -r tests/requirements.txt
     python3 tests/validate.py               # all templates
     python3 tests/validate.py grafana immich  # selected templates
     python3 tests/validate.py --strict      # warnings fail too
@@ -35,6 +35,10 @@ try:
     from jsonschema import Draft202012Validator
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs jsonschema: pip install pyyaml jsonschema")
+try:
+    import re2  # google-re2: setting patterns are RE2, as in the Hub (Go regexp)
+except ImportError:  # pragma: no cover
+    sys.exit("validate.py needs google-re2: pip install -r tests/requirements.txt")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(ROOT, "schema", "manifest.schema.json")
@@ -344,27 +348,74 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     """SafeLoader that rejects duplicate mapping keys (YAML silently keeps the last)."""
 
 
+_BOOL_TAG = "tag:yaml.org,2002:bool"
+
+
+def _construct_key(loader: yaml.SafeLoader, key_node: yaml.Node, deep: bool) -> Any:
+    """A mapping key; a plain `true` / `false` key keeps its text, as the
+    Hub's yaml.v3 matches struct fields by it (`render: {true: "on"}` is the
+    field "true"; `TRUE:` matches no field and stays a boolean)."""
+    if isinstance(key_node, yaml.ScalarNode) and key_node.tag == _BOOL_TAG and key_node.value in ("true", "false"):
+        return key_node.value
+    return loader.construct_object(key_node, deep=deep)
+
+
 def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> Dict[Any, Any]:
     seen: Set[Any] = set()
     for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=deep)
+        key = _construct_key(loader, key_node, deep)
         if key in seen:
             raise yaml.constructor.ConstructorError(
                 None, None, f"duplicate key {key!r}", key_node.start_mark)
         seen.add(key)
-    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+    loader.flatten_mapping(node)   # merge keys (<<), as SafeLoader.construct_mapping
+    mapping: Dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = _construct_key(loader, key_node, deep)
+        try:
+            hash(key)
+        except TypeError:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark, "found unhashable key", key_node.start_mark) from None
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
 
 
 _UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
 # Read plain scalars as the Hub's yaml.v3 does (YAML 1.2 core schema): only
 # true / false are booleans (yes / no / on / off stay strings, so
 # `traefik.enable: yes` and `default: yes` are refused as the Hub refuses
-# them) and timestamps stay strings.
+# them), timestamps and base-60 numbers (`1:30`) stay strings.
+_DROPPED_TAGS = (_BOOL_TAG, "tag:yaml.org,2002:timestamp", "tag:yaml.org,2002:int", "tag:yaml.org,2002:float")
 _UniqueKeyLoader.yaml_implicit_resolvers = {
-    k: [(tag, rx) for tag, rx in v if tag not in ("tag:yaml.org,2002:bool", "tag:yaml.org,2002:timestamp")]
+    k: [(tag, rx) for tag, rx in v if tag not in _DROPPED_TAGS]
     for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()}
 _UniqueKeyLoader.add_implicit_resolver(
-    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"))
+    _BOOL_TAG, re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"))
+# SafeLoader's int and float resolvers without their base-60 forms.
+_UniqueKeyLoader.add_implicit_resolver("tag:yaml.org,2002:int", re.compile(r"""^(?:[-+]?0b[0-1_]+
+    |[-+]?0[0-7_]+
+    |[-+]?(?:0|[1-9][0-9_]*)
+    |[-+]?0x[0-9a-fA-F_]+)$""", re.X), list("-+0123456789"))
+_UniqueKeyLoader.add_implicit_resolver("tag:yaml.org,2002:float", re.compile(r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+    |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
+    |[-+]?\.(?:inf|Inf|INF)
+    |\.(?:nan|NaN|NAN))$""", re.X), list("-+0123456789."))
+
+
+def compose_bool(v: Any) -> Optional[bool]:
+    """A boolean compose field as compose-go reads it (loader toBoolean):
+    true / false, or (deprecated) y / yes / on and n / no / off, any case;
+    None for anything else (compose refuses it)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        low = v.lower()
+        if low in ("true", "y", "yes", "on"):
+            return True
+        if low in ("false", "n", "no", "off"):
+            return False
+    return None
 
 
 def scalar_text(v: Any) -> str:
@@ -378,16 +429,6 @@ def scalar_text(v: Any) -> str:
 def load_yaml(path: str) -> Any:
     with open(path, encoding="utf-8") as f:
         return yaml.load(f, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
-
-
-def _string_bool_keys(v: Any) -> Any:
-    """Mapping keys true / false as the Hub's yaml.v3 matches struct fields:
-    by their text (`render: {true: "on"}` is the field "true")."""
-    if isinstance(v, dict):
-        return {(scalar_text(k) if isinstance(k, bool) else k): _string_bool_keys(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_string_bool_keys(x) for x in v]
-    return v
 
 
 def as_list(v: Any) -> List[Any]:
@@ -576,7 +617,6 @@ def check_manifest_schema(t: Template, validator: Draft202012Validator, r: Repor
     if not isinstance(data, dict):
         r.error(t.m_where, "top level must be a mapping")
         return
-    data = _string_bool_keys(data)
     t.manifest = data
     errs = sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path))
     for e in errs:
@@ -821,8 +861,12 @@ def check_compose(t: Template, r: Report) -> None:
         if svc.get("network_mode"):
             if nets:
                 r.error(where, "network_mode and networks are mutually exclusive")
-            if not NETWORK_MODE_RE.match(str(svc.get("network_mode")).strip().lower()):
-                r.error(where, f"network_mode {svc.get('network_mode')!r}: only none, host or service:<own service>",
+            nm = svc.get("network_mode")
+            target = nm[len("service:"):] if isinstance(nm, str) and nm.startswith("service:") else None
+            # templates.checkNetworkMode: exactly as written (Docker matches the
+            # keywords exactly: " host" and "Host" are network names).
+            if not (nm in ("none", "host") or (target and target != sname and target in services)):
+                r.error(where, f"network_mode {nm!r}: only none, host or service:<another service of this template>, exactly, in lower case",
                         "any other value names a network (e.g. portcullis-proxy) the service would join unchecked")
         elif enabled:
             if PROXY_NET not in nets or "default" not in nets:
@@ -1596,7 +1640,10 @@ def check_mount(t: Template, vol: Any, where: str, r: Report) -> None:
         if vol.get("type") not in (None, "bind", "volume"):
             return
         src = str(vol.get("source") or "")
-        read_only = bool(vol.get("read_only"))
+        read_only = bool(compose_bool(vol.get("read_only")))
+        if "read_only" in vol and compose_bool(vol.get("read_only")) is None:
+            r.error(where, f"read_only {vol.get('read_only')!r} is not a boolean compose reads",
+                    "write read_only: true (or false)")
         if vol.get("type") == "volume" or (src and not _is_path(src)):
             return
     else:
@@ -2698,27 +2745,29 @@ def _check_text(s: str) -> None:
 
 
 _PATTERN_CACHE: Dict[str, Any] = {}
-# What RE2 (Go's regexp) has no syntax for: Python would accept these.
-_NOT_RE2 = re.compile(r"\(\?[=!>#]|\(\?<[=!]|\(\?P=|\\[1-9]|\\[Zz]|\(\?[aiLmsux-]*[aLux]")
+_RE2_OPTIONS = re2.Options()
+_RE2_OPTIONS.log_errors = False
+# \C (any byte) is the one C++ RE2 escape Go's regexp refuses.
+_BYTE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\C")
 
 
 def _compile_pattern(p: str) -> Any:
-    """compilePattern: anchored ^…$, ≤ 500, applied to the whole value."""
+    """compilePattern: anchored ^…$, ≤ 500, RE2 syntax (google-re2: the
+    library Go's regexp ports, linear time), applied to the whole value as
+    ^(?:…)$."""
     if p in _PATTERN_CACHE:
         return _PATTERN_CACHE[p]
     if blen(p) > 500:
         raise SettingError("pattern is longer than 500 characters")
     if not (p.startswith("^") and p.endswith("$")):
         raise SettingError(f"pattern {json.dumps(p)} must be anchored: ^…$")
-    if _NOT_RE2.search(p):
-        raise SettingError(f"pattern {json.dumps(p)}: lookarounds, backreferences, atomic groups, comments, \\Z and the "
-                           "a / L / u / x flags are not RE2 (Go regexp) syntax")
+    if _BYTE_ESCAPE_RE.search(p):
+        raise SettingError(f"pattern {json.dumps(p)}: error parsing regexp: invalid escape sequence: `\\C`")
     try:
-        # re.ASCII: \d \w \s \b are ASCII in Go too. \Z: Go's $ is the end of
-        # the text; Python's would also match before a final newline.
-        rx = re.compile(r"(?:" + p + r")\Z", re.ASCII)
-    except re.error as e:
-        raise SettingError(f"pattern {json.dumps(p)}: {e}") from None
+        rx = re2.compile("^(?:" + p + ")$", _RE2_OPTIONS)
+    except re2.error as e:
+        msg = e.args[0].decode() if e.args and isinstance(e.args[0], bytes) else str(e)
+        raise SettingError(f"pattern {json.dumps(p)}: error parsing regexp: {msg}") from None
     _PATTERN_CACHE[p] = rx
     return rx
 
@@ -3056,7 +3105,7 @@ def setting_value(o: Dict[str, Any], raw: Any) -> Any:
             if why:
                 raise SettingError(f"{json.dumps(raw)} is not a valid {fmt}: {why}")
         if _str(o, "pattern"):
-            if not _compile_pattern(_str(o, "pattern")).match(raw):
+            if not _compile_pattern(_str(o, "pattern")).search(raw):
                 raise SettingError(f"{json.dumps(raw)} doesn't match the pattern {_str(o, 'pattern')}")
         return raw
     if t == "int":

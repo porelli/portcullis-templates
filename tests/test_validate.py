@@ -1650,8 +1650,8 @@ class TestSettingsV3(Case):
             "{key: q, label: Q, type: string, pattern: '[a-z]+'}": "anchored",
             "{key: q, label: Q, type: string, pattern: '^[a-z+$'}": "pattern",
             "{key: q, label: Q, type: string, pattern: '^(?=a)a$'}": "pattern",
-            "{key: q, label: Q, type: string, pattern: '^(?x) a $'}": "not RE2",
-            "{key: q, label: Q, type: string, pattern: '^(a)\\1$'}": "not RE2",
+            "{key: q, label: Q, type: string, pattern: '^(?x) a $'}": "error parsing regexp",
+            "{key: q, label: Q, type: string, pattern: '^(a)\\1$'}": "error parsing regexp",
             "{key: q, label: Q, type: string, min_len: 5, max_len: 2}": "min_len",
             "{key: q, label: Q, type: string, max_len: 70000}": "max_len",
             "{key: q, label: Q, type: string, max_len: 2, default: abc}": "default",
@@ -1675,6 +1675,88 @@ class TestSettingsV3(Case):
             "{key: q, label: Q, type: bool, pattern: '^x$'}": "pattern is not a constraint of type bool",
         }
         self.cases([(line, S_HDR + s_opts(line), s_compose(s_env("Q")), "q", part) for line, part in bad.items()])
+
+    def test_patterns_are_re2(self) -> None:
+        """Patterns compile and match as Go's regexp (RE2) does; each row was
+        checked with regexp.Compile("^(?:" + pattern + ")$") under Go."""
+        rows = [   # (pattern, default, Go accepts the pattern, Go matches the default)
+            ("^a++$", "a", False, False),               # invalid nested repetition operator
+            ("^a{2}{3}$", "aaaaaa", False, False),
+            ("^.{1,4096}$", "a", False, False),         # invalid repeat count (> 1000)
+            ("^.{1,1000}$", "a", True, True),
+            ("^a{,3}$", "a{,3}", True, True),           # literal text in RE2, {0,3} in Python
+            ("^a{,3}$", "aaa", True, False),
+            ("^[[:alpha:]]$", "a]", True, False),       # a POSIX class in RE2
+            ("^[[:alpha:]]$", "a", True, True),
+            ("^\\pL+$", "\u00e9t\u00e9", True, True),
+            ("^(?U)a+$", "aa", True, True),
+            ("^\\C$", "a", False, False),               # Go refuses \C (C++ RE2 has it)
+            ("^\\\\C$", "\\C", True, True),             # an escaped backslash, then C
+            ("^(?<n>a)$", "a", True, True),
+            ("^(?P<n>a)$", "a", True, True),
+            ("^\\Qa.b\\E$", "a.b", True, True),
+            ("^\\Qa.b\\E$", "axb", True, False),
+            ("^[\\d]$", "\u0663", True, False),             # \d is ASCII
+            ("^(?i)k$", "K", True, True),
+            ("^(?=a)a$", "a", False, False),
+            ("^(a)\\1$", "aa", False, False),
+            ("^(?>a)$", "a", False, False),
+            ("^a$", "a\n", True, False),                # control characters are refused first anyway
+        ]
+        cases = []
+        for pat, default, compiles, matches in rows:
+            line = "{key: q, label: Q, type: string, pattern: %s, default: %s}" % (json.dumps(pat), json.dumps(default))
+            want = "" if compiles and matches else ("pattern" if not compiles else "default")
+            cases.append((f"{pat} / {default!r}", S_HDR + s_opts(line), s_compose(s_env("Q")), "q" if want else "", want))
+        self.cases(cases)
+        # Linear time: a pattern Python's re would backtrack on for ages.
+        import time
+        start = time.monotonic()
+        with self.assertRaises(v.SettingError):
+            v.setting_value({"key": "q", "type": "string", "pattern": "^(a+)+$"}, "a" * 5000 + "b")
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_yaml_scalars_as_the_hub_reads_them(self) -> None:
+        h = s_compose(s_env("Q"))
+        self.cases([
+            ("base-60 int is a string", S_HDR + s_opts("{key: q, label: Q, type: int, default: 1:30}"), h, "q", "default"),
+            ("base-60 duration is a string", S_HDR + s_opts("{key: q, label: Q, type: duration, default: 1:30}"), h, "q", "default"),
+            ("yes is a string", S_HDR + s_opts("{key: q, label: Q, type: bool, default: yes}"), h, "q", "want true or false"),
+            ("true key", S_HDR + s_opts("{key: q, label: Q, type: bool, delivery: [{env: Q, render: {true: on, false: off}}]}"), h, "", ""),
+            ("TRUE key matches no field", S_HDR + s_opts("{key: q, label: Q, type: bool, delivery: [{env: Q, render: {TRUE: on}}]}"), h, "", "delivery"),
+            ("True key matches no field", S_HDR + s_opts("{key: q, label: Q, type: bool, delivery: [{env: Q, render: {True: on}}]}"), h, "", "delivery"),
+        ])
+
+    def test_read_only_as_compose_reads_it(self) -> None:
+        bind = "      - {type: bind, source: ./templates/demo/app.conf, target: /app.conf, read_only: %s}\n"
+        ca = "      - {type: bind, source: ./certs/ca-bundle.crt, target: /ca.crt, read_only: %s}\n"
+        for mount, what in ((bind, "shared by every instance"), (ca, "must be read-only")):
+            for val, ok in (("true", True), ("yes", True), ("ON", True), ("y", True), ("\"True\"", True),
+                            ("false", False), ("no", False), ("off", False), ("n", False), ("\"No\"", False)):
+                with self.subTest(mount=what, val=val):
+                    c = s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val)
+                    self.run_raw(S_HDR, c)
+                    with open(os.path.join(self.tmp.name, "demo", "app.conf"), "w") as f:
+                        f.write("x\n")
+                    errors, _ = self.run_raw(S_HDR, c)
+                    if ok:
+                        self.assertClean(errors)
+                    else:
+                        self.assertError(errors, what)
+            for val in ("maybe", "1", "\" yes\""):
+                with self.subTest(mount=what, val=val):
+                    errors, _ = self.run_raw(S_HDR, s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val))
+                    self.assertError(errors, "is not a boolean compose reads")
+
+    def test_network_mode_exact(self) -> None:
+        for mode, ok in (("host", True), ("none", True), ("service:demo", True),
+                         (" host", False), ("Host", False), ("NONE", False), ("host ", False), ("service:side", False),
+                         ("service:nope", False), ("Service:demo", False), ("portcullis-proxy", False)):
+            with self.subTest(mode=mode):
+                c = s_compose(services=S_INIT + f"  side:\n    image: demo/side:1.0.0@sha256:{S_DIGEST}\n    network_mode: \"{mode}\"\n")
+                errors, _ = self.run_raw(S_HDR, c)
+                bad = [e for e in errors if "services.side: network_mode" in e]
+                self.assertEqual(not bad, ok, errors)
 
     def test_string_formats(self) -> None:
         """settings.TestStringFormats / TestFormatsStrict, as defaults."""
