@@ -5,15 +5,40 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ## Unreleased (app instances and extra domains)
 
+### Template contract v3 settings (breaking)
+
+Every template declares its settings in the contract v3 form (`settings:
+{sections, options}`, typed options with lowercase keys, scopes, explicit
+deliveries; contracts §13), validated by `tests/validate.py` as the Hub does.
+No installs exist, so nothing is migrated: settings saved under v2 are not
+carried over and have to be entered again.
+
+- Typed options instead of free text: user pickers (guacamole, kanboard
+  admin), lists (matrix federation peers, scrutiny disks, motionEye
+  cameras), a multi-choice (paperless OCR languages), secrets (headscale API
+  key, Plex claim token, Zigbee2MQTT MQTT password), time zones, IP
+  addresses, device paths, and the Craft release version / SHA-256 pair.
+- Plex runs as the "Plex user id / group id" settings (default 1000:1000);
+  Jellyfin and Plex mount the library folders read-only.
+- Pilots: Immich storage quota and role per group (token claims, at the
+  next sign-in), trash days and machine learning; Grafana role per group
+  (Viewer / Editor / Admin, header on every request: Admin is no longer a
+  manual promotion, and a role changed in Grafana's UI is overwritten);
+  Nextcloud default quota and trash retention applied live through occ;
+  Firefox Sync's allowlist from the account ids people enter themselves.
+- Firefox Sync: the "Allowed accounts" setting is gone. Members of
+  `users_firefox-sync` (created on enable) enter their Mozilla account id
+  on My apps; ids not tied to a person go in "Other allowed accounts".
+
 ### New templates
 
 - **Firefox Sync** (`firefox-sync`): Mozilla's syncstorage-rs 0.24.0 (the
   porelli/firefox-sync PostgreSQL build) for Mozilla accounts. The host is
   open (Firefox's Sync requests carry no cookie or client certificate), and
-  only the Mozilla account ids in the "Allowed accounts" setting can sync
-  (empty = nobody). The public server runs as a database role that can't
-  touch the allowlist. Planned: each access-group member enters their own
-  account id on their People page.
+  only Mozilla account ids on its allowlist can sync (empty = nobody): the
+  ids members of `users_firefox-sync` enter themselves on My apps, plus the
+  instance's "Other allowed accounts". The public server runs as a database
+  role that can't touch the allowlist.
 - **Vikunja** (`vikunja`): to-do lists and kanban boards, OIDC only (no
   password login, sign-up or invite links). Sign-in restricted to
   `users_vikunja` by the Hub's Keycloak access role. Link sharing is a

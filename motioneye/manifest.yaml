@@ -41,7 +41,7 @@ auth:
     empty password for the admin and user account names. Cameras: network
     cameras by URL (RTSP, HTTP/MJPEG; added in motionEye, reached outbound
     from the container) and up to four local V4L2 cameras listed in the
-    Camera 1-4 settings (e.g. /dev/video0; only those are passed in, not
+    Local cameras setting (e.g. /dev/video0; only those are passed in, not
     privileged, so several instances can each use their own; a path that
     doesn't exist on the host stops the container from starting). Live
     view goes through motionEye's own UI; motion's direct streaming ports

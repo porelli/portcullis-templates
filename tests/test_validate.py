@@ -601,13 +601,7 @@ class TestCross(Case):
         self.assertError(r.errors, "volume name 'portcullis_demo-data' is also used by demo")
 
 
-# The real templates still declare contract v2 settings: the conversion
-# (Task 17 of the app settings plan) removes these two skips.
-V2_TEMPLATES_PENDING = "real templates move to contract v3 settings in Task 17"
-
-
 class TestRealTemplates(unittest.TestCase):
-    @unittest.skip(V2_TEMPLATES_PENDING)
     def test_all_templates_in_repo_validate(self) -> None:
         self.assertEqual(v.main([]), 0)
 
@@ -919,7 +913,6 @@ class TestGatedHomeTemplates(unittest.TestCase):
         errors = self.errors()
         self.assertTrue(any(needle in e for e in errors), f"no error containing {needle!r} in:\n" + "\n".join(errors))
 
-    @unittest.skip(V2_TEMPLATES_PENDING)
     def test_real_templates_are_clean(self) -> None:
         self.assertEqual(self.errors(), [])
 

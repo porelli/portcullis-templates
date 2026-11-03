@@ -18,8 +18,8 @@ auth:
   notes: >
     No SSO or user system. Access gated by group-gate middleware. All
     authenticated users have full access.
-    Disks: list the host disks this instance monitors in the Disk 1-8
-    settings (e.g. /dev/sda, /dev/nvme0); only those are passed into the
+    Disks: list the host disks this instance monitors in the Disks
+    setting (up to 8, e.g. /dev/sda, /dev/nvme0); only those are passed into the
     container, read-only, so several instances can each monitor their own
     disks. The container is not privileged: it gets SYS_RAWIO for SATA/SAS
     SMART passthrough, plus SYS_ADMIN only if "NVMe capability" is set to
