@@ -11,11 +11,18 @@
 -- email. The allowlist below is the only way onto this server: an account
 -- whose uid is not on it gets no row, so no token, so no storage.
 --
--- Values come from the environment (\getenv), never from argv:
---   FIREFOX_SYNC_ALLOWED_ACCOUNTS  the Allowed accounts setting (uids)
+-- Who may sync comes from the Hub's data file allowlist.json (contract
+-- §13.7, mounted read-only at /portcullis): the union of
+--   entries.mozilla_uid[].value  the uids access-group members entered on
+--                                My apps (only current members' are in it)
+--   values.extra_accounts        the admin's "Other allowed accounts"
+-- A missing or unparsable file, or one of another shape, stops the start.
+-- The other values come from the environment (\getenv), never from argv:
 --   FIREFOX_SYNC_NODE_URL          https://<this instance's hostname>
-\getenv allowed FIREFOX_SYNC_ALLOWED_ACCOUNTS
+--   PORTCULLIS_INSTANCE            the instance id the file must name
+\set allowlist_doc `cat /portcullis/allowlist.json`
 \getenv node_url FIREFOX_SYNC_NODE_URL
+\getenv instance PORTCULLIS_INSTANCE
 \getenv app_password FIREFOX_SYNC_APP_DB_PASSWORD
 
 -- The app role's password is in a statement below: never put statement text
@@ -23,13 +30,51 @@
 SET LOCAL log_statement = 'none';
 SET LOCAL log_min_error_statement = 'panic';
 
--- An unset variable would stay as the literal text :'allowed' and fail the
--- statement below (fail closed); an empty setting is a valid empty list.
-CREATE TEMP TABLE portcullis_wanted ON COMMIT DROP AS
-SELECT DISTINCT lower(x) AS uid
-FROM regexp_split_to_table(:'allowed', '[,;[:space:]]+') AS x
-WHERE x <> '';
+-- An unset variable would stay as the literal text :'allowlist_doc' (a
+-- failed cat, no file) and an empty one is no JSON either: both fail the
+-- cast (fail closed).
+CREATE TEMP TABLE portcullis_doc ON COMMIT DROP AS SELECT :'allowlist_doc'::jsonb AS doc;
 
+-- An absent list, or JSON null (nobody entered a uid, no other accounts), is
+-- the empty list; any other non-array is refused below before this is used.
+CREATE FUNCTION pg_temp.portcullis_list(j jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]'::jsonb END $$;
+
+DO $$
+DECLARE
+    d jsonb := (SELECT doc FROM portcullis_doc);
+BEGIN
+    IF jsonb_typeof(d) <> 'object' OR d->'version' IS DISTINCT FROM '1'::jsonb THEN
+        RAISE EXCEPTION 'portcullis: allowlist.json is not a version 1 data file';
+    END IF;
+    IF jsonb_typeof(d->'entries') NOT IN ('object', 'null')
+       OR jsonb_typeof(d->'entries'->'mozilla_uid') NOT IN ('array', 'null')
+       OR jsonb_typeof(d->'values') NOT IN ('object', 'null')
+       OR jsonb_typeof(d->'values'->'extra_accounts') NOT IN ('array', 'null') THEN
+        RAISE EXCEPTION 'portcullis: allowlist.json: entries.mozilla_uid and values.extra_accounts must be lists';
+    END IF;
+    IF EXISTS (SELECT 1 FROM jsonb_array_elements(pg_temp.portcullis_list(d->'entries'->'mozilla_uid')) e
+               WHERE jsonb_typeof(e) <> 'object' OR jsonb_typeof(e->'value') <> 'string'
+                  OR jsonb_typeof(e->'user') <> 'string')
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(pg_temp.portcullis_list(d->'values'->'extra_accounts')) e
+                  WHERE jsonb_typeof(e) <> 'string') THEN
+        RAISE EXCEPTION 'portcullis: allowlist.json: an entry is not {user, value} or an account is not a string';
+    END IF;
+END $$;
+
+-- uid -> who listed it (an entry's LLDAP username wins over the admin list).
+CREATE TEMP TABLE portcullis_wanted ON COMMIT DROP AS
+SELECT DISTINCT ON (uid) uid, added_by
+FROM (
+    SELECT e->>'value' AS uid, e->>'user' AS added_by, 0 AS pref
+    FROM portcullis_doc, jsonb_array_elements(pg_temp.portcullis_list(doc->'entries'->'mozilla_uid')) e
+    UNION ALL
+    SELECT a #>> '{}', 'Other allowed accounts setting', 1
+    FROM portcullis_doc, jsonb_array_elements(pg_temp.portcullis_list(doc->'values'->'extra_accounts')) a
+) x
+ORDER BY uid, pref, added_by;
+
+CREATE TEMP TABLE portcullis_instance ON COMMIT DROP AS SELECT :'instance'::text AS id;
 CREATE TEMP TABLE portcullis_node ON COMMIT DROP AS SELECT :'node_url'::text AS url;
 CREATE TEMP TABLE portcullis_pw ON COMMIT DROP AS SELECT length(:'app_password') AS len;
 
@@ -39,7 +84,11 @@ DECLARE
 BEGIN
     SELECT string_agg(left(uid, 40), ', ') INTO bad FROM portcullis_wanted WHERE uid !~ '^[0-9a-f]{32}$';
     IF bad IS NOT NULL THEN
-        RAISE EXCEPTION 'portcullis: Allowed accounts: % is not a Mozilla account uid (32 hexadecimal characters)', bad;
+        RAISE EXCEPTION 'portcullis: allowlist.json: % is not a Mozilla account uid (32 lowercase hexadecimal characters)', bad;
+    END IF;
+    IF (SELECT doc->>'instance' FROM portcullis_doc) IS DISTINCT FROM (SELECT id FROM portcullis_instance)
+       OR (SELECT id FROM portcullis_instance) = '' THEN
+        RAISE EXCEPTION 'portcullis: allowlist.json is not the data file of this instance';
     END IF;
     IF (SELECT len FROM portcullis_pw) < 16 THEN
         RAISE EXCEPTION 'portcullis: FIREFOX_SYNC_APP_DB_PASSWORD is missing or too short';
@@ -56,11 +105,11 @@ BEGIN
     END IF;
 END $$;
 
--- The allowlist, replaced on every start: the setting is authoritative.
+-- The allowlist, replaced on every start: the data file is authoritative.
 -- Table as porelli/firefox-sync's invite-only Sync has it (db/postgres/init/
 -- allowlist.sql: sync_allowed_accounts uid, note, added_at, added_by), so
--- its admin UI and a later per-person list (added_by = the LLDAP user who
--- entered the id, see auth.notes) read and write the same rows.
+-- its admin UI reads the same rows; added_by = the LLDAP user who entered
+-- the uid, or the admin list.
 CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
     uid VARCHAR(32) PRIMARY KEY CHECK (uid ~ '^[0-9a-f]{32}$'),
     note VARCHAR(255) NOT NULL DEFAULT '',
@@ -69,7 +118,7 @@ CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
 );
 DELETE FROM sync_allowed_accounts;
 INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by)
-SELECT uid, '', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT, 'Allowed accounts setting'
+SELECT uid, '', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT, left(added_by, 255)
 FROM portcullis_wanted;
 
 -- Every row the tokenserver writes must belong to a listed account. Raising
@@ -90,7 +139,7 @@ DECLARE
     account pg_catalog.text := pg_catalog.lower(pg_catalog.split_part(NEW.email::pg_catalog.text, '@', 1));
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.sync_allowed_accounts a WHERE a.uid::pg_catalog.text = account) THEN
-        RAISE EXCEPTION 'portcullis: Firefox account % is not in the Allowed accounts setting: refused', pg_catalog.left(account, 64)
+        RAISE EXCEPTION 'portcullis: Firefox account % is not on the allowlist (no access-group member entered it, not in Other allowed accounts): refused', pg_catalog.left(account, 64)
             USING ERRCODE = 'insufficient_privilege';
     END IF;
     RETURN NEW;

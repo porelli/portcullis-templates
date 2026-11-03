@@ -140,29 +140,34 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # One-shot, every start: the allowlist (Allowed accounts setting) and its
+  # One-shot, every start: the allowlist (the Hub's data file allowlist.json:
+  # uids access-group members entered + Other allowed accounts) and its
   # trigger, the node of this hostname (guard.sql), in one transaction. Fails
-  # closed: on any error the Sync server does not start. Values reach psql
-  # through the environment (\getenv), never argv.
+  # closed: on any error (a missing or unparsable allowlist.json included)
+  # the Sync server does not start. The Hub bind-mounts the data file's
+  # directory read-only at /portcullis (manifest files[]); the file is 0640
+  # group 10001, hence group_add. Other values reach psql through the
+  # environment (\getenv), never argv.
   firefox-sync-init:
     image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     user: "70:70"
+    group_add: ["10001"]
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 128m
     pids_limit: 32
-    entrypoint: ["psql", "-X", "-q", "-t", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-f", "/portcullis/guard.sql"]
+    entrypoint: ["psql", "-X", "-q", "-t", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-f", "/etc/portcullis/guard.sql"]
     environment:
       PGHOST: firefox-sync-db
       PGUSER: firefoxsync
       PGDATABASE: firefoxsync
       PGPASSWORD: ${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}
       FIREFOX_SYNC_APP_DB_PASSWORD: ${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}
-      FIREFOX_SYNC_ALLOWED_ACCOUNTS: ${FIREFOX_SYNC_ALLOWED_ACCOUNTS:-}
       FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-firefox-sync}
     volumes:
-      - ./templates/firefox-sync/guard.sql:/portcullis/guard.sql:ro
+      - ./templates/firefox-sync/guard.sql:/etc/portcullis/guard.sql:ro
     depends_on:
       firefox-sync-migrate:
         condition: service_completed_successfully

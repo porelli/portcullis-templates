@@ -788,3 +788,45 @@ assert_gated_path() {
     fail "gated $path → expected a redirect to auth.$DOMAIN, got $code ${loc:-<none>}"
   fi
 }
+
+# ── Data files (settings file delivery, contract §13.7) ────
+# write_appfiles_override <app> <name> <json> <out>: emulate the Hub's
+# delivery of the manifest's files[] entry <name>: <json> is written as
+# <name>.json into a temporary directory (APPFILES_DIR/<app>/<name>, mode
+# 0640 group 10001 like the Hub's, 0644 when the group can't be set), and
+# <out> becomes a compose override that bind-mounts that directory (never the
+# single file: the Hub replaces it by rename) read-only at the entry's mount
+# in its service. Use <out> as COMPOSE_OVERRIDE. Change the file later with
+# write_appfile <app> <name> <json> (or delete it) and restart the service.
+write_appfiles_override() {
+  local app="$1" name="$2" json="$3" out="$4" compose manifest svc mount
+  compose=$(_find_compose "$app") || { fail "compose.yml not found for $app"; return 1; }
+  manifest="$(dirname "$compose")/manifest.yaml"
+  svc=$(yq -r ".files[] | select(.name == \"$name\") | .service" "$manifest")
+  mount=$(yq -r ".files[] | select(.name == \"$name\") | .mount" "$manifest")
+  if [ -z "$svc" ] || [ "$svc" = null ] || [ -z "$mount" ] || [ "$mount" = null ]; then
+    fail "$app: no files[] entry $name in the manifest"; return 1
+  fi
+  APPFILES_DIR="${APPFILES_DIR:-$(mktemp -d)}"
+  export APPFILES_DIR
+  mkdir -p "$APPFILES_DIR/$app/$name"
+  chmod 0755 "$APPFILES_DIR" "$APPFILES_DIR/$app" "$APPFILES_DIR/$app/$name"
+  write_appfile "$app" "$name" "$json" || return 1
+  printf 'services:\n  %s:\n    volumes:\n      - type: bind\n        source: %s\n        target: %s\n        read_only: true\n' \
+    "$svc" "$APPFILES_DIR/$app/$name" "$mount" > "$out"
+}
+
+# write_appfile <app> <name> <json>: (re)write the data file atomically.
+write_appfile() {
+  local dir="$APPFILES_DIR/$1/$2" tmp
+  [ -d "$dir" ] || { fail "write_appfiles_override $1 $2 first"; return 1; }
+  tmp="$dir/.$2.json.tmp"
+  printf '%s' "$3" > "$tmp"
+  if chgrp 10001 "$tmp" 2>/dev/null || sudo -n chgrp 10001 "$tmp" 2>/dev/null; then
+    chmod 0640 "$tmp" 2>/dev/null || sudo -n chmod 0640 "$tmp"
+  else
+    info "data file group 10001 not settable here: $2.json is 0644"
+    chmod 0644 "$tmp"
+  fi
+  mv -f "$tmp" "$dir/$2.json" 2>/dev/null || sudo -n mv -f "$tmp" "$dir/$2.json"
+}

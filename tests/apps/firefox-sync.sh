@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test: Firefox Sync (public host for Firefox's anonymous requests; only the
-# Mozilla accounts of the Allowed accounts setting get a tokenserver row)
+# Mozilla accounts of the Hub's allowlist.json data file get a tokenserver
+# row: the uids access-group members entered, plus Other allowed accounts)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
@@ -52,18 +53,56 @@ if [ "$(yq -r '.services["firefox-sync"].environment.SYNC_TOKENSERVER__INIT_NODE
 else
   fail "public server sets SYNC_TOKENSERVER__INIT_NODE_URL (needs INSERT on nodes)"
 fi
-assert_compose_setting "$COMPOSE" FIREFOX_SYNC_ALLOWED_ACCOUNTS '\$\{FIREFOX_SYNC_ALLOWED_ACCOUNTS:-\}'
 if grep -q 'BEFORE INSERT OR UPDATE OF email ON users' "$GUARD"; then
   pass "guard.sql: allowlist trigger on users"
 else
   fail "guard.sql: allowlist trigger missing"
 fi
+# Settings: who syncs is a person-entered uid (access-group members) plus an
+# admin list, delivered as the data file the init reads at every start.
+if [ "$(yq -r '.auth.access_group' "$MANIFEST")" = users_firefox-sync ] \
+    && [ "$(yq -r '.auth.group_access' "$MANIFEST")" = false ]; then
+  pass "manifest: access_group users_firefox-sync (who may enter a uid), group_access false"
+else
+  fail "manifest: access_group / group_access"
+fi
+if [ "$(yq -r '.files[] | select(.name == "allowlist") | [.service, .mount, .on_membership_change] | join("|")' "$MANIFEST")" = 'firefox-sync-init|/portcullis|restart' ]; then
+  pass "files: allowlist -> firefox-sync-init at /portcullis, restart on membership change"
+else
+  fail "files: allowlist entry missing or changed"
+fi
+UID_OPT=$(yq -r '.settings.options[] | select(.key == "mozilla_uid") | [.type, .scope, .pattern, .unique, .admin_override, .applies, .delivery[0].file.name] | join("|")' "$MANIFEST")
+if [ "$UID_OPT" = 'string|person_entered|^[0-9a-f]{32}$|true|true|restart|allowlist' ]; then
+  pass "mozilla_uid: person_entered, unique, pattern, file allowlist"
+else
+  fail "mozilla_uid option: $UID_OPT"
+fi
+if grep -q 'FIREFOX_SYNC_ALLOWED_ACCOUNTS' "$COMPOSE" "$GUARD"; then
+  fail "the old Allowed accounts env is still used"
+else
+  pass "no FIREFOX_SYNC_ALLOWED_ACCOUNTS env (the data file is the only source)"
+fi
+if [ "$(yq -r '.services["firefox-sync-init"].group_add[0]' "$COMPOSE")" = 10001 ] \
+    && grep -q '^\\set allowlist_doc `cat /portcullis/allowlist.json`$' "$GUARD"; then
+  pass "firefox-sync-init reads /portcullis/allowlist.json (group 10001)"
+else
+  fail "firefox-sync-init must read /portcullis/allowlist.json with group_add 10001"
+fi
 
-# Shell env wins over --env-file: two listed accounts.
+# The Hub's data file (contract §13.7): alice and bob entered a uid, one
+# other account is listed by the admin.
 ALLOWED_A=0123456789abcdef0123456789abcdef
 ALLOWED_B=fedcba9876543210fedcba9876543210
+ALLOWED_C=5d41402abc4b2a76b9719d911017c592
 OUTSIDER=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-export FIREFOX_SYNC_ALLOWED_ACCOUNTS="$ALLOWED_A, ${ALLOWED_B^^}"
+allowlist() {  # $1 = entries JSON array, $2 = extra_accounts JSON array, [$3 = instance]
+  printf '{"version":1,"instance":"%s","values":{"extra_accounts":%s},"people":{},"groups":{},"entries":{"mozilla_uid":%s}}' \
+    "${3:-firefox-sync}" "$2" "$1"
+}
+DOC=$(allowlist "[{\"user\":\"alice\",\"value\":\"$ALLOWED_A\"},{\"user\":\"bob\",\"value\":\"$ALLOWED_B\"}]" "[\"$ALLOWED_C\"]")
+COMPOSE_OVERRIDE=$(mktemp)
+export COMPOSE_OVERRIDE
+write_appfiles_override "$APP_ID" allowlist "$DOC" "$COMPOSE_OVERRIDE"
 
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_FIREFOX_SYNC"
@@ -84,12 +123,13 @@ wait_for_url "http://${IP}:8000/__heartbeat__" 180 "$APP_ID"
 db() {
   docker exec portcullis-firefox-sync-db-1 psql -X -U firefoxsync -d firefoxsync -tAc "$1" 2>&1
 }
-# Runs guard.sql as firefox-sync-init does, with another Allowed accounts value.
+# The next start of the init (same container, mounts and env as the Hub's
+# restart gives it) with another allowlist.json; $1 = the file's content, or
+# "-" for no file at all. Prints the init's output, returns its exit code.
 guard() {
-  docker exec -i -e FIREFOX_SYNC_ALLOWED_ACCOUNTS="$1" -e "FIREFOX_SYNC_NODE_URL=https://$HOST" \
-    -e FIREFOX_SYNC_APP_DB_PASSWORD \
-    portcullis-firefox-sync-db-1 psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction \
-    -U firefoxsync -d firefoxsync -f - < "$GUARD" 2>&1
+  if [ "$1" = - ]; then rm -f "$APPFILES_DIR/$APP_ID/allowlist/allowlist.json"
+  else write_appfile "$APP_ID" allowlist "$1"; fi
+  docker start -a portcullis-firefox-sync-init-1 2>&1
 }
 # As the public server connects (socket, role firefoxsync_app).
 app_sql() {
@@ -102,12 +142,9 @@ insert_user() {
       WHERE s.service = 'sync-1.5' AND n.node = 'https://$HOST' RETURNING uid"
 }
 
-LIST=$(db "SELECT string_agg(uid, ',' ORDER BY uid) FROM sync_allowed_accounts")
-if [ "$LIST" = "$ALLOWED_A,$ALLOWED_B" ]; then
-  pass "allowlist = the setting (lowercased)"
-  BY=$(db "SELECT DISTINCT added_by FROM sync_allowed_accounts")
-  [ "$BY" = "Allowed accounts setting" ] && pass "rows in firefox-sync's sync_allowed_accounts layout (added_by)" \
-    || fail "added_by: $BY"
+LIST=$(db "SELECT string_agg(uid || '=' || added_by, ',' ORDER BY uid) FROM sync_allowed_accounts")
+if [ "$LIST" = "$ALLOWED_A=alice,$ALLOWED_C=Other allowed accounts setting,$ALLOWED_B=bob" ]; then
+  pass "allowlist = entries.mozilla_uid + values.extra_accounts (added_by = who entered it)"
 else
   fail "allowlist: $LIST"
 fi
@@ -155,7 +192,7 @@ else
 fi
 
 OUT=$(insert_user "$OUTSIDER" || true)
-if echo "$OUT" | grep -q "portcullis: Firefox account $OUTSIDER is not in the Allowed accounts setting"; then
+if echo "$OUT" | grep -q "portcullis: Firefox account $OUTSIDER is not on the allowlist"; then
   pass "an account not on the list gets no tokenserver row"
 else
   fail "outsider row not refused: $OUT"
@@ -167,28 +204,46 @@ else
   fail "listed account refused: $OUT"
 fi
 
-# Fail closed: an invalid value aborts the transaction, the list stays.
-OUT=$(guard "$ALLOWED_A,not-a-uid" || true)
-if echo "$OUT" | grep -q 'portcullis: Allowed accounts: not-a-uid is not a Mozilla account uid'; then
-  pass "invalid Allowed accounts value refused"
-else
-  fail "invalid value not refused: $OUT"
-fi
-[ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 2 ] && pass "refused run changed nothing" \
-  || fail "refused run changed the allowlist"
-
-# Removal: a start without the account deletes its rows; empty = nobody.
-guard "$ALLOWED_B" > /dev/null
-[ "$(db "SELECT count(*) FROM users")" = 0 ] && pass "removed account's tokenserver rows deleted" \
-  || fail "removed account still has rows"
-guard "" > /dev/null
 OUT=$(insert_user "$ALLOWED_B" || true)
-if echo "$OUT" | grep -q 'not in the Allowed accounts setting'; then
-  pass "empty Allowed accounts: nobody"
+if echo "$OUT" | grep -Eq '^[0-9]+'; then pass "bob's entered account gets its row"; else fail "bob's account refused: $OUT"; fi
+
+# Fail closed: a bad, unparsable, foreign or missing file stops the start
+# (non-zero exit: the Sync server's depends_on keeps it down) and changes
+# nothing.
+for bad in "$(allowlist "[{\"user\":\"alice\",\"value\":\"not-a-uid\"}]" '[]')" \
+           "$(allowlist '[]' "[\"${ALLOWED_C^^}\"]")" \
+           "$(allowlist '{}' '[]')" \
+           "$(allowlist '[]' '[]' other-instance)" \
+           '{"version":2}' 'not json' '' -; do
+  if OUT=$(guard "$bad"); then
+    fail "init accepted allowlist.json '${bad:0:60}': $OUT"
+  else
+    pass "init refused allowlist.json '${bad:0:40}' (exit non-zero)"
+  fi
+done
+[ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 3 ] && [ "$(db "SELECT count(*) FROM users")" = 2 ] \
+  && pass "refused runs changed nothing" || fail "a refused run changed the allowlist or the users"
+
+# Removal: alice left the access group (the Hub delivers her entry no more):
+# at the next start her account loses its rows; empty = nobody.
+if guard "$(allowlist "[{\"user\":\"bob\",\"value\":\"$ALLOWED_B\"}]" "[\"$ALLOWED_C\"]")" > /dev/null; then
+  pass "init accepted the new allowlist"
+else
+  fail "init refused a valid allowlist"
+fi
+[ "$(db "SELECT count(*) FROM users WHERE email LIKE '$ALLOWED_A@%'")" = 0 ] \
+  && [ "$(db "SELECT count(*) FROM users WHERE email LIKE '$ALLOWED_B@%'")" = 1 ] \
+  && pass "uid removed from the file: its tokenserver rows deleted, the others kept" \
+  || fail "removed uid still has rows, or another lost them"
+guard "$(allowlist null null)" > /dev/null || fail "init refused an empty allowlist (null lists)"
+[ "$(db "SELECT count(*) FROM users")" = 0 ] && pass "empty allowlist: every row deleted" || fail "rows left with an empty allowlist"
+OUT=$(insert_user "$ALLOWED_B" || true)
+if echo "$OUT" | grep -q 'not on the allowlist'; then
+  pass "empty allowlist: nobody"
 else
   fail "empty list let an account in: $OUT"
 fi
-guard "$FIREFOX_SYNC_ALLOWED_ACCOUNTS" > /dev/null
+guard "$DOC" > /dev/null || fail "init refused the original allowlist"
 
 # The tokenserver wants a Mozilla OAuth token; storage wants Hawk.
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://${IP}:8000/1.0/sync/1.5" || echo 000)
@@ -229,3 +284,4 @@ else
 fi
 
 compose_down "$APP_ID"
+rm -rf "$COMPOSE_OVERRIDE" "$APPFILES_DIR"

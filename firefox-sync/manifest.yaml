@@ -14,8 +14,11 @@ auth:
   # native_login, since the gateway in front of it would stop Firefox.
   method: custom
   sso: false
+  # Firefox's requests are anonymous: nothing in front enforces the group.
   group_access: false
   group_admin: false
+  # Who may enter a Mozilla account id on My apps (person-entered values).
+  access_group: users_firefox-sync
   notes: >
     Mozilla's syncstorage-rs 0.24.0 (Sync storage + tokenserver; upstream
     https://github.com/mozilla-services/syncstorage-rs), as built by
@@ -48,27 +51,29 @@ auth:
     keeps CREATE on the schema only for syncstorage-rs' no-op migration
     check). It runs no migrations; firefox-sync-migrate and
     firefox-sync-init use the owner and are not reachable.
-    Who can sync: only the Mozilla accounts listed in the Allowed accounts
-    setting (their uids). A database trigger (guard.sql, installed by
-    firefox-sync-init before the server starts, every start) refuses every
-    other account: no tokenserver row, no token, no storage. Empty (the
-    default) = nobody; an invalid entry stops the instance (fail closed).
-    Taking a uid off the list deletes that account's tokenserver rows at
-    the next start: its tokens expire within the hour and it can't get new
-    ones (its encrypted data stays, unreachable).
+    Who can sync: the Mozilla accounts on the allowlist, which is the uids
+    the members of the access group (users_firefox-sync) entered themselves
+    on My apps (Mozilla account ID; one uid per person, and no two people
+    may register the same uid; admins may enter or clear one for someone),
+    plus the instance's Other allowed accounts (uids not tied to a
+    Portcullis person). The Hub writes them to the data file
+    allowlist.json; at every start firefox-sync-init (guard.sql) installs
+    exactly that list before the server starts, and a database trigger
+    refuses every other account: no tokenserver row, no token, no storage.
+    Nobody listed (the default) = nobody syncs; a missing, unparsable or
+    invalid allowlist.json stops the instance (fail closed). Someone who
+    leaves the access group drops off the list at the next delivery (the
+    instance restarts within about a minute): that account's tokenserver
+    rows are deleted, its tokens expire within the hour and it can't get
+    new ones (its encrypted data stays, unreachable). Their entered uid is
+    kept and comes back if they rejoin.
     Identity: Mozilla accounts, not Portcullis. Firefox has no way to use
     Keycloak or LLDAP for Sync (the self-hosted Mozilla accounts stack has
-    no external OIDC login and is not published as an image), so
-    Portcullis users and groups don't apply here; the admin decides who
-    syncs, by uid. Sync data is end-to-end encrypted with keys derived from
-    the Mozilla account: this server, and whoever controls it, can't read
-    it.
-    Planned: each person enters their own Mozilla account id on their
-    People page (a person-entered value, a Hub feature being designed), and
-    the allowlist becomes the ids entered by the current members of the
-    access group (rows added_by = their LLDAP username, removed when they
-    leave the group). Until then the admin maintains the Allowed accounts
-    setting.
+    no external OIDC login and is not published as an image), so the
+    access group decides only who may register a uid, not who signs in to
+    Firefox: whoever holds a listed Mozilla account can sync. Sync data is
+    end-to-end encrypted with keys derived from the Mozilla account: this
+    server, and whoever controls it, can't read it.
     Self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono option)
     are not offered: they need an SMTP server, MySQL and Redis, three more
     public hosts, a 5 GB image and 3-4 GB of RAM, and they are a second,
@@ -83,8 +88,7 @@ auth:
     (devtools.chrome.enabled = true) -
     (await ChromeUtils.importESModule("resource://gre/modules/FxAccounts.sys.mjs").getFxAccountsSingleton().getSignedInUser()).uid
     - or let the person try: the refused uid is in the firefox-sync-db log
-    ("portcullis: Firefox account <uid> is not in the Allowed accounts
-    setting").
+    ("portcullis: Firefox account <uid> is not on the allowlist").
     Firefox setup: about:config identity.sync.tokenserver.uri =
     https://<this host>/1.0/sync/1.5 (Android: Sync Debug > Custom Sync
     server; iOS: Advanced Sync Settings), before signing in to the account.
@@ -99,14 +103,42 @@ auth:
     firefox-sync-migrate on the same image; don't bump the PostgreSQL
     major.
 
+files:
+  - name: allowlist
+    service: firefox-sync-init
+    mount: /portcullis
+    on_membership_change: restart
+
 settings:
-  - key: FIREFOX_SYNC_ALLOWED_ACCOUNTS
-    label: Allowed accounts
-    description: >
-      Mozilla account uids (32 hexadecimal characters) that may sync with
-      this server, separated by commas or spaces. Empty = nobody. Applied at
-      every start; a removed uid loses access within the hour.
-    type: text
+  sections: [Accounts]
+  options:
+    - key: mozilla_uid
+      label: Mozilla account ID
+      description: >
+        The uid of the Mozilla account you sign in to Firefox with
+        (32 lowercase hexadecimal characters). Only accounts listed here
+        can sync with this server.
+      section: Accounts
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+      min_len: 32
+      max_len: 32
+      scope: person_entered
+      unique: true
+      admin_override: true
+      applies: restart
+      delivery: [{file: {name: allowlist}}]
+    - key: extra_accounts
+      label: Other allowed accounts
+      description: >
+        Mozilla account uids (32 lowercase hexadecimal characters) that may
+        sync without being entered by a member of the access group.
+      section: Accounts
+      type: list
+      items: {type: string, pattern: '^[0-9a-f]{32}$'}
+      unique: true
+      applies: restart
+      delivery: [{file: {name: allowlist}}]
 
 env:
   - key: FIREFOX_SYNC_DB_PASSWORD
