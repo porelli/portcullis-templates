@@ -25,8 +25,9 @@ Reference docs:
 
 1. **Check for an existing request.** Search the issues, or open a
    "New app request" issue first if you want feedback on the approach.
-2. **Pick an app id.** Lowercase, `^[a-z0-9][a-z0-9_-]{0,63}$`, e.g.
-   `uptime-kuma`. It is the directory name, the compose project scope and part
+2. **Pick an app id.** Lowercase letters and digits joined by single `-`
+   (`^[a-z0-9]+(-[a-z0-9]+)*$`, at most 64 characters, no `portcullis`
+   segment), e.g. `uptime-kuma`. It is the directory name, the compose project scope and part
    of URLs. Pick a subdomain no other template uses.
 3. **Choose the auth method** (see [Choosing an auth method](#choosing-an-auth-method)).
 4. **Write `manifest.yaml`.** Copy a template with the same auth method (for
@@ -37,6 +38,7 @@ Reference docs:
    ```yaml
    # yaml-language-server: $schema=../schema/manifest.schema.json
    ```
+   Options an admin sets go under `settings:` (see [Settings](#settings)).
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose
@@ -323,6 +325,74 @@ stripped). Rules, all checked by `tests/validate.py`:
 - `enabled_by_default: true` only if nothing is opened until an admin acts
   (listed mode) or the exception can't weaken the host (see Immich: on, it
   drops the handshake mTLS requirement under an mTLS-only policy).
+
+## Settings
+
+Options an admin (or each person) sets in the Hub go under `settings:`
+(template contract v3,
+[integration contracts §13](https://porelli.github.io/portcullis-docs/guides/integration-contracts/#13-settings)).
+The Hub validates, stores and delivers the values; the template only
+declares them. `tests/validate.py` refuses everything the Hub refuses at
+discovery (`check_settings`, same messages), so a green Lint means the Hub
+lists the template.
+
+```yaml
+settings:
+  sections: [Library]
+  options:
+    - key: trash_days              # ^[a-z][a-z0-9_]{0,39}$, not an env name
+      label: Keep deleted items for
+      type: int                    # string int size duration bool enum multi_enum list table
+      unit: days                   #   path secret group groups user users
+      min: 0
+      max: 3650
+      default: 30
+      section: Library
+      applies: restart             # live reload next_request next_sign_in restart account_creation
+      delivery: [{env: IMMICH_TRASH_DAYS}]   # default for an instance option: env UPPER(key)
+```
+
+- **Types.** `text`, `boolean`, `select` and `paths` are contract v2 and
+  refused (use `string`, `bool`, `enum` with `options: [{value, label}]`,
+  one `path` per directory). `folder`, `person_secret` and `person_id` are
+  reserved for later projects, as are the option fields `folder`, `checks`,
+  `hash`, `length`, `revoke_on_leave`, `on_restore`, `pool`, `username` and
+  `mount`. A constraint the type doesn't take (`min` on an `enum`) is
+  refused, and so is any unknown key.
+- **Values are canonical.** Sizes are bytes and take binary units only
+  (`10GiB`, `512MiB`; `10GB` and `10G` are refused); durations are seconds
+  (`30d`, `90m`). `default`, `min` / `max` / `step` and `group_values` must
+  be valid values of the option. `pattern` is anchored (`^…$`), in Go's RE2
+  syntax (no lookarounds or backreferences), and matches the whole value.
+- **Scopes.** `instance` (the default), `person` (needs a `default` and a
+  per-person delivery: claim, header, file or hook; never env), `group`
+  (no default; env needs `render.format: json`) and `person_entered` (each
+  person enters their own value on My apps: `string` / `int` / `bool` /
+  `enum`, a bounded string, no default; templates without Portcullis
+  identity on their routes need `auth.access_group`).
+- **Env deliveries** name a variable compose interpolates as `${NAME…}`,
+  not one it hard-codes, not a `PORTCULLIS_*` name and not one `env:`,
+  `ports:` or a client's `secret_env` already writes. An instance `list` can
+  deliver `NAME_{n}` (`NAME_1` … `NAME_<max_items>`, at most 64).
+- **Claims** need `auth.method: native-oidc` and a `keycloak_clients[]`
+  `client_id`; the claim name may not be a standard, Keycloak, `attr_*` or
+  `portcullis_*` claim, and `json_type` must fit the render (`int` is 32-bit:
+  render sizes in a unit).
+- **Headers** are `X-Forwarded-Attr-<Name>` and need a router with
+  `portcullis-groups@docker`. Every router that reaches the delivering
+  backend (its network namespace, `network_mode: service:` followed) must run
+  Portcullis forward-auth, no Traefik-labelled service may run on
+  `network_mode: host`, and `method: public` / `custom` without
+  `native_login` / `allow_without_gateway` can't deliver headers.
+- **Files, hooks, reload.** `files[]` (`name` `^[a-z][a-z0-9_-]{0,31}$`, an
+  absolute clean `mount`, `on_membership_change`), `hooks[]` (an argv
+  `command`, `when` of `start` / `settings_change` / `membership_change`,
+  `timeout` ≤ 10m) and `reload` (`{service, signal: HUP|USR1|USR2}` or
+  `{hook}`) are declared once and referenced by name. A service reading a
+  secret option's `<name>.secrets.json` (0600) runs as root or
+  `user: "10001"`.
+- `env[].generate: none` is gone: a value the admin enters is a setting
+  (`type: secret` for credentials).
 
 ## Compose rules
 

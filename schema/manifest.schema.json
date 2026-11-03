@@ -39,10 +39,20 @@
     "auth": {"$ref": "#/$defs/auth"},
     "tests": {"$ref": "#/$defs/tests"},
     "settings": {
-      "description": "User-configurable settings shown in the Hub; each key becomes a per-app .env key.",
-      "type": "array",
-      "items": {"$ref": "#/$defs/setting"}
+      "description": "Template contract v3 settings (contracts §13): {sections, options}, typed options with a scope, constraints and deliveries.",
+      "$ref": "#/$defs/settingsSpec"
     },
+    "files": {
+      "description": "Data files the Hub writes for file deliveries (contracts §13.7).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/dataFile"}
+    },
+    "hooks": {
+      "description": "Commands the Hub runs in the app's containers with the desired settings on stdin (contracts §13.8).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/hook"}
+    },
+    "reload": {"$ref": "#/$defs/reload"},
     "ports": {
       "description": "Host port bindings. The Hub writes them into the per-app compose override; compose.yml must not publish these itself.",
       "type": "array",
@@ -313,39 +323,219 @@
         {"if": {"properties": {"exact": {"const": true}}, "required": ["exact"]}, "then": {"required": ["justification"]}}
       ]
     },
-    "setting": {
+    "settingsSpec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "label", "type"],
       "properties": {
-        "key": {"$ref": "#/$defs/envKey"},
-        "label": {"$ref": "#/$defs/singleLine", "minLength": 1},
-        "description": {"type": "string"},
-        "type": {"enum": ["text", "path", "paths", "boolean", "select"]},
+        "sections": {"description": "Panel sections, in order (^[A-Za-z0-9][A-Za-z0-9 ]{0,31}$).", "type": "array", "items": {"type": "string"}},
+        "options": {"type": "array", "items": {"$ref": "#/$defs/option"}}
+      }
+    },
+    "option": {
+      "description": "One setting (contracts §13.1). Types: string int size duration bool enum multi_enum list table path secret group groups user users (folder, person_secret and person_id are reserved). The structure is checked here; tests/validate.py check_settings applies the Hub's rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type"],
+      "properties": {
+        "key": {"description": "Identifier, ^[a-z][a-z0-9_]{0,39}$ (not an env name). An instance option without delivery is delivered as env UPPER(key).", "type": "string"},
+        "label": {"description": "Single line, at most 64 characters.", "type": "string"},
+        "description": {"description": "At most 500 characters.", "type": "string"},
+        "section": {"description": "One of settings.sections.", "type": "string"},
+        "type": {"type": "string"},
+        "scope": {"description": "instance (default) | person | group | person_entered (contracts §13.3).", "type": "string"},
+        "applies": {"description": "live | reload | next_request | next_sign_in | restart | account_creation (contracts §13.9).", "type": "string"},
         "required": {"type": "boolean"},
-        "default": {"$ref": "#/$defs/noControlChars"},
-        "options": {
-          "description": "Choices for type: select.",
-          "type": "array",
-          "items": {"$ref": "#/$defs/noControlChars"}
-        },
+        "default": {"description": "A value of the option's type. Required for scope person; refused for scopes group and person_entered and for secrets."},
+        "pattern": {"description": "string: anchored ^…$ (RE2 syntax), applied to the whole value.", "type": "string"},
+        "format": {"description": "string: hostname | ip | cidr | url | email | iana_tz | locale | cron | semver | hex.", "type": "string"},
+        "min_len": {"type": "integer"},
+        "max_len": {"type": "integer"},
+        "min_items": {"type": "integer"},
+        "max_items": {"type": "integer"},
+        "min": {"$ref": "#/$defs/settingBound"},
+        "max": {"$ref": "#/$defs/settingBound"},
+        "step": {"$ref": "#/$defs/settingBound"},
+        "unit": {"description": "int: the unit label shown next to the value (e.g. days).", "type": "string"},
+        "allow_unlimited": {"description": "size: the value \"unlimited\" is allowed; every delivery sets render.unlimited.", "type": "boolean"},
+        "options": {"$ref": "#/$defs/settingChoices"},
+        "items": {"$ref": "#/$defs/settingItems"},
+        "unique": {"type": "boolean"},
+        "columns": {"type": "array", "items": {"$ref": "#/$defs/settingColumn"}},
+        "key_column": {"type": "string"},
         "target": {
-          "description": "Bind-mount target for path/paths settings.",
+          "description": "path: the compose service and the container directory the host path is mounted at.",
           "type": "object",
           "additionalProperties": false,
           "required": ["service", "mount"],
+          "properties": {"service": {"$ref": "#/$defs/serviceName"}, "mount": {"type": "string"}}
+        },
+        "mode": {"description": "path: ro | rw.", "type": "string"},
+        "needs": {"description": "path: read | write.", "type": "string"},
+        "writes_as": {
+          "description": "path: the uid / gid the app writes as: numbers, or keys of instance int / string options.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"uid": {"type": ["integer", "string"]}, "gid": {"type": ["integer", "string"]}}
+        },
+        "generate": {
+          "description": "secret: the Hub can generate a value (length 8-128; charset hex | alphanumeric | ascii_printable).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"length": {"type": "integer"}, "charset": {"type": "string"}}
+        },
+        "resolve": {"description": "person: max | min | priority | union | intersection | any | all (contracts §13.4).", "type": "string"},
+        "resolve_choices": {"type": "array", "items": {"type": "string"}},
+        "group_values": {"description": "person: per-group values keyed by the placeholders {{ACCESS_GROUP}} / {{ADMIN_GROUP}} only.", "type": "object"},
+        "privileged": {"type": "boolean"},
+        "admin_override": {"description": "person_entered: admins may set a value.", "type": "boolean"},
+        "self_visible": {"type": "boolean"},
+        "requires": {"description": "Instance options that must be non-empty when this one is.", "type": "array", "items": {"type": "string"}},
+        "delivery": {
+          "description": "How the value reaches the app (contracts §13.6): each delivery is exactly one of env, claim, header, file or hook. The bare form (file | hook) is reserved for person_secret (project 3).",
+          "oneOf": [{"type": "array", "items": {"$ref": "#/$defs/settingDelivery"}}, {"enum": ["file", "hook"]}]
+        },
+        "folder": {"description": "Reserved (shared folders, project 2): refused by this Hub.", "type": "object"},
+        "checks": {"description": "Reserved (shared folders, project 2): refused by this Hub.", "type": "array", "items": {"type": "object"}},
+        "hash": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"},
+        "length": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "integer"},
+        "revoke_on_leave": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "boolean"},
+        "on_restore": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"},
+        "pool": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"},
+        "username": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "object"},
+        "mount": {
+          "description": "Reserved (file sharing, project 3): refused by this Hub.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"service": {"type": "string"}, "path": {"type": "string"}}
+        }
+      }
+    },
+    "settingBound": {"description": "A number, or a size / duration string (\"1GiB\", \"30d\").", "type": ["integer", "number", "string"]},
+    "settingChoices": {
+      "description": "enum / multi_enum choices; the list order is the rank (resolve: max / min).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "label"],
+        "properties": {"value": {"type": "string"}, "label": {"type": "string"}}
+      }
+    },
+    "settingItems": {
+      "description": "list: the item type (string | int | bool | enum) and its constraints.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"type": "string"},
+        "pattern": {"type": "string"},
+        "format": {"type": "string"},
+        "min_len": {"type": "integer"},
+        "max_len": {"type": "integer"},
+        "min": {"type": "integer"},
+        "max": {"type": "integer"},
+        "options": {"$ref": "#/$defs/settingChoices"}
+      }
+    },
+    "settingColumn": {
+      "description": "table: one typed column (string | int | bool | enum); name ^[a-z][a-z0-9_]{0,31}$.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {"type": "string"},
+        "label": {"type": "string"},
+        "type": {"type": "string"},
+        "pattern": {"type": "string"},
+        "format": {"type": "string"},
+        "min_len": {"type": "integer"},
+        "max_len": {"type": "integer"},
+        "min": {"type": "integer"},
+        "max": {"type": "integer"},
+        "required": {"type": "boolean"},
+        "options": {"$ref": "#/$defs/settingChoices"}
+      }
+    },
+    "settingDelivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": {"description": "The variable: NAME, or NAME_{n} for an instance list (NAME_1 … NAME_<max_items>).", "type": "string"},
+        "claim": {
+          "description": "native-oidc, scope person / person_entered: a token claim on one keycloak_clients[] client.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["client", "name"],
           "properties": {
-            "service": {"$ref": "#/$defs/serviceName"},
-            "mount": {"type": "string", "pattern": "^/[^\\u0000-\\u001f\\u007f:]*$"}
+            "client": {"type": "string"},
+            "name": {"type": "string"},
+            "json_type": {"description": "int | string | bool | json.", "type": "string"},
+            "render": {"$ref": "#/$defs/settingRender"}
           }
-        }
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"type": {"const": "select"}}, "required": ["type"]},
-          "then": {"required": ["options"], "properties": {"options": {"minItems": 1}}}
-        }
-      ]
+        },
+        "header": {
+          "description": "Scope person / person_entered: an X-Forwarded-Attr-<Name> header group-gate returns on gated routers.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {"name": {"type": "string"}, "render": {"$ref": "#/$defs/settingRender"}}
+        },
+        "file": {
+          "description": "A files[] data file; field (person / person_entered) names the entry, default the option key.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {"name": {"type": "string"}, "field": {"type": "string"}, "render": {"$ref": "#/$defs/settingRender"}}
+        },
+        "hook": {"description": "A hooks[] name: the value goes on its stdin.", "type": "string"},
+        "render": {"$ref": "#/$defs/settingRender"}
+      }
+    },
+    "settingRender": {
+      "description": "How a delivery renders the canonical value (contracts §13.5).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unit": {"description": "size: B KiB MiB GiB TiB (binary) or KB MB GB TB (decimal, strictly 10^n); duration: s m h d; int: its own unit.", "type": "string"},
+        "integer": {"description": "size / duration: refuse values that aren't whole in the unit.", "type": "boolean"},
+        "unlimited": {"description": "size with allow_unlimited: what unlimited renders as (e.g. \"-1\").", "type": ["string", "integer"]},
+        "true": {"type": ["string", "integer"]},
+        "false": {"type": ["string", "integer"]},
+        "join": {"description": "Lists and person_entered collections: the separator (default \",\").", "type": "string"},
+        "format": {"description": "json | yaml | csv.", "type": "string"}
+      }
+    },
+    "dataFile": {
+      "description": "A data file for file deliveries (contracts §13.7): <mount>/<name>.json, plus <name>.secrets.json (0600) for secret options; the Hub bind-mounts the directory read-only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "mount"],
+      "properties": {
+        "name": {"description": "^[a-z][a-z0-9_-]{0,31}$, unique.", "type": "string"},
+        "service": {"$ref": "#/$defs/serviceName"},
+        "mount": {"description": "Absolute, clean container directory (no ':').", "type": "string"},
+        "on_membership_change": {"description": "restart | reload | hook | none (default none).", "type": "string"}
+      }
+    },
+    "hook": {
+      "description": "A command the Hub runs with Docker exec in a running container, the desired state as JSON on stdin (contracts §13.8).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "service", "command", "when"],
+      "properties": {
+        "name": {"description": "^[a-z][a-z0-9_-]{0,31}$, unique.", "type": "string"},
+        "service": {"$ref": "#/$defs/serviceName"},
+        "user": {"type": "string"},
+        "command": {"description": "argv, run directly (no sh -c).", "type": "array", "items": {"type": "string"}},
+        "when": {"description": "start | settings_change | membership_change.", "type": "array", "items": {"type": "string"}},
+        "timeout": {"description": "A Go duration such as 60s; default 30s, at most 10m.", "type": "string"}
+      }
+    },
+    "reload": {
+      "description": "The template's reload action (contracts §13.8): {service, signal: HUP | USR1 | USR2} or {hook}.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"service": {"type": "string"}, "signal": {"type": "string"}, "hook": {"type": "string"}}
     },
     "port": {
       "type": "object",
@@ -380,7 +570,7 @@
       "properties": {
         "key": {"$ref": "#/$defs/envKey"},
         "description": {"type": "string", "minLength": 1},
-        "generate": {"enum": ["random", "none", ""]},
+        "generate": {"description": "random: the Hub generates the value (generate: none is template contract v2: declare a setting).", "enum": ["random", ""]},
         "required": {"type": "boolean"}
       }
     },

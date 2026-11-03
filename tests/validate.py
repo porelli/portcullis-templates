@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
@@ -355,11 +356,38 @@ def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bo
 
 
 _UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+# Read plain scalars as the Hub's yaml.v3 does (YAML 1.2 core schema): only
+# true / false are booleans (yes / no / on / off stay strings, so
+# `traefik.enable: yes` and `default: yes` are refused as the Hub refuses
+# them) and timestamps stay strings.
+_UniqueKeyLoader.yaml_implicit_resolvers = {
+    k: [(tag, rx) for tag, rx in v if tag not in ("tag:yaml.org,2002:bool", "tag:yaml.org,2002:timestamp")]
+    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()}
+_UniqueKeyLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"))
+
+
+def scalar_text(v: Any) -> str:
+    """A decoded YAML scalar as the Hub reads it into a string (Go's
+    fmt.Sprint: booleans lowercase)."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return "" if v is None else str(v)
 
 
 def load_yaml(path: str) -> Any:
     with open(path, encoding="utf-8") as f:
         return yaml.load(f, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+
+
+def _string_bool_keys(v: Any) -> Any:
+    """Mapping keys true / false as the Hub's yaml.v3 matches struct fields:
+    by their text (`render: {true: "on"}` is the field "true")."""
+    if isinstance(v, dict):
+        return {(scalar_text(k) if isinstance(k, bool) else k): _string_bool_keys(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_string_bool_keys(x) for x in v]
+    return v
 
 
 def as_list(v: Any) -> List[Any]:
@@ -371,7 +399,7 @@ def as_list(v: Any) -> List[Any]:
 def labels_of(svc: Dict[str, Any]) -> Dict[str, str]:
     raw = svc.get("labels") or {}
     if isinstance(raw, dict):
-        return {str(k): "" if v is None else str(v) for k, v in raw.items()}
+        return {str(k): scalar_text(v) for k, v in raw.items()}
     out: Dict[str, str] = {}
     for item in raw:
         k, _, v = str(item).partition("=")
@@ -501,6 +529,8 @@ class Template:
         # host variable -> default subdomain of each host router.
         self.form: Optional[str] = None
         self.host_vars: Dict[str, str] = {}
+        # Top-level manifest keys with schema errors (check_settings waits for those).
+        self.schema_errors: Set[str] = set()
 
     @property
     def multi(self) -> bool:
@@ -519,6 +549,9 @@ def check_layout(t: Template, r: Report) -> bool:
     if not ID_RE.match(t.id):
         r.error(t.id + "/", f"directory name {t.id!r} is not a valid app id",
                 "use lowercase letters, digits, '-' and '_' (regex ^[a-z0-9][a-z0-9_-]{0,63}$); the Hub skips other names")
+    elif check_id_shape(t.id):
+        r.error(t.id + "/", f"directory name: {check_id_shape(t.id)}",
+                "the Hub refuses the template (templates.CheckIDShape): Traefik's automatic service names must stay apart")
     ok = True
     for path, what in ((t.manifest_path, "manifest.yaml"), (t.compose_path, "compose.yml")):
         if not os.path.isfile(path):
@@ -543,9 +576,12 @@ def check_manifest_schema(t: Template, validator: Draft202012Validator, r: Repor
     if not isinstance(data, dict):
         r.error(t.m_where, "top level must be a mapping")
         return
+    data = _string_bool_keys(data)
     t.manifest = data
     errs = sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path))
     for e in errs:
+        if e.absolute_path:
+            t.schema_errors.add(str(e.absolute_path[0]))
         path = ".".join(str(p) for p in e.absolute_path) or "(top level)"
         r.error(t.m_where, f"{path}: {_schema_msg(e)}",
                 f"see schema/manifest.schema.json and {DOCS_URL}/manifest-reference/")
@@ -560,6 +596,8 @@ def _schema_msg(e: jsonschema.ValidationError) -> str:
         return f"{e.message[:120]} — closest problem: {best.message}"
     if e.validator == "pattern":
         return f"{e.instance!r} does not match {e.schema.get('pattern')}"
+    if e.validator == "type" and isinstance(e.instance, (dict, list)):
+        return f"a {'list' if isinstance(e.instance, list) else 'mapping'} is not of type {e.validator_value!r}"
     if e.validator == "not":
         pat = (e.validator_value or {}).get("pattern") if isinstance(e.validator_value, dict) else None
         if pat:
@@ -574,23 +612,28 @@ def check_manifest_rules(t: Template, r: Report) -> None:
     env = [e for e in (m.get("env") or []) if isinstance(e, dict)]
     random_keys = {e.get("key") for e in env if e.get("generate") == "random"}
 
-    # Duplicate keys across settings/ports/env all land in one .env file.
+    # Ports and env share the per-app .env (a setting's env name colliding
+    # with them is check_settings', as in the Hub's envNames).
     seen: Dict[str, str] = {}
-    for section in ("settings", "ports", "env"):
-        for item in m.get(section) or []:
-            if not isinstance(item, dict) or not isinstance(item.get("key"), str):
-                continue
-            k = item["key"]
+    keyed = [(section, item.get("key")) for section in ("ports", "env") for item in m.get(section) or []
+             if isinstance(item, dict) and isinstance(item.get("key"), str)]
+    for section, k in keyed + [("settings", n) for n in settings_env_names(m)]:
+        if section != "settings":
             if k in seen:
                 r.error(t.m_where, f"key {k} is declared in both {seen[k]} and {section}",
-                        "settings, ports and env share the per-app .env; keys must be unique")
+                        "ports and env share the per-app .env; keys must be unique")
             seen[k] = section
-            if k in CORE_VARS:
-                r.error(t.m_where, f"{section} key {k} shadows a core variable")
-            if is_instance_var(k):
-                r.error(t.m_where, f"{section} key {k} is reserved for the Hub's instance variables",
-                        "the Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_*, PORTCULLIS_OIDC_CLIENT_ID*, "
-                        "PORTCULLIS_ACCESS_GROUP and PORTCULLIS_ADMIN_GROUP itself; " + V2_HINT)
+        if k in CORE_VARS:
+            r.error(t.m_where, f"{section} key {k} shadows a core variable")
+        if is_instance_var(k):
+            r.error(t.m_where, f"{section} key {k} is reserved for the Hub's instance variables",
+                    "the Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_*, PORTCULLIS_OIDC_CLIENT_ID*, "
+                    "PORTCULLIS_ACCESS_GROUP and PORTCULLIS_ADMIN_GROUP itself; " + V2_HINT)
+
+    for e in env:
+        if e.get("generate") == "none":
+            r.error(t.m_where, f"env {e.get('key')}: generate: none is template contract v2 — declare a setting for a value the admin enters (contract §13)",
+                    "an admin-entered value is a settings option (a secret for credentials): see " + SETTINGS_HINT)
 
     for c in m.get("keycloak_clients") or []:
         if isinstance(c, dict) and c.get("secret_env") and c["secret_env"] not in random_keys:
@@ -726,8 +769,8 @@ def check_compose(t: Template, r: Report) -> None:
         r.error(t.c_where, f"a service joins {PROXY_NET} but networks.{PROXY_NET} (external: true) is not declared")
 
     random_keys = {e.get("key") for e in (m.get("env") or []) if isinstance(e, dict) and e.get("generate") == "random"}
-    declared = set(random_keys)
-    for section in ("env", "settings", "ports"):
+    declared = set(random_keys) | set(settings_env_names(m))
+    for section in ("env", "ports"):
         for item in m.get(section) or []:
             if isinstance(item, dict) and isinstance(item.get("key"), str):
                 declared.add(item["key"])
@@ -806,6 +849,8 @@ def check_compose(t: Template, r: Report) -> None:
     check_mosquitto(t, services, r)
     check_signin_test(t, r)
     check_hub_rules(t, r)
+    check_traefik_routes(t, services, r)
+    check_settings(t, services, routers, r)
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -964,7 +1009,7 @@ def check_own_hosts(t: Template, services: Dict[str, Any], r: Report) -> None:
 def env_of(svc: Dict[str, Any]) -> Dict[str, str]:
     raw = svc.get("environment") or {}
     if isinstance(raw, dict):
-        return {str(k): "" if v is None else str(v) for k, v in raw.items()}
+        return {str(k): scalar_text(v) for k, v in raw.items()}
     out: Dict[str, str] = {}
     for item in raw:
         k, _, v = str(item).partition("=")
@@ -1445,8 +1490,7 @@ def check_signin_test(t: Template, r: Report) -> None:
         if t.host_vars and var not in t.host_vars:
             r.error(t.m_where, f"tests.signin.host {host} is not a host router of compose.yml",
                     f"use one of {', '.join('{{HOST_' + v[len('PORTCULLIS_HOST_'):] + '}}' for v in sorted(t.host_vars))}")
-    env_keys = {e.get("key") for e in m.get("env") or [] if isinstance(e, dict)} | \
-               {e.get("key") for e in m.get("settings") or [] if isinstance(e, dict)}
+    env_keys = {e.get("key") for e in m.get("env") or [] if isinstance(e, dict)} | set(settings_env_names(m))
     for st in si.get("setup") or []:
         if isinstance(st, dict) and st.get("save_env") and st["save_env"] not in env_keys:
             r.error(t.m_where, f"tests.signin.setup save_env {st['save_env']} is not a settings/env key",
@@ -2260,6 +2304,1909 @@ def check_hub_label(where: str, k: str, v: str, host_vars: Set[str], own_service
     rest = _OWN_HOSTVAR_RE.sub(lambda mm: "h" if mm.group(1) in host_vars else mm.group(0), v)
     if _interpolated(rest):
         r.error(where, f"label {k}: {v!r} must be a literal (only HTTP router rules and the template's own host variables are interpolated)", HUB_HINT)
+
+
+# ── Settings (template contract v3, contracts §13) ──────────────────
+#
+# A mirror of the Hub's discover-time settings checks: portcullis-hub
+# internal/templates/settings.go (ValidateSettingsSpec) and the type checks
+# of internal/settings (Registry.CheckOption: kinds_*.go, formats.go,
+# render.go). Messages follow the Hub's ("setting <key>: …"), so CI refuses
+# what the Hub would skip, with the same reason.
+
+SETTINGS_HINT = f"see {DOCS_URL}/integration-contracts/#13-settings"
+SETTINGS_SHAPE_KEYS = ("settings", "files", "hooks", "reload")
+
+OPTION_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+SECTION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ]{0,31}")
+FILE_HOOK_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+FIELD_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+CLAIM_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+# policy.HeaderNameRe: group-gate's suffix form after the prefix.
+HEADER_NAME_RE = re.compile(r"X-Forwarded-Attr-[A-Za-z0-9]+(-[A-Za-z0-9]+){0,30}")
+ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+COLUMN_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+GROUP_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+HOSTNAME_RE = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+ID_NORMAL_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+
+BUILTIN_TYPES = {"string", "int", "size", "duration", "bool", "enum", "multi_enum", "list", "table", "path",
+                 "secret", "group", "groups", "user", "users"}
+OLD_TYPES = {"text": "use string", "boolean": "use bool", "select": "use enum (options: [{value, label}])",
+             "paths": "use path (one option per directory)"}
+SCOPES = ("instance", "person", "group", "person_entered")
+PERSON_ENTERED_TYPES = {"string", "int", "bool", "enum"}
+PERSON_ENTERED_MAX_LEN = 256
+APPLIES = {"live", "reload", "next_sign_in", "next_request", "restart", "account_creation"}
+RESOLVE_TYPES: Dict[str, Optional[Set[str]]] = {
+    "max": {"int", "size", "duration", "enum"}, "min": {"int", "size", "duration", "enum"}, "priority": None,
+    "union": {"list", "multi_enum", "groups"}, "intersection": {"list", "multi_enum", "groups"},
+    "any": {"bool"}, "all": {"bool"},
+}
+HOOK_TRIGGERS = ("start", "settings_change", "membership_change")
+RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
+GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
+CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
+PLACEHOLDER_ACCESS, PLACEHOLDER_ADMIN = "{{ACCESS_GROUP}}", "{{ADMIN_GROUP}}"
+FEATURE_FOLDERS, FEATURE_SHARING = "shared folders (project 2)", "file sharing (project 3)"
+INDEX_SUFFIX, MAX_INDEXED = "_{n}", 64
+HOOK_DEFAULT_TIMEOUT, HOOK_MAX_TIMEOUT = 30 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
+RESERVED_CLAIMS = {
+    "sub", "iss", "aud", "exp", "nbf", "iat", "jti", "azp", "sid", "nonce", "auth_time", "at_hash", "c_hash",
+    "typ", "scope", "acr", "amr", "email", "email_verified", "name", "given_name", "family_name", "middle_name",
+    "nickname", "preferred_username", "profile", "picture", "website", "gender", "birthdate", "zoneinfo", "locale",
+    "phone_number", "phone_number_verified", "address", "updated_at", "groups", "realm_access", "resource_access",
+    "allowed-origins", "session_state", "client_id", "cnf", "roles",
+}
+FORWARD_AUTH_MWS = ("portcullis-auth@docker", "portcullis-groups@docker")
+INT64_MIN, INT64_MAX = -(1 << 63), (1 << 63) - 1
+
+
+class SettingError(ValueError):
+    """A value or option the Hub's settings kinds refuse (the message is the Hub's)."""
+
+
+class _Unlimited:
+    def __repr__(self) -> str:
+        return "unlimited"
+
+
+UNLIMITED = _Unlimited()   # a size's "unlimited" (settings.Unlimited{})
+
+
+def is_control_rune(c: str) -> bool:
+    """templates.IsControlRune: Unicode Cc, U+2028/9 and the bidi controls."""
+    o = ord(c)
+    return unicodedata.category(c) == "Cc" or o in (0x2028, 0x2029) or 0x202A <= o <= 0x202E or 0x2066 <= o <= 0x2069
+
+
+def has_control(s: str) -> bool:
+    return any(is_control_rune(c) for c in s)
+
+
+def blen(s: str) -> int:
+    """Go's len(): bytes."""
+    return len(s.encode("utf-8", "surrogatepass"))
+
+
+def _gofmt(v: Any) -> str:
+    """A value as Go's %v prints it in the Hub's messages."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, list):
+        return "[" + " ".join(_gofmt(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "map[" + " ".join(f"{k}:{_gofmt(x)}" for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))) + "]"
+    if v is UNLIMITED:
+        return "unlimited"
+    return "<nil>" if v is None else str(v)
+
+
+def _type_name(v: Any) -> str:
+    """Go's %T of a decoded value, for messages."""
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, int):
+        return "int"
+    if isinstance(v, float):
+        return "float64"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, list):
+        return "[]interface {}"
+    if isinstance(v, dict):
+        return "map[string]interface {}"
+    return "<nil>"
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _has(o: Dict[str, Any], k: str) -> bool:
+    """A field the Hub sees as set: present and not YAML null (Go nil)."""
+    return o.get(k) is not None
+
+
+def _str(o: Dict[str, Any], k: str) -> str:
+    v = o.get(k)
+    return "" if v is None else scalar_text(v)
+
+
+def go_clean(p: str) -> str:
+    """Go's path.Clean."""
+    if p == "":
+        return "."
+    rooted = p.startswith("/")
+    out: List[str] = []
+    for seg in p.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if out and out[-1] != "..":
+                out.pop()
+            elif not rooted:
+                out.append("..")
+            continue
+        out.append(seg)
+    s = "/".join(out)
+    return ("/" + s) if rooted else (s or ".")
+
+
+def valid_mount(p: str) -> bool:
+    """templates.validMount: an absolute, clean container directory, not /."""
+    return p.startswith("/") and go_clean(p) == p and p != "/" and not has_control(p) and ":" not in p
+
+
+def _nested(a: str, b: str) -> bool:
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+# ── Go durations ──
+
+_GO_DUR_UNITS = {"ns": 1, "us": 10 ** 3, "µs": 10 ** 3, "μs": 10 ** 3, "ms": 10 ** 6, "s": 10 ** 9,
+                 "m": 60 * 10 ** 9, "h": 3600 * 10 ** 9}
+_STR2DUR_UNITS = dict(_GO_DUR_UNITS, d=86400 * 10 ** 9, w=7 * 86400 * 10 ** 9)
+_DUR_PART_RE = re.compile(r"([0-9]*(?:\.[0-9]*)?)([a-zµμ]+)")
+
+
+def go_parse_duration(s: str, units: Dict[str, int] = _GO_DUR_UNITS) -> int:
+    """time.ParseDuration (units = _STR2DUR_UNITS: go-str2duration, + d, w),
+    in nanoseconds; ValueError like Go's."""
+    from fractions import Fraction
+    orig, neg = s, False
+    if s[:1] in ("-", "+"):
+        neg, s = s[0] == "-", s[1:]
+    if s == "0":
+        return 0
+    if s == "":
+        raise ValueError(f"invalid duration {orig!r}")
+    total, pos = Fraction(0), 0
+    while pos < len(s):
+        m = _DUR_PART_RE.match(s, pos)
+        if not m or m.group(1) in ("", ".") or m.group(2) not in units:
+            raise ValueError(f"invalid duration {orig!r}" if not m or m.group(1) in ("", ".") else
+                             f"unknown unit {m.group(2)!r} in duration {orig!r}")
+        total += Fraction(m.group(1) if not m.group(1).endswith(".") else m.group(1)[:-1]) * units[m.group(2)]
+        pos = m.end()
+    ns = int(total)   # Go truncates the fraction
+    if ns > INT64_MAX + (1 if neg else 0):
+        raise ValueError(f"invalid duration {orig!r}")
+    return -ns if neg else ns
+
+
+# ── string formats (settings/formats.go) ──
+
+def _fmt_hostname(s: str) -> Optional[str]:
+    return None if len(s) <= 253 and HOSTNAME_RE.fullmatch(s) else "want a lowercase DNS name such as app.example.com"
+
+
+def _parse_addr(s: str) -> Optional[Any]:
+    """netip.ParseAddr without zones."""
+    if "%" in s or not s.isascii():
+        return None
+    try:
+        return ipaddress.ip_address(s)
+    except ValueError:
+        return None
+
+
+def _fmt_ip(s: str) -> Optional[str]:
+    return None if _parse_addr(s) is not None else "want an IPv4 or IPv6 address"
+
+
+def _fmt_cidr(s: str) -> Optional[str]:
+    bad = "want an address/prefix such as 10.0.0.0/8"
+    addr_s, sep, bits = s.partition("/")
+    a = _parse_addr(addr_s)
+    if not sep or a is None or not re.fullmatch(r"0|[1-9][0-9]{0,2}", bits) or int(bits) > a.max_prefixlen:
+        return bad
+    net = ipaddress.ip_network(f"{addr_s}/{bits}", strict=False)
+    if net.network_address != a:
+        return f"{s} has host bits set: the network is {net}"
+    return None
+
+
+# url.Parse + u.String() == s, statically: what Go's URL round trip keeps
+# byte for byte (RFC 3986 characters only, valid %XX escapes).
+_URL_PATH_CHARS = r"A-Za-z0-9\-._~!$&'()*+,;=:@\[\]/"
+_URL_RE = re.compile(
+    r"(https?)://"
+    r"(?:[A-Za-z0-9\-._~!$&'()*+,;=:%]*@)?"
+    r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9\-._~!$&'()*+,;=%]+)"
+    r"(?::([0-9]*))?"
+    rf"((?:/(?:[{_URL_PATH_CHARS}]|%[0-9A-Fa-f]{{2}})*)?)"
+    r"(\?[^#]*)?"   # Go keeps the raw query as written
+    r"(#[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]*)?")
+
+
+def _fmt_url(s: str) -> Optional[str]:
+    bad = "want an http or https URL such as https://host/path (printable ASCII, no spaces; non-ASCII percent-encoded)"
+    if any(ord(c) <= 0x20 or ord(c) >= 0x7F for c in s):
+        return bad
+    m = _URL_RE.fullmatch(s)
+    if not m or re.search(r"%(?![0-9A-Fa-f]{2})", m.group(2) + m.group(4)):
+        return bad
+    port = m.group(3)
+    if port:
+        if not (port.isdigit() and 1 <= int(port) <= 65535 and str(int(port)) == port):
+            return f"port {port!r} must be 1-65535"
+    return None
+
+
+_ATEXT = r"A-Za-z0-9!#$%&'*+/=?^_`{|}~\-\u0080-\U0010ffff"
+_EMAIL_RE = re.compile(rf"[{_ATEXT}]+(?:\.[{_ATEXT}]+)*@[{_ATEXT}]+(?:\.[{_ATEXT}]+)+")
+
+
+def _fmt_email(s: str) -> Optional[str]:
+    """lldap.ValidEmail: one bare address (mail.ParseAddress round trip),
+    a dot in the domain, ≤ 254."""
+    if s == "" or len(s) > 254 or any(c in s for c in " <>\"") or not _EMAIL_RE.fullmatch(s):
+        return "want a bare address such as name@example.com"
+    return None
+
+
+_TZ_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9][A-Za-z0-9_+-]*){0,2}")
+_TZ_NAMES: Optional[Set[str]] = None
+
+
+def _fmt_iana_tz(s: str) -> Optional[str]:
+    global _TZ_NAMES
+    bad = "want an IANA time zone such as Europe/Rome"
+    if s in ("", "Local") or not _TZ_NAME_RE.fullmatch(s):
+        return bad
+    if _TZ_NAMES is None:
+        try:
+            import zoneinfo
+            _TZ_NAMES = set(zoneinfo.available_timezones())
+        except ImportError:  # pragma: no cover - Python < 3.9
+            _TZ_NAMES = set()
+    if _TZ_NAMES and s not in _TZ_NAMES:
+        return bad
+    return None
+
+
+# BCP 47 in the canonical case x/text writes (language lowercase, Script
+# titlecase, REGION uppercase, variants / extensions lowercase).
+_LOCALE_RE = re.compile(
+    r"(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4,8})"
+    r"(?:-[A-Z][a-z]{3})?"
+    r"(?:-(?:[A-Z]{2}|[0-9]{3}))?"
+    r"(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*"
+    r"(?:-[a-wyz0-9](?:-[a-z0-9]{2,8})+)*"
+    r"(?:-x(?:-[a-z0-9]{1,8})+)?")
+
+
+def _fmt_locale(s: str) -> Optional[str]:
+    return None if _LOCALE_RE.fullmatch(s) else "want a BCP 47 tag in canonical form such as it-IT"
+
+
+_CRON_FIELDS = ((0, 59, None), (0, 23, None), (1, 31, None),
+                (1, 12, ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]),
+                (0, 6, ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]))
+_CRON_DESCRIPTORS = {"@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"}
+
+
+def _cron_field_ok(field: str, lo: int, hi: int, names: Optional[List[str]]) -> bool:
+    """robfig/cron getField: comma list of ranges with an optional step."""
+    def num(x: str) -> Optional[int]:
+        if names and x.lower() in names:
+            return names.index(x.lower()) + (lo if lo == 1 and len(names) == 12 else 0)
+        return int(x) if re.fullmatch(r"[0-9]+", x) else None
+    for part in field.split(","):
+        rng, _, step = part.partition("/")
+        if rng in ("*", "?"):
+            a, b = lo, hi
+        else:
+            x, dash, y = rng.partition("-")
+            a = num(x)
+            b = num(y) if dash else a
+            if a is None or b is None:
+                return False
+            if not dash and step:
+                b = hi
+        if "/" in part and not re.fullmatch(r"[0-9]+", step):
+            return False
+        if "/" in part and int(step) == 0:
+            return False
+        if a < lo or b > hi or a > b:
+            return False
+    return True
+
+
+def _fmt_cron(s: str) -> Optional[str]:
+    bad = "want a five-field cron expression such as */5 * * * *"
+    if " ".join(s.split()) != s or "\t" in s:
+        return "fields must be separated by single spaces, without leading or trailing space"
+    if s.startswith(("TZ=", "CRON_TZ=", "@every")):
+        return bad
+    if s.startswith("@"):
+        return None if s in _CRON_DESCRIPTORS else bad
+    fields = s.split(" ")
+    if len(fields) != 5 or not all(_cron_field_ok(f, *spec) for f, spec in zip(fields, _CRON_FIELDS)):
+        return bad
+    return None
+
+
+_SEMVER_ID = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_SEMVER_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+                        rf"(?:-{_SEMVER_ID}(?:\.{_SEMVER_ID})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+
+
+def _fmt_semver(s: str) -> Optional[str]:
+    return None if _SEMVER_RE.fullmatch(s) else "want MAJOR.MINOR.PATCH such as 1.2.3"
+
+
+def _fmt_hex(s: str) -> Optional[str]:
+    return None if re.fullmatch(r"[0-9a-fA-F]+", s) else "want hexadecimal digits"
+
+
+STRING_FORMATS = {"hostname": _fmt_hostname, "ip": _fmt_ip, "cidr": _fmt_cidr, "url": _fmt_url, "email": _fmt_email,
+                  "iana_tz": _fmt_iana_tz, "locale": _fmt_locale, "cron": _fmt_cron, "semver": _fmt_semver,
+                  "hex": _fmt_hex}
+
+
+# ── kinds (settings/kinds_*.go) ──
+
+def _to_int(raw: Any) -> int:
+    if isinstance(raw, bool) or not _is_number(raw):
+        raise SettingError(f"want a whole number, not {_type_name(raw)}")
+    if isinstance(raw, float):
+        if raw != raw or raw in (float("inf"), float("-inf")) or raw != int(raw):
+            raise SettingError(f"{_gofmt(raw)} is not a whole number")
+        if raw >= 2.0 ** 63 or raw < -(2.0 ** 63):
+            raise SettingError(f"{_gofmt(raw)} is too large")
+        return int(raw)
+    if raw > INT64_MAX or raw < INT64_MIN:
+        raise SettingError(f"{raw} is too large")
+    return raw
+
+
+def _parse_decimal(s: str) -> int:
+    if not re.fullmatch(r"-?[0-9]{1,19}", s):
+        raise SettingError(f"{json.dumps(s)} is not a whole number")
+    n = int(s)
+    if n > INT64_MAX or n < INT64_MIN:
+        raise SettingError(f"{json.dumps(s)} is out of range")
+    return n
+
+
+def _check_text(s: str) -> None:
+    if has_control(s):
+        raise SettingError("contains control characters (newlines included)")
+
+
+_PATTERN_CACHE: Dict[str, Any] = {}
+# What RE2 (Go's regexp) has no syntax for: Python would accept these.
+_NOT_RE2 = re.compile(r"\(\?[=!>#]|\(\?<[=!]|\(\?P=|\\[1-9]|\\[Zz]|\(\?[aiLmsux-]*[aLux]")
+
+
+def _compile_pattern(p: str) -> Any:
+    """compilePattern: anchored ^…$, ≤ 500, applied to the whole value."""
+    if p in _PATTERN_CACHE:
+        return _PATTERN_CACHE[p]
+    if blen(p) > 500:
+        raise SettingError("pattern is longer than 500 characters")
+    if not (p.startswith("^") and p.endswith("$")):
+        raise SettingError(f"pattern {json.dumps(p)} must be anchored: ^…$")
+    if _NOT_RE2.search(p):
+        raise SettingError(f"pattern {json.dumps(p)}: lookarounds, backreferences, atomic groups, comments, \\Z and the "
+                           "a / L / u / x flags are not RE2 (Go regexp) syntax")
+    try:
+        # re.ASCII: \d \w \s \b are ASCII in Go too. \Z: Go's $ is the end of
+        # the text; Python's would also match before a final newline.
+        rx = re.compile(r"(?:" + p + r")\Z", re.ASCII)
+    except re.error as e:
+        raise SettingError(f"pattern {json.dumps(p)}: {e}") from None
+    _PATTERN_CACHE[p] = rx
+    return rx
+
+
+def _check_lens(min_len: Any, max_len: Any) -> None:
+    for name, val in (("min_len", min_len), ("max_len", max_len)):
+        if val is not None and not 0 <= val <= 65535:
+            raise SettingError(f"{name} must be 0-65535")
+    if min_len is not None and max_len is not None and min_len > max_len:
+        raise SettingError("min_len is above max_len")
+
+
+def _only_fields(o: Dict[str, Any], *allowed: str) -> None:
+    """onlyFields: a type-specific field the type doesn't take is refused."""
+    set_fields = [
+        ("pattern", _str(o, "pattern") != ""), ("format", _str(o, "format") != ""),
+        ("min_len", _has(o, "min_len")), ("max_len", _has(o, "max_len")),
+        ("min_items", _has(o, "min_items")), ("max_items", _has(o, "max_items")),
+        ("min", _has(o, "min")), ("max", _has(o, "max")), ("step", _has(o, "step")),
+        ("unit", _str(o, "unit") != ""), ("allow_unlimited", bool(o.get("allow_unlimited"))),
+        ("options", _has(o, "options")), ("items", _has(o, "items")), ("columns", _has(o, "columns")),
+        ("key_column", _str(o, "key_column") != ""), ("target", _has(o, "target")),
+        ("mode", _str(o, "mode") != ""), ("needs", _str(o, "needs") != ""),
+    ]
+    for name, on in set_fields:
+        if on and name not in allowed:
+            raise SettingError(f"{name} is not a constraint of type {o.get('type')}")
+
+
+def _read_bounds(o: Dict[str, Any], parse: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    vals: List[Optional[int]] = []
+    for name in ("min", "max", "step"):
+        raw = o.get(name)
+        if raw is None:
+            vals.append(None)
+            continue
+        try:
+            vals.append(parse(raw))
+        except SettingError as e:
+            raise SettingError(f"{name}: {e}") from None
+    lo, hi, step = vals
+    if lo is not None and hi is not None and lo > hi:
+        raise SettingError("min is above max")
+    if step is not None and step <= 0:
+        raise SettingError("step must be positive")
+    return lo, hi, step
+
+
+def _check_bounds(b: Tuple[Optional[int], Optional[int], Optional[int]], v: int, show: Any) -> None:
+    lo, hi, step = b
+    if lo is not None and v < lo:
+        raise SettingError(f"must be at least {show(lo)}")
+    if hi is not None and v > hi:
+        raise SettingError(f"must be at most {show(hi)}")
+    if step is not None:
+        base = lo if lo is not None else 0
+        if abs(v - base) % step != 0:
+            if base != 0:
+                raise SettingError(f"must be {show(base)} plus a multiple of {show(step)}")
+            raise SettingError(f"must be a multiple of {show(step)}")
+
+
+def _go_g4(x: float) -> str:
+    """Go's %.4g."""
+    s = f"{x:.4g}"
+    if "e" in s:
+        mant, exp = s.split("e")
+        s = f"{mant}e{exp[0]}{int(exp[1:]):02d}"
+    return s
+
+
+_BINARY_LABELS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"]
+
+
+def show_size(n: int) -> str:
+    """units.CustomSize("%.4g %s", n, 1024, binary labels)."""
+    x, i = float(n), 0
+    while x >= 1024 and i < len(_BINARY_LABELS) - 1:
+        x /= 1024
+        i += 1
+    return f"{_go_g4(x)} {_BINARY_LABELS[i]}"
+
+
+def show_duration(s: int) -> str:
+    if s == 0:
+        return "0s"
+    out = ""
+    for n, label in ((86400, "d"), (3600, "h"), (60, "m"), (1, "s")):
+        if s >= n:
+            out += f"{s // n}{label}"
+            s %= n
+    return out
+
+
+# sizeInputRe: a number with an optional binary unit (GB / G refused: GB
+# means 10^9, never 2^30). go-units RAMInBytes accepts a superset of it.
+SIZE_INPUT_RE = re.compile(r"([0-9]{1,20}(?:\.[0-9]{1,12})?) ?((?:[kmgtp]i)?b)?", re.IGNORECASE | re.ASCII)
+SIZE_MULTIPLIERS = {"": 1, "b": 1, "kib": 1 << 10, "mib": 1 << 20, "gib": 1 << 30, "tib": 1 << 40, "pib": 1 << 50}
+
+
+def parse_size(raw: Any) -> int:
+    """settings.parseSize: "10GiB", "10 GiB", "512" or a number of bytes.
+    RAMInBytes goes through float64; the exact value must agree with it."""
+    from fractions import Fraction
+    if _is_number(raw):
+        v = _to_int(raw)
+        if v < 0:
+            raise SettingError("a size can't be negative")
+        return v
+    if not isinstance(raw, str):
+        raise SettingError(f"want a size such as 10GiB, not {_type_name(raw)}")
+    m = SIZE_INPUT_RE.fullmatch(raw)
+    if not m:
+        raise SettingError(f"{json.dumps(raw)} is not a size: use a number with B, KiB, MiB, GiB, TiB or PiB (binary units)")
+    mult = SIZE_MULTIPLIERS[(m.group(2) or "").lower()]
+    approx = float(m.group(1)) * float(mult)
+    exact = Fraction(m.group(1)) * mult
+    if exact.denominator != 1 or not INT64_MIN <= exact.numerator <= INT64_MAX or approx >= 2.0 ** 63 \
+            or int(approx) != exact.numerator:
+        raise SettingError(f"{json.dumps(raw)} is not a whole number of bytes, or too large")
+    return exact.numerator
+
+
+MAX_SECONDS = INT64_MAX // 10 ** 9
+
+
+def parse_duration_value(raw: Any) -> int:
+    """settings.parseDuration: "30d", "1h30m" or a number of seconds."""
+    if _is_number(raw):
+        v = _to_int(raw)
+        if not 0 <= v <= MAX_SECONDS:
+            raise SettingError(f"a duration is 0-{MAX_SECONDS} seconds")
+        return v
+    if not isinstance(raw, str):
+        raise SettingError(f"want a duration such as 30d or 90m, not {_type_name(raw)}")
+    try:
+        ns = go_parse_duration(raw, _STR2DUR_UNITS)
+    except ValueError:
+        raise SettingError(f"{json.dumps(raw)} is not a duration (e.g. 30d, 12h, 90m, 45s)") from None
+    if ns < 0:
+        raise SettingError("a duration can't be negative")
+    if ns % 10 ** 9:
+        raise SettingError(f"{json.dumps(raw)}: durations are whole seconds")
+    return ns // 10 ** 9
+
+
+def _check_choices(cs: Any) -> None:
+    if not cs:
+        raise SettingError("options: at least one {value, label}")
+    seen: Set[str] = set()
+    for c in cs:
+        val, label = _str(c, "value"), _str(c, "label")
+        if val == "" or blen(val) > 128 or has_control(val):
+            raise SettingError(f"options: value {json.dumps(val)} must be 1-128 characters without control characters")
+        if val in seen:
+            raise SettingError(f"options: value {json.dumps(val)} listed twice")
+        seen.add(val)
+        if label == "" or blen(label) > 64 or has_control(label):
+            raise SettingError(f"options: value {json.dumps(val)} needs a single-line label of at most 64 characters")
+
+
+def _choice_values(cs: Any) -> List[str]:
+    return [_str(c, "value") for c in cs or []]
+
+
+def _parse_choice(cs: Any, raw: Any) -> str:
+    vals = _choice_values(cs)
+    if not isinstance(raw, str):
+        raise SettingError(f"want one of {', '.join(vals)}, not {_type_name(raw)}")
+    if raw not in vals:
+        raise SettingError(f"{json.dumps(raw)} is not one of {', '.join(vals)}")
+    return raw
+
+
+def _check_item_bounds(o: Dict[str, Any]) -> None:
+    for name in ("min_items", "max_items"):
+        if _has(o, name) and not 0 <= o[name] <= 1000:
+            raise SettingError(f"{name} must be 0-1000")
+    if _has(o, "min_items") and _has(o, "max_items") and o["min_items"] > o["max_items"]:
+        raise SettingError("min_items is above max_items")
+
+
+def _count_items(o: Dict[str, Any], n: int) -> None:
+    if n > 1000:
+        raise SettingError("at most 1000 items")
+    if _has(o, "min_items") and n < o["min_items"]:
+        raise SettingError(f"needs at least {o['min_items']} items")
+    if _has(o, "max_items") and n > o["max_items"]:
+        raise SettingError(f"takes at most {o['max_items']} items")
+
+
+def _sub_option(o: Dict[str, Any], spec: Any) -> Dict[str, Any]:
+    """itemOption / columnOption: an item type or column as an option."""
+    spec = spec if isinstance(spec, dict) else {}
+    out = {"key": o.get("key"), "type": _str(spec, "type")}
+    for f in ("pattern", "format", "min_len", "max_len", "min", "max", "options"):
+        if f in spec:
+            out[f] = spec[f]
+    return out
+
+
+LIST_ITEM_TYPES = ("string", "int", "bool", "enum")
+
+
+def _kind_check(o: Dict[str, Any]) -> None:
+    """Each kind's CheckOption (manifest-time constraints of its type)."""
+    t = o.get("type")
+    if t == "string":
+        _only_fields(o, "pattern", "format", "min_len", "max_len")
+        if _str(o, "pattern"):
+            _compile_pattern(_str(o, "pattern"))
+        if _str(o, "format") and _str(o, "format") not in STRING_FORMATS:
+            raise SettingError(f"format {json.dumps(_str(o, 'format'))} must be one of {', '.join(sorted(STRING_FORMATS))}")
+        _check_lens(o.get("min_len"), o.get("max_len"))
+    elif t == "int":
+        _only_fields(o, "min", "max", "step", "unit")
+        unit = _str(o, "unit")
+        if unit and (blen(unit) > 32 or has_control(unit)):
+            raise SettingError("unit must be a single line of at most 32 characters")
+        _read_bounds(o, _to_int)
+    elif t == "size":
+        _only_fields(o, "min", "max", "step", "allow_unlimited")
+        _read_bounds(o, parse_size)
+    elif t == "duration":
+        _only_fields(o, "min", "max")
+        _read_bounds(o, parse_duration_value)
+    elif t == "bool":
+        _only_fields(o)
+    elif t == "enum":
+        _only_fields(o, "options")
+        _check_choices(o.get("options"))
+    elif t == "multi_enum":
+        _only_fields(o, "options", "min_items", "max_items")
+        _check_choices(o.get("options"))
+        _check_item_bounds(o)
+    elif t == "list":
+        _only_fields(o, "items", "min_items", "max_items")
+        if not _has(o, "items"):
+            raise SettingError("a list needs items: {type: string | int | bool | enum}")
+        io = _sub_option(o, o["items"])
+        if io["type"] not in LIST_ITEM_TYPES:
+            raise SettingError(f"items: type {json.dumps(io['type'])} must be string, int, bool or enum")
+        try:
+            _kind_check(io)
+        except SettingError as e:
+            raise SettingError(f"items: {e}") from None
+        _check_item_bounds(o)
+    elif t == "table":
+        _only_fields(o, "columns", "key_column", "min_items", "max_items")
+        cols = o.get("columns") or []
+        if not cols:
+            raise SettingError("a table needs at least one column")
+        seen: Set[str] = set()
+        for c in cols:
+            name, label = _str(c, "name"), _str(c, "label")
+            if not COLUMN_NAME_RE.fullmatch(name):
+                raise SettingError(f"columns: name {json.dumps(name)} must match ^{COLUMN_NAME_RE.pattern}$")
+            if name in seen:
+                raise SettingError(f"columns: {name} listed twice")
+            seen.add(name)
+            if label == "" or blen(label) > 64 or has_control(label):
+                raise SettingError(f"columns: {name} needs a single-line label of at most 64 characters")
+            co = _sub_option(o, c)
+            if co["type"] not in LIST_ITEM_TYPES:
+                raise SettingError(f"columns: {name}: type {json.dumps(co['type'])} must be string, int, bool or enum")
+            try:
+                _kind_check(co)
+            except SettingError as e:
+                raise SettingError(f"columns: {name}: {e}") from None
+        kc = _str(o, "key_column")
+        if kc and kc not in seen:
+            raise SettingError(f"key_column {kc} is not a column")
+        _check_item_bounds(o)
+    elif t in ("group", "user"):
+        _only_fields(o)
+    elif t in ("groups", "users"):
+        _only_fields(o, "min_items", "max_items")
+        _check_item_bounds(o)
+    elif t == "path":
+        _only_fields(o, "target", "mode", "needs")
+        mode, needs = _str(o, "mode"), _str(o, "needs")
+        if mode not in ("", "ro", "rw"):
+            raise SettingError(f"mode {json.dumps(mode)} must be ro or rw")
+        if needs not in ("", "read", "write"):
+            raise SettingError(f"needs {json.dumps(needs)} must be read or write")
+        if mode == "ro" and needs == "write":
+            raise SettingError("needs: write with mode: ro: the app could never write there")
+    elif t == "secret":
+        _only_fields(o, "min_len", "max_len")
+        if _has(o, "default"):
+            raise SettingError("a secret takes no default (set it, or declare generate)")
+        _check_lens(o.get("min_len"), o.get("max_len"))
+
+
+def _parse_one_name(user: bool, raw: Any) -> str:
+    if not isinstance(raw, str):
+        raise SettingError(f"want a name, not {_type_name(raw)}")
+    if user:
+        if "@" in raw:
+            raise SettingError(f"{json.dumps(raw)}: want a username, not an email address")
+        if not raw.isascii():
+            raise SettingError(f"{json.dumps(raw)} is not a valid username (ASCII only)")
+        u = raw.lower()
+        if not USERNAME_RE.fullmatch(u):
+            raise SettingError(f"{json.dumps(raw)} is not a valid username")
+        return u
+    if not GROUP_NAME_RE.fullmatch(raw):
+        raise SettingError(f"{json.dumps(raw)} is not a valid group name")
+    return raw
+
+
+def setting_value(o: Dict[str, Any], raw: Any) -> Any:
+    """Registry.Parse: raw (YAML-decoded) as a canonical value of option o
+    (sizes bytes, durations seconds, UNLIMITED); SettingError if refused."""
+    t = o.get("type")
+    if raw is None:
+        raise SettingError("no value")
+    if t == "string":
+        if not isinstance(raw, str):
+            raise SettingError(f"want a string, not {_type_name(raw)}")
+        _check_text(raw)
+        n = len(raw)
+        if n > 65535:
+            raise SettingError("must be at most 65535 characters")
+        if _has(o, "min_len") and n < o["min_len"]:
+            raise SettingError(f"must be at least {o['min_len']} characters")
+        if _has(o, "max_len") and n > o["max_len"]:
+            raise SettingError(f"must be at most {o['max_len']} characters")
+        fmt = _str(o, "format")
+        if fmt:
+            f = STRING_FORMATS.get(fmt)
+            if f is None:
+                raise SettingError(f"unknown format {json.dumps(fmt)}")
+            why = f(raw)
+            if why:
+                raise SettingError(f"{json.dumps(raw)} is not a valid {fmt}: {why}")
+        if _str(o, "pattern"):
+            if not _compile_pattern(_str(o, "pattern")).match(raw):
+                raise SettingError(f"{json.dumps(raw)} doesn't match the pattern {_str(o, 'pattern')}")
+        return raw
+    if t == "int":
+        v = _parse_decimal(raw) if isinstance(raw, str) else _to_int(raw)
+        _check_bounds(_read_bounds(o, _to_int), v, str)
+        return v
+    if t == "size":
+        if raw is UNLIMITED or raw == "unlimited":
+            if not o.get("allow_unlimited"):
+                raise SettingError("unlimited is not allowed here")
+            return UNLIMITED
+        v = parse_size(raw)
+        _check_bounds(_read_bounds(o, parse_size), v, show_size)
+        return v
+    if t == "duration":
+        v = parse_duration_value(raw)
+        _check_bounds(_read_bounds(o, parse_duration_value), v, show_duration)
+        return v
+    if t == "bool":
+        if not isinstance(raw, bool):
+            raise SettingError(f"want true or false, not {_gofmt(raw)}")
+        return raw
+    if t == "enum":
+        return _parse_choice(o.get("options"), raw)
+    if t == "multi_enum":
+        if not isinstance(raw, list):
+            raise SettingError(f"want a list, not {_type_name(raw)}")
+        chosen = {_parse_choice(o.get("options"), it) for it in raw}
+        out = [c for c in _choice_values(o.get("options")) if c in chosen]
+        _count_items(o, len(out))
+        return out
+    if t == "list":
+        if not isinstance(raw, list):
+            raise SettingError(f"want a list, not {_type_name(raw)}")
+        io = _sub_option(o, o.get("items"))
+        if io["type"] not in LIST_ITEM_TYPES:
+            raise SettingError(f"items: unknown type {json.dumps(io['type'])}")
+        _count_items(o, len(raw))
+        out, seen = [], set()
+        for i, it in enumerate(raw, 1):
+            try:
+                val = setting_value(io, it)
+            except SettingError as e:
+                raise SettingError(f"item {i}: {e}") from None
+            k = (type(val).__name__, val)
+            if o.get("unique"):
+                if k in seen:
+                    raise SettingError(f"item {i}: duplicate {_gofmt(val)} (items must be unique)")
+                seen.add(k)
+            out.append(val)
+        return out
+    if t == "table":
+        if not isinstance(raw, list):
+            raise SettingError(f"want a list, not {_type_name(raw)}")
+        _count_items(o, len(raw))
+        cols = {_str(c, "name"): c for c in o.get("columns") or []}
+        kc = _str(o, "key_column")
+        keys: Dict[Any, int] = {}
+        out = []
+        for i, row in enumerate(raw, 1):
+            if not isinstance(row, dict) or not all(isinstance(k, str) for k in row):
+                raise SettingError(f"row {i}: want a record {{column: value}}, not {_type_name(row)}")
+            for name in sorted(row):
+                if name not in cols:
+                    raise SettingError(f"row {i}: {name} is not a column")
+            rec = {}
+            for c in o.get("columns") or []:
+                name = _str(c, "name")
+                present = name in row
+                cv = row.get(name)
+                if not present or cv is None or cv == "":
+                    if c.get("required") or name == kc:
+                        raise SettingError(f"row {i}: {name} is required")
+                    if not present or cv is None:
+                        continue
+                try:
+                    rec[name] = setting_value(_sub_option(o, c), cv)
+                except SettingError as e:
+                    raise SettingError(f"row {i}: {name}: {e}") from None
+            if kc:
+                k = (type(rec.get(kc)).__name__, rec.get(kc))
+                if k in keys:
+                    raise SettingError(f"row {i}: duplicate {kc} {_gofmt(rec.get(kc))} (also in row {keys[k]})")
+                keys[k] = i
+            out.append(rec)
+        return out
+    if t in ("group", "user"):
+        return _parse_one_name(t == "user", raw)
+    if t in ("groups", "users"):
+        if not isinstance(raw, list):
+            raise SettingError(f"want a list, not {_type_name(raw)}")
+        names = set()
+        for i, it in enumerate(raw, 1):
+            try:
+                names.add(_parse_one_name(t == "users", it))
+            except SettingError as e:
+                raise SettingError(f"item {i}: {e}") from None
+        _count_items(o, len(names))
+        return sorted(names)
+    if t == "path":
+        if not isinstance(raw, str):
+            raise SettingError(f"want a host directory as a string, not {_type_name(raw)}")
+        if raw.startswith("folder:"):
+            raise SettingError(f"{json.dumps(raw)} names a shared folder: shared folders arrive in project 2")
+        if has_control(raw) or ":" in raw:
+            raise SettingError(f"path {json.dumps(raw)} may not contain ':' or control characters")
+        if not raw.startswith("/"):
+            raise SettingError(f"path {json.dumps(raw)} must be absolute")
+        c = go_clean(raw)
+        if c == "/":
+            raise SettingError(f"path {json.dumps(raw)}: the host's / can't be mounted")
+        return c
+    if t == "secret":
+        if not isinstance(raw, str):
+            raise SettingError("want a string")
+        if raw == "":
+            raise SettingError("a secret can't be empty (clear it instead)")
+        if blen(raw) > 4096:
+            raise SettingError("a secret is at most 4096 bytes")
+        if "'" in raw:
+            raise SettingError("a secret can't contain ' (env values are single-quoted)")
+        if has_control(raw):
+            raise SettingError("the secret contains control characters (newlines included)")
+        if _has(o, "min_len") and len(raw) < o["min_len"]:
+            raise SettingError(f"must be at least {o['min_len']} characters")
+        if _has(o, "max_len") and len(raw) > o["max_len"]:
+            raise SettingError(f"must be at most {o['max_len']} characters")
+        return raw
+    raise SettingError(f"unknown type {json.dumps(t)}")
+
+
+# ── renders (settings/render.go) ──
+
+SIZE_RENDER_UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40,
+                     "KB": 10 ** 3, "MB": 10 ** 6, "GB": 10 ** 9, "TB": 10 ** 12}
+DURATION_RENDER_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+LIST_LIKE = {"list", "multi_enum", "groups", "users"}
+
+
+def scope_of(o: Dict[str, Any]) -> str:
+    return _str(o, "scope") or "instance"
+
+
+def render_of(d: Dict[str, Any]) -> Dict[str, Any]:
+    """RenderOf: inside a claim, header or file delivery; on the delivery for env and hook."""
+    for k in ("claim", "header", "file"):
+        if isinstance(d.get(k), dict):
+            return d[k].get("render") or {}
+    return d.get("render") or {}
+
+
+def delivery_name(d: Dict[str, Any]) -> str:
+    if _str(d, "env"):
+        return "env " + _str(d, "env")
+    for k in ("claim", "header", "file"):
+        if isinstance(d.get(k), dict):
+            return f"{k} {_str(d[k], 'name')}"
+    if _str(d, "hook"):
+        return "hook " + _str(d, "hook")
+    return "delivery"
+
+
+def _check_render(o: Dict[str, Any], rd: Dict[str, Any]) -> None:
+    t, unit = o.get("type"), _str(rd, "unit")
+    if unit:
+        if t == "size":
+            if unit not in SIZE_RENDER_UNITS:
+                raise SettingError(f"unit {json.dumps(unit)} must be B, KiB, MiB, GiB, TiB, KB, MB, GB or TB")
+        elif t == "duration":
+            if unit not in DURATION_RENDER_UNITS:
+                raise SettingError(f"unit {json.dumps(unit)} must be s, m, h or d")
+        elif t == "int":
+            if unit != _str(o, "unit"):
+                raise SettingError(f"unit {json.dumps(unit)} must be the option's unit {json.dumps(_str(o, 'unit'))} (an int is not converted)")
+        else:
+            raise SettingError("unit is for size, duration and int options")
+    if rd.get("integer") and t not in ("size", "duration"):
+        raise SettingError("integer is for size and duration options")
+    if _has(rd, "unlimited"):
+        if t != "size" or not o.get("allow_unlimited"):
+            raise SettingError("unlimited is for size options with allow_unlimited")
+        if _str(rd, "unlimited") == "" or has_control(_str(rd, "unlimited")):
+            raise SettingError("unlimited must be a non-empty single-line string")
+    elif t == "size" and o.get("allow_unlimited"):
+        raise SettingError("allow_unlimited needs render.unlimited (the value the app takes for unlimited, e.g. \"-1\")")
+    for name in ("true", "false"):
+        if not _has(rd, name):
+            continue
+        if t != "bool":
+            raise SettingError(f"{name} is for bool options")
+        if has_control(_str(rd, name)):
+            raise SettingError(f"{name} must be a single-line string")
+    collection = t in LIST_LIKE or scope_of(o) == "person_entered"
+    if _has(rd, "join"):
+        if not collection:
+            raise SettingError("join is for list, multi_enum, groups and users options (and person_entered collections)")
+        if _str(rd, "join") == "" or has_control(_str(rd, "join")):
+            raise SettingError("join must be a non-empty separator without newlines or control characters")
+        if _str(rd, "format"):
+            raise SettingError("join and format exclude each other")
+    fmt = _str(rd, "format")
+    if fmt in ("yaml", "csv"):
+        if not collection and t != "table":
+            raise SettingError(f"format {fmt} is for list, multi_enum, groups, users and table options (and person_entered collections)")
+    elif fmt not in ("", "json"):
+        raise SettingError(f"format {json.dumps(fmt)} must be json, yaml or csv")
+
+
+def check_option_kind(o: Dict[str, Any]) -> None:
+    """Registry.CheckOption: the kind's constraints, each delivery's render,
+    the default and the group_values as values of o."""
+    _kind_check(o)
+    deliveries = o.get("delivery") if isinstance(o.get("delivery"), list) else []
+    if o.get("type") == "size" and o.get("allow_unlimited") and not deliveries:
+        raise SettingError("allow_unlimited needs deliveries that say how unlimited is rendered (render.unlimited)")
+    for d in deliveries:
+        try:
+            _check_render(o, render_of(d) if isinstance(d, dict) else {})
+        except SettingError as e:
+            raise SettingError(f"{delivery_name(d)}: render: {e}") from None
+    if _has(o, "default"):
+        try:
+            setting_value(o, o["default"])
+        except SettingError as e:
+            raise SettingError(f"default {_gofmt(o['default'])}: {e}") from None
+    gv = o.get("group_values") if isinstance(o.get("group_values"), dict) else {}
+    for g in sorted(gv, key=str):
+        try:
+            setting_value(o, gv[g])
+        except SettingError as e:
+            raise SettingError(f"group_values[{g}] {_gofmt(gv[g])}: {e}") from None
+
+
+# ── compose interpolation (settings.go referenced / interpolations) ──
+
+def _interpolations(s: str, rx: Any) -> List[Any]:
+    """rx's matches compose interpolates: one preceded by an odd run of $ is escaped."""
+    out = []
+    for m in rx.finditer(s):
+        run, i = 0, m.start() - 1
+        while i >= 0 and s[i] == "$":
+            run += 1
+            i -= 1
+        if run % 2 == 0:
+            out.append(m)
+    return out
+
+
+def compose_references(s: str, name: str) -> bool:
+    """Whether compose interpolates ${name} in s."""
+    return bool(_interpolations(s, re.compile(r"\$\{" + re.escape(name) + r"(\}|:?[-?+])")))
+
+
+def _string_values(x: Any, out: List[str]) -> None:
+    """scalarValues: every decoded string value (mapping keys excluded)."""
+    if isinstance(x, str):
+        out.append(x)
+    elif isinstance(x, dict):
+        for val in x.values():
+            _string_values(val, out)
+    elif isinstance(x, list):
+        for e in x:
+            _string_values(e, out)
+
+
+def compose_environment(services: Dict[str, Any]) -> Dict[str, Dict[str, Optional[str]]]:
+    """composeEnvironment: service → name → value (None = passed through)."""
+    out: Dict[str, Dict[str, Optional[str]]] = {}
+    for svc, s in services.items():
+        env: Dict[str, Optional[str]] = {}
+        raw = s.get("environment") if isinstance(s, dict) else None
+        if isinstance(raw, dict):
+            for k, val in raw.items():
+                env[str(k)] = None if val is None else scalar_text(val)
+        elif isinstance(raw, list):
+            for e in raw:
+                k, eq, val = scalar_text(e).partition("=")
+                env[k] = val if eq else None
+        out[str(svc)] = env
+    return out
+
+
+def option_env_names(o: Dict[str, Any]) -> List[str]:
+    """Option.EnvNames: every env variable o's env deliveries write (indexed
+    NAME_{n} expanded to NAME_1 … NAME_<max_items>); an instance option
+    without deliveries writes UPPER(key) (a path none)."""
+    out: List[str] = []
+
+    def add(n: str) -> None:
+        if n.endswith(INDEX_SUFFIX):
+            mi = o.get("max_items")
+            if isinstance(mi, int) and not isinstance(mi, bool):
+                out.extend(f"{n[:-len(INDEX_SUFFIX)]}_{i}" for i in range(1, min(mi, MAX_INDEXED) + 1))
+            return
+        out.append(n)
+    deliveries = o.get("delivery")
+    if scope_of(o) == "instance" and not deliveries:
+        if o.get("type") != "path" and isinstance(o.get("key"), str):
+            add(o["key"].upper())
+        return out
+    for d in deliveries if isinstance(deliveries, list) else []:
+        if isinstance(d, dict) and _str(d, "env"):
+            add(_str(d, "env"))
+    return out
+
+
+def setting_options(m: Dict[str, Any]) -> List[Dict[str, Any]]:
+    s = m.get("settings")
+    opts = s.get("options") if isinstance(s, dict) else None
+    return [o for o in opts if isinstance(o, dict)] if isinstance(opts, list) else []
+
+
+def settings_env_names(m: Dict[str, Any]) -> List[str]:
+    return [n for o in setting_options(m) for n in option_env_names(o)]
+
+
+def reserved_var(k: str) -> bool:
+    """templates.ReservedVar: the instance variables the Hub sets."""
+    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES)
+
+
+def reserved_use(o: Dict[str, Any]) -> Tuple[str, str]:
+    """reservedUse: what of o is reserved (projects 2 / 3), and for which feature."""
+    t = o.get("type")
+    if t == "folder":
+        return "type folder", FEATURE_FOLDERS
+    if t in ("person_secret", "person_id"):
+        return f"type {t}", FEATURE_SHARING
+    for f, feat, on in (("folder", FEATURE_FOLDERS, _has(o, "folder")), ("checks", FEATURE_FOLDERS, _has(o, "checks")),
+                        ("hash", FEATURE_SHARING, _str(o, "hash") != ""),
+                        ("length", FEATURE_SHARING, o.get("length") not in (None, 0)),
+                        ("revoke_on_leave", FEATURE_SHARING, _has(o, "revoke_on_leave")),
+                        ("on_restore", FEATURE_SHARING, _str(o, "on_restore") != ""),
+                        ("pool", FEATURE_SHARING, _str(o, "pool") != ""),
+                        ("username", FEATURE_SHARING, _has(o, "username")),
+                        ("mount", FEATURE_SHARING, _has(o, "mount"))):
+        if on:
+            return f, feat
+    if isinstance(o.get("delivery"), str):
+        return "delivery: " + o["delivery"], FEATURE_SHARING
+    return "", ""
+
+
+def applies_of(o: Dict[str, Any]) -> str:
+    """The effective applies (§13.9 defaults: claims next_sign_in, headers next_request, else restart)."""
+    if _str(o, "applies"):
+        return _str(o, "applies")
+    for d in o.get("delivery") if isinstance(o.get("delivery"), list) else []:
+        if isinstance(d, dict) and isinstance(d.get("claim"), dict):
+            return "next_sign_in"
+        if isinstance(d, dict) and isinstance(d.get("header"), dict):
+            return "next_request"
+    return "restart"
+
+
+def check_id_shape(app_id: str) -> Optional[str]:
+    """templates.CheckIDShape: no portcullis segment, its own Normalize form."""
+    for seg in re.split(r"[^a-zA-Z0-9]+", app_id):
+        if seg.lower() == "portcullis":
+            return (f"id {json.dumps(app_id)}: portcullis may not be a segment of an id (Traefik's automatic names "
+                    f"<service>-portcullis-<id> of two instances could collide)")
+    if not ID_NORMAL_RE.fullmatch(app_id):
+        return (f"id {json.dumps(app_id)}: write it as letters and digits joined by single - (Traefik turns _, -- and a "
+                f"trailing - into the same automatic name as another id)")
+    return None
+
+
+def traefik_enable(labels: Dict[str, str]) -> Tuple[bool, Optional[str]]:
+    """templates.TraefikEnable: exactly true or false, set once (folded keys)."""
+    key, on = None, False
+    for k in sorted(labels):
+        if fold_key(k) != "traefik.enable":
+            continue
+        if key is not None:
+            a, b = sorted((key, k))
+            return False, f"traefik.enable is set twice ({json.dumps(a)} and {json.dumps(b)})"
+        key = k
+        val = labels[k]
+        if val == "true":
+            on = True
+        elif val != "false":
+            return False, (f"traefik.enable is {json.dumps(val)}: write true or false (Traefik also reads 1, t, TRUE, … as "
+                           "on; the Hub accepts only these two)")
+    return on, None
+
+
+_ROUTER_SVC_NAME_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(?:routers|services)\.([^.]+)\.")
+_HTTP_SERVICE_RE = re.compile(r"^traefik\.http\.services\.([^.]+)\.")
+_HTTP_ROUTER_NAME_RE = re.compile(r"^traefik\.http\.routers\.([a-z0-9][a-z0-9_-]*)\.(.+)$")
+
+
+def auto_name_key(svc: str) -> str:
+    """autoNameKey: Traefik's provider.Normalize part of <svc>_<project>."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", svc).strip("-").lower()
+
+
+def check_traefik_routes(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """ParseRoutes' refusals beyond the rule form (routes.go): automatic-name
+    look-alikes, Traefik services or HTTP routers on two compose services,
+    automatic names that normalise alike, traefik.enable exactly true/false."""
+    tsvc_owner: Dict[str, str] = {}
+    router_owner: Dict[str, str] = {}
+    auto_owner: Dict[str, str] = {}
+    for sname in sorted(services, key=str):
+        svc = services[sname]
+        if not isinstance(svc, dict):
+            continue
+        where = f"{t.c_where}: services.{sname}"
+        labels = labels_of(svc)
+        for k in sorted(labels):
+            m = _ROUTER_SVC_NAME_RE.match(fold_key(k))
+            if m and ("-portcullis-" in m.group(1) or m.group(1).endswith("-portcullis")):
+                r.error(where, f"Traefik name {m.group(1)} looks like an automatic service name (<compose service>-portcullis-<id>, "
+                               "which Traefik gives a container's routers without a service label) and would merge with it: "
+                               "names may not contain -portcullis- or end with -portcullis", HUB_HINT)
+        for name in sorted({m.group(1) for k in labels for m in [_HTTP_SERVICE_RE.match(k)] if m}):
+            if name in tsvc_owner:
+                r.error(t.c_where, f"Traefik service {name} is defined on services {tsvc_owner[name]} and {sname} (Traefik would "
+                                   "merge them into one load balancer): give each its own name", HUB_HINT)
+            else:
+                tsvc_owner[name] = str(sname)
+        enabled, why = traefik_enable(labels)
+        if why:
+            r.error(where, why, HUB_HINT)
+        if enabled:
+            key = auto_name_key(str(sname))
+            if key in auto_owner:
+                r.error(t.c_where, f"services {auto_owner[key]} and {sname} would get the same automatic Traefik service name "
+                                   f"(Traefik turns every run of characters other than letters and digits into -, "
+                                   f"{key}-portcullis-<id>) and be merged into one load balancer: rename one of them", HUB_HINT)
+            else:
+                auto_owner[key] = str(sname)
+            if not any(_HTTP_ROUTER_NAME_RE.match(k) for k in labels) and \
+                    not any(k.startswith(("traefik.tcp.", "traefik.udp.")) for k in labels):
+                r.error(where, "traefik.enable=true without an HTTP router rule (Traefik would apply its default rule)", HUB_HINT)
+        for name in sorted({m.group(1) for k in labels for m in [_HTTP_ROUTER_NAME_RE.match(k)] if m}):
+            if fold_key(name) in router_owner:
+                r.error(t.c_where, f"router {name} is defined on services {router_owner[fold_key(name)]} and {sname}: give each its own name", HUB_HINT)
+            else:
+                router_owner[fold_key(name)] = str(sname)
+
+
+class _Refuse(Exception):
+    pass
+
+
+class _SpecCheck:
+    """ValidateSettingsSpec over one template (contract §13)."""
+
+    def __init__(self, t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+        self.t, self.r = t, r
+        self.m: Dict[str, Any] = t.manifest or {}
+        self.auth: Dict[str, Any] = self.m.get("auth") if isinstance(self.m.get("auth"), dict) else {}
+        self.services = {str(k): (s if isinstance(s, dict) else {}) for k, s in services.items()}
+        self.routers = routers
+        self.env = compose_environment(self.services)
+        self.scalars: List[str] = []
+        _string_values(t.compose or {}, self.scalars)
+        self.files: Dict[str, Dict[str, Any]] = {}
+        self.hooks: Dict[str, Dict[str, Any]] = {}
+        self.opts: Dict[str, Dict[str, Any]] = {}
+        self.claims: Dict[Tuple[str, str], str] = {}
+        self.headers: Dict[str, str] = {}
+        self.fields: Dict[Tuple[str, str, str], str] = {}
+        # routes (templates.Routes): Traefik services per compose service,
+        # network_mode, Traefik-labelled services.
+        self.traefik_services: Dict[str, List[str]] = {}
+        self.network_mode: Dict[str, str] = {}
+        self.labelled: Set[str] = set()
+        for name, s in self.services.items():
+            labels = labels_of(s)
+            self.traefik_services[name] = sorted({m.group(1) for k in labels for m in [_HTTP_SERVICE_RE.match(k)] if m})
+            nm = s.get("network_mode")
+            self.network_mode[name] = nm if isinstance(nm, str) else ""
+            if any(fold_key(k).startswith("traefik.") for k in labels):
+                self.labelled.add(name)
+
+    def err(self, msg: str, hint: str = SETTINGS_HINT) -> None:
+        self.r.error(self.t.m_where, msg, hint)
+
+    def run(self) -> None:
+        self.check_files()
+        self.check_hooks()
+        self.check_reload()
+        spec = self.m.get("settings")
+        if not isinstance(spec, dict):
+            return
+        sections = spec.get("sections") or []
+        seen: Set[str] = set()
+        for s in sections:
+            s = scalar_text(s)
+            if not SECTION_RE.fullmatch(s):
+                self.err(f"settings.sections: {json.dumps(s)} must match ^{SECTION_RE.pattern}$")
+            elif s in seen:
+                self.err(f"settings.sections: {json.dumps(s)} listed twice")
+            seen.add(s)
+        self.sections = seen
+        bad: Set[int] = set()
+        options = setting_options(self.m)
+        for i, o in enumerate(options):
+            key = _str(o, "key")
+            if not OPTION_KEY_RE.fullmatch(key):
+                self.err(f"setting {key}: key must match ^{OPTION_KEY_RE.pattern}$ (an identifier, not an env name)")
+                bad.add(i)
+                continue
+            if key in self.opts:
+                self.err(f"setting {key}: declared twice")
+                bad.add(i)
+                continue
+            why = self.type_problem(o)
+            if why:
+                self.err(f"setting {key}: {why}")
+                bad.add(i)
+            self.opts[key] = o
+        self.check_env_names(options, bad)
+        for i, o in enumerate(options):
+            if i in bad:
+                continue
+            try:
+                self.option(o)
+                check_option_kind(o)
+            except (_Refuse, SettingError) as e:
+                self.err(f"setting {_str(o, 'key')}: {e}")
+                continue
+            self.warnings(o)
+
+    # files / hooks / reload
+
+    def has_trigger(self, tr: str) -> bool:
+        return any(tr in (h.get("when") or []) for h in self.m.get("hooks") or [] if isinstance(h, dict))
+
+    def check_files(self) -> None:
+        files = [f for f in self.m.get("files") or [] if isinstance(f, dict)]
+        for i, f in enumerate(files):
+            name, svc, mount = _str(f, "name"), _str(f, "service"), _str(f, "mount")
+            w = f"files[{name}]"
+            omc = _str(f, "on_membership_change")
+            problems = []
+            if not FILE_HOOK_NAME_RE.fullmatch(name):
+                problems.append(f"name must match ^{FILE_HOOK_NAME_RE.pattern}$")
+            elif name in self.files:
+                problems.append("declared twice")
+            if svc not in self.services:
+                problems.append(f"service {svc} is not in compose.yml")
+            if not valid_mount(mount):
+                problems.append(f"mount {json.dumps(mount)} must be an absolute, clean container directory (no ':')")
+            if omc in ("", "none", "restart"):
+                pass
+            elif omc == "reload":
+                if self.m.get("reload") is None:
+                    problems.append("on_membership_change: reload needs the template's reload action")
+            elif omc == "hook":
+                if not self.has_trigger("membership_change"):
+                    problems.append("on_membership_change: hook needs a hook with when: [membership_change]")
+            else:
+                problems.append(f"on_membership_change {json.dumps(omc)} must be restart, reload, hook or none")
+            for g in files[:i]:
+                if _str(g, "service") == svc and _nested(_str(g, "mount"), mount):
+                    problems.append(f"mount {mount} collides with files[{_str(g, 'name')}] ({_str(g, 'mount')}) on service {svc}")
+            for o in setting_options(self.m):
+                tg = o.get("target") if isinstance(o.get("target"), dict) else None
+                if o.get("type") == "path" and tg and _str(tg, "service") == svc and _nested(_str(tg, "mount"), mount):
+                    problems.append(f"mount {mount} collides with setting {_str(o, 'key')}'s target {_str(tg, 'mount')} on service {svc}")
+            for p in problems:
+                self.err(f"{w}: {p}")
+            self.files.setdefault(name, f)
+
+    def check_hooks(self) -> None:
+        for h in [h for h in self.m.get("hooks") or [] if isinstance(h, dict)]:
+            name, svc = _str(h, "name"), _str(h, "service")
+            w = f"hooks[{name}]"
+            problems = []
+            if not FILE_HOOK_NAME_RE.fullmatch(name):
+                problems.append(f"name must match ^{FILE_HOOK_NAME_RE.pattern}$")
+            elif name in self.hooks:
+                problems.append("declared twice")
+            if svc not in self.services:
+                problems.append(f"service {svc} is not in compose.yml")
+            cmd = h.get("command") or []
+            if not cmd:
+                problems.append("command must be a non-empty argv list (run directly, no sh -c)")
+            elif any(scalar_text(a) == "" or has_control(scalar_text(a)) for a in cmd):
+                problems.append("command arguments must be non-empty, without control characters")
+            if has_control(_str(h, "user")):
+                problems.append("user contains control characters")
+            when = h.get("when") or []
+            if not when:
+                problems.append("when must list at least one trigger (start, settings_change, membership_change)")
+            for tr in when:
+                if tr not in HOOK_TRIGGERS:
+                    problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change or membership_change")
+            if _has(h, "timeout"):
+                try:
+                    ns = go_parse_duration(scalar_text(h["timeout"]))
+                    if ns < 0 or ns > HOOK_MAX_TIMEOUT:
+                        problems.append(f"timeout {scalar_text(h['timeout'])} must be between 0 (default 30s) and 10m0s")
+                except ValueError as e:
+                    problems.append(f"duration {json.dumps(scalar_text(h['timeout']))}: time: {e}")
+            for p in problems:
+                self.err(f"{w}: {p}")
+            self.hooks.setdefault(name, h)
+
+    def check_reload(self) -> None:
+        rl = self.m.get("reload")
+        if not isinstance(rl, dict):
+            return
+        hook, svc, sig = _str(rl, "hook"), _str(rl, "service"), _str(rl, "signal")
+        if hook and (svc or sig):
+            self.err("reload: either {service, signal} or {hook}, not both")
+        elif hook:
+            if hook not in self.hooks:
+                self.err(f"reload: hook {hook} is not declared in hooks")
+        else:
+            if svc not in self.services:
+                self.err(f"reload: service {json.dumps(svc)} is not in compose.yml")
+            if sig not in RELOAD_SIGNALS:
+                self.err(f"reload: signal {json.dumps(sig)} must be HUP, USR1 or USR2")
+
+    # options
+
+    def type_problem(self, o: Dict[str, Any]) -> str:
+        t = _str(o, "type")
+        if t in OLD_TYPES:
+            return f"type {t} is template contract v2: {OLD_TYPES[t]}"
+        what, feat = reserved_use(o)
+        if feat:
+            return f"{what} needs {feat}, which this Hub doesn't implement"
+        if t not in BUILTIN_TYPES:
+            return f"unknown type {json.dumps(t)}"
+        return ""
+
+    def check_env_names(self, options: List[Dict[str, Any]], bad: Set[int]) -> None:
+        m = self.m
+        owner: Dict[str, str] = {}
+        for e in m.get("env") or []:
+            if isinstance(e, dict) and _str(e, "key"):
+                owner[_str(e, "key")] = "env[] " + _str(e, "key")
+        for p in m.get("ports") or []:
+            if isinstance(p, dict) and _str(p, "key"):
+                owner[_str(p, "key")] = "ports[] " + _str(p, "key")
+                owner[_str(p, "key") + "_BIND"] = "ports[] " + _str(p, "key") + " (bind)"
+        for c in m.get("keycloak_clients") or []:
+            if isinstance(c, dict) and _str(c, "secret_env"):
+                owner[_str(c, "secret_env")] = f"keycloak client {_str(c, 'client_id')} secret_env"
+        for i, o in enumerate(options):
+            if i in bad:
+                continue
+            key = _str(o, "key")
+            try:
+                for d in o.get("delivery") if isinstance(o.get("delivery"), list) else []:
+                    n = _str(d, "env") if isinstance(d, dict) else ""
+                    if not n:
+                        continue
+                    if n.endswith(INDEX_SUFFIX):
+                        self.indexed(o, n[:-len(INDEX_SUFFIX)])
+                    elif "{" in n:
+                        raise _Refuse(f"env name {json.dumps(n)}: the only indexed form is NAME_{{n}}")
+                for n in option_env_names(o):
+                    if not ENV_KEY_RE.fullmatch(n):
+                        raise _Refuse(f"env name {json.dumps(n)} must match ^{ENV_KEY_RE.pattern}$")
+                    if reserved_var(n) or n.startswith("PORTCULLIS_"):
+                        raise _Refuse(f"env name {n} is reserved (PORTCULLIS_*: core and the Hub set them)")
+                    if n in owner:
+                        raise _Refuse(f"env name {n} is already used by {owner[n]}")
+                    owner[n] = "setting " + key
+                    for svc in sorted(self.env):
+                        val = self.env[svc].get(n, "\0absent")
+                        if val is not None and val != "\0absent" and not compose_references(val, n):
+                            raise _Refuse(f"compose.yml hard-codes {n} in service {svc}'s environment (use ${{{n}}})")
+                    if not any(compose_references(s, n) for s in self.scalars):
+                        raise _Refuse(f"env name {n} is not referenced as ${{{n}}} in compose.yml")
+            except _Refuse as e:
+                self.err(f"setting {key}: {e}")
+                bad.add(i)
+
+    def indexed(self, o: Dict[str, Any], prefix: str) -> None:
+        if o.get("type") != "list" or scope_of(o) != "instance":
+            raise _Refuse(f"indexed env {prefix}{INDEX_SUFFIX} is for instance list options only")
+        mi = o.get("max_items")
+        if not isinstance(mi, int) or isinstance(mi, bool) or not 1 <= mi <= MAX_INDEXED:
+            raise _Refuse(f"indexed env {prefix}{INDEX_SUFFIX} needs max_items (1-{MAX_INDEXED})")
+        rx = re.compile(r"\$\{" + re.escape(prefix) + r"_([0-9]+)(\}|:?[-?+])")
+        for sc in self.scalars:
+            for mm in _interpolations(sc, rx):
+                n = int(mm.group(1)) if len(mm.group(1)) <= 18 else 0
+                if n < 1 or n > mi:
+                    raise _Refuse(f"compose.yml references {prefix}_{mm.group(1)}, beyond max_items {mi}")
+
+    def identityless(self) -> bool:
+        a = self.auth
+        nl = a.get("native_login") if isinstance(a.get("native_login"), dict) else {}
+        return a.get("method") in ("public", "custom") or bool(nl.get("allow_without_gateway"))
+
+    def option(self, o: Dict[str, Any]) -> None:
+        label, desc = _str(o, "label"), _str(o, "description")
+        if label == "" or blen(label) > 64 or has_control(label):
+            raise _Refuse("label must be a single non-empty line of at most 64 characters")
+        if blen(desc) > 500 or any(c != "\n" and is_control_rune(c) for c in desc):
+            raise _Refuse("description must be at most 500 characters, without control characters")
+        sec = _str(o, "section")
+        if sec and sec not in self.sections:
+            raise _Refuse(f"section {json.dumps(sec)} is not listed in settings.sections")
+        scope = scope_of(o)
+        if scope not in SCOPES:
+            raise _Refuse(f"scope {json.dumps(_str(o, 'scope'))} must be instance, person, group or person_entered")
+        applies = _str(o, "applies")
+        if applies and applies not in APPLIES:
+            raise _Refuse(f"applies {json.dumps(applies)} must be live, reload, next_request, next_sign_in, restart or account_creation")
+        if scope == "person_entered":
+            self.person_entered(o)
+        t = o.get("type")
+        sv = o.get("self_visible")
+        if o.get("privileged") and scope != "person":
+            raise _Refuse("privileged needs scope: person")
+        if sv is not None and scope != "person" and not (scope == "person_entered" and sv):
+            raise _Refuse("self_visible needs scope: person")
+        if (_str(o, "resolve") or o.get("resolve_choices")) and scope != "person":
+            raise _Refuse("resolve and resolve_choices need scope: person")
+        if _has(o, "group_values") and scope != "person":
+            raise _Refuse("group_values need scope: person")
+        if o.get("admin_override") and scope != "person_entered":
+            raise _Refuse("admin_override needs scope: person_entered")
+        if scope == "person" and not _has(o, "default"):
+            raise _Refuse("scope person needs a default (the value for everyone else with access)")
+        if scope == "group" and _has(o, "default"):
+            raise _Refuse("scope group takes no default (the group records are the values)")
+        if o.get("unique") and t != "list" and not (scope == "person_entered" and t in ("string", "int")):
+            raise _Refuse("unique is for list options and person_entered string / int options")
+        if _has(o, "generate") and t != "secret":
+            raise _Refuse("generate is for secret options")
+        if _has(o, "writes_as") and t != "path":
+            raise _Refuse("writes_as is for path options")
+        if t == "path" and scope != "instance":
+            raise _Refuse("a path option must have scope instance")
+        if applies == "reload" and self.m.get("reload") is None:
+            raise _Refuse("applies: reload needs the template's reload action")
+        self.resolve(o)
+        self.group_values(o)
+        self.privileged(o)
+        self.requires(o)
+        self.path_and_secret(o)
+        self.deliveries(o)
+
+    def person_entered(self, o: Dict[str, Any]) -> None:
+        t = o.get("type")
+        if t not in PERSON_ENTERED_TYPES:
+            if t == "secret":
+                raise _Refuse("scope person_entered can't be a secret: a per-person credential is person_secret (project 3)")
+            raise _Refuse(f"scope person_entered is for string, int, bool or enum options, not {t}")
+        for field, on in (("default", _has(o, "default")), ("required", bool(o.get("required"))),
+                          ("resolve", _str(o, "resolve") != ""), ("resolve_choices", bool(o.get("resolve_choices"))),
+                          ("group_values", _has(o, "group_values")), ("privileged", bool(o.get("privileged"))),
+                          ("requires", bool(o.get("requires"))),
+                          ("self_visible: false (people always see their own value)", o.get("self_visible") is False),
+                          ("applies: account_creation", _str(o, "applies") == "account_creation")):
+            if on:
+                raise _Refuse(f"scope person_entered takes no {field}")
+        if o.get("unique") and t not in ("string", "int"):
+            raise _Refuse("unique is for person_entered string / int options")
+        if t == "string":
+            if not _has(o, "max_len") and not _str(o, "pattern") and not _str(o, "format"):
+                raise _Refuse(f"a person_entered string needs max_len (at most {PERSON_ENTERED_MAX_LEN}), a pattern or a format")
+            if _has(o, "max_len") and o["max_len"] > PERSON_ENTERED_MAX_LEN:
+                raise _Refuse(f"a person_entered string's max_len is at most {PERSON_ENTERED_MAX_LEN}")
+        if self.identityless() and not _str(self.auth, "access_group"):
+            raise _Refuse("scope person_entered on a template whose routes can run without Portcullis identity (method public / "
+                          "custom, or the app's own login only) needs auth.access_group (who may enter a value)")
+        applies = applies_of(o)
+        for d in o.get("delivery") if isinstance(o.get("delivery"), list) else []:
+            if not isinstance(d, dict):
+                continue
+            if _str(d, "env"):
+                rd = d.get("render") if isinstance(d.get("render"), dict) else None
+                if rd is None or (not _has(rd, "join") and _str(rd, "format") != "json"):
+                    raise _Refuse("a person_entered env delivery is the list of values: it needs render.join or render.format: json")
+                if applies != "restart":
+                    raise _Refuse("a person_entered env delivery needs applies: restart")
+            elif isinstance(d.get("file"), dict):
+                f = self.files.get(_str(d["file"], "name"))
+                if f is None:
+                    continue
+                omc = _str(f, "on_membership_change")
+                want = {"restart": "restart", "reload": "reload", "hook": "live"}.get(omc, "")
+                if not want:
+                    raise _Refuse(f"file {_str(f, 'name')} has no on_membership_change: person-entered values reach it only "
+                                  "through the membership path")
+                if applies != want:
+                    raise _Refuse(f"applies {applies} doesn't match file {_str(f, 'name')}'s on_membership_change {omc} "
+                                  f"(want applies: {want})")
+            elif _str(d, "hook"):
+                h = self.hooks.get(_str(d, "hook"))
+                if h is None:
+                    continue
+                if applies != "live":
+                    raise _Refuse("a person_entered hook delivery needs applies: live")
+                if "membership_change" not in (h.get("when") or []):
+                    raise _Refuse(f"hook {_str(h, 'name')} needs membership_change in its when to deliver person-entered values")
+            elif isinstance(d.get("claim"), dict):
+                if applies != "next_sign_in":
+                    raise _Refuse(f"a claim delivery applies at next_sign_in, not {applies}")
+            elif isinstance(d.get("header"), dict):
+                if applies != "next_request":
+                    raise _Refuse(f"a header delivery applies at next_request, not {applies}")
+
+    def resolve(self, o: Dict[str, Any]) -> None:
+        def fits(rule: str) -> None:
+            if rule not in RESOLVE_TYPES:
+                raise _Refuse(f"resolve {rule} must be max, min, priority, union, intersection, any or all")
+            types = RESOLVE_TYPES[rule]
+            if types is not None and o.get("type") not in types:
+                raise _Refuse(f"resolve {rule} doesn't fit type {o.get('type')}")
+        if _str(o, "resolve"):
+            fits(_str(o, "resolve"))
+        for rule in o.get("resolve_choices") or []:
+            try:
+                fits(scalar_text(rule))
+            except _Refuse as e:
+                raise _Refuse(f"resolve_choices: {scalar_text(rule)}: {e}") from None
+
+    def group_values(self, o: Dict[str, Any]) -> None:
+        gv = o.get("group_values") if isinstance(o.get("group_values"), dict) else {}
+        for k in gv:
+            if k == PLACEHOLDER_ACCESS:
+                if not _str(self.auth, "access_group"):
+                    raise _Refuse(f"group_values: {k} needs auth.access_group")
+                if o.get("privileged"):
+                    raise _Refuse(f"group_values: {k} on a privileged option would give everyone with access a privileged "
+                                  f"value: use {PLACEHOLDER_ADMIN}")
+            elif k == PLACEHOLDER_ADMIN:
+                if not _str(self.auth, "admin_group"):
+                    raise _Refuse(f"group_values: {k} needs auth.admin_group")
+            else:
+                raise _Refuse(f"group_values: {json.dumps(scalar_text(k))}: only the placeholders {PLACEHOLDER_ACCESS} and "
+                              f"{PLACEHOLDER_ADMIN} (the admin picks other groups)")
+
+    def privileged(self, o: Dict[str, Any]) -> None:
+        if not o.get("privileged"):
+            return
+        t = o.get("type")
+        if t == "enum":
+            cs = o.get("options") or []
+            if not cs:
+                raise _Refuse("an enum needs options")
+            low = _str(cs[0], "value")
+            if not isinstance(o.get("default"), str) or o["default"] != low:
+                raise _Refuse(f"a privileged option's default must be its lowest-ranked value {json.dumps(low)}")
+        elif t == "bool":
+            if o.get("default") is not False:
+                raise _Refuse("a privileged option's default must be its lowest-ranked value false")
+        else:
+            raise _Refuse("privileged is for enum and bool options (a role, an admin flag)")
+
+    def requires(self, o: Dict[str, Any]) -> None:
+        reqs = [scalar_text(k) for k in o.get("requires") or []]
+        if reqs and scope_of(o) != "instance":
+            raise _Refuse("requires is for instance options")
+        for k in reqs:
+            ro = self.opts.get(k)
+            if k == _str(o, "key"):
+                raise _Refuse("requires names itself")
+            if ro is None:
+                raise _Refuse(f"requires {k}: no such option")
+            if scope_of(ro) != "instance":
+                raise _Refuse(f"requires {k}: not an instance option")
+
+    def path_and_secret(self, o: Dict[str, Any]) -> None:
+        if o.get("type") == "path":
+            tg = o.get("target") if isinstance(o.get("target"), dict) else None
+            if tg is None:
+                raise _Refuse("a path option needs a target {service, mount}")
+            if _str(tg, "service") not in self.services:
+                raise _Refuse(f"target service {json.dumps(_str(tg, 'service'))} is not in compose.yml")
+            if not valid_mount(_str(tg, "mount")):
+                raise _Refuse(f"target mount {json.dumps(_str(tg, 'mount'))} must be an absolute, clean container path (no ':')")
+            if o.get("delivery"):
+                raise _Refuse("a path option is delivered as its target mount: no delivery")
+        wa = o.get("writes_as")
+        if isinstance(wa, dict):
+            for what in ("uid", "gid"):
+                ref = wa.get(what)
+                if isinstance(ref, int) and not isinstance(ref, bool):
+                    if ref < 0:
+                        raise _Refuse(f"writes_as.{what} must be non-negative")
+                elif isinstance(ref, str) and ref != "":
+                    ro = self.opts.get(ref)
+                    if ro is None or scope_of(ro) != "instance" or ro.get("type") not in ("int", "string"):
+                        raise _Refuse(f"writes_as.{what}: {ref} is not an instance int or string option")
+                else:
+                    raise _Refuse(f"writes_as.{what}: a number or an option key")
+        g = o.get("generate")
+        if isinstance(g, dict):
+            length = g.get("length") if isinstance(g.get("length"), int) else 0
+            if not 8 <= length <= 128:
+                raise _Refuse(f"generate.length {length} must be 8-128")
+            if _str(g, "charset") not in GENERATE_CHARSETS:
+                raise _Refuse(f"generate.charset {json.dumps(_str(g, 'charset'))} must be hex, alphanumeric or ascii_printable")
+
+    def deliveries(self, o: Dict[str, Any]) -> None:
+        scope = scope_of(o)
+        ds = [d if isinstance(d, dict) else {} for d in (o.get("delivery") if isinstance(o.get("delivery"), list) else [])]
+        if not ds:
+            if scope == "person":
+                raise _Refuse("scope person needs a per-person delivery (claim, header, file or hook)")
+            if scope in ("group", "person_entered"):
+                raise _Refuse(f"scope {scope} needs a delivery")
+        per_person = hook = False
+        for d in ds:
+            kinds = [bool(_str(d, "env")), isinstance(d.get("claim"), dict), isinstance(d.get("header"), dict),
+                     isinstance(d.get("file"), dict), bool(_str(d, "hook"))]
+            if sum(kinds) != 1:
+                raise _Refuse("each delivery is exactly one of env, claim, header, file or hook")
+            if _has(d, "render") and not _str(d, "env") and not _str(d, "hook"):
+                raise _Refuse("render goes inside a claim, header or file delivery")
+            if _str(d, "env"):
+                if scope == "person":
+                    raise _Refuse("per-person env is not allowed (one env for every person): deliver through a claim, header, file or hook")
+                if scope == "group":
+                    rd = d.get("render") if isinstance(d.get("render"), dict) else {}
+                    if _str(rd, "format") != "json":
+                        raise _Refuse("a scope group env delivery is the map of records: it needs render.format: json")
+            elif isinstance(d.get("claim"), dict):
+                per_person = True
+                self.claim(o, d["claim"])
+            elif isinstance(d.get("header"), dict):
+                per_person = True
+                self.header(o, d["header"])
+            elif isinstance(d.get("file"), dict):
+                per_person = True
+                self.file(o, d["file"])
+                hook = hook or _str(self.files[_str(d["file"], "name")], "on_membership_change") == "hook"
+            elif _str(d, "hook"):
+                per_person = hook = True
+                if _str(d, "hook") not in self.hooks:
+                    raise _Refuse(f"hook {_str(d, 'hook')} is not declared in hooks")
+        if scope == "person" and not per_person:
+            raise _Refuse("scope person needs a per-person delivery (claim, header, file or hook)")
+        if _str(o, "applies") == "live" and not hook:
+            raise _Refuse("applies: live means a hook applies it: add a hook delivery (or a file with on_membership_change: hook)")
+
+    def claim(self, o: Dict[str, Any], c: Dict[str, Any]) -> None:
+        if scope_of(o) not in ("person", "person_entered"):
+            raise _Refuse("a claim delivery is for scope person or person_entered")
+        method = _str(self.auth, "method")
+        if method != "native-oidc":
+            raise _Refuse(f"a claim delivery needs auth.method native-oidc (not {method})")
+        client, name, jt = _str(c, "client"), _str(c, "name"), _str(c, "json_type")
+        if client not in {_str(k, "client_id") for k in self.m.get("keycloak_clients") or [] if isinstance(k, dict)}:
+            raise _Refuse(f"claim: client {client} is not a keycloak_clients[] client_id")
+        if not CLAIM_NAME_RE.fullmatch(name):
+            raise _Refuse(f"claim {json.dumps(name)}: name must match ^{CLAIM_NAME_RE.pattern}$")
+        if name in RESERVED_CLAIMS or name.startswith(("attr_", "portcullis_")):
+            raise _Refuse(f"claim {name} is reserved (standard, Keycloak, attr_* and portcullis_* claims)")
+        if jt and jt not in CLAIM_JSON_TYPES:
+            raise _Refuse(f"claim {name}: json_type {json.dumps(jt)} must be int, string, bool or json")
+        why = claim_type_problem(o, c)
+        if why:
+            raise _Refuse(f"claim {name}: {why}")
+        if (client, name) in self.claims:
+            raise _Refuse(f"claim {name} on client {client} is already delivered by setting {self.claims[(client, name)]}")
+        self.claims[(client, name)] = _str(o, "key")
+
+    def net_ns(self, svc: str) -> Optional[str]:
+        """Routes.NetNS: network_mode service:X followed; "host"; None = a cycle or unknown target."""
+        seen: Set[str] = set()
+        while True:
+            if svc in seen:
+                return None
+            seen.add(svc)
+            nm = self.network_mode.get(svc, "")
+            if nm == "host":
+                return "host"
+            if not nm.startswith("service:"):
+                return svc
+            nxt = nm[len("service:"):]
+            if nxt not in self.network_mode:
+                return None
+            svc = nxt
+
+    def router_target(self, ri: Dict[str, str]) -> Optional[str]:
+        ts = ri.get("service", "").strip()
+        if ts == "":
+            return ri.get("_service")
+        base, _, prov = ts.partition("@")
+        if prov and fold_key(prov) != "docker":
+            return None
+        for svc in sorted(self.traefik_services):
+            if any(fold_key(n) == fold_key(base) for n in self.traefik_services[svc]):
+                return svc
+        return None
+
+    def header(self, o: Dict[str, Any], h: Dict[str, Any]) -> None:
+        if scope_of(o) not in ("person", "person_entered"):
+            raise _Refuse("a header delivery is for scope person or person_entered")
+        name = _str(h, "name")
+        if not HEADER_NAME_RE.fullmatch(name):
+            raise _Refuse(f"header {json.dumps(name)} must be X-Forwarded-Attr-<Name>")
+        a = self.auth
+        nl = a.get("native_login") if isinstance(a.get("native_login"), dict) else None
+        if a.get("method") == "public" or (a.get("method") == "custom" and not (nl and nl.get("supported") is True)):
+            raise _Refuse(f"header {name}: method {a.get('method')} routes carry no Portcullis identity (no per-person values, "
+                          "and clients could forge the header)")
+        if nl and nl.get("allow_without_gateway"):
+            raise _Refuse(f"header {name}: the app may run with its own login only (no Portcullis in front): clients could forge the header")
+        for svc in sorted(self.network_mode):
+            ns = self.net_ns(svc)
+            if ns is None:
+                raise _Refuse(f"header {name}: service {svc}'s network_mode doesn't resolve to a service of the template (a cycle?): "
+                              "the Hub can't tell which backend its routers reach")
+            if ns == "host" and svc in self.labelled:
+                raise _Refuse(f"header {name}: service {svc} has Traefik labels and runs in the host's network namespace "
+                              "(network_mode host): it can reach any port on the host, the delivering backend's included")
+        gated: Set[str] = set()
+        target: Dict[str, str] = {}
+        routers = {n: ri for n, ri in self.routers.items() if "rule" in ri}
+        for rn in sorted(routers):
+            ri = routers[rn]
+            tg = self.router_target(ri)
+            if tg is None:
+                raise _Refuse(f"header {name}: router {rn}'s service {ri.get('service', '').strip()} isn't one of the template's "
+                              "own services: the Hub can't tell which backend it reaches")
+            ns = self.net_ns(tg)
+            if ns is None:
+                raise _Refuse(f"header {name}: router {rn}'s backend has a network_mode the Hub can't resolve")
+            target[rn] = ns
+            if "portcullis-groups@docker" in split_middlewares(ri.get("middlewares", "")):
+                gated.add(ns)
+        if not gated:
+            raise _Refuse(f"header {name} needs routers with portcullis-groups@docker (group-gate returns the header)")
+        for rn in sorted(routers):
+            mws = split_middlewares(routers[rn].get("middlewares", ""))
+            if target[rn] in gated and not any(m in FORWARD_AUTH_MWS for m in mws):
+                raise _Refuse(f"header {name}: router {rn} reaches service {target[rn]} (its network namespace) without Portcullis "
+                              "forward-auth: clients could forge the header there")
+        k = name.lower()
+        if k in self.headers:
+            raise _Refuse(f"header {name} is already delivered by setting {self.headers[k]}")
+        self.headers[k] = _str(o, "key")
+
+    def file(self, o: Dict[str, Any], fd: Dict[str, Any]) -> None:
+        fname = _str(fd, "name")
+        if fname not in self.files:
+            raise _Refuse(f"file {fname} is not declared in files")
+        scope = scope_of(o)
+        if scope in ("instance", "group"):
+            if _str(fd, "field"):
+                raise _Refuse(f"file {fname}: field is for person and person_entered options (this option is the file's "
+                              f"{json.dumps(_str(o, 'key'))} entry)")
+            return
+        section = "people" if scope == "person" else "entries"
+        field = _str(fd, "field") or _str(o, "key")
+        if not FIELD_RE.fullmatch(field):
+            raise _Refuse(f"file {fname}: field {json.dumps(field)} must match ^{FIELD_RE.pattern}$")
+        k = (fname, section, field)
+        if k in self.fields:
+            raise _Refuse(f"file {fname}: field {field} is already written by setting {self.fields[k]}")
+        self.fields[k] = _str(o, "key")
+
+    def warnings(self, o: Dict[str, Any]) -> None:
+        """Advice the Hub gives at run time rather than at discover."""
+        key = _str(o, "key")
+        ds = [d for d in o.get("delivery") or [] if isinstance(d, dict)] if isinstance(o.get("delivery"), list) else []
+        if scope_of(o) == "instance" and _str(o, "applies") in ("live", "reload") and any(_str(d, "env") for d in ds):
+            self.r.warn(self.t.m_where, f"setting {key}: applies {_str(o, 'applies')} with an env delivery: a change still "
+                                        "restarts the app (the env is read at start)",
+                        "deliver it only through the hook / reload path, or declare applies: restart")
+        values = ([o["default"]] if _has(o, "default") else []) + \
+            (list(o["group_values"].values()) if isinstance(o.get("group_values"), dict) else [])
+        for d in ds:
+            rd = render_of(d)
+            unit = _str(rd, "unit")
+            units = SIZE_RENDER_UNITS if o.get("type") == "size" else DURATION_RENDER_UNITS if o.get("type") == "duration" else {}
+            if not rd.get("integer") or not unit or unit not in units:
+                continue
+            for raw in values:
+                val = setting_value(o, raw)
+                if isinstance(val, int) and val % units[unit]:
+                    shown = show_size(val) if o.get("type") == "size" else show_duration(val)
+                    self.r.warn(self.t.m_where, f"setting {key}: {delivery_name(d)}: {shown} is not a whole number of {unit}: "
+                                                "the Hub refuses this value at save", "pick a default on the delivery's unit")
+        for d in ds:
+            f = self.files.get(_str(d["file"], "name")) if isinstance(d.get("file"), dict) else None
+            if o.get("type") != "secret" or f is None:
+                continue
+            user = scalar_text(self.services.get(_str(f, "service"), {}).get("user")).split(":", 1)[0]
+            if user and user not in ("0", "root", "10001"):
+                self.r.warn(self.t.m_where, f"setting {key}: service {_str(f, 'service')} runs as {user} but "
+                                            f"{_str(f, 'name')}.secrets.json is 0600 (root or uid 10001 only)",
+                            "run the reading service as root or user: \"10001\" (contract §13.7)")
+
+
+def claim_type_problem(o: Dict[str, Any], c: Dict[str, Any]) -> str:
+    """templates.claimTypeFits: a json_type the claim's render can't produce."""
+    rd = c.get("render") if isinstance(c.get("render"), dict) else {}
+    jt, t = _str(c, "json_type"), o.get("type")
+
+    def numeric(int32: bool) -> str:
+        if t in ("int", "duration"):
+            pass
+        elif t == "size":
+            if int32 and _str(rd, "unit") in ("", "B"):
+                return (f"json_type {jt}: a size in bytes overflows the 32-bit integer Keycloak converts to: render it in a "
+                        "unit (render.unit: MiB, GiB, …)")
+        else:
+            return f"json_type {jt} needs a number: type {t} doesn't render as one"
+        if o.get("allow_unlimited"):
+            if not _has(rd, "unlimited"):
+                return f"json_type {jt}: render.unlimited must be set"
+            u = _str(rd, "unlimited")
+            if int32:
+                if not re.fullmatch(r"[+-]?[0-9]+", u) or not -(1 << 31) <= int(u) < (1 << 31):
+                    return f"json_type {jt}: render.unlimited {json.dumps(u)} must be a 32-bit integer"
+            else:
+                try:
+                    json.loads(u, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+                except ValueError:
+                    return f"json_type {jt}: render.unlimited {json.dumps(u)} must be JSON (a number or null)"
+        return ""
+
+    def boolean() -> str:
+        if t != "bool":
+            return f"json_type {jt} needs type bool (not {t})"
+        if (_has(rd, "true") and _str(rd, "true") != "true") or (_has(rd, "false") and _str(rd, "false") != "false"):
+            return f"json_type {jt}: render.true / render.false must be exactly true / false"
+        return ""
+    if jt == "int":
+        return numeric(True)
+    if jt == "bool":
+        return boolean()
+    if jt == "json":
+        if _str(rd, "format") == "json" or (t == "table" and _str(rd, "format") == ""):
+            return ""
+        if t in ("int", "size", "duration"):
+            return numeric(False)
+        if t == "bool":
+            return boolean()
+        return f"json_type {jt}: type {t} renders plain text: add render.format: json"
+    return ""
+
+
+def check_settings(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+    """Template contract v3 settings, files, hooks and reload (contracts §13),
+    as the Hub's ValidateSettingsSpec and settings.Registry check them."""
+    m = t.manifest or {}
+    if isinstance(m.get("settings"), list):
+        r.error(t.m_where, "settings: a list of settings is template contract v2; contract v3 declares settings: "
+                           "{sections, options} (integration contracts §13)", SETTINGS_HINT)
+        return
+    if t.schema_errors & set(SETTINGS_SHAPE_KEYS):
+        return   # the schema errors above say what to fix first
+    _SpecCheck(t, services, routers, r).run()
 
 
 # ── Main ────────────────────────────────────────────────────────────
