@@ -92,9 +92,11 @@ auth:
         justification: Shared-link route (sharedLink auth)
   notes: >
     Full OIDC with auto-register and auto-launch; password login is disabled
-    while OIDC is configured. Promote an SSO user to admin with
-    `docker exec <immich-server container> immich-admin grant-admin`.
-    roleClaim available but not yet mapped to groups.
+    while OIDC is configured. Storage quota and role come from the instance
+    settings as the token claims immich_quota (GiB, -1 = unlimited) and
+    immich_role: members of the admin group are Immich administrators
+    (privileged setting), and Immich re-reads both at every sign-in. Trash
+    days and machine learning are rendered into config.json at every start.
     Identity: OAuth users are keyed on the OIDC sub. Immich also links a login
     to an existing user with the same email and cannot be told not to, while
     LLDAP emails are user-editable; so on every start a one-shot job
@@ -114,10 +116,67 @@ auth:
     breaking changes and keep immich-db on the image upstream specifies.
 
 settings:
+  sections: [Storage, Accounts, Library]
   options:
+    - key: storage_quota
+      label: Storage quota
+      description: >
+        How much each person may upload. Set per group; a person in several
+        groups gets the largest. Immich applies it at the person's next
+        sign-in.
+      section: Storage
+      type: size
+      step: 1GiB
+      allow_unlimited: true
+      scope: person
+      default: 100GiB
+      resolve: max
+      resolve_choices: [max, min, priority]
+      applies: next_sign_in
+      delivery:
+        - {claim: {client: immich, name: immich_quota, json_type: int, render: {unit: GiB, unlimited: "-1"}}}
+    - key: role
+      label: Role
+      description: >
+        Immich administrators. The instance's admin group is an administrator
+        by default; Immich applies the role at the person's next sign-in.
+      section: Accounts
+      type: enum
+      options:
+        - {value: user, label: User}
+        - {value: admin, label: Administrator}
+      scope: person
+      privileged: true
+      default: user
+      resolve: max
+      group_values: {"{{ADMIN_GROUP}}": admin}
+      applies: next_sign_in
+      delivery: [{claim: {client: immich, name: immich_role, json_type: string}}]
+    - key: trash_days
+      label: Keep deleted items for
+      description: Days a deleted photo or video stays in the trash before Immich removes it.
+      section: Library
+      type: int
+      unit: days
+      min: 0
+      max: 3650
+      default: 30
+      applies: restart
+      delivery: [{env: IMMICH_TRASH_DAYS}]
+    - key: machine_learning
+      label: Machine learning
+      description: >
+        Smart search, face recognition and duplicate detection (the
+        immich-machine-learning service). Off = Immich never calls it.
+      section: Library
+      type: bool
+      default: true
+      applies: restart
+      delivery: [{env: IMMICH_MACHINE_LEARNING}]
     - key: external_library
       label: External photo library
       description: Host path to existing photos to import (mounted read-only)
+      section: Library
       type: path
       mode: ro
       needs: read

@@ -51,11 +51,22 @@ services:
           echo "IMMICH_OIDC_SECRET empty: keeping password login enabled."
           PASSWORD_LOGIN=true
         fi
+        # Instance settings (Hub-validated; checked again so a bad value
+        # can't break the JSON): trash days and machine learning on/off.
+        case "$${IMMICH_TRASH_DAYS}" in
+          ''|*[!0-9]*) echo "IMMICH_TRASH_DAYS must be a whole number of days" >&2; exit 1 ;;
+        esac
+        case "$${IMMICH_MACHINE_LEARNING}" in
+          true|false) ;;
+          *) echo "IMMICH_MACHINE_LEARNING must be true or false" >&2; exit 1 ;;
+        esac
         sed \
           -e "s|\$${PORTCULLIS_DOMAIN}|$${PORTCULLIS_DOMAIN}|g" \
           -e "s|\$${IMMICH_OIDC_CLIENT_ID}|$${IMMICH_OIDC_CLIENT_ID}|g" \
           -e "s|\$${IMMICH_OIDC_SECRET}|$${IMMICH_OIDC_SECRET}|g" \
           -e "s|\$${IMMICH_PASSWORD_LOGIN}|$${PASSWORD_LOGIN}|g" \
+          -e "s|\$${IMMICH_TRASH_DAYS}|$${IMMICH_TRASH_DAYS}|g" \
+          -e "s|\$${IMMICH_MACHINE_LEARNING}|$${IMMICH_MACHINE_LEARNING}|g" \
           /tmp/config.json.tmpl > /etc/immich/config.json.new
         mv /etc/immich/config.json.new /etc/immich/config.json
         echo "Config generated."
@@ -63,6 +74,8 @@ services:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       IMMICH_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-immich}
       IMMICH_OIDC_SECRET: ${IMMICH_OIDC_SECRET:-}
+      IMMICH_TRASH_DAYS: ${IMMICH_TRASH_DAYS:-30}
+      IMMICH_MACHINE_LEARNING: ${IMMICH_MACHINE_LEARNING:-true}
     volumes:
       - immich-config:/etc/immich
       - ./templates/immich/immich-config.json.tmpl:/tmp/config.json.tmpl:ro

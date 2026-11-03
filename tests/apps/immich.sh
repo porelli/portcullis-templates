@@ -18,6 +18,9 @@ else
   fail "immich-lock-local-users job missing"
 fi
 
+# Instance settings as the Hub writes them into the env (trash_days,
+# machine_learning): the init one-shot renders them into config.json.
+export IMMICH_TRASH_DAYS=7 IMMICH_MACHINE_LEARNING=false
 compose_up "$APP_ID"
 
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
@@ -39,6 +42,18 @@ else
   fail "IMMICH_CONFIG_FILE not set"
 fi
 
+# Runtime: the rendered config (never printed: it holds the OIDC secret)
+# names the Hub's per-person claims and carries the instance settings.
+if CFG=$(docker exec "portcullis-${SERVICE}-1" cat /etc/immich/config.json 2>/dev/null) \
+    && jq -e '.oauth.storageQuotaClaim == "immich_quota" and .oauth.roleClaim == "immich_role"
+              and .trash.enabled == true and .trash.days == 7 and .machineLearning.enabled == false' \
+       <<< "$CFG" > /dev/null; then
+  pass "config.json: storageQuotaClaim / roleClaim, trash.days 7, machineLearning off (settings rendered)"
+else
+  fail "config.json lacks the claim names or the rendered settings (trash.days, machineLearning.enabled)"
+fi
+unset CFG
+
 # Runtime: the lock job ran after setup and succeeded
 if LOCK_RC=$(timeout 240 docker wait "portcullis-immich-lock-local-users-1" 2>/dev/null) && [ "$LOCK_RC" = "0" ]; then
   pass "immich-lock-local-users exited 0"
@@ -48,6 +63,7 @@ else
 fi
 
 compose_down "$APP_ID"
+unset IMMICH_TRASH_DAYS IMMICH_MACHINE_LEARNING
 
 # Public exceptions: shared links only (mode all; the Hub generates the
 # router). /api as a whole must never be public.
