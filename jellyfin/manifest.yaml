@@ -45,7 +45,7 @@ settings:
       description: Host path to your movies library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: 0, gid: 0}
       target:
@@ -57,7 +57,7 @@ settings:
       description: Host path to your TV shows library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: 0, gid: 0}
       target:
@@ -69,7 +69,7 @@ settings:
       description: Host path to your music library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: 0, gid: 0}
       target:

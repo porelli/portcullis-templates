@@ -37,7 +37,7 @@ settings:
       description: Host path to your movies library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: puid, gid: pgid}
       target:
@@ -49,7 +49,7 @@ settings:
       description: Host path to your TV shows library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: puid, gid: pgid}
       target:
@@ -61,7 +61,7 @@ settings:
       description: Host path to your music library
       section: Libraries
       type: path
-      mode: rw
+      mode: ro
       needs: read
       writes_as: {uid: puid, gid: pgid}
       target:
@@ -75,7 +75,7 @@ settings:
         needs read access to the library folders.
       section: Server
       type: int
-      min: 0
+      min: 1
       max: 65534
       default: 1000
       applies: restart
@@ -85,7 +85,7 @@ settings:
       description: Group id Plex Media Server runs as inside the container (PLEX_GID).
       section: Server
       type: int
-      min: 0
+      min: 1
       max: 65534
       default: 1000
       applies: restart
