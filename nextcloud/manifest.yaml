@@ -170,7 +170,7 @@ hooks:
     user: www-data
     command: [php, /portcullis/apply-settings.php]
     when: [start, settings_change]
-    timeout: 60s
+    timeout: 10m
 
 settings:
   sections: [Files]

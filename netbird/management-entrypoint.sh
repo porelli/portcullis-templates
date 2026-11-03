@@ -6,7 +6,13 @@ TEMPLATE="/etc/netbird/management.json.tmpl"
 # DataStoreEncryptionKey in it), so later changes are applied in place.
 STATE_FILE="/etc/netbird/.portcullis-endpoints"
 NETBIRD_DOMAIN="${NETBIRD_HOST:?NETBIRD_HOST must be set}"
-TURN_ENDPOINT="${COTURN_EXTERNAL_IP:-${NETBIRD_DOMAIN}}:${COTURN_STUN_PORT:?COTURN_STUN_PORT must be set}"
+# The TURN host: the "TURN public IP" setting, else the hostname. An IPv6
+# address is bracketed, as stun:/turn: URIs need it before the port.
+TURN_HOST="${COTURN_EXTERNAL_IP:-${NETBIRD_DOMAIN}}"
+case "$TURN_HOST" in
+  *:*) TURN_HOST="[$TURN_HOST]" ;;
+esac
+TURN_ENDPOINT="${TURN_HOST}:${COTURN_STUN_PORT:?COTURN_STUN_PORT must be set}"
 
 # Escape a literal for a sed regex (| is the delimiter).
 re_escape() { printf '%s' "$1" | sed 's/[].[*^$\\|]/\\&/g'; }

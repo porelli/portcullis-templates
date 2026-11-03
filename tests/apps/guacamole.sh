@@ -54,6 +54,22 @@ else
   fail "valve does not refuse X-Forwarded-User guacadmin*"
 fi
 
+# The Administrator setting (type user: any LLDAP username) is checked by
+# guacamole-init before it is written: a guacadmin* name (the valve refuses
+# such header logins) or other characters stop the init (fail closed). Run
+# the init's own check on sample values ($$ unescaped as compose does).
+ADMIN_CHECK=$(yq -r '.services["guacamole-init"].command[0]' "$COMPOSE" \
+  | sed -n '/case "\$\${GUACAMOLE_ADMIN_USER}" in/,/esac/p' | sed 's/\$\$/$/g')
+admin_ok() { GUACAMOLE_ADMIN_USER="$1" sh -c "set -eu; $ADMIN_CHECK" >/dev/null 2>&1; }
+if [ -n "$ADMIN_CHECK" ] && admin_ok alice && admin_ok "" && admin_ok first.last@x; then
+  pass "guacamole-init accepts admin_user alice / empty / first.last@x"
+else
+  fail "guacamole-init's admin_user check missing or refuses a valid username"
+fi
+for bad in guacadmin guacadmin-x GuacAdmin2 'a b' "x'y" 'a;b'; do
+  if admin_ok "$bad"; then fail "guacamole-init accepts admin_user '$bad'"; else pass "guacamole-init refuses admin_user '$bad'"; fi
+done
+
 # Static: the DB healthcheck takes the password from the env, not argv
 if grep -q 'MYSQL_PWD=' "$COMPOSE" && ! grep -qE '"-p\$\{?GUACAMOLE_DB_PASSWORD' "$COMPOSE"; then
   pass "DB healthcheck passes the password via MYSQL_PWD"

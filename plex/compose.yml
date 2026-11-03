@@ -3,8 +3,8 @@ services:
     image: plexinc/pms-docker:1.43.5.11079-b3b13e506@sha256:6d778d41daae68f89115aa87a44ae14a96b23e71a2093da173b5a9aac4091336
     environment:
       PLEX_CLAIM: ${PLEX_CLAIM:-}
-      PLEX_UID: ${PLEX_UID:-1000}
-      PLEX_GID: ${PLEX_GID:-1000}
+      PLEX_UID: ${PLEX_UID:-1001}
+      PLEX_GID: ${PLEX_GID:-1001}
       ADVERTISE_IP: https://${PORTCULLIS_HOST_PLEX:-plex.portcullis.local}:443
     volumes:
       - plex-config:/config

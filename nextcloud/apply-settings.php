@@ -18,7 +18,7 @@
 declare(strict_types=1);
 
 const OCC = '/var/www/html/occ';
-const INSTALL_WAIT = 45; // seconds; the hook's timeout is 60s
+const INSTALL_WAIT = 570; // seconds; the hook's timeout is 10m (the contract's maximum): a first install fits
 
 function fail(string $msg): never
 {

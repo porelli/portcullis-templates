@@ -211,6 +211,7 @@ if echo "$OUT" | grep -Eq '^[0-9]+'; then pass "bob's entered account gets its r
 # (non-zero exit: the Sync server's depends_on keeps it down) and changes
 # nothing.
 for bad in "$(allowlist "[{\"user\":\"alice\",\"value\":\"not-a-uid\"}]" '[]')" \
+           "$(allowlist "[{\"user\":\"alice\"}]" '[]')" \
            "$(allowlist '[]' "[\"${ALLOWED_C^^}\"]")" \
            "$(allowlist '{}' '[]')" \
            "$(allowlist '[]' '[]' other-instance)" \

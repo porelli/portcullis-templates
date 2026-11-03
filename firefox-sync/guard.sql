@@ -54,8 +54,8 @@ BEGIN
         RAISE EXCEPTION 'portcullis: allowlist.json: entries.mozilla_uid and values.extra_accounts must be lists';
     END IF;
     IF EXISTS (SELECT 1 FROM jsonb_array_elements(pg_temp.portcullis_list(d->'entries'->'mozilla_uid')) e
-               WHERE jsonb_typeof(e) <> 'object' OR jsonb_typeof(e->'value') <> 'string'
-                  OR jsonb_typeof(e->'user') <> 'string')
+               WHERE jsonb_typeof(e) <> 'object' OR jsonb_typeof(e->'value') IS DISTINCT FROM 'string'
+                  OR jsonb_typeof(e->'user') IS DISTINCT FROM 'string')
        OR EXISTS (SELECT 1 FROM jsonb_array_elements(pg_temp.portcullis_list(d->'values'->'extra_accounts')) e
                   WHERE jsonb_typeof(e) <> 'string') THEN
         RAISE EXCEPTION 'portcullis: allowlist.json: an entry is not {user, value} or an account is not a string';

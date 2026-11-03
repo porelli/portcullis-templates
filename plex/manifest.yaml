@@ -71,23 +71,23 @@ settings:
     - key: puid
       label: Plex user id
       description: >
-        User id Plex Media Server runs as inside the container (PLEX_UID); it
-        needs read access to the library folders.
+        User id Plex Media Server runs as inside the container (PLEX_UID; default 1001,
+        the image's own plex user); it needs read access to the library folders.
       section: Server
       type: int
       min: 1
       max: 65534
-      default: 1000
+      default: 1001
       applies: restart
       delivery: [{env: PLEX_UID}]
     - key: pgid
       label: Plex group id
-      description: Group id Plex Media Server runs as inside the container (PLEX_GID).
+      description: Group id Plex Media Server runs as inside the container (PLEX_GID; default 1001).
       section: Server
       type: int
       min: 1
       max: 65534
-      default: 1000
+      default: 1001
       applies: restart
       delivery: [{env: PLEX_GID}]
     - key: claim

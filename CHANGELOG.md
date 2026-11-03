@@ -18,7 +18,7 @@ carried over and have to be entered again.
   cameras), a multi-choice (paperless OCR languages), secrets (headscale API
   key, Plex claim token, Zigbee2MQTT MQTT password), time zones, IP
   addresses, device paths, and the Craft release version / SHA-256 pair.
-- Plex runs as the "Plex user id / group id" settings (default 1000:1000);
+- Plex runs as the "Plex user id / group id" settings (default 1001:1001, the image's own plex user);
   Jellyfin and Plex mount the library folders read-only.
 - Pilots: Immich storage quota and role per group (token claims, at the
   next sign-in), trash days and machine learning; Grafana role per group
