@@ -537,8 +537,10 @@ app_logs() {
 
 # ── Public exceptions (QUIRK #12) ──────────────────────────
 # Mirror of the Hub's coreIdentityHeaders + credentialHeaders
-# (internal/hub/public.go); the manifest's auth.identity_headers and
-# public_access.credential_headers are added, all also in underscore form.
+# (internal/hub/public.go); the manifest's auth.identity_headers,
+# public_access.credential_headers and every settings header delivery
+# (header: {name: X-Forwarded-Attr-...}, flow form as used in this repo) are
+# added, all also in underscore form.
 PUBLIC_CORE_HEADERS=(Remote-Email Remote-Groups Remote-Name Remote-User
   X-Auth-Request-Access-Token X-Auth-Request-Email X-Auth-Request-Groups
   X-Auth-Request-Preferred-Username X-Auth-Request-User
@@ -551,6 +553,7 @@ _public_strip_headers() {
     printf '%s\n' "${PUBLIC_CORE_HEADERS[@]}" Authorization Proxy-Authorization
     sed -n 's/^  identity_headers:[[:space:]]*\[\(.*\)\].*/\1/p' "$manifest" | tr ',' '\n' | tr -d ' "\047'
     _manifest_public_list "$manifest" credential_headers
+    sed -n 's/.*header:[[:space:]]*{[[:space:]]*name:[[:space:]]*["\047]\{0,1\}\(X-Forwarded-Attr-[A-Za-z0-9-]*\).*/\1/p' "$manifest"
   } | while read -r h; do
     [ -n "$h" ] || continue
     echo "$h"

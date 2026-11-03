@@ -60,11 +60,22 @@ else
   fail "Missing forward-auth or group-gate middleware in compose"
 fi
 
-# Identity is the username only; never map an email header (account linking).
-if grep -q 'GF_AUTH_PROXY_HEADER_PROPERTY: username' "$COMPOSE" && ! grep -q 'GF_AUTH_PROXY_HEADERS' "$COMPOSE"; then
-  pass "Grafana header login keyed on username, no email mapping"
+# Identity is the username only; never map an email header (account
+# linking). The only extra mapping is the Role setting's header delivery.
+if grep -q 'GF_AUTH_PROXY_HEADER_PROPERTY: username' "$COMPOSE" \
+    && [ "$(grep -c 'GF_AUTH_PROXY_HEADERS' "$COMPOSE")" = 1 ] \
+    && grep -qx '      GF_AUTH_PROXY_HEADERS: Role:X-Forwarded-Attr-Grafana-Role' "$COMPOSE"; then
+  pass "Grafana header login keyed on username; only Role mapped (no email)"
 else
-  fail "Grafana must use HEADER_PROPERTY username and no GF_AUTH_PROXY_HEADERS"
+  fail "Grafana must use HEADER_PROPERTY username and GF_AUTH_PROXY_HEADERS exactly Role:X-Forwarded-Attr-Grafana-Role"
+fi
+# Runtime: the role header mapping and per-request sync are in the env.
+GF_HEADERS=$(docker exec "portcullis-dashboards-1" printenv GF_AUTH_PROXY_HEADERS 2>/dev/null || echo "")
+GF_TTL=$(docker exec "portcullis-dashboards-1" printenv GF_AUTH_PROXY_SYNC_TTL 2>/dev/null || echo "")
+if [ "$GF_HEADERS" = "Role:X-Forwarded-Attr-Grafana-Role" ] && [ "$GF_TTL" = 0 ]; then
+  pass "GF_AUTH_PROXY_HEADERS=Role:X-Forwarded-Attr-Grafana-Role, GF_AUTH_PROXY_SYNC_TTL=0"
+else
+  fail "role header mapping: GF_AUTH_PROXY_HEADERS='$GF_HEADERS' GF_AUTH_PROXY_SYNC_TTL='$GF_TTL'"
 fi
 
 section "Public exception through Traefik"
@@ -78,6 +89,15 @@ if docker inspect "portcullis-dashboards-1" --format '{{json .Config.Labels}}' |
   pass "public router strips X-Forwarded-User (GF_AUTH_PROXY_HEADER_NAME)"
 else
   fail "public router lacks the X-Forwarded-User strip"
+fi
+# The Role setting's header delivery never reaches Grafana from a client on
+# the public router (the Hub strips every header delivery, both spellings).
+LABELS=$(docker inspect "portcullis-dashboards-1" --format '{{json .Config.Labels}}')
+if grep -q 'portcullis-public-strip-grafana.headers.customrequestheaders.X-Forwarded-Attr-Grafana-Role"' <<< "$LABELS" \
+    && grep -q 'portcullis-public-strip-grafana.headers.customrequestheaders.X_Forwarded_Attr_Grafana_Role"' <<< "$LABELS"; then
+  pass "public router strips X-Forwarded-Attr-Grafana-Role (and its underscore form)"
+else
+  fail "public router lacks the X-Forwarded-Attr-Grafana-Role strip"
 fi
 # Listed dashboard: answered by Grafana without Keycloak.
 assert_public_path "$HOST" "/public-dashboards/$TOKEN"

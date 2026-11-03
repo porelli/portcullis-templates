@@ -8,6 +8,11 @@ services:
       # No email header is mapped on purpose: Grafana's user sync can match
       # accounts by email, and email is not an identity anchor here.
       GF_AUTH_PROXY_HEADER_PROPERTY: username
+      # The only extra header mapped: the Role setting, which group-gate
+      # sends per person (Hub user-attributes.json) on the gated router; the
+      # Hub's public router strips it. Synced on every request (TTL 0).
+      GF_AUTH_PROXY_HEADERS: Role:X-Forwarded-Attr-Grafana-Role
+      GF_AUTH_PROXY_SYNC_TTL: "0"
       GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
       GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
