@@ -2985,7 +2985,7 @@ def _check_choices(cs: Any) -> None:
         if val in seen:
             raise SettingError(f"options: value {json.dumps(val)} listed twice")
         seen.add(val)
-        if label == "" or blen(label) > 64 or has_control(label):
+        if label == "" or len(label) > 64 or has_control(label):
             raise SettingError(f"options: value {json.dumps(val)} needs a single-line label of at most 64 characters")
 
 
@@ -3088,7 +3088,7 @@ def _kind_check(o: Dict[str, Any]) -> None:
             if name in seen:
                 raise SettingError(f"columns: {name} listed twice")
             seen.add(name)
-            if label == "" or blen(label) > 64 or has_control(label):
+            if label == "" or len(label) > 64 or has_control(label):
                 raise SettingError(f"columns: {name} needs a single-line label of at most 64 characters")
             co = _sub_option(o, c)
             if co["type"] not in LIST_ITEM_TYPES:
@@ -3328,8 +3328,16 @@ def delivery_name(d: Dict[str, Any]) -> str:
     return "delivery"
 
 
-def _check_render(o: Dict[str, Any], rd: Dict[str, Any]) -> None:
+def _check_render(o: Dict[str, Any], d: Dict[str, Any], rd: Dict[str, Any]) -> None:
     t, unit = o.get("type"), _str(rd, "unit")
+    kind = _delivery_kind(d)
+    if kind == "env":
+        for name in ("true", "false", "unlimited", "join"):
+            if _has(rd, name) and any(c in _str(rd, name) for c in "'\\"):
+                raise SettingError(f"{name} must not contain a single quote or a backslash (an env value is single-quoted)")
+    if _str(rd, "format") in ("yaml", "csv") and kind in ("env", "header", "claim"):
+        raise SettingError(f"format {_str(rd, 'format')} is multi-line: an env, header or claim delivery takes one line "
+                           "(use format: json or join)")
     if unit:
         if t == "size":
             if unit not in SIZE_RENDER_UNITS:
@@ -3358,7 +3366,8 @@ def _check_render(o: Dict[str, Any], rd: Dict[str, Any]) -> None:
             raise SettingError(f"{name} is for bool options")
         if has_control(_str(rd, name)):
             raise SettingError(f"{name} must be a single-line string")
-    collection = t in LIST_LIKE or scope_of(o) == "person_entered"
+    pe = scope_of(o) == "person_entered"
+    collection = t in LIST_LIKE or pe
     if _has(rd, "join"):
         if not collection:
             raise SettingError("join is for list, multi_enum, groups and users options (and person_entered collections)")
@@ -3368,7 +3377,10 @@ def _check_render(o: Dict[str, Any], rd: Dict[str, Any]) -> None:
             raise SettingError("join and format exclude each other")
     fmt = _str(rd, "format")
     if fmt in ("yaml", "csv"):
-        if not collection and t != "table":
+        # Only env carries a person_entered collection; elsewhere it is the person's own (scalar) value.
+        if t not in LIST_LIKE and t != "table":
+            if pe:
+                raise SettingError(f"format {fmt} is for list and table values: outside env a person_entered {t} is the person's own value")
             raise SettingError(f"format {fmt} is for list, multi_enum, groups, users and table options (and person_entered collections)")
     elif fmt not in ("", "json"):
         raise SettingError(f"format {json.dumps(fmt)} must be json, yaml or csv")
@@ -3383,9 +3395,10 @@ def check_option_kind(o: Dict[str, Any]) -> None:
         raise SettingError("allow_unlimited needs deliveries that say how unlimited is rendered (render.unlimited)")
     for d in deliveries:
         try:
-            _check_render(o, render_of(d) if isinstance(d, dict) else {})
+            _check_render(o, d if isinstance(d, dict) else {}, render_of(d) if isinstance(d, dict) else {})
         except SettingError as e:
             raise SettingError(f"{delivery_name(d)}: render: {e}") from None
+    check_unlimited_reachable(o)
     if _has(o, "default"):
         try:
             setting_value(o, o["default"])
@@ -3397,6 +3410,220 @@ def check_option_kind(o: Dict[str, Any]) -> None:
             setting_value(o, gv[g])
         except SettingError as e:
             raise SettingError(f"group_values[{g}] {_gofmt(gv[g])}: {e}") from None
+    check_option_values(o)
+
+
+# ── rendering values through the deliveries (settings.Render / RenderDelivery) ──
+
+MAX_HEADER_VALUE, MAX_CLAIM_VALUE = 1024, 4096
+INDEX_SUFFIX_RE = "_{n}"
+
+
+def _json_text(v: Any) -> str:
+    """encoding/json with SetEscapeHTML(false), compact (the Hub trims Encode's newline)."""
+    def conv(x: Any) -> Any:
+        if x is UNLIMITED:
+            return "unlimited"
+        if isinstance(x, list):
+            return [conv(i) for i in x]
+        if isinstance(x, dict):
+            return {str(k): conv(i) for k, i in x.items()}
+        return x
+    return json.dumps(conv(v), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _item_text(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def _divide(n: int, div: int, unit: str, shown: str, integer: bool) -> Tuple[str, Any]:
+    if n % div == 0:
+        return str(n // div), n // div
+    if integer:
+        raise SettingError(f"{shown} is not a whole number of {unit}: the app takes whole {unit}")
+    f = n / div
+    return repr(f), f
+
+
+class _Rendered:
+    def __init__(self, text: str, js: Any, text_err: Optional[str] = None) -> None:
+        self.text, self.json, self.text_err = text, js, text_err
+
+
+def _multi_line(s: str) -> _Rendered:
+    return _Rendered(s, s, "the rendered value contains a newline (use format: json for a single-line value)"
+                     if has_control(s) else None)
+
+
+def render_value(o: Dict[str, Any], v: Any, rd: Dict[str, Any]) -> _Rendered:
+    """settings.Render: canonical v for one render rd."""
+    t, fmt = o.get("type"), _str(rd, "format")
+    if t in LIST_LIKE:
+        texts = [_item_text(i) for i in v]
+        if fmt == "json":
+            return _Rendered(_json_text(v), v)
+        if fmt in ("yaml", "csv"):
+            # Multi-line except for one short item; files and hooks only (statically checked).
+            return _multi_line("\n".join(texts) + ("\n" if fmt == "yaml" else ""))
+        sep = _str(rd, "join") if _has(rd, "join") else ","
+        clash = next((f"item {json.dumps(x)} contains the separator {json.dumps(sep)}" for x in texts if sep in x), None)
+        joined = sep.join(texts)
+        if _has(rd, "join"):
+            if clash:
+                raise SettingError(clash)
+            return _Rendered(joined, joined)
+        return _Rendered(joined, v, clash)
+    if t == "table":
+        kc = _str(o, "key_column")
+        structured: Any = {_item_text(r.get(kc)): r for r in v} if kc else v
+        if fmt in ("", "json"):
+            return _Rendered(_json_text(structured), structured)
+        return _multi_line("\n")
+    if t == "size":
+        if v is UNLIMITED:
+            if not _has(rd, "unlimited"):
+                raise SettingError("the delivery has no render.unlimited: it can't take unlimited")
+            out = _Rendered(_str(rd, "unlimited"), _str(rd, "unlimited"))
+        else:
+            unit = _str(rd, "unit") or "B"
+            out = _Rendered(*_divide(v, SIZE_RENDER_UNITS[unit], unit, show_size(v), bool(rd.get("integer"))))
+    elif t == "duration":
+        unit = _str(rd, "unit") or "s"
+        out = _Rendered(*_divide(v, DURATION_RENDER_UNITS[unit], unit, show_duration(v), bool(rd.get("integer"))))
+    elif t == "int":
+        out = _Rendered(str(v), v)
+    elif t == "bool":
+        out = _Rendered(_item_text(v), v)
+        if _has(rd, "true") or _has(rd, "false"):
+            txt = _item_text(v)
+            if v and _has(rd, "true"):
+                txt = _str(rd, "true")
+            elif not v and _has(rd, "false"):
+                txt = _str(rd, "false")
+            out = _Rendered(txt, txt)
+    else:
+        out = _Rendered(v, v)
+    if fmt == "json":
+        out.text = _json_text(out.json)
+    elif fmt:
+        raise SettingError(f"format {fmt} is for list and table options")
+    if has_control(out.text):
+        raise SettingError("the rendered value contains a newline or control characters")
+    return out
+
+
+def _delivery_kind(d: Dict[str, Any]) -> str:
+    for k in ("claim", "header", "file"):
+        if isinstance(d.get(k), dict):
+            return k
+    return "env" if _str(d, "env") else ("hook" if _str(d, "hook") else "")
+
+
+def render_delivery(o: Dict[str, Any], v: Any, d: Dict[str, Any]) -> None:
+    """RenderDelivery, then the env quote rule (envQuote) for env deliveries
+    (indexed NAME_{n}: each item on its own, RenderIndexed)."""
+    name, kind = delivery_name(d), _delivery_kind(d)
+    indexed = kind == "env" and _str(d, "env").endswith(INDEX_SUFFIX_RE)
+    try:
+        if indexed:
+            texts = []
+            for i, it in enumerate(v if isinstance(v, list) else [], 1):
+                s = _item_text(it)
+                if has_control(s):
+                    raise SettingError(f"item {i} contains a newline or control characters")
+                texts.append(s)
+        else:
+            out = render_value(o, v, render_of(d))
+            if kind in ("env", "header", "claim"):
+                if out.text_err:
+                    raise SettingError(out.text_err)
+                n = blen(out.text)
+                if kind == "header" and n > MAX_HEADER_VALUE:
+                    raise SettingError(f"the rendered value is {n} bytes, over the {MAX_HEADER_VALUE}-byte header limit")
+                if kind == "claim" and n > MAX_CLAIM_VALUE:
+                    raise SettingError(f"the rendered value is {n} bytes, over the {MAX_CLAIM_VALUE}-byte claim attribute limit")
+            texts = [out.text] if kind == "env" else []
+        for i, s in enumerate(texts, 1):
+            why = env_text_problem(s, kind == "env" and not indexed and env_json(o, d))
+            if why:
+                raise SettingError(f"item {i}: {why}" if indexed else why)
+    except SettingError as e:
+        raise SettingError(f"{name}: {e}") from None
+
+
+def env_text_problem(text: str, from_json: bool) -> str:
+    """CheckEnvText: text a single-quoted env value can't carry."""
+    if not any(c in text for c in "'\\\n\r"):
+        return ""
+    if from_json and "\\" in text:
+        return ("the JSON text contains a backslash (JSON escapes a double quote, a backslash and control characters "
+                "inside strings as \\…), which an env value can't carry (use a file or hook delivery)")
+    return "the value contains a single quote, a backslash or a line break, which an env value can't carry (use a file or hook delivery)"
+
+
+def env_json(o: Dict[str, Any], d: Dict[str, Any]) -> bool:
+    """EnvJSON: the env delivery carries JSON text (format json; a table's default rendering)."""
+    fmt = _str(render_of(d), "format")
+    return fmt == "json" or (o.get("type") == "table" and fmt == "")
+
+
+def option_deliveries(o: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The option's deliveries, the implicit env UPPER(key) of an instance option without any."""
+    ds = [d for d in (o.get("delivery") if isinstance(o.get("delivery"), list) else []) if isinstance(d, dict)]
+    if not ds and scope_of(o) == "instance" and o.get("type") != "path" and isinstance(o.get("key"), str):
+        ds = [{"env": o["key"].upper()}]
+    return ds
+
+
+def empty_default(v: Any) -> bool:
+    """emptyDefault: a manifest default that holds no value (none, "", an empty list or map)."""
+    return v is None or v == "" or v == [] or v == {}
+
+
+def check_unlimited_reachable(o: Dict[str, Any]) -> None:
+    """checkUnlimitedReach: allow_unlimited refused when a delivery's
+    numeric render.unlimited is also what a size within the option's bounds
+    renders as (the app would take it for unlimited; under resolve: min a
+    restrictive row would win as the smallest)."""
+    if o.get("type") != "size" or not o.get("allow_unlimited"):
+        return
+    try:
+        lo, hi, _ = _read_bounds(o, parse_size)
+    except SettingError:
+        return  # the kind's own check reports it
+    for d in o.get("delivery") if isinstance(o.get("delivery"), list) else []:
+        rd = render_of(d) if isinstance(d, dict) else {}
+        if not _has(rd, "unlimited"):
+            continue
+        u = _str(rd, "unlimited")
+        if not re.fullmatch(r"[+-]?[0-9]+", u, re.ASCII) or not INT64_MIN <= int(u) <= INT64_MAX or int(u) < 0:
+            continue  # not a number, or below any size
+        div = SIZE_RENDER_UNITS.get(_str(rd, "unit"), 1) if _str(rd, "unit") else 1
+        if int(u) > INT64_MAX // div:
+            continue
+        v = int(u) * div
+        if (lo is None or v >= lo) and (hi is None or v <= hi):
+            raise SettingError(f"allow_unlimited: {delivery_name(d)} renders unlimited as {u}, which the value {show_size(v)} "
+                               "also renders as (set min above it, or render unlimited as a value no size reaches)")
+
+
+def check_option_values(o: Dict[str, Any]) -> None:
+    """The default and each group_values value through every delivery."""
+    vals = []
+    if _has(o, "default"):
+        vals.append((f"default {_gofmt(o['default'])}", o["default"]))
+    gv = o.get("group_values") if isinstance(o.get("group_values"), dict) else {}
+    for g in sorted(gv, key=str):
+        vals.append((f"group_values[{g}] {_gofmt(gv[g])}", gv[g]))
+    for what, raw in vals:
+        v = setting_value(o, raw)
+        for d in option_deliveries(o):
+            try:
+                render_delivery(o, v, d)
+            except SettingError as e:
+                raise SettingError(f"{what}: {e}") from None
 
 
 # ── compose interpolation (settings.go referenced / interpolations) ──
@@ -3861,7 +4088,7 @@ class _SpecCheck:
 
     def option(self, o: Dict[str, Any]) -> None:
         label, desc = _str(o, "label"), _str(o, "description")
-        if label == "" or blen(label) > 64 or has_control(label):
+        if label == "" or len(label) > 64 or has_control(label):
             raise _Refuse("label must be a single non-empty line of at most 64 characters")
         if blen(desc) > 500 or any(c != "\n" and is_control_rune(c) for c in desc):
             raise _Refuse("description must be at most 500 characters, without control characters")
@@ -3888,8 +4115,14 @@ class _SpecCheck:
             raise _Refuse("group_values need scope: person")
         if o.get("admin_override") and scope != "person_entered":
             raise _Refuse("admin_override needs scope: person_entered")
+        if t == "secret" and scope != "instance":
+            raise _Refuse("a secret option needs scope instance (a secret is write-only, stored apart from the settings)")
         if scope == "person" and not _has(o, "default"):
             raise _Refuse("scope person needs a default (the value for everyone else with access)")
+        if o.get("required") and scope == "group":
+            raise _Refuse("required is not for scope group (its records are optional, and it has no default)")
+        if o.get("required") and scope == "person" and empty_default(o.get("default")):
+            raise _Refuse("required on scope person needs a non-empty default (the value for everyone without a row)")
         if scope == "group" and _has(o, "default"):
             raise _Refuse("scope group takes no default (the group records are the values)")
         if o.get("unique") and t != "list" and not (scope == "person_entered" and t in ("string", "int")):
@@ -3908,6 +4141,8 @@ class _SpecCheck:
         self.requires(o)
         self.path_and_secret(o)
         self.deliveries(o)
+        if scope == "person" and not _str(o, "resolve"):
+            raise _Refuse("scope person needs resolve (how a person's rows combine: max, min, priority, union, intersection, any or all)")
 
     def person_entered(self, o: Dict[str, Any]) -> None:
         t = o.get("type")
@@ -4062,6 +4297,10 @@ class _SpecCheck:
                 raise _Refuse(f"generate.length {length} must be 8-128")
             if _str(g, "charset") not in GENERATE_CHARSETS:
                 raise _Refuse(f"generate.charset {json.dumps(_str(g, 'charset'))} must be hex, alphanumeric or ascii_printable")
+            if _has(o, "min_len") and length < o["min_len"]:
+                raise _Refuse(f"generate.length {length} is below min_len {o['min_len']}")
+            if _has(o, "max_len") and length > o["max_len"]:
+                raise _Refuse(f"generate.length {length} is above max_len {o['max_len']}")
 
     def deliveries(self, o: Dict[str, Any]) -> None:
         scope = scope_of(o)
@@ -4231,20 +4470,6 @@ class _SpecCheck:
             self.r.warn(self.t.m_where, f"setting {key}: applies {_str(o, 'applies')} with an env delivery: a change still "
                                         "restarts the app (the env is read at start)",
                         "deliver it only through the hook / reload path, or declare applies: restart")
-        values = ([o["default"]] if _has(o, "default") else []) + \
-            (list(o["group_values"].values()) if isinstance(o.get("group_values"), dict) else [])
-        for d in ds:
-            rd = render_of(d)
-            unit = _str(rd, "unit")
-            units = SIZE_RENDER_UNITS if o.get("type") == "size" else DURATION_RENDER_UNITS if o.get("type") == "duration" else {}
-            if not rd.get("integer") or not unit or unit not in units:
-                continue
-            for raw in values:
-                val = setting_value(o, raw)
-                if isinstance(val, int) and val % units[unit]:
-                    shown = show_size(val) if o.get("type") == "size" else show_duration(val)
-                    self.r.warn(self.t.m_where, f"setting {key}: {delivery_name(d)}: {shown} is not a whole number of {unit}: "
-                                                "the Hub refuses this value at save", "pick a default on the delivery's unit")
         for d in ds:
             f = self.files.get(_str(d["file"], "name")) if isinstance(d.get("file"), dict) else None
             if o.get("type") != "secret" or f is None:

@@ -1256,7 +1256,8 @@ def s_opts(*lines: str) -> str:
 
 
 S_PERSON_CLAIM = "delivery: [{claim: {client: demo, name: demo_quota, json_type: int}}]"
-S_PERSON_HEADER = "{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota}}]}"
+S_PERSON_HEADER = "{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota}}]}"
+HOOK_APPLY = "hooks:\n  - {name: apply, service: demo, command: [x], when: [start]}\n"
 S_FILES = """\
 files:
   - {name: people, service: init, mount: /portcullis, on_membership_change: restart}
@@ -1268,6 +1269,71 @@ S_ROLE = ("{key: role, label: Role, type: enum, options: [{value: user, label: U
 
 
 class TestSettingsV3(Case):
+
+    def test_final_review_rules(self) -> None:
+        """Hub templates.TestFinalReviewValidatorRules (H1-H6): the validator
+        refuses what the runtime could never deliver."""
+        h, o = s_compose(S_HDR_ENV), s_compose(oidc=True)
+
+        def hdr(line: str) -> str:
+            return S_HDR + s_opts(line)
+
+        def oidc(line: str) -> str:
+            return S_OIDC + s_opts(line)
+        ff = S_FIREFOX + S_FIREFOX_SETTINGS.replace(
+            "delivery: [{file: {name: allowlist}}]\n    - key: extra",
+            "delivery: [{file: {name: allowlist, render: {format: yaml}}}]\n    - key: extra", 1)
+        people = "files:\n  - {name: people, service: init, mount: /portcullis}\n"
+        self.cases([
+            # H1: scope person needs resolve.
+            ("person without resolve", oidc("{key: quota, label: Q, type: int, scope: person, default: 1, " + S_PERSON_CLAIM + "}"), o, "quota", "scope person needs resolve"),
+            # H2: a secret is instance scope only.
+            ("group secret", hdr("{key: theme, label: T, type: secret, scope: group, delivery: [{env: THEME, render: {format: json}}]}"), h, "theme", "a secret option needs scope instance"),
+            ("person secret", oidc("{key: quota, label: Q, type: secret, scope: person, resolve: priority, " + S_PERSON_CLAIM + "}"), o, "quota", "a secret option needs scope instance"),
+            # H3: the default and group_values render through every delivery.
+            ("env default with a quote", hdr("{key: theme, label: T, type: string, default: \"it's\"}"), h, "theme", "default"),
+            ("env default with a backslash", hdr("{key: theme, label: T, type: string, default: 'a\\b', delivery: [{env: THEME}]}"), h, "theme", "single quote, a backslash"),
+            ("size default not whole", hdr("{key: theme, label: T, type: size, default: 1536, delivery: [{env: THEME, render: {unit: KiB, integer: true}}]}"), h, "theme", "whole number"),
+            ("list default item with the separator", hdr("{key: theme, label: T, type: list, items: {type: string}, default: ['a,b']}"), h, "theme", "separator"),
+            ("group_values not renderable", oidc("{key: quota, label: Q, type: size, scope: person, default: 1GiB, resolve: max, group_values: {'{{ADMIN_GROUP}}': 1536}, delivery: [{claim: {client: demo, name: demo_quota, json_type: int, render: {unit: KiB, integer: true}}}]}"), o, "quota", "group_values"),
+            ("env render true with a quote", hdr("{key: theme, label: T, type: bool, default: false, delivery: [{env: THEME, render: {true: \"it's\"}}]}"), h, "theme", "an env value is single-quoted"),
+            ("env render join with a backslash", hdr("{key: theme, label: T, type: list, items: {type: string}, delivery: [{env: THEME, render: {join: '\\'}}]}"), h, "theme", "an env value is single-quoted"),
+            ("header render true with a quote", hdr("{key: quota, label: Q, type: bool, scope: person, default: false, resolve: any, applies: next_request, delivery: [{header: {name: X-Forwarded-Attr-Quota, render: {true: \"it's\"}}}]}"), s_compose(), "", ""),
+            ("env yaml", hdr("{key: theme, label: T, type: list, items: {type: string}, delivery: [{env: THEME, render: {format: yaml}}]}"), h, "theme", "format yaml is multi-line"),
+            ("env csv table", hdr("{key: theme, label: T, type: table, columns: [{name: a, label: A, type: string}], delivery: [{env: THEME, render: {format: csv}}]}"), h, "theme", "format csv is multi-line"),
+            ("header yaml", hdr("{key: quota, label: Q, type: list, items: {type: string}, scope: person, default: [], resolve: union, applies: next_request, delivery: [{header: {name: X-Forwarded-Attr-Quota, render: {format: yaml}}}]}"), h, "quota", "format yaml is multi-line"),
+            ("file yaml list", hdr("{key: quota, label: Q, type: list, items: {type: string}, scope: person, default: [], resolve: union, delivery: [{file: {name: people, render: {format: yaml}}}]}") + people, s_compose(), "", ""),
+            ("person_entered scalar file yaml", ff, s_compose(routers=router("demo", S_HOST, gated=False)), "mozilla_uid", "format yaml"),
+            # H4: JSON renders don't escape & < >.
+            ("json env with an ampersand", hdr("{key: theme, label: T, type: list, items: {type: string}, default: ['https://x/?a=1&b=2'], delivery: [{env: THEME, render: {format: json}}]}"), s_compose(s_env("THEME")), "", ""),
+            ("json env with a double quote", hdr("{key: theme, label: T, type: list, items: {type: string}, default: ['say \"hi\"'], delivery: [{env: THEME, render: {format: json}}]}"), h, "theme", "JSON escapes"),
+            # H5: unlimited's sentinel out of the values' reach.
+            ("unlimited sentinel reachable", oidc("{key: quota, label: Q, type: size, allow_unlimited: true, scope: person, default: 1GiB, resolve: min, delivery: [{claim: {client: demo, name: demo_quota, json_type: int, render: {unit: GiB, unlimited: '0'}}}]}"), o, "quota", "allow_unlimited: claim demo_quota renders unlimited as 0"),
+            ("unlimited sentinel above max", oidc("{key: quota, label: Q, type: size, allow_unlimited: true, max: 10GiB, scope: person, default: 1GiB, resolve: min, delivery: [{claim: {client: demo, name: demo_quota, json_type: int, render: {unit: GiB, unlimited: '100'}}}]}"), o, "", ""),
+            ("unlimited sentinel below min", oidc("{key: quota, label: Q, type: size, allow_unlimited: true, min: 1GiB, scope: person, default: 1GiB, resolve: min, delivery: [{claim: {client: demo, name: demo_quota, json_type: int, render: {unit: GiB, unlimited: '0'}}}]}"), o, "", ""),
+            ("unlimited sentinel not a number", oidc("{key: quota, label: Q, type: size, allow_unlimited: true, scope: person, default: 1GiB, resolve: min, delivery: [{claim: {client: demo, name: demo_quota, json_type: string, render: {unit: GiB, unlimited: none}}}]}"), o, "", ""),
+            # H6.
+            ("required person empty default", oidc("{key: quota, label: Q, type: string, scope: person, required: true, default: '', resolve: priority, delivery: [{claim: {client: demo, name: demo_quota, json_type: string}}]}"), o, "quota", "required on scope person needs a non-empty default"),
+            ("required person default", oidc("{key: quota, label: Q, type: string, scope: person, required: true, default: a, resolve: priority, delivery: [{claim: {client: demo, name: demo_quota, json_type: string}}]}"), o, "", ""),
+            ("required person bool false", oidc("{key: quota, label: Q, type: bool, scope: person, required: true, default: false, resolve: any, delivery: [{claim: {client: demo, name: demo_quota, json_type: bool}}]}"), o, "", ""),
+            ("required group", hdr("{key: theme, label: T, type: string, scope: group, required: true, delivery: [{env: THEME, render: {format: json}}]}"), h, "theme", "required is not for scope group"),
+            ("generate above max_len", hdr("{key: theme, label: T, type: secret, max_len: 32, generate: {length: 64, charset: hex}}"), h, "theme", "generate.length 64 is above max_len 32"),
+            ("generate below min_len", hdr("{key: theme, label: T, type: secret, min_len: 40, generate: {length: 32, charset: hex}}"), h, "theme", "generate.length 32 is below min_len 40"),
+            ("label of 64 runes", hdr("{key: theme, label: " + "é" * 64 + ", type: string}"), s_compose(s_env("THEME")), "", ""),
+            ("label of 65 runes", hdr("{key: theme, label: " + "é" * 65 + ", type: string}"), h, "theme", "at most 64 characters"),
+            ("choice label of 65 runes", hdr("{key: theme, label: T, type: enum, options: [{value: a, label: " + "é" * 65 + "}], default: a}"), h, "theme", "at most 64 characters"),
+            ("indexed item with a quote", hdr("{key: theme, label: T, type: list, items: {type: string}, max_items: 2, default: [\"it's\"], delivery: [{env: 'DISK_{n}'}]}"), h, "theme", "item 1: the value contains a single quote"),
+        ])
+
+    def test_render_matches_go(self) -> None:
+        """settings.TestJSONRenderNoHTMLEscape: JSON text as the Hub's JSONText writes it."""
+        o = {"type": "list", "items": {"type": "string"}}
+        self.assertEqual(v.render_value(o, ["https://x/?a=1&b=<2>"], {"format": "json"}).text, '["https://x/?a=1&b=<2>"]')
+        self.assertEqual(v.render_value({"type": "string"}, "R&D", {"format": "json"}).text, '"R&D"')
+        tb = {"type": "table", "columns": [{"name": "a", "label": "A", "type": "string"}]}
+        self.assertEqual(v.render_value(tb, [{"a": "x&y"}], {}).text, '[{"a":"x&y"}]')
+        self.assertIn("JSON escapes", v.env_text_problem('["a\\"b"]', True))
+
     """tests/validate.py check_settings mirrors the Hub's discover-time
     settings refusals (ValidateSettingsSpec + settings.Registry.CheckOption)."""
 
@@ -1348,8 +1414,8 @@ class TestSettingsV3(Case):
         o, h = s_compose(oidc=True), s_compose(S_HDR_ENV)
         self.cases([
             ("no default", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: max, " + S_PERSON_CLAIM + "}"), o, "quota", "default"),
-            ("env only", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{env: TRASH_DAYS}]}"), h, "quota", "per-person env is not allowed"),
-            ("no delivery", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1}"), h, "quota", "per-person delivery"),
+            ("env only", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{env: TRASH_DAYS}]}"), h, "quota", "per-person env is not allowed"),
+            ("no delivery", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1}"), h, "quota", "per-person delivery"),
             ("claim", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 10, resolve: max, " + S_PERSON_CLAIM + "}"), o, "", ""),
             ("bad scope", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: everyone}"), h, "quota", "scope"),
             ("group default", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: group, default: 1, delivery: [{env: THEME, render: {format: json}}]}"), h, "quota", "default"),
@@ -1360,7 +1426,7 @@ class TestSettingsV3(Case):
             ("instance resolve", S_HDR + s_opts("{key: trash_days, label: Q, type: int, resolve: max}"), h, "trash_days", "resolve"),
             ("instance privileged", S_HDR + s_opts("{key: trash_days, label: Q, type: bool, privileged: true}"), h, "trash_days", "privileged"),
             ("instance self_visible", S_HDR + s_opts("{key: trash_days, label: Q, type: int, self_visible: false}"), h, "trash_days", "self_visible"),
-            ("two kinds in one delivery", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{env: TRASH_DAYS, hook: x}]}"), s_compose(s_env("TRASH_DAYS"), oidc=True), "quota", "exactly one"),
+            ("two kinds in one delivery", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{env: TRASH_DAYS, hook: x}]}"), s_compose(s_env("TRASH_DAYS"), oidc=True), "quota", "exactly one"),
         ])
 
     def test_resolve_fits_type(self) -> None:
@@ -1407,14 +1473,14 @@ class TestSettingsV3(Case):
     def test_claim_delivery_needs_native_oidc_client(self) -> None:
         o = s_compose(oidc=True)
         cases = [
-            ("forward-auth", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, " + S_PERSON_CLAIM + "}"), s_compose(), "quota", "native-oidc"),
-            ("unknown client", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{claim: {client: other, name: demo_quota, json_type: int}}]}"), o, "quota", "client other"),
-            ("bad json_type", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{claim: {client: demo, name: demo_quota, json_type: float}}]}"), o, "quota", "json_type"),
-            ("bad name", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{claim: {client: demo, name: Quota, json_type: int}}]}"), o, "quota", "must match"),
-            ("duplicate claim", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, " + S_PERSON_CLAIM + "}", "{key: q2, label: Q, type: int, scope: person, default: 1, " + S_PERSON_CLAIM + "}"), o, "q2", "demo_quota"),
+            ("forward-auth", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, " + S_PERSON_CLAIM + "}"), s_compose(), "quota", "native-oidc"),
+            ("unknown client", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{claim: {client: other, name: demo_quota, json_type: int}}]}"), o, "quota", "client other"),
+            ("bad json_type", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{claim: {client: demo, name: demo_quota, json_type: float}}]}"), o, "quota", "json_type"),
+            ("bad name", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{claim: {client: demo, name: Quota, json_type: int}}]}"), o, "quota", "must match"),
+            ("duplicate claim", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, " + S_PERSON_CLAIM + "}", "{key: q2, label: Q, type: int, scope: person, resolve: priority, default: 1, " + S_PERSON_CLAIM + "}"), o, "q2", "demo_quota"),
         ]
         for n in ("sub", "email", "groups", "acr", "amr", "preferred_username", "attr_x", "portcullis_x"):
-            cases.append(("claim " + n, S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{claim: {client: demo, name: " + n + ", json_type: int}}]}"), o, "quota", "claim " + n))
+            cases.append(("claim " + n, S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{claim: {client: demo, name: " + n + ", json_type: int}}]}"), o, "quota", "claim " + n))
         self.cases(cases)
 
     def test_header_delivery_rules(self) -> None:
@@ -1434,12 +1500,12 @@ class TestSettingsV3(Case):
         q2 = S_PERSON_HEADER.replace("key: quota", "key: q2", 1)
         self.cases([
             ("ok", S_HDR + s_opts(S_PERSON_HEADER), h, "", ""),
-            ("bad name", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Quota}}]}"), h, "quota", "X-Forwarded-Attr-"),
-            ("trailing dash", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota-}}]}"), h, "quota", "X-Forwarded-Attr-"),
-            ("double dash", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-A--B}}]}"), h, "quota", "X-Forwarded-Attr-"),
-            ("bare prefix", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-}}]}"), h, "quota", "X-Forwarded-Attr-"),
-            ("trailing newline", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: \"X-Forwarded-Attr-Quota\\n\"}}]}"), h, "quota", "X-Forwarded-Attr-"),
-            ("multi-part name", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Grafana-Role}}]}"), h, "", ""),
+            ("bad name", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Quota}}]}"), h, "quota", "X-Forwarded-Attr-"),
+            ("trailing dash", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota-}}]}"), h, "quota", "X-Forwarded-Attr-"),
+            ("double dash", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-A--B}}]}"), h, "quota", "X-Forwarded-Attr-"),
+            ("bare prefix", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-}}]}"), h, "quota", "X-Forwarded-Attr-"),
+            ("trailing newline", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: \"X-Forwarded-Attr-Quota\\n\"}}]}"), h, "quota", "X-Forwarded-Attr-"),
+            ("multi-part name", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Grafana-Role}}]}"), h, "", ""),
             ("no group-gate", S_HDR + s_opts(S_PERSON_HEADER), no_groups, "quota", "portcullis-groups"),
             ("public router", S_HDR + s_opts(S_PERSON_HEADER), public, "quota", "router share"),
             ("sign_in native", native + s_opts(S_PERSON_HEADER), h, "quota", "own login"),
@@ -1459,13 +1525,13 @@ class TestSettingsV3(Case):
         def pf(o: str) -> str:
             return S_HDR + s_opts(o) + S_FILES
         self.cases([
-            ("ok", pf("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{file: {name: people, field: quota}}, {hook: apply}]}"), s_compose(), "", ""),
-            ("undeclared file", pf("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{file: {name: nope}}]}"), h, "quota", "file nope"),
-            ("undeclared hook", pf("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{hook: nope}]}"), h, "quota", "hook nope"),
+            ("ok", pf("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{file: {name: people, field: quota}}, {hook: apply}]}"), s_compose(), "", ""),
+            ("undeclared file", pf("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{file: {name: nope}}]}"), h, "quota", "file nope"),
+            ("undeclared hook", pf("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{hook: nope}]}"), h, "quota", "hook nope"),
             ("field on instance", pf("{key: trash_days, label: Q, type: int, delivery: [{file: {name: people, field: x}}]}"), h, "trash_days", "field"),
-            ("bad field", pf("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{file: {name: people, field: Quota}}]}"), h, "quota", "field \"Quota\""),
-            ("duplicate field", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{file: {name: people, field: q}}]}",
-                                               "{key: q2, label: Q, type: int, scope: person, default: 1, delivery: [{file: {name: people, field: q}}]}") + S_FILES, h, "q2", "already written by setting quota"),
+            ("bad field", pf("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{file: {name: people, field: Quota}}]}"), h, "quota", "field \"Quota\""),
+            ("duplicate field", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{file: {name: people, field: q}}]}",
+                                               "{key: q2, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{file: {name: people, field: q}}]}") + S_FILES, h, "q2", "already written by setting quota"),
             ("file service", S_HDR + "files:\n  - {name: people, service: nope, mount: /portcullis}\n", h, "", "files[people]: service nope"),
             ("file name", S_HDR + "files:\n  - {name: People, service: init, mount: /portcullis}\n", h, "", "People"),
             ("file mount relative", S_HDR + "files:\n  - {name: people, service: init, mount: portcullis}\n", h, "", "absolute"),
@@ -1492,7 +1558,7 @@ class TestSettingsV3(Case):
             ("path delivery", S_HDR + s_opts("{key: media, label: M, type: path, target: {service: demo, mount: /media}, delivery: [{env: THEME}]}"), h, "media", "target"),
             ("path no target", S_HDR + s_opts("{key: media, label: M, type: path}"), h, "media", "target"),
             ("path target service", S_HDR + s_opts("{key: media, label: M, type: path, target: {service: nope, mount: /media}}"), h, "media", "nope"),
-            ("path person", S_HDR + s_opts("{key: media, label: M, type: path, scope: person, default: /x, target: {service: demo, mount: /media}}"), h, "media", "instance"),
+            ("path person", S_HDR + s_opts("{key: media, label: M, type: path, scope: person, resolve: priority, default: /x, target: {service: demo, mount: /media}}"), h, "media", "instance"),
         ])
 
     def test_reload_rules(self) -> None:
@@ -1824,9 +1890,10 @@ class TestSettingsV3(Case):
         ]
         cases = []
         for pat, default, compiles, matches in rows:
-            line = "{key: q, label: Q, type: string, pattern: %s, default: %s}" % (json.dumps(pat), json.dumps(default))
+            # A hook delivery: the implicit env would refuse the backslash of \\C.
+            line = "{key: q, label: Q, type: string, pattern: %s, default: %s, delivery: [{hook: apply}]}" % (json.dumps(pat), json.dumps(default))
             want = "" if compiles and matches else ("pattern" if not compiles else "default")
-            cases.append((f"{pat} / {default!r}", S_HDR + s_opts(line), s_compose(s_env("Q")), "q" if want else "", want))
+            cases.append((f"{pat} / {default!r}", S_HDR + s_opts(line) + HOOK_APPLY, s_compose(), "q" if want else "", want))
         self.cases(cases)
         # Linear time: a pattern Python's re would backtrack on for ages.
         import time
@@ -1917,33 +1984,36 @@ class TestSettingsV3(Case):
             "{key: q, label: Q, type: string, delivery: [{env: Q, render: {true: \"y\"}}]}": "true",
             "{key: q, label: Q, type: string, delivery: [{env: Q, render: {join: \"+\"}}]}": "join",
             "{key: q, label: Q, type: string, delivery: [{env: Q, render: {format: xml}}]}": "format",
-            "{key: q, label: Q, type: string, delivery: [{env: Q, render: {format: yaml}}]}": "format yaml is for list",
-            "{key: q, label: Q, type: int, delivery: [{env: Q, render: {format: csv}}]}": "format csv is for list",
+            "{key: q, label: Q, type: string, delivery: [{hook: apply, render: {format: yaml}}]}": "format yaml is for list",
+            "{key: q, label: Q, type: int, delivery: [{hook: apply, render: {format: csv}}]}": "format csv is for list",
+            "{key: q, label: Q, type: string, delivery: [{env: Q, render: {format: yaml}}]}": "format yaml is multi-line",
+            "{key: q, label: Q, type: list, items: {type: string}, delivery: [{env: Q, render: {format: csv}}]}": "format csv is multi-line",
+            "{key: q, label: Q, type: table, columns: [{name: a, label: A, type: string}], delivery: [{env: Q, render: {format: yaml}}]}": "format yaml is multi-line",
             "{key: q, label: Q, type: duration, delivery: [{env: Q, render: {unit: GiB}}]}": "unit",
             "{key: q, label: Q, type: bool, delivery: [{env: Q, render: {integer: true}}]}": "integer",
             "{key: q, label: Q, type: list, items: {type: string}, delivery: [{env: Q, render: {join: \"\"}}]}": "join",
             "{key: q, label: Q, type: list, items: {type: string}, delivery: [{env: Q, render: {join: \",\", format: json}}]}": "exclude each other",
             "{key: q, label: Q, type: string, delivery: [{env: Q, render: {unit: GiB}}]}": "unit is for size",
         }
-        self.cases([(line, S_HDR + s_opts(line), s_compose(s_env("Q")), "q", part) for line, part in bad.items()])
+        hooks = HOOK_APPLY
+        self.cases([(line, S_HDR + s_opts(line) + hooks, s_compose(s_env("Q")), "q", part) for line, part in bad.items()])
         ok = [
             "{key: q, label: Q, type: size, delivery: [{hook: apply, render: {unit: GB, integer: true}}]}",
             "{key: q, label: Q, type: size, delivery: [{env: Q, render: {unit: TB}}]}",
             "{key: q, label: Q, type: list, items: {type: string}, delivery: [{env: Q, render: {join: \" \"}}]}",
-            "{key: q, label: Q, type: list, items: {type: string}, delivery: [{env: Q, render: {format: csv}}]}",
-            "{key: q, label: Q, type: table, columns: [{name: a, label: A, type: string}], delivery: [{env: Q, render: {format: yaml}}]}",
+            "{key: q, label: Q, type: list, items: {type: string}, delivery: [{hook: apply, render: {format: csv}}]}",
+            "{key: q, label: Q, type: table, columns: [{name: a, label: A, type: string}], delivery: [{hook: apply, render: {format: yaml}}]}",
             "{key: q, label: Q, type: bool, delivery: [{env: Q, render: {true: \"on\", false: \"off\"}}]}",
             "{key: q, label: Q, type: int, unit: days, delivery: [{env: Q, render: {unit: days}}]}",
             "{key: q, label: Q, type: duration, delivery: [{env: Q, render: {unit: d, integer: true}}]}",
         ]
-        hooks = "hooks:\n  - {name: apply, service: demo, command: [x], when: [start]}\n"
         self.cases([(line, S_HDR + s_opts(line) + hooks, s_compose("" if "{hook:" in line else s_env("Q")), "", "") for line in ok])
 
     def test_claim_json_type_fits_render(self) -> None:
         o = s_compose(oidc=True)
 
         def c(typ: str, extra: str, claim: str) -> str:
-            return S_OIDC + s_opts("{key: v, label: V, type: " + typ + ", scope: person, " + extra + ", delivery: [{claim: {client: demo, name: demo_v, " + claim + "}}]}")
+            return S_OIDC + s_opts("{key: v, label: V, type: " + typ + ", scope: person, resolve: priority, " + extra + ", delivery: [{claim: {client: demo, name: demo_v, " + claim + "}}]}")
         self.cases([
             ("int ok", c("int", "default: 1", "json_type: int"), o, "", ""),
             ("size in GiB ok", c("size", "default: 1GiB, step: 1GiB", "json_type: int, render: {unit: GiB, integer: true}"), o, "", ""),
@@ -2006,11 +2076,10 @@ class TestSettingsV3(Case):
         self.assertClean(errors)
         self.assertFalse([w for w in warnings if "setting theme" in w], warnings)
 
-    def test_integer_render_warns(self) -> None:
+    def test_integer_render_refuses_default(self) -> None:
         m = S_HDR + s_opts("{key: q, label: Q, type: size, default: 1536MiB, delivery: [{env: Q, render: {unit: GiB, integer: true}}]}")
-        errors, warnings = self.run_raw(m, s_compose(s_env("Q")))
-        self.assertClean(errors)
-        self.assertTrue(any("setting q" in w and "whole number of GiB" in w for w in warnings), warnings)
+        errors, _ = self.run_raw(m, s_compose(s_env("Q")))
+        self.assertError(errors, "setting q: default 1536MiB: env Q: 1.5 GiB is not a whole number of GiB")
         errors, warnings = self.run_raw(m.replace("1536MiB", "2GiB"), s_compose(s_env("Q")))
         self.assertClean(errors)
         self.assertFalse([w for w in warnings if "setting q" in w], warnings)
@@ -2122,11 +2191,12 @@ settings:
             ("description newline ok", S_HDR + s_opts("{key: theme, label: T, type: string, description: \"a\\nb\"}"), s_compose(s_env("THEME")), "", ""),
             ("description too long", S_HDR + s_opts("{key: theme, label: T, type: string, description: " + "x" * 501 + "}"), h, "theme", "description"),
             ("label too long", S_HDR + s_opts("{key: theme, label: " + "x" * 65 + ", type: string}"), h, "theme", "label"),
-            ("label multibyte", S_HDR + s_opts("{key: theme, label: " + "\u00e9" * 33 + ", type: string}"), h, "theme", "label"),
+            ("label of 64 runes", S_HDR + s_opts("{key: theme, label: " + "\u00e9" * 64 + ", type: string}"), s_compose(s_env("THEME")), "", ""),
+            ("label of 65 runes", S_HDR + s_opts("{key: theme, label: " + "\u00e9" * 65 + ", type: string}"), h, "theme", "at most 64 characters"),
             ("unique on string", S_HDR + s_opts("{key: theme, label: T, type: string, unique: true}"), h, "theme", "unique"),
             ("admin_override on instance", S_HDR + s_opts("{key: theme, label: T, type: string, admin_override: true}"), h, "theme", "admin_override"),
             ("wrong shape", S_HDR + s_opts("{key: theme, label: T, type: string, required: \"yes\"}"), h, "", "required"),
-            ("render outside", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota}, render: {format: json}}]}"), h, "quota", "render goes inside"),
+            ("render outside", S_HDR + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: priority, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Quota}, render: {format: json}}]}"), h, "quota", "render goes inside"),
             ("empty delivery", S_HDR + s_opts("{key: theme, label: T, type: string, delivery: [{}]}"), h, "theme", "exactly one"),
         ])
 
