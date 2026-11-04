@@ -51,9 +51,12 @@ auth:
     instead of the instance's media volume; keep an eye on its size
     (motionEye's own "Preserve" settings delete old media). Not available
     in a container: shutdown/reboot, and SMB share mounts.
-    Shared folders: motionEye runs as root (no compose user:) and writes the
-    Storage folder, so it declares access write with runs_as uid 0 / gid 0;
-    on a shared folder it joins the folder's group through group_add.
+    Shared folders: motionEye runs as root (uid 0 / gid 0, the image's
+    motion user; no compose user:) and writes the Storage folder, so it
+    declares access write with runs_as uid 0 / gid 0. Root is what lets it
+    write a shared folder: the entrypoint starts motionEye with su -g,
+    which drops supplementary groups, so the folder group the Hub adds
+    through group_add never reaches the process.
 
 settings:
   options:

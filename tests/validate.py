@@ -3884,7 +3884,9 @@ FOLDER_VAR_PREFIX = "PORTCULLIS_FOLDER_"
 USER_NUM_RE = re.compile(r"[0-9]{1,10}")
 SINGLE_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([0-9]{1,10}))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 BRACE_REF_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:[:?+-]{1,2}[0-9]*)?\}")
-GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+# groupNameRe: a plain group (group_add) or user (uid part) name; not
+# GROUP_NAME_RE, the group options' lldap.ValidGroupName.
+ID_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 GID_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-+?])([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 DECIMAL_RE = re.compile(r"-?[0-9]{1,18}")
 _V3_FLOAT_RE = re.compile(r"[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?")
@@ -4204,7 +4206,7 @@ class FolderCheck:
         if msg:
             return msg
         uid, g, has_gid = split_user(u)
-        if u != "" and not (USER_NUM_RE.fullmatch(uid) or GROUP_NAME_RE.fullmatch(uid) or SINGLE_REF_RE.fullmatch(uid)):
+        if u != "" and not (USER_NUM_RE.fullmatch(uid) or ID_NAME_RE.fullmatch(uid) or SINGLE_REF_RE.fullmatch(uid)):
             return (f"service {s}: compose user: uid {_q(uid)} must be a whole number, a user name or exactly one "
                     "${NAME} / $NAME (no mixed forms)")
         msg = self.int_ref(s, "compose user: uid", uid)
@@ -4235,7 +4237,7 @@ class FolderCheck:
             if in_folder_gid_range(int(val)):
                 return f"service {svc}: {lit} {int(val)} is in {GID_RANGE_TEXT}"
             return None
-        if names and GROUP_NAME_RE.fullmatch(val):
+        if names and ID_NAME_RE.fullmatch(val):
             return None
         if not SINGLE_REF_RE.fullmatch(val):
             if names:

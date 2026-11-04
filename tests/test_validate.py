@@ -2733,6 +2733,15 @@ class TestFolders(Case):
         ])
         self.assertEqual(sorted(v.CHECK_KINDS), ["exclusive", "filesystem", "free_space", "requires_group_value"])
 
+    def test_group_names_unshadowed(self) -> None:
+        """The folder id-name pattern (Go groupNameRe) never replaces the
+        group option's lldap.ValidGroupName (review I1)."""
+        self.cases([
+            ("leading underscore", fm("{key: grp, label: G, type: group, default: _staff}"), fc("GRP"), "grp", 'default _staff: "_staff" is not a valid group name'),
+            ("leading digit", fm("{key: grp, label: G, type: group, default: 1staff}"), fc("GRP"), "", ""),
+        ])
+        self.assertIsNot(v.GROUP_NAME_RE, v.ID_NAME_RE)
+
     def test_folder_ref_values(self) -> None:
         """A folder: value is the Hub's (settings.ParseFolderRef): a path
         option's default can't name one."""

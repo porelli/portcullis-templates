@@ -33,8 +33,9 @@ auth:
     which resets the supplementary groups to plex's own in /etc/group (a
     group_add gid wouldn't reach Plex). So the library settings join a
     shared folder's group through PLEX_GID (joins_group gid_env): the Hub
-    writes the folder gid there, and all three library settings must use
-    the same shared folder (subfolders of it are fine) or host paths.
+    writes the folder gid there. Keep all three library settings on the
+    same shared folder (subfolders are fine), or all on host paths; a
+    library left empty doesn't count.
 
 settings:
   sections: [Libraries, Server]
