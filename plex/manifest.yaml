@@ -28,6 +28,13 @@ auth:
     Plex uses its own plex.tv account system; no SSO is possible. By default the Hub puts Portcullis sign-in
     (users_plex) in front of Plex's own login; the Hub's Sign-in setting can switch to Plex's own login only
     (no Portcullis, TLS tier public), which Plex's native apps need. Claim token required for initial setup.
+    Shared folders: pms-docker's first-run script sets the plex user's uid /
+    gid from PLEX_UID / PLEX_GID, and Plex starts through s6-setuidgid plex,
+    which resets the supplementary groups to plex's own in /etc/group (a
+    group_add gid wouldn't reach Plex). So the library settings join a
+    shared folder's group through PLEX_GID (joins_group gid_env): the Hub
+    writes the folder gid there, and all three library settings must use
+    the same shared folder (subfolders of it are fine) or host paths.
 
 settings:
   sections: [Libraries, Server]
@@ -37,9 +44,11 @@ settings:
       description: Host path to your movies library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: puid, gid: pgid}
+      folder:
+        access: read                  # always mounted read-only
+        # the image's plex user takes its ids from PLEX_UID / PLEX_GID (notes)
+        runs_as: {uid_env: PLEX_UID, gid_env: PLEX_GID}
+        joins_group: gid_env
       target:
         service: plex
         mount: /data/movies
@@ -49,9 +58,11 @@ settings:
       description: Host path to your TV shows library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: puid, gid: pgid}
+      folder:
+        access: read                  # always mounted read-only
+        # the image's plex user takes its ids from PLEX_UID / PLEX_GID (notes)
+        runs_as: {uid_env: PLEX_UID, gid_env: PLEX_GID}
+        joins_group: gid_env
       target:
         service: plex
         mount: /data/tv
@@ -61,9 +72,11 @@ settings:
       description: Host path to your music library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: puid, gid: pgid}
+      folder:
+        access: read                  # always mounted read-only
+        # the image's plex user takes its ids from PLEX_UID / PLEX_GID (notes)
+        runs_as: {uid_env: PLEX_UID, gid_env: PLEX_GID}
+        joins_group: gid_env
       target:
         service: plex
         mount: /data/music
@@ -82,7 +95,9 @@ settings:
       delivery: [{env: PLEX_UID}]
     - key: pgid
       label: Plex group id
-      description: Group id Plex Media Server runs as inside the container (PLEX_GID; default 1001).
+      description: >
+        Group id Plex Media Server runs as inside the container (PLEX_GID; default 1001).
+        While a library setting uses a shared folder, the Hub sets it to the folder's group.
       section: Server
       type: int
       min: 1

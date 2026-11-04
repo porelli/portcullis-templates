@@ -365,7 +365,7 @@
       }
     },
     "option": {
-      "description": "One setting (contracts §13.1). Types: string int size duration bool enum multi_enum list table path secret group groups user users (folder, person_secret and person_id are reserved). The structure is checked here; tests/validate.py check_settings applies the Hub's rules.",
+      "description": "One setting (contracts §13.1). Types: string int size duration bool enum multi_enum list table path secret group groups user users (folder, person_secret and person_id are reserved: a shared folder is a path option with a folder block). The structure is checked here; tests/validate.py check_settings applies the Hub's rules.",
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "type"],
@@ -402,10 +402,10 @@
           "required": ["service", "mount"],
           "properties": {"service": {"$ref": "#/$defs/serviceName"}, "mount": {"type": "string"}}
         },
-        "mode": {"description": "path: ro | rw.", "type": "string"},
-        "needs": {"description": "path: read | write.", "type": "string"},
+        "mode": {"description": "path: ro | rw (without a folder block; folder.access replaces it).", "type": "string"},
+        "needs": {"description": "path: read | write (without a folder block; folder.access replaces it).", "type": "string"},
         "writes_as": {
-          "description": "path: the uid / gid the app writes as: numbers, or keys of instance int / string options.",
+          "description": "path: the uid / gid the app writes as: numbers, or keys of instance int / string options (without a folder block; folder.runs_as replaces it). A gid in 60000-60999 is refused (shared folder groups).",
           "type": "object",
           "additionalProperties": false,
           "properties": {"uid": {"type": ["integer", "string"]}, "gid": {"type": ["integer", "string"]}}
@@ -427,8 +427,12 @@
           "description": "How the value reaches the app (contracts §13.6): each delivery is exactly one of env, claim, header, file or hook. The bare form (file | hook) is reserved for person_secret (project 3).",
           "oneOf": [{"type": "array", "items": {"$ref": "#/$defs/settingDelivery"}}, {"enum": ["file", "hook"]}]
         },
-        "folder": {"description": "Reserved (shared folders, project 2): refused by this Hub.", "type": "object"},
-        "checks": {"description": "Reserved (shared folders, project 2): refused by this Hub.", "type": "array", "items": {"type": "object"}},
+        "folder": {"$ref": "#/$defs/folder"},
+        "checks": {
+          "description": "Doctor checks from the fixed catalog (contracts §13.15), at option level next to folder (never inside it). tests/validate.py applies the Hub's rules (kind placement, parameters, free_space.min in binary units).",
+          "type": "array",
+          "items": {"$ref": "#/$defs/check"}
+        },
         "hash": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"},
         "length": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "integer"},
         "revoke_on_leave": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "boolean"},
@@ -442,6 +446,61 @@
           "properties": {"service": {"type": "string"}, "path": {"type": "string"}}
         }
       }
+    },
+    "folder": {
+      "description": "path, scope instance: what the app needs on a shared folder (contracts §13.15); replaces mode, needs and writes_as. tests/validate.py applies the Hub's rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "access": {"description": "read (always mounted read-only) | write.", "type": "string"},
+        "runs_as": {"$ref": "#/$defs/runsAs"},
+        "joins_group": {"description": "How the app joins the folder's group: group_add (default: the Hub adds the folder gid to the target service) | gid_env (the folder gid is written to runs_as.gid_env) | template (the template reads PORTCULLIS_FOLDER_GID_<KEY> itself).", "type": "string"},
+        "must_own": {"description": "The app refuses files it doesn't own: the Hub also makes the app's uid the owner (access: write only).", "type": "boolean"}
+      }
+    },
+    "runsAs": {
+      "description": "The uid and gid the app's process uses on the mount: each exactly one of a number (uid / gid, 0-2147483647; a gid not in 60000-60999) or the env name of an instance int option of this template (uid_env / gid_env). uid_from / gid_from are reserved (file sharing, project 3).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uid": {"description": "A whole number (tests/validate.py refuses anything else with the Hub's message)."},
+        "gid": {"description": "A whole number (tests/validate.py refuses anything else with the Hub's message)."},
+        "uid_env": {"type": "string"},
+        "gid_env": {"type": "string"},
+        "uid_from": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"},
+        "gid_from": {"description": "Reserved (file sharing, project 3): refused by this Hub.", "type": "string"}
+      }
+    },
+    "check": {
+      "description": "One doctor check (contracts §13.15): kind from the catalog and a one-line reason (at most 200 characters) the doctor shows. One branch per kind documents where it goes and what it takes; tests/validate.py refuses an unknown kind, kind lan_only (a port flag), a misplaced check and a parameter the kind doesn't take, with the Hub's messages.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": {"type": "string"},
+        "reason": {"type": "string"},
+        "needs": {"type": "array", "items": {"type": "string"}},
+        "not": {"type": "array", "items": {"type": "string"}},
+        "min": {"type": ["string", "integer"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "filesystem"}}},
+          "then": {"description": "filesystem: a path option with a folder block; needs ⊆ [xattr, acl], not ⊆ [nfs, cifs, fuse] (at least one of them)."}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "exclusive"}}},
+          "then": {"description": "exclusive: a path option with folder.access: write; no parameters."}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "free_space"}}},
+          "then": {"description": "free_space: a path option; min is a size in binary units (500GiB; 500GB is refused)."}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "requires_group_value"}}},
+          "then": {"description": "requires_group_value: a scope person option; no parameters."}
+        }
+      ]
     },
     "settingBound": {"description": "A number, or a size / duration string (\"1GiB\", \"30d\").", "type": ["integer", "number", "string"]},
     "settingChoices": {
@@ -590,7 +649,8 @@
         "required": {"type": "boolean"},
         "service": {"$ref": "#/$defs/serviceName"},
         "network_mode_host": {"type": "boolean"},
-        "range": {"type": "string", "pattern": "^[0-9]{1,5}-[0-9]{1,5}$"}
+        "range": {"type": "string", "pattern": "^[0-9]{1,5}-[0-9]{1,5}$"},
+        "lan_only": {"description": "The port should be reachable only from the local networks (LAN, VPN): the doctor judges its binding (contracts §14.7). It changes nothing in how the port is bound.", "type": "boolean"}
       },
       "if": {"required": ["range"]},
       "then": {"not": {"anyOf": [{"required": ["container"]}, {"required": ["default"]}]}},

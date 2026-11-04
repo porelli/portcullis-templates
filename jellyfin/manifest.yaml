@@ -36,6 +36,10 @@ auth:
     DefaultUsernameClaim) and never sees the email (no email scope). An SSO
     login whose username equals an existing local Jellyfin user (e.g. the
     LLDAP "admin" and the local admin created by setup) is linked to it.
+    Shared folders: the jellyfin image runs as root (no USER, no compose
+    user:), so the library settings declare runs_as uid 0 / gid 0, read-
+    only; on a shared folder Jellyfin joins the folder's group through
+    group_add.
 
 settings:
   sections: [Libraries]
@@ -45,9 +49,10 @@ settings:
       description: Host path to your movies library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: 0, gid: 0}
+      folder:
+        access: read                  # always mounted read-only
+        runs_as: {uid: 0, gid: 0}     # the image runs as root (no compose user:)
+        joins_group: group_add        # the default
       target:
         service: jellyfin
         mount: /data/movies
@@ -57,9 +62,10 @@ settings:
       description: Host path to your TV shows library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: 0, gid: 0}
+      folder:
+        access: read                  # always mounted read-only
+        runs_as: {uid: 0, gid: 0}     # the image runs as root (no compose user:)
+        joins_group: group_add        # the default
       target:
         service: jellyfin
         mount: /data/tv
@@ -69,9 +75,10 @@ settings:
       description: Host path to your music library
       section: Libraries
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: 0, gid: 0}
+      folder:
+        access: read                  # always mounted read-only
+        runs_as: {uid: 0, gid: 0}     # the image runs as root (no compose user:)
+        joins_group: group_add        # the default
       target:
         service: jellyfin
         mount: /data/music

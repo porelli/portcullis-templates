@@ -114,6 +114,9 @@ auth:
     Upgrades: immich-server and immich-machine-learning are pinned to the same
     release and must always move together; read the upstream release notes for
     breaking changes and keep immich-db on the image upstream specifies.
+    Shared folders: immich-server runs as root (no compose user:), so
+    External photo library declares runs_as uid 0 / gid 0, read-only; on a
+    shared folder it joins the folder's group through group_add.
 
 settings:
   sections: [Storage, Accounts, Library]
@@ -178,9 +181,9 @@ settings:
       description: Host path to existing photos to import (mounted read-only)
       section: Library
       type: path
-      mode: ro
-      needs: read
-      writes_as: {uid: 0, gid: 0}
+      folder:
+        access: read                  # always mounted read-only
+        runs_as: {uid: 0, gid: 0}     # immich-server runs as root (no compose user:)
       target:
         service: immich-server
         mount: /usr/src/app/external

@@ -51,6 +51,9 @@ auth:
     instead of the instance's media volume; keep an eye on its size
     (motionEye's own "Preserve" settings delete old media). Not available
     in a container: shutdown/reboot, and SMB share mounts.
+    Shared folders: motionEye runs as root (no compose user:) and writes the
+    Storage folder, so it declares access write with runs_as uid 0 / gid 0;
+    on a shared folder it joins the folder's group through group_add.
 
 settings:
   options:
@@ -58,9 +61,9 @@ settings:
       label: Storage folder
       description: Host folder for recordings and pictures (empty = the instance's own volume).
       type: path
-      mode: rw
-      needs: write
-      writes_as: {uid: 0, gid: 0}
+      folder:
+        access: write
+        runs_as: {uid: 0, gid: 0}     # motionEye runs as root (no compose user:)
       target:
         service: motioneye
         mount: /var/lib/motioneye

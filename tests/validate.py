@@ -383,6 +383,16 @@ def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bo
 
 
 _UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+
+
+def _refuse_binary(loader: yaml.SafeLoader, node: yaml.Node) -> Any:
+    """CheckTags: !!binary decodes to text no check sees (compose reads
+    [!!binary MDYwMDAx] as "060001", gid 60001)."""
+    raise yaml.constructor.ConstructorError(
+        None, None, "YAML tag !!binary is not allowed (a binary scalar decodes to text no check sees)", node.start_mark)
+
+
+_UniqueKeyLoader.add_constructor("tag:yaml.org,2002:binary", _refuse_binary)
 # Read plain scalars as the Hub's yaml.v3 does (YAML 1.2 core schema): only
 # true / false are booleans (yes / no / on / off stay strings, so
 # `traefik.enable: yes` and `default: yes` are refused as the Hub refuses
@@ -573,6 +583,9 @@ class Template:
         self.host_vars: Dict[str, str] = {}
         # Top-level manifest keys with schema errors (check_settings waits for those).
         self.schema_errors: Set[str] = set()
+        # compose user: / group_add per service (check_folders, compose_ids).
+        self.compose_users: Dict[str, str] = {}
+        self.compose_group_add: Dict[str, List[str]] = {}
 
     @property
     def multi(self) -> bool:
@@ -2456,7 +2469,7 @@ RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
 GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
 CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
 PLACEHOLDER_ACCESS, PLACEHOLDER_ADMIN = "{{ACCESS_GROUP}}", "{{ADMIN_GROUP}}"
-FEATURE_FOLDERS, FEATURE_SHARING = "shared folders (project 2)", "file sharing (project 3)"
+FEATURE_FOLDERS, FEATURE_SHARING = "type: path with a folder block", "file sharing (project 3)"
 INDEX_SUFFIX, MAX_INDEXED = "_{n}", 64
 HOOK_DEFAULT_TIMEOUT, HOOK_MAX_TIMEOUT = 30 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
 RESERVED_CLAIMS = {
@@ -2850,7 +2863,7 @@ def _only_fields(o: Dict[str, Any], *allowed: str) -> None:
         ("unit", _str(o, "unit") != ""), ("allow_unlimited", bool(o.get("allow_unlimited"))),
         ("options", _has(o, "options")), ("items", _has(o, "items")), ("columns", _has(o, "columns")),
         ("key_column", _str(o, "key_column") != ""), ("target", _has(o, "target")),
-        ("mode", _str(o, "mode") != ""), ("needs", _str(o, "needs") != ""),
+        ("mode", _str(o, "mode") != ""), ("needs", _str(o, "needs") != ""), ("folder", _has(o, "folder")),
     ]
     for name, on in set_fields:
         if on and name not in allowed:
@@ -3107,7 +3120,9 @@ def _kind_check(o: Dict[str, Any]) -> None:
         _only_fields(o, "min_items", "max_items")
         _check_item_bounds(o)
     elif t == "path":
-        _only_fields(o, "target", "mode", "needs")
+        _only_fields(o, "target", "mode", "needs", "folder")
+        if _has(o, "folder") and (_str(o, "mode") or _str(o, "needs") or _has(o, "writes_as")):
+            raise SettingError("folder together with mode, needs or writes_as: folder.access and folder.runs_as replace them")
         mode, needs = _str(o, "mode"), _str(o, "needs")
         if mode not in ("", "ro", "rw"):
             raise SettingError(f"mode {json.dumps(mode)} must be ro or rw")
@@ -3269,7 +3284,7 @@ def setting_value(o: Dict[str, Any], raw: Any) -> Any:
         if not isinstance(raw, str):
             raise SettingError(f"want a host directory as a string, not {_type_name(raw)}")
         if raw.startswith("folder:"):
-            raise SettingError(f"{json.dumps(raw)} names a shared folder: shared folders arrive in project 2")
+            raise SettingError(f"{json.dumps(raw)}: a shared folder value is resolved by the Hub")
         if has_control(raw) or ":" in raw:
             raise SettingError(f"path {json.dumps(raw)} may not contain ':' or control characters")
         if not raw.startswith("/"):
@@ -3390,6 +3405,7 @@ def check_option_kind(o: Dict[str, Any]) -> None:
     """Registry.CheckOption: the kind's constraints, each delivery's render,
     the default and the group_values as values of o."""
     _kind_check(o)
+    check_checks(o)
     deliveries = o.get("delivery") if isinstance(o.get("delivery"), list) else []
     if o.get("type") == "size" and o.get("allow_unlimited") and not deliveries:
         raise SettingError("allow_unlimited needs deliveries that say how unlimited is rendered (render.unlimited)")
@@ -3711,7 +3727,7 @@ def settings_env_names(m: Dict[str, Any]) -> List[str]:
 
 def reserved_var(k: str) -> bool:
     """templates.ReservedVar: the instance variables the Hub sets."""
-    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES)
+    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_")
 
 
 def reserved_use(o: Dict[str, Any]) -> Tuple[str, str]:
@@ -3721,8 +3737,13 @@ def reserved_use(o: Dict[str, Any]) -> Tuple[str, str]:
         return "type folder", FEATURE_FOLDERS
     if t in ("person_secret", "person_id"):
         return f"type {t}", FEATURE_SHARING
-    for f, feat, on in (("folder", FEATURE_FOLDERS, _has(o, "folder")), ("checks", FEATURE_FOLDERS, _has(o, "checks")),
-                        ("hash", FEATURE_SHARING, _str(o, "hash") != ""),
+    f = o.get("folder")
+    ra = f.get("runs_as") if isinstance(f, dict) else None
+    if isinstance(ra, dict):
+        for k in ("uid_from", "gid_from"):
+            if _str(ra, k):
+                return "folder.runs_as." + k, FEATURE_SHARING
+    for f, feat, on in (("hash", FEATURE_SHARING, _str(o, "hash") != ""),
                         ("length", FEATURE_SHARING, o.get("length") not in (None, 0)),
                         ("revoke_on_leave", FEATURE_SHARING, _has(o, "revoke_on_leave")),
                         ("on_restore", FEATURE_SHARING, _str(o, "on_restore") != ""),
@@ -3835,6 +3856,656 @@ def check_traefik_routes(t: Template, services: Dict[str, Any], r: Report) -> No
                 router_owner[fold_key(name)] = str(sname)
 
 
+# ── Shared folders (contract §13.15) ────────────────────────────────
+# A mirror of the Hub's portcullis-hub internal/templates/folders.go: the
+# path option's folder block, option-level doctor checks, the folder gid
+# range 60000-60999 and the strict uid / gid source forms of compose user:
+# and group_add, with the Hub's messages. compose.yml's user: / group_add
+# are read from the YAML node graph and resolved as yaml.v3 resolves plain
+# scalars (v3_plain_resolve), so 0165141 is octal 60001 as Docker gets it.
+# Where PyYAML can't see what yaml.v3 sees, the mirror refuses more, never
+# less (CONTRIBUTING.md "Shared folders and checks").
+
+FOLDERS_HINT = f"see {DOCS_URL}/integration-contracts/#1315-shared-folders-checks-and-lan-only-ports"
+FOLDER_TYPE_REFUSAL = "type folder is reserved: a shared folder is a type: path option with a folder block (§13.15)"
+FOLDER_READ, FOLDER_WRITE = "read", "write"
+JOIN_GROUP_ADD, JOIN_GID_ENV, JOIN_TEMPLATE = "group_add", "gid_env", "template"
+CHECK_LAN_ONLY = "lan_only"   # the port flag and the doctor's finding kind, never an option check
+CHECK_KINDS = ("exclusive", "filesystem", "free_space", "requires_group_value")
+CHECK_PARAMS = {"filesystem": ("needs", "not"), "free_space": ("min",)}
+FS_NEEDS, FS_NOT = ("xattr", "acl"), ("nfs", "cifs", "fuse")
+CHECK_REASON_MAX = 200
+FOLDER_GID_MIN, FOLDER_GID_MAX = 60000, 60999
+MAX_RUNS_AS_ID = (1 << 31) - 1
+GID_RANGE_TEXT = f"{FOLDER_GID_MIN}-{FOLDER_GID_MAX} (shared folder groups)"
+FOLDER_VAR_PREFIX = "PORTCULLIS_FOLDER_"
+
+# The Hub's regexps (Go's $ is the end of the text: fullmatch / match here).
+USER_NUM_RE = re.compile(r"[0-9]{1,10}")
+SINGLE_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([0-9]{1,10}))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+BRACE_REF_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:[:?+-]{1,2}[0-9]*)?\}")
+GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+GID_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-+?])([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+DECIMAL_RE = re.compile(r"-?[0-9]{1,18}")
+_V3_FLOAT_RE = re.compile(r"[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?")
+_V3_MAP = {"true": "bool", "True": "bool", "TRUE": "bool", "false": "bool", "False": "bool", "FALSE": "bool",
+           "": "null", "~": "null", "null": "null", "Null": "null", "NULL": "null",
+           ".nan": "float", ".NaN": "float", ".NAN": "float", ".inf": "float", ".Inf": "float", ".INF": "float",
+           "+.inf": "float", "+.Inf": "float", "+.INF": "float", "-.inf": "float", "-.Inf": "float", "-.INF": "float",
+           "<<": "merge"}
+
+
+def _q(s: str) -> str:
+    """Go's %q for the messages (printable non-ASCII kept)."""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def in_folder_gid_range(n: int) -> bool:
+    return FOLDER_GID_MIN <= n <= FOLDER_GID_MAX
+
+
+def _go_parse_int(s: str, base: int, signed: bool) -> Optional[int]:
+    """strconv.ParseInt / ParseUint (s, base, 64): None when it fails."""
+    neg = False
+    if signed and s[:1] in ("+", "-"):
+        neg, s = s[0] == "-", s[1:]
+    if base == 0:
+        low = s[:2].lower()
+        if low == "0x":
+            base, s = 16, s[2:]
+        elif low == "0o":
+            base, s = 8, s[2:]
+        elif low == "0b":
+            base, s = 2, s[2:]
+        elif s[:1] == "0" and len(s) > 1:
+            base, s = 8, s[1:]
+        else:
+            base = 10
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"[:base]
+    if not s or any(c not in digits for c in s.lower()):
+        return None
+    n = -int(s, base) if neg else int(s, base)
+    if signed and not INT64_MIN <= n <= INT64_MAX:
+        return None
+    if not signed and n > (1 << 64) - 1:
+        return None
+    return n
+
+
+def v3_plain_resolve(v: str) -> Tuple[str, Optional[int]]:
+    """yaml.v3 resolve("", v): the tag of a plain scalar (str, int, float,
+    bool, null, timestamp, merge) and, for an int, its value."""
+    if v in _V3_MAP:
+        return _V3_MAP[v], None
+    hint = v[:1]
+    if hint == ".":
+        try:
+            float(v)
+            return "float", None
+        except ValueError:
+            return "str", None
+    if hint and (hint.isdigit() and hint.isascii() or hint in "+-"):
+        # parseTimestamp needs four digits and '-': such a value is never a
+        # number, a name or a reference, so calling it a timestamp only
+        # changes which refusal is shown.
+        if re.match(r"[0-9]{4}-", v):
+            return "timestamp", None
+        plain = v.replace("_", "")
+        for signed in (True, False):
+            n = _go_parse_int(plain, 0, signed)
+            if n is not None:
+                return "int", n
+        if _V3_FLOAT_RE.fullmatch(plain):
+            return "float", None
+        for pre, base, neg in (("0b", 2, False), ("-0b", 2, True), ("0o", 8, False), ("-0o", 8, True)):
+            if plain.startswith(pre):
+                n = _go_parse_int(plain[len(pre):], base, True)
+                if n is not None:
+                    return "int", -n if neg else n
+        return "str", None
+    return "str", None
+
+
+class _IDNodeLoader(_UniqueKeyLoader):
+    """Composes nodes and records which scalar carried an explicit tag
+    (yaml.v3 keeps it as the node's Tag; a plain one is resolved)."""
+
+    def compose_scalar_node(self, anchor: Any) -> yaml.ScalarNode:
+        event = self.peek_event()
+        node = super().compose_scalar_node(anchor)
+        node.v3_explicit = event.tag not in (None, "!")  # type: ignore[attr-defined]
+        return node
+
+
+def v3_tag(node: yaml.Node) -> str:
+    """The node's tag as yaml.v3's parser sets it (!!str, !!int, …)."""
+    if isinstance(node, yaml.ScalarNode):
+        if getattr(node, "v3_explicit", False):
+            t = node.tag
+            return "!!" + t[len("tag:yaml.org,2002:"):] if t.startswith("tag:yaml.org,2002:") else t
+        if node.style:
+            return "!!str"
+        return "!!" + v3_plain_resolve(node.value)[0]
+    return "!!seq" if isinstance(node, yaml.SequenceNode) else "!!map"
+
+
+def _is_null(node: Optional[yaml.Node]) -> bool:
+    return node is None or (isinstance(node, yaml.ScalarNode) and v3_tag(node) == "!!null")
+
+
+def id_scalar(node: Optional[yaml.Node]) -> Tuple[Optional[str], str]:
+    """idScalar: a user: / group_add value as compose reads it (None = not
+    set; aliases are the anchored node itself in PyYAML's graph): only
+    !!str, !!int and !!null, an !!int written in decimal as YAML decodes it."""
+    if _is_null(node):
+        return None, ""
+    if not isinstance(node, yaml.ScalarNode):
+        return None, "want a scalar"
+    tag = v3_tag(node)
+    if tag not in ("!!str", "!!int"):
+        return None, f"want a string or a whole number, not {tag}"
+    if tag == "!!int":
+        rt, n = v3_plain_resolve(node.value)
+        if rt != "int" or n is None or not INT64_MIN <= n <= INT64_MAX:
+            return None, f"cannot decode {node.value!r} as a whole number"
+        return str(n), ""
+    return node.value, ""
+
+
+def _node_map(node: yaml.Node, depth: int = 0) -> Dict[str, yaml.Node]:
+    """A mapping node's keys as yaml.v3 decodes a struct: explicit keys
+    win, then the (last) << merge, a sequence of maps first map first."""
+    if not isinstance(node, yaml.MappingNode) or depth > 32:
+        raise ValueError("map merge requires map or sequence of maps as the value")
+    out: Dict[str, yaml.Node] = {}
+    merge = None
+    for k, val in node.value:
+        if isinstance(k, yaml.ScalarNode) and v3_tag(k) == "!!merge":
+            merge = val
+            continue
+        if isinstance(k, yaml.ScalarNode):
+            out.setdefault(k.value, val)
+    if merge is not None:
+        for m in (merge.value if isinstance(merge, yaml.SequenceNode) else [merge]):
+            for k, val in _node_map(m, depth + 1).items():
+                out.setdefault(k, val)
+    return out
+
+
+def compose_ids(text: str) -> Tuple[Dict[str, str], Dict[str, List[str]], str]:
+    """composeIDs: every service's user: ("" = set empty) and group_add
+    entries, or the reason compose.yml can't be read that way."""
+    users: Dict[str, str] = {}
+    group_add: Dict[str, List[str]] = {}
+    try:
+        root = yaml.compose(text, Loader=_IDNodeLoader)  # noqa: S506 - SafeLoader subclass
+    except yaml.YAMLError as e:
+        return users, group_add, f"compose.yml: {e}"
+    if _is_null(root):
+        return users, group_add, ""
+    if not isinstance(root, yaml.MappingNode):
+        return users, group_add, "compose.yml: the top level must be a mapping"
+    try:
+        services = _node_map(root).get("services")
+        if _is_null(services):
+            return users, group_add, ""
+        svcs = _node_map(services)
+    except ValueError as e:
+        return users, group_add, f"compose.yml: {e}"
+    for svc, node in svcs.items():
+        if _is_null(node):
+            continue
+        try:
+            s = _node_map(node)
+        except ValueError:
+            return {}, {}, f"compose.yml: service {svc} is not a mapping"
+        u, err = id_scalar(s.get("user"))
+        if err:
+            return {}, {}, f"service {svc}: user: {err}"
+        if u is not None:
+            users[svc] = u
+        g = s.get("group_add")
+        if _is_null(g):
+            continue
+        if not isinstance(g, yaml.SequenceNode):
+            return {}, {}, f"service {svc}: group_add must be a list"
+        for e in g.value:
+            val, err = id_scalar(e)
+            if err or val is None:
+                return {}, {}, f"service {svc}: group_add entries must be numbers or names"
+            group_add.setdefault(svc, []).append(val)
+    return users, group_add, ""
+
+
+def split_user(u: str) -> Tuple[str, str, bool]:
+    """splitUser: compose user: split at the first ':' outside ${…}."""
+    depth, i = 0, 0
+    while i < len(u):
+        if u[i] == "$" and i + 1 < len(u) and u[i + 1] == "{":
+            depth += 1
+            i += 1
+        elif u[i] == "}" and depth > 0:
+            depth -= 1
+        elif u[i] == ":" and depth == 0:
+            return u[:i], u[i + 1:], True
+        i += 1
+    return u, "", False
+
+
+def user_part(s: str) -> Tuple[Optional[int], str, bool]:
+    """parseUserPart: (a literal number, the ${NAME…} / $NAME it names, other)."""
+    if USER_NUM_RE.fullmatch(s):
+        return int(s), "", False
+    m = SINGLE_REF_RE.fullmatch(s)
+    if m:
+        return None, m.group(1) or m.group(4), False
+    return None, "", True
+
+
+def default_int(d: Any) -> Optional[int]:
+    """defaultInt: a manifest default as an integer (a YAML int, a whole
+    float, a decimal string), None when it can't be read so. yaml.v3 reads
+    an int beyond int64 as a uint64 above 1<<62 or a float above 2^53:
+    both unreadable."""
+    if isinstance(d, bool):
+        return None
+    if isinstance(d, int):
+        return d if INT64_MIN <= d <= INT64_MAX else None
+    if isinstance(d, float):
+        return int(d) if d == int(d) and abs(d) <= 1 << 53 else None
+    if isinstance(d, str) and DECIMAL_RE.fullmatch(d):
+        return int(d)
+    return None
+
+
+def id_default(ro: Dict[str, Any]) -> Tuple[int, bool, bool]:
+    """idDefault: (the default, unreadable, in the folder gid range)."""
+    if not _has(ro, "default"):
+        return 0, False, False
+    d = default_int(ro["default"])
+    if d is None:
+        return 0, True, False
+    return d, False, in_folder_gid_range(d)
+
+
+def quote_default(d: Any) -> str:
+    return _q(d) if isinstance(d, str) else _gofmt(d)
+
+
+def runs_as_of(o: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    f = o.get("folder")
+    ra = f.get("runs_as") if isinstance(f, dict) else None
+    return ra if isinstance(ra, dict) else None
+
+
+def runs_as_norm(ra: Dict[str, Any]) -> Tuple[Any, ...]:
+    """A runs_as as the Hub's RunsAs struct compares (reflect.DeepEqual)."""
+    return (ra.get("uid"), ra.get("gid"), _str(ra, "uid_env"), _str(ra, "gid_env"),
+            _str(ra, "uid_from"), _str(ra, "gid_from"))
+
+
+def runs_as_number_problem(o: Dict[str, Any]) -> str:
+    """RunsAs.UnmarshalYAML: a uid / gid that isn't a whole number."""
+    ra = runs_as_of(o)
+    if ra is None:
+        return ""
+    for what in ("uid", "gid"):
+        n = ra.get(what)
+        if n is None:
+            continue
+        if isinstance(n, bool) or not isinstance(n, int) or not INT64_MIN <= n <= INT64_MAX:
+            shown = "" if isinstance(n, (dict, list)) else scalar_text(n)
+            return f"folder.runs_as.{what}: want a whole number, not {_q(shown)} (a variable goes in {what}_env)"
+    return ""
+
+
+def folder_join(o: Dict[str, Any]) -> str:
+    """FolderSpec.Join: joins_group, default group_add."""
+    f = o.get("folder") if isinstance(o.get("folder"), dict) else {}
+    return _str(f, "joins_group") or JOIN_GROUP_ADD
+
+
+class FolderCheck:
+    """The folder parts of the Hub's specCheck over one template: its
+    options (dicts), every service's compose user: and group_add entries.
+    Each method answers the Hub's refusal, or None."""
+
+    def __init__(self, options: List[Dict[str, Any]], users: Dict[str, str], group_add: Dict[str, List[str]]) -> None:
+        self.options, self.users, self.group_add = options, users, group_add
+
+    def any_env_option(self, name: str) -> Optional[Dict[str, Any]]:
+        """anyEnvOption: the instance option (any type) delivering env name."""
+        for ro in self.options:
+            if scope_of(ro) == "instance" and name in option_env_names(ro):
+                return ro
+        return None
+
+    def env_option(self, name: str) -> Optional[Dict[str, Any]]:
+        """envOption: the instance int option delivering env name."""
+        ro = self.any_env_option(name)
+        return ro if ro is not None and ro.get("type") == "int" else None
+
+    def services(self) -> List[str]:
+        return sorted(set(self.users) | set(self.group_add))
+
+    # compose-level (composeGIDs), on every service, before the options
+
+    def compose_gids(self) -> List[str]:
+        out = []
+        for s in self.services():
+            msg = self.service_gids(s)
+            if msg:
+                out.append(msg)
+        return out
+
+    def service_gids(self, s: str) -> Optional[str]:
+        u = self.users.get(s, "")
+        msg = user_fallbacks(s, u)
+        if msg:
+            return msg
+        uid, g, has_gid = split_user(u)
+        if u != "" and not (USER_NUM_RE.fullmatch(uid) or GROUP_NAME_RE.fullmatch(uid) or SINGLE_REF_RE.fullmatch(uid)):
+            return (f"service {s}: compose user: uid {_q(uid)} must be a whole number, a user name or exactly one "
+                    "${NAME} / $NAME (no mixed forms)")
+        msg = self.int_ref(s, "compose user: uid", uid)
+        if msg:
+            return msg
+        if has_gid:
+            msg = self.gid_source(s, "compose user: gid", "compose user: gid", g, False)
+            if msg:
+                return msg
+        for e in self.group_add.get(s, []):
+            msg = self.gid_source(s, "group_add gid", "group_add", e, True)
+            if msg:
+                return msg
+        return None
+
+    def int_ref(self, svc: str, what: str, val: str) -> Optional[str]:
+        m = SINGLE_REF_RE.fullmatch(val)
+        if not m:
+            return None
+        name = m.group(1) or m.group(4)
+        if self.env_option(name) is None:
+            return (f"service {svc}: {what} ${{{name}}} must name an instance int option of this template "
+                    "(not a string option, an undeclared variable or PORTCULLIS_*)")
+        return None
+
+    def gid_source(self, svc: str, lit: str, ref: str, val: str, names: bool) -> Optional[str]:
+        if USER_NUM_RE.fullmatch(val):
+            if in_folder_gid_range(int(val)):
+                return f"service {svc}: {lit} {int(val)} is in {GID_RANGE_TEXT}"
+            return None
+        if names and GROUP_NAME_RE.fullmatch(val):
+            return None
+        if not SINGLE_REF_RE.fullmatch(val):
+            if names:
+                return (f"service {svc}: group_add entry {_q(val)} must be a whole number, a group name or exactly one "
+                        "${NAME} / $NAME (no mixed forms)")
+            return f"service {svc}: compose user: gid {_q(val)} must be a whole number or exactly one ${{NAME}} / $NAME (no mixed forms)"
+        msg = self.int_ref(svc, ref, val)
+        if msg:
+            return msg
+        for m in _interpolations(val, GID_REF_RE):
+            name, op, value = m.group(1) or m.group(4), m.group(2) or "", m.group(3) or ""
+            if op and op not in ("?", ":?") and USER_NUM_RE.fullmatch(value) and in_folder_gid_range(int(value)):
+                return f"service {svc}: {lit} {int(value)} (the default of ${{{name}}}) is in {GID_RANGE_TEXT}"
+            ro = self.env_option(name)
+            if ro is not None:
+                d, _, inr = id_default(ro)
+                if inr:
+                    return f"service {svc}: {ref} ${{{name}}} is setting {_str(ro, 'key')}, whose default {d} is in {GID_RANGE_TEXT}"
+        return None
+
+    # the folder block of one option (folderOption)
+
+    def folder_option(self, o: Dict[str, Any]) -> Optional[str]:
+        f = o.get("folder")
+        if not isinstance(f, dict):
+            return None
+        bad = runs_as_number_problem(o)
+        if bad:
+            return bad
+        if o.get("type") != "path" or scope_of(o) != "instance":
+            return f"folder is for path options with scope instance (not type {_str(o, 'type')}, scope {scope_of(o)})"
+        for name, on in (("mode", _str(o, "mode") != ""), ("needs", _str(o, "needs") != ""), ("writes_as", _has(o, "writes_as"))):
+            if on:
+                return f"{name} together with folder: folder.access and folder.runs_as replace them"
+        access = _str(f, "access")
+        if access == "":
+            return "folder.access is required (read or write)"
+        if access not in (FOLDER_READ, FOLDER_WRITE):
+            return f"folder.access {_q(access)} must be read or write"
+        ra = runs_as_of(o)
+        if ra is None:
+            return "folder.runs_as is required (the uid and gid the app uses on the mount)"
+        for what in ("uid", "gid"):
+            num, env = ra.get(what), _str(ra, what + "_env")
+            if (num is not None) == (env != ""):
+                return (f"folder.runs_as.{what}: exactly one of {what}, {what}_env (a number, or the env name of an instance "
+                        "int option)")
+            if num is not None:
+                if not 0 <= num <= MAX_RUNS_AS_ID:
+                    return f"folder.runs_as.{what} {num} is not a valid id (0-{MAX_RUNS_AS_ID})"
+                if what == "gid" and in_folder_gid_range(num):
+                    return f"folder.runs_as.gid {num} is in {GID_RANGE_TEXT}"
+                continue
+            if reserved_var(env) or env.startswith("PORTCULLIS_"):
+                return f"folder.runs_as.{what}_env {env} is reserved (PORTCULLIS_*: core and the Hub set them)"
+            ro = self.env_option(env)
+            if ro is None:
+                return f"folder.runs_as.{what}_env {env} is not the env name of an instance int option of this template"
+            d, bad, inr = id_default(ro)
+            if bad:
+                return (f"folder.runs_as.{what}_env {env} names setting {_str(ro, 'key')}, whose default "
+                        f"{quote_default(ro['default'])} is not a whole number")
+            if inr and what == "gid":
+                return f"folder.runs_as.{what}_env {env} names setting {_str(ro, 'key')}, whose default {d} is in {GID_RANGE_TEXT}"
+        join = _str(f, "joins_group")
+        if join == JOIN_GID_ENV:
+            if _str(ra, "gid_env") == "":
+                return "folder.joins_group: gid_env needs runs_as.gid_env (the variable the folder gid is written to)"
+        elif join not in ("", JOIN_GROUP_ADD, JOIN_TEMPLATE):
+            return f"folder.joins_group {_q(join)} must be group_add, gid_env or template"
+        if f.get("must_own") is True and access != FOLDER_WRITE:
+            return "folder.must_own needs access: write (the Hub makes the app the owner of what it writes)"
+        tg = o.get("target")
+        if not isinstance(tg, dict):
+            return None   # path_and_secret refuses it
+        svc = _str(tg, "service")
+        msg = self.compose_user_matches(svc, ra) or self.group_add_resolves(svc)
+        if msg:
+            return msg
+        if join == JOIN_GID_ENV:
+            leak = self.gid_env_leaks().get(_str(ra, "gid_env"))
+            if leak:
+                return leak
+        return self.same_env_same_runs_as(o)
+
+    def compose_user_matches(self, svc: str, ra: Dict[str, Any]) -> Optional[str]:
+        u = self.users.get(svc, "")
+        if u == "":
+            return None
+        us, gs, has_gid = split_user(u)
+        ids = [("uid", us, ra.get("uid"), _str(ra, "uid_env"))]
+        if has_gid:
+            ids.append(("gid", gs, ra.get("gid"), _str(ra, "gid_env")))
+        for what, part, num, env in ids:
+            pnum, penv, other = user_part(part)
+            if other:
+                return (f"service {svc}'s compose user: {_q(u)} is not numeric next to a folder block: give numbers "
+                        "in compose `user:` (uid:gid, or ${PUID:-1000}:${PGID:-1000})")
+            if pnum is not None and num is not None:
+                if num != pnum:
+                    return f"folder.runs_as.{what} {num} doesn't match service {svc}'s compose user: {_q(u)}"
+            elif pnum is not None:
+                return f"folder.runs_as.{what}_env {env} doesn't match service {svc}'s compose user: {_q(u)} (use {what}: {pnum})"
+            elif num is not None:
+                return (f"folder.runs_as.{what}: service {svc}'s compose user: takes it from ${{{penv}}}: use {what}_env: "
+                        f"{penv}")
+            elif env != penv:
+                return (f"folder.runs_as.{what}_env {env} doesn't match service {svc}'s compose user: {_q(u)} "
+                        f"(use {what}_env: {penv})")
+        return None
+
+    def group_add_resolves(self, svc: str) -> Optional[str]:
+        for e in self.group_add.get(svc, []):
+            if USER_NUM_RE.fullmatch(e):
+                continue
+            _, env, _ = user_part(e)
+            if env and self.env_option(env) is not None:
+                continue
+            return (f"service {svc}'s group_add entry {_q(e)} next to a folder block must be a number or ${{NAME}} "
+                    "of an instance int option")
+        return None
+
+    def gid_env_leaks(self) -> Dict[str, str]:
+        """gidEnvLeaks: per gid_env join variable, the first other service
+        (sorted) whose compose user: gid or group_add reads it."""
+        targets: Dict[str, Set[str]] = {}
+        for o in self.options:
+            f, ra, tg = o.get("folder"), runs_as_of(o), o.get("target")
+            if not isinstance(f, dict) or _str(f, "joins_group") != JOIN_GID_ENV or ra is None or not _str(ra, "gid_env") \
+                    or not isinstance(tg, dict):
+                continue
+            targets.setdefault(_str(ra, "gid_env"), set()).add(_str(tg, "service"))
+        out: Dict[str, str] = {}
+        for env, on in targets.items():
+            for s in self.services():
+                if s in on:
+                    continue
+                _, g, ok = split_user(self.users.get(s, ""))
+                reads = []
+                if ok and user_part(g)[1] == env:
+                    reads.append("compose user: gid")
+                if any(user_part(e)[1] == env for e in self.group_add.get(s, [])):
+                    reads.append("group_add")
+                for what in reads:
+                    out.setdefault(env, f"folder.joins_group: gid_env writes the folder gid to {env}, which service {s}'s "
+                                        f"{what} also reads: only the services the folder options target may use a gid_env variable")
+        return out
+
+    def same_env_same_runs_as(self, o: Dict[str, Any]) -> Optional[str]:
+        ra = runs_as_of(o) or {}
+        svc = _str(o.get("target") or {}, "service")
+        for p in self.options:
+            if p is o or _str(p, "key") == _str(o, "key"):
+                break
+            pr, ptg = runs_as_of(p), p.get("target")
+            if not isinstance(p.get("folder"), dict) or pr is None or not isinstance(ptg, dict) or _str(ptg, "service") != svc:
+                continue
+            for j in (p, o):
+                if folder_join(j) == JOIN_GID_ENV and _str(ra, "gid_env") != _str(pr, "gid_env"):
+                    other = p if j is o else o
+                    g = _str(runs_as_of(j) or {}, "gid_env")
+                    return (f"service {svc} joins a folder group through gid_env {g}: every folder option on it must use "
+                            f"runs_as.gid_env {g} (setting {_str(other, 'key')} doesn't)")
+            if _str(ra, "gid_env") and _str(ra, "gid_env") == _str(pr, "gid_env"):
+                shared = "gid_env " + _str(ra, "gid_env")
+            elif _str(ra, "uid_env") and _str(ra, "uid_env") == _str(pr, "uid_env"):
+                shared = "uid_env " + _str(ra, "uid_env")
+            else:
+                continue
+            if runs_as_norm(ra) != runs_as_norm(pr) or folder_join(o) != folder_join(p):
+                return (f"folder names {shared} like setting {_str(p, 'key')} on service {svc}, with another runs_as or "
+                        "joins_group (one primary gid per process: use identical blocks)")
+        return None
+
+    # option-level doctor checks (checks)
+
+    def checks(self, o: Dict[str, Any]) -> Optional[str]:
+        seen: Set[str] = set()
+        for i, c in enumerate(o.get("checks") or []):
+            c = c if isinstance(c, dict) else {}
+            kind = _str(c, "kind")
+            if kind == CHECK_LAN_ONLY:
+                return f"checks[{i}]: kind lan_only is not an option check: set lan_only: true on the port"
+            if kind not in CHECK_KINDS:
+                return f"checks[{i}]: unknown kind {_q(kind)} (the catalog: {', '.join(CHECK_KINDS)})"
+            w = f"checks[{i}] ({kind})"
+            if kind in seen:
+                return f"{w}: listed twice"
+            seen.add(kind)
+            reason = _str(c, "reason")
+            if reason.strip() == "" or len(reason) > CHECK_REASON_MAX or has_control(reason):
+                return f"{w}: reason must be one line of 1-{CHECK_REASON_MAX} characters, without control characters"
+            path, folder = o.get("type") == "path", isinstance(o.get("folder"), dict)
+            if kind == "filesystem" and not (path and folder):
+                return f"{w}: needs a path option with a folder block"
+            if kind == "exclusive" and not (path and folder and _str(o["folder"], "access") == FOLDER_WRITE):
+                return f"{w}: needs a path option with folder.access: write"
+            if kind == "free_space" and not path:
+                return f"{w}: needs a path option"
+            if kind == "requires_group_value" and scope_of(o) != "person":
+                return f"{w}: needs scope: person"
+            for p, on in (("needs", _has(c, "needs")), ("not", _has(c, "not")), ("min", _str(c, "min") != "")):
+                if on and p not in CHECK_PARAMS.get(kind, ()):
+                    return f"{w}: {kind} takes no {p}"
+            if kind == "filesystem":
+                needs, nots = c.get("needs") or [], c.get("not") or []
+                if not needs and not nots:
+                    return f"{w}: filesystem needs needs or not (what to check)"
+                for field, items, allowed, want in (("needs", needs, FS_NEEDS, "xattr or acl"), ("not", nots, FS_NOT, "nfs, cifs or fuse")):
+                    got: Set[str] = set()
+                    for x in items:
+                        x = scalar_text(x)
+                        if x not in allowed:
+                            return f"{w}: {field} {_q(x)} must be {want}"
+                        if x in got:
+                            return f"{w}: {field} {_q(x)} listed twice"
+                        got.add(x)
+            if kind == "free_space" and _str(c, "min") == "":
+                return f"{w}: free_space needs min (a size such as 500GiB)"
+        return None
+
+
+def check_checks(o: Dict[str, Any]) -> None:
+    """settings.checkChecks: free_space.min is a size in binary units, > 0."""
+    for i, c in enumerate(o.get("checks") or []):
+        if not isinstance(c, dict) or _str(c, "kind") != "free_space" or _str(c, "min") == "":
+            continue
+        m = _str(c, "min")
+        try:
+            n = parse_size(m)
+        except SettingError as e:
+            raise SettingError(f"checks[{i}] (free_space): min {_q(m)}: {e}") from None
+        if n <= 0:
+            raise SettingError(f"checks[{i}] (free_space): min must be more than 0")
+
+
+def check_folders(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """The compose-level shared-folder rules (Hub composeIDs + composeGIDs,
+    on every service of every template, settings or not): reads compose
+    user: / group_add for the option checks (t.compose_users /
+    t.compose_group_add) and refuses gids in 60000-60999 and any uid / gid
+    source that isn't a number, a name or exactly one ${NAME} of an
+    instance int option."""
+    users, group_add, err = compose_ids(t.compose_text)
+    t.compose_users, t.compose_group_add = users, group_add
+    if err:
+        r.error(t.c_where, err, FOLDERS_HINT)
+        return
+    fc = FolderCheck(setting_options(t.manifest or {}), users, group_add)
+    for msg in fc.compose_gids():
+        r.error(t.c_where, msg, FOLDERS_HINT)
+
+
+def user_fallbacks(svc: str, u: str) -> Optional[str]:
+    """userFallbacks: every ${…} fallback in compose user: is only digits."""
+    i = 0
+    while i < len(u):
+        if u[i] != "$" or i + 1 >= len(u):
+            i += 1
+            continue
+        if u[i + 1] == "$":
+            i += 2
+            continue
+        if u[i + 1] == "{" and not BRACE_REF_RE.match(u, i):
+            return (f"service {svc}: compose user: {_q(u)}: a ${{…}} fallback may only be a whole "
+                    "number (no ':', '$' or nesting)")
+        i += 1
+    return None
+
+
 class _Refuse(Exception):
     pass
 
@@ -3849,6 +4520,7 @@ class _SpecCheck:
         self.services = {str(k): (s if isinstance(s, dict) else {}) for k, s in services.items()}
         self.routers = routers
         self.env = compose_environment(self.services)
+        self.folders = FolderCheck(setting_options(self.m), t.compose_users, t.compose_group_add)
         self.scalars: List[str] = []
         _string_values(t.compose or {}, self.scalars)
         self.files: Dict[str, Dict[str, Any]] = {}
@@ -4015,8 +4687,13 @@ class _SpecCheck:
 
     def type_problem(self, o: Dict[str, Any]) -> str:
         t = _str(o, "type")
+        bad = runs_as_number_problem(o)   # the Hub's strict decode, before everything
+        if bad:
+            return bad
         if t in OLD_TYPES:
             return f"type {t} is template contract v2: {OLD_TYPES[t]}"
+        if t == "folder":
+            return FOLDER_TYPE_REFUSAL
         what, feat = reserved_use(o)
         if feat:
             return f"{what} needs {feat}, which this Hub doesn't implement"
@@ -4098,6 +4775,9 @@ class _SpecCheck:
         scope = scope_of(o)
         if scope not in SCOPES:
             raise _Refuse(f"scope {json.dumps(_str(o, 'scope'))} must be instance, person, group or person_entered")
+        why = self.folders.folder_option(o) or self.folders.checks(o)
+        if why:
+            raise _Refuse(why)
         applies = _str(o, "applies")
         if applies and applies not in APPLIES:
             raise _Refuse(f"applies {json.dumps(applies)} must be live, reload, next_request, next_sign_in, restart or account_creation")
@@ -4284,10 +4964,17 @@ class _SpecCheck:
                 if isinstance(ref, int) and not isinstance(ref, bool):
                     if ref < 0:
                         raise _Refuse(f"writes_as.{what} must be non-negative")
+                    if what == "gid" and in_folder_gid_range(ref):
+                        raise _Refuse(f"writes_as.gid {ref} is in {GID_RANGE_TEXT}")
                 elif isinstance(ref, str) and ref != "":
                     ro = self.opts.get(ref)
                     if ro is None or scope_of(ro) != "instance" or ro.get("type") not in ("int", "string"):
                         raise _Refuse(f"writes_as.{what}: {ref} is not an instance int or string option")
+                    d, bad, inr = id_default(ro)
+                    if bad:
+                        raise _Refuse(f"writes_as.{what}: setting {ref}'s default {quote_default(ro['default'])} is not a whole number")
+                    if inr and what == "gid":
+                        raise _Refuse(f"writes_as.{what}: setting {ref}'s default {d} is in {GID_RANGE_TEXT}")
                 else:
                     raise _Refuse(f"writes_as.{what}: a number or an option key")
         g = o.get("generate")
@@ -4533,6 +5220,7 @@ def claim_type_problem(o: Dict[str, Any], c: Dict[str, Any]) -> str:
 def check_settings(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
     """Template contract v3 settings, files, hooks and reload (contracts §13),
     as the Hub's ValidateSettingsSpec and settings.Registry check them."""
+    check_folders(t, services, r)
     m = t.manifest or {}
     if isinstance(m.get("settings"), list):
         r.error(t.m_where, "settings: a list of settings is template contract v2; contract v3 declares settings: "

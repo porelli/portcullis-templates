@@ -380,10 +380,11 @@ settings:
 
 - **Types.** `text`, `boolean`, `select` and `paths` are contract v2 and
   refused (use `string`, `bool`, `enum` with `options: [{value, label}]`,
-  one `path` per directory). `folder`, `person_secret` and `person_id` are
-  reserved for later projects, as are the option fields `folder`, `checks`,
-  `hash`, `length`, `revoke_on_leave`, `on_restore`, `pool`, `username` and
-  `mount`. A constraint the type doesn't take (`min` on an `enum`) is
+  one `path` per directory). `folder` is reserved (a shared folder is a
+  `type: path` option with a `folder` block, below); `person_secret` and
+  `person_id` are reserved for file sharing (project 3), as are the option
+  fields `hash`, `length`, `revoke_on_leave`, `on_restore`, `pool`,
+  `username`, `mount` and `folder.runs_as.uid_from` / `gid_from`. A constraint the type doesn't take (`min` on an `enum`) is
   refused, and so is any unknown key.
 - **Values are canonical.** Sizes are bytes and take binary units only
   (`10GiB`, `512MiB`; `10GB` and `10G` are refused); durations are seconds
@@ -419,6 +420,74 @@ settings:
   `user: "10001"`.
 - `env[].generate: none` is gone: a value the admin enters is a setting
   (`type: secret` for credentials).
+
+### Shared folders and checks
+
+A `path` option can point at a **shared folder**: a host directory the
+admin defines once in the Hub and several apps use with consistent
+ownership
+([integration contracts §13.15](https://porelli.github.io/portcullis-docs/guides/integration-contracts/#1315-shared-folders-checks-and-lan-only-ports)).
+Say how the app uses it with a `folder` block, which replaces `mode`,
+`needs` and `writes_as` (the validator refuses them together):
+
+```yaml
+    - key: movies_path
+      type: path
+      target: {service: jellyfin, mount: /data/movies}
+      folder:
+        access: read                  # read (always mounted read-only) | write
+        runs_as: {uid: 0, gid: 0}     # the uid / gid the app's process uses there
+        joins_group: group_add        # group_add (default) | gid_env | template
+      checks:                         # option level, next to folder
+        - {kind: free_space, min: 500GiB, reason: Transcodes need room}
+```
+
+- **`runs_as`**: each id has exactly one source, a number (`uid`, `gid`) or
+  the env name of an instance `int` option of the template (`uid_env`,
+  `gid_env`; e.g. `PUID` / `PGID` images). Numbers must match the target
+  service's compose `user:` when it sets one (`${PUID:-1000}:${PGID:-1000}`
+  only matches the `_env` form naming those variables); a named `user:`
+  (`www-data`) next to a folder block is refused: give numbers.
+- **`joins_group`**: `group_add` when Docker's supplementary group reaches
+  the app's process; `gid_env` when the image switches to the gid in a
+  variable (`runs_as.gid_env`, which the Hub then writes with the folder
+  gid; only the services the folder options target may read that variable,
+  and every folder option on that service uses it); `template` when the
+  template reads `PORTCULLIS_FOLDER_GID_<KEY>` itself. Check the image's
+  entrypoint (does it drop privileges with `s6-setuidgid`, `gosu`,
+  `su-exec`?) and say what you found in `auth.notes` (plex, jellyfin).
+- **`must_own: true`** (only with `access: write`): the app refuses files it
+  doesn't own, so the Hub also makes it the owner.
+- **The folder gid range 60000–60999 is the Hub's.** No numeric
+  `runs_as.gid` / `writes_as.gid`, no default of an option a `gid_env` or
+  `writes_as.gid` names, and on **every** service no compose `user:` gid or
+  `group_add` entry (literal, `${X:-n}` / `${X-n}` default, or the default
+  of the option `${X}` names) may fall in it. YAML ints count as YAML reads
+  them (`0165141` is 60001).
+- **uid / gid sources in compose** (`user:` parts and `group_add` entries,
+  on every service) are only a number, a name (`group_add`; or a user name
+  for the uid), `$NAME` / `${NAME}`, or `${NAME:-n}` / `${NAME-n}` with
+  digits — no `+` forms, nesting, `$` in a fallback, mixed text or
+  `${NAME?err}` — and every `${NAME}` names an instance `int` option of the
+  template. Next to a folder block every `group_add` entry of the target
+  service is a number or such a `${NAME}`: hardware transcoding groups
+  become an int option, e.g. `group_add: ["${RENDER_GID:-109}"]`.
+  `!!binary` scalars are refused anywhere, and `user:` / `group_add` take
+  only plain strings and ints.
+- **`checks`** come from a fixed catalog, each with a one-line `reason`
+  (≤ 200 characters) the doctor shows: `filesystem` (a folder block;
+  `needs` ⊆ `[xattr, acl]`, `not` ⊆ `[nfs, cifs, fuse]`), `exclusive`
+  (`folder.access: write`), `free_space` (any path option; `min` in binary
+  units, `500GiB`) and `requires_group_value` (a `scope: person` option).
+  Each kind once per option; a parameter the kind doesn't take is refused.
+- **`ports[].lan_only: true`** marks a port that should be reachable only
+  from the local networks; the doctor judges its bind address. It is a port
+  flag, never a check kind.
+
+`tests/validate.py` mirrors the Hub's rules with its messages
+(`check_folders`, `FolderCheck`). PyYAML isn't yaml.v3: where it can't see
+what the Hub sees (a YAML 1.2 `0o…` int in `runs_as`, `<<` merge keys), it
+refuses more, never less.
 
 ## Compose rules
 

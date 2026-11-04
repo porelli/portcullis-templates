@@ -1398,11 +1398,12 @@ class TestSettingsV3(Case):
     def test_reserved_types_refused(self) -> None:
         c = s_compose(S_HDR_ENV)
         self.cases([
-            ("folder", S_HDR + s_opts("{key: media, label: X, type: folder}"), c, "media", "type folder needs shared folders (project 2)"),
+            ("folder", S_HDR + s_opts("{key: media, label: X, type: folder}"), c, "media",
+             "type folder is reserved: a shared folder is a type: path option with a folder block (§13.15)"),
             ("person_secret", S_HDR + s_opts("{key: smb, label: X, type: person_secret}"), c, "smb", "type person_secret needs file sharing (project 3)"),
             ("person_id", S_HDR + s_opts("{key: uid, label: X, type: person_id}"), c, "uid", "type person_id needs file sharing (project 3)"),
-            ("folder block", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: read}}"), c, "media", "shared folders (project 2)"),
-            ("checks", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, checks: [{kind: exclusive}]}"), c, "media", "shared folders (project 2)"),
+            ("folder block", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: read, runs_as: {uid: 0, gid: 0}}}"), c, "media", "!"),
+            ("checks", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: write, runs_as: {uid: 0, gid: 0}}, checks: [{kind: exclusive, reason: one writer}]}"), c, "media", "!"),
             ("hash", S_HDR + s_opts("{key: theme, label: X, type: string, hash: nt}"), c, "theme", "file sharing (project 3)"),
             ("length", S_HDR + s_opts("{key: theme, label: X, type: string, length: 8}"), c, "theme", "length needs file sharing"),
             ("revoke_on_leave", S_HDR + s_opts("{key: theme, label: X, type: string, revoke_on_leave: true}"), c, "theme", "file sharing"),
@@ -2348,6 +2349,445 @@ settings:
             ("interpolated beyond", S_HDR + s_opts(o), s_compose(base + "      X: $$${DISK_3}\n"), "disks", "DISK_3"),
             ("escaped only", S_HDR + s_opts("{key: theme, label: T, type: string}"), s_compose("      THEME: $${THEME}\n"), "theme", "hard-codes"),
         ])
+
+
+
+# ── Shared folders (contract §13.15): Hub templates/folders_test.go, case for case ──
+
+F_IMG = f"demo/x:1.0.0@sha256:{S_DIGEST}"
+
+
+def f_svc(name: str, body: str = "") -> str:
+    return f"  {name}:\n    image: {F_IMG}\n{body}"
+
+
+# fixed / named: the Hub fixture's services with a numeric and a named compose user:.
+F_USERS = f_svc("fixed", '    user: "1000:1000"\n') + f_svc("named", "    user: www-data\n")
+F_ENVUSER = f_svc("envuser", '    user: "${PUID:-1000}:${PGID:-1000}"\n')
+F_PUID = "{key: puid, label: P, type: int, default: 1000}"
+F_PGID = "{key: pgid, label: G, type: int, default: 1000}"
+F_RO = ", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}"
+
+
+def fc(*env: str, extra: str = "", head: str = "") -> str:
+    """The demo compose file: env lines interpolating each name on the demo
+    service, the fixed / named services and extra services; head goes
+    before services: (anchors)."""
+    return head + s_compose(s_env(*env), services=S_INIT + F_USERS + extra)
+
+
+def fp(key: str, svc: str = "demo", extra: str = "") -> str:
+    """A path option on service svc (Hub fpath)."""
+    return "{key: " + key + ", label: X, type: path, target: {service: " + svc + ", mount: /" + key + "}" + extra + "}"
+
+
+def fm(*opts: str) -> str:
+    return S_HDR + s_opts(*opts)
+
+
+class TestFolders(Case):
+    """tests/validate.py mirrors the Hub's shared-folder validator
+    (internal/templates/folders.go): the folder block, checks, lan_only
+    ports, the folder gid range and the strict compose id forms."""
+
+    run_raw = TestSettingsV3.run_raw
+    cases = TestSettingsV3.cases
+
+    def test_folder_only_on_instance_path(self) -> None:
+        self.cases([
+            ("string", fm("{key: theme, label: X, type: string, folder: {access: read, runs_as: {uid: 1, gid: 1}}}"), fc("THEME"), "theme", "folder is for path options with scope instance (not type string, scope instance)"),
+            ("person path", fm("{key: media, label: X, type: path, scope: person, default: /srv/x, resolve: priority, target: {service: demo, mount: /m}, folder: {access: read, runs_as: {uid: 1, gid: 1}}}"), fc(), "media", "folder is for path options with scope instance (not type path, scope person)"),
+            ("ok", fm(fp("media", extra=F_RO)), fc(), "", ""),
+        ])
+
+    def test_folder_access_and_runs_as_required(self) -> None:
+        self.cases([
+            ("no access", fm(fp("media", extra=", folder: {runs_as: {uid: 1000, gid: 1000}}")), fc(), "media", "folder.access is required (read or write)"),
+            ("rw", fm(fp("media", extra=", folder: {access: rw, runs_as: {uid: 1000, gid: 1000}}")), fc(), "media", 'folder.access "rw" must be read or write'),
+            ("no runs_as", fm(fp("media", extra=", folder: {access: read}")), fc(), "media", "folder.runs_as is required (the uid and gid the app uses on the mount)"),
+            ("ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}")), fc(), "", ""),
+            ("negative", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: -1, gid: 1000}}")), fc(), "media", "folder.runs_as.uid -1 is not a valid id (0-2147483647)"),
+            ("too big", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: 2147483648}}")), fc(), "media", "folder.runs_as.gid 2147483648 is not a valid id"),
+        ])
+
+    def test_runs_as_one_source_per_id(self) -> None:
+        self.cases([
+            ("two uid sources", fm(F_PUID, fp("media", extra=", folder: {access: read, runs_as: {uid: 1, uid_env: PUID, gid: 1}}")), fc("PUID"), "media", "folder.runs_as.uid: exactly one of uid, uid_env (a number, or the env name of an instance int option)"),
+            ("no uid source", fm(fp("media", extra=", folder: {access: read, runs_as: {gid: 1}}")), fc(), "media", "folder.runs_as.uid: exactly one of uid, uid_env"),
+            ("no gid source", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1}}")), fc(), "media", "folder.runs_as.gid: exactly one of gid, gid_env"),
+        ])
+
+    def test_runs_as_env_names_option(self) -> None:
+        self.cases([
+            ("no option", fm(fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 1}}")), fc(), "media", "folder.runs_as.uid_env PUID is not the env name of an instance int option of this template"),
+            ("reserved", fm(fp("media", extra=", folder: {access: read, runs_as: {uid_env: PORTCULLIS_X, gid: 1}}")), fc(), "media", "folder.runs_as.uid_env PORTCULLIS_X is reserved (PORTCULLIS_*: core and the Hub set them)"),
+            ("folder variable", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid_env: PORTCULLIS_FOLDER_GID_MEDIA}}")), fc(), "media", "folder.runs_as.gid_env PORTCULLIS_FOLDER_GID_MEDIA is reserved"),
+            ("string option", fm("{key: puid, label: P, type: string, default: '1000'}", fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 1}}")), fc("PUID"), "media", "not the env name of an instance int option"),
+            ("person option", fm("{key: puid, label: P, type: int, scope: person, resolve: max, default: 1, delivery: [{header: {name: X-Forwarded-Attr-Uid}}]}", fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 1}}")), fc(), "media", "not the env name of an instance int option"),
+            ("ok", fm(F_PUID, F_PGID, fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")), fc("PUID", "PGID"), "", ""),
+            ("env delivery name", fm("{key: user_id, label: P, type: int, default: 1000, delivery: [{env: PUID}]}", fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 1}}")), fc("PUID"), "", ""),
+            ("second env delivery", fm("{key: user_id, label: P, type: int, default: 1000, delivery: [{env: OTHER_UID}, {env: PUID}]}", fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 1}}")), fc("OTHER_UID", "PUID"), "", ""),
+        ])
+
+    def test_runs_as_matches_compose_user(self) -> None:
+        both = (F_PUID, F_PGID)
+        self.cases([
+            ("gid differs", fm(fp("media", "fixed", ", folder: {access: read, runs_as: {uid: 1000, gid: 100}}")), fc(), "media", 'folder.runs_as.gid 100 doesn\'t match service fixed\'s compose user: "1000:1000"'),
+            ("uid differs", fm(fp("media", "fixed", ", folder: {access: read, runs_as: {uid: 0, gid: 1000}}")), fc(), "media", "folder.runs_as.uid 0 doesn't match"),
+            ("numbers match", fm(fp("media", "fixed", ", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}")), fc(), "", ""),
+            ("env form", fm(*both, fp("media", "envuser", ", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")), fc("PUID", "PGID", extra=F_ENVUSER), "", ""),
+            ("env user, numbers", fm(*both, fp("media", "envuser", ", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}")), fc("PUID", "PGID", extra=F_ENVUSER), "media", "folder.runs_as.uid: service envuser's compose user: takes it from ${PUID}: use uid_env: PUID"),
+            ("env user, other env", fm(*both, "{key: other, label: O, type: int, default: 1}", fp("media", "envuser", ", folder: {access: read, runs_as: {uid_env: OTHER, gid_env: PGID}}")), fc("PUID", "PGID", "OTHER", extra=F_ENVUSER), "media", 'folder.runs_as.uid_env OTHER doesn\'t match service envuser\'s compose user: "${PUID:-1000}:${PGID:-1000}" (use uid_env: PUID)'),
+            ("numeric user, env", fm(*both, fp("media", "fixed", ", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")), fc("PUID", "PGID"), "media", 'folder.runs_as.uid_env PUID doesn\'t match service fixed\'s compose user: "1000:1000" (use uid: 1000)'),
+            ("named user", fm(fp("media", "named", ", folder: {access: read, runs_as: {uid: 33, gid: 33}}")), fc(), "media", "service named's compose user: \"www-data\" is not numeric next to a folder block: give numbers in compose `user:`"),
+            ("named user, no folder", fm(fp("media", "named")), fc(), "", ""),
+            ("uid only user", fm(fp("media", "solo", ", folder: {access: read, runs_as: {uid: 1000, gid: 5}}")), fc(extra=f_svc("solo", '    user: "1000"\n')), "", ""),
+        ])
+
+    def test_folder_gid_range_refused(self) -> None:
+        self.cases([
+            ("runs_as.gid", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 60000}}")), fc(), "media", "folder.runs_as.gid 60000 is in 60000-60999 (shared folder groups)"),
+            ("writes_as.gid", fm(fp("media", extra=", writes_as: {uid: 1000, gid: 60999}")), fc(), "media", "writes_as.gid 60999 is in 60000-60999 (shared folder groups)"),
+            ("edge ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 60000, gid: 61000}}")), fc(), "", ""),
+            ("edge below ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: 59999}}")), fc(), "", ""),
+            ("compose user gid", fm(fp("media")), fc(extra=f_svc("high", '    user: "1000:60001"\n')), "", "service high: compose user: gid 60001 is in 60000-60999 (shared folder groups)"),
+            ("gid_env default", fm(F_PUID, "{key: pgid, label: G, type: int, default: 60005}", fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")), fc("PUID", "PGID"), "media", "folder.runs_as.gid_env PGID names setting pgid, whose default 60005 is in 60000-60999 (shared folder groups)"),
+        ])
+
+    def test_folder_gid_defaults_read(self) -> None:
+        g = ", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}"
+        c = fc("PUID", "PGID")
+        self.cases([
+            ("string default", fm(F_PUID, "{key: pgid, label: G, type: int, default: '60001'}", fp("media", extra=g)), c, "media", "whose default 60001 is in 60000-60999"),
+            ("float default", fm(F_PUID, "{key: pgid, label: G, type: int, default: 60001.0}", fp("media", extra=g)), c, "media", "whose default 60001 is in 60000-60999"),
+            ("unreadable default", fm(F_PUID, fp("media", extra=g), "{key: pgid, label: G, type: int, default: lots}"), c, "media", 'folder.runs_as.gid_env PGID names setting pgid, whose default "lots" is not a whole number'),
+            ("bool default", fm(F_PUID, fp("media", extra=g), "{key: pgid, label: G, type: int, default: true}"), c, "media", "whose default true is not a whole number"),
+            ("string default ok", fm(F_PUID, "{key: pgid, label: G, type: int, default: '1000'}", fp("media", extra=g)), c, "", ""),
+            ("writes_as ref in range", fm("{key: pgid, label: G, type: int, default: 60001}", fp("media", extra=", writes_as: {uid: 0, gid: pgid}")), fc("PGID"), "media", "writes_as.gid: setting pgid's default 60001 is in 60000-60999 (shared folder groups)"),
+            ("writes_as ref string", fm("{key: pgid, label: G, type: string, default: 'x'}", fp("media", extra=", writes_as: {uid: 0, gid: pgid}")), fc("PGID"), "media", 'writes_as.gid: setting pgid\'s default "x" is not a whole number'),
+            ("writes_as uid ref unreadable", fm("{key: puid, label: P, type: string, default: 'x'}", fp("media", extra=", writes_as: {uid: puid, gid: 0}")), fc("PUID"), "media", 'writes_as.uid: setting puid\'s default "x" is not a whole number'),
+            ("writes_as ref ok", fm("{key: pgid, label: G, type: string, default: '1000'}", fp("media", extra=", writes_as: {uid: 0, gid: pgid}")), fc("PGID"), "", ""),
+        ])
+
+    def test_uid_defaults_not_range_checked(self) -> None:
+        self.cases([
+            ("uid_env default", fm("{key: puid, label: P, type: int, default: 60001}", F_PGID, fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")), fc("PUID", "PGID"), "", ""),
+            ("writes_as uid key", fm("{key: puid, label: P, type: int, default: 60001}", fp("media", extra=", writes_as: {uid: puid, gid: 0}")), fc("PUID"), "", ""),
+        ])
+
+    def test_joins_group(self) -> None:
+        self.cases([
+            ("gid_env without runs_as.gid_env", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}, joins_group: gid_env}")), fc(), "media", "folder.joins_group: gid_env needs runs_as.gid_env (the variable the folder gid is written to)"),
+            ("sudo", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}, joins_group: sudo}")), fc(), "media", 'folder.joins_group "sudo" must be group_add, gid_env or template'),
+            ("gid_env ok", fm(F_PUID, F_PGID, fp("media", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}, joins_group: gid_env}")), fc("PUID", "PGID"), "", ""),
+            ("template ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}, joins_group: template}")), fc(), "", ""),
+            ("group_add ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}, joins_group: group_add}")), fc(), "", ""),
+        ])
+
+    def test_must_own_writers_only(self) -> None:
+        self.cases([
+            ("read", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}, must_own: true}")), fc(), "media", "folder.must_own needs access: write (the Hub makes the app the owner of what it writes)"),
+            ("write", fm(fp("media", extra=", folder: {access: write, runs_as: {uid: 1000, gid: 1000}, must_own: true}")), fc(), "", ""),
+        ])
+
+    def test_folder_replaces_mode_needs_writes_as(self) -> None:
+        self.cases([(f, fm(fp("media", extra=", " + f + F_RO)), fc(), "media",
+                     f"{f.split(':')[0]} together with folder: folder.access and folder.runs_as replace them")
+                    for f in ("mode: rw", "needs: write", "writes_as: {uid: 1, gid: 1}")])
+
+    def test_same_env_same_runs_as(self) -> None:
+        a = fp("movies", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}, joins_group: gid_env}")
+        b = fp("tv", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")
+        same = fp("tv", extra=", folder: {access: write, runs_as: {uid_env: PUID, gid_env: PGID}, joins_group: gid_env}")
+        other = fp("tv", "fixed", ", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}")
+        uid = fp("tv", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 5}}")
+        uid0 = fp("movies", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid: 6}}")
+        c = fc("PUID", "PGID")
+        self.cases([
+            ("differ", fm(F_PUID, F_PGID, a, b), c, "tv", "folder names gid_env PGID like setting movies on service demo, with another runs_as or joins_group (one primary gid per process: use identical blocks)"),
+            ("identical", fm(F_PUID, F_PGID, a, same), c, "", ""),
+            ("other service", fm(F_PUID, F_PGID, a, other), c, "", ""),
+            ("uid_env differ", fm(F_PUID, uid0, uid), fc("PUID"), "tv", "folder names uid_env PUID like setting movies on service demo"),
+        ])
+
+    def test_gid_env_join_owns_service(self) -> None:
+        a = fp("movies", extra=", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}, joins_group: gid_env}")
+        num = fp("tv", extra=", folder: {access: read, runs_as: {uid: 1000, gid: 1000}}")
+        c = fc("PUID", "PGID")
+        self.cases([
+            ("numeric after gid_env join", fm(F_PUID, F_PGID, a, num), c, "tv", "service demo joins a folder group through gid_env PGID: every folder option on it must use runs_as.gid_env PGID (setting tv doesn't)"),
+            ("gid_env join after numeric", fm(F_PUID, F_PGID, num, a), c, "movies", "service demo joins a folder group through gid_env PGID: every folder option on it must use runs_as.gid_env PGID (setting tv doesn't)"),
+        ])
+
+    def test_gid_env_join_variable_not_shared(self) -> None:
+        join = fp("movies", "envuser", ", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}, joins_group: gid_env}")
+        m = fm(F_PUID, F_PGID, join)
+        base = ("PUID", "PGID")
+        self.cases([
+            ("alone", m, fc(*base, extra=F_ENVUSER), "", ""),
+            ("sidecar group_add", m, fc(*base, extra=F_ENVUSER + f_svc("side", '    group_add: ["${PGID}"]\n')), "movies",
+             "folder.joins_group: gid_env writes the folder gid to PGID, which service side's group_add also reads: only the services the folder options target may use a gid_env variable"),
+            ("sidecar user", m, fc(*base, extra=F_ENVUSER + f_svc("side", '    user: "${PUID:-1000}:${PGID:-1000}"\n')), "movies",
+             "folder.joins_group: gid_env writes the folder gid to PGID, which service side's compose user: gid also reads: only the services the folder options target may use a gid_env variable"),
+            ("group_add join elsewhere ok", fm(F_PUID, F_PGID, fp("movies", "envuser", ", folder: {access: read, runs_as: {uid_env: PUID, gid_env: PGID}}")),
+             fc(*base, extra=F_ENVUSER + f_svc("side", '    group_add: ["${PGID}"]\n')), "", ""),
+        ])
+
+    def test_uid_from_reserved(self) -> None:
+        self.cases([
+            ("uid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid_from: person_uid, gid: 0}}")), fc(), "media", "folder.runs_as.uid_from needs file sharing (project 3), which this Hub doesn't implement"),
+            ("gid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid: 0, gid_from: person_gid}}")), fc(), "media", "folder.runs_as.gid_from needs file sharing (project 3)"),
+        ])
+        self.assertEqual(v.reserved_use({"type": "path", "folder": {"runs_as": {"uid_from": "x"}}}), ("folder.runs_as.uid_from", v.FEATURE_SHARING))
+        self.assertEqual(v.reserved_use({"type": "path", "folder": {"access": "read"}, "checks": [{"kind": "exclusive"}]}), ("", ""))
+
+    def test_runs_as_non_integer_friendly(self) -> None:
+        self.cases([
+            ("string uid", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: abc, gid: 1}}")), fc(), "", 'folder.runs_as.uid: want a whole number, not "abc" (a variable goes in uid_env)'),
+            ("float gid", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: 1.5}}")), fc(), "", 'folder.runs_as.gid: want a whole number, not "1.5" (a variable goes in gid_env)'),
+            ("quoted uid", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: '1000', gid: 1}}")), fc(), "", 'folder.runs_as.uid: want a whole number, not "1000"'),
+            ("bool gid", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: true}}")), fc(), "", "folder.runs_as.gid: want a whole number"),
+            ("hex ok", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 0x10, gid: 1}}")), fc(), "", ""),
+            ("null gid = no source", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: ~}}")), fc(), "media", "folder.runs_as.gid: exactly one of gid, gid_env"),
+        ])
+
+    def test_compose_gid_defaults_refused(self) -> None:
+        ints = ("{key: xg, label: XG, type: int}", "{key: g, label: G, type: int}", "{key: u, label: U, type: int}")
+        env = ("XG", "G", "U")
+        p = fm(*ints, fp("media"))
+        with_string = fm(*ints, "{key: name, label: N, type: string}", fp("media"))
+
+        def svc(body: str, *more: str) -> str:
+            return fc(*env, *more, extra=f_svc("extra", body))
+        self.cases([
+            ("uid undeclared", p, svc('    user: "${NOPE}:1000"\n'), "", "service extra: compose user: uid ${NOPE} must name an instance int option of this template (not a string option, an undeclared variable or PORTCULLIS_*)"),
+            ("gid undeclared", p, svc('    user: "1000:$NOPE"\n'), "", "service extra: compose user: gid ${NOPE} must name an instance int option of this template"),
+            ("gid string option", with_string, svc('    user: "1000:${NAME}"\n', "NAME"), "", "compose user: gid ${NAME} must name an instance int option"),
+            ("uid string option", with_string, svc('    user: "${NAME}"\n', "NAME"), "", "compose user: uid ${NAME} must name an instance int option"),
+            ("gid portcullis", p, svc('    user: "1000:${PORTCULLIS_INSTANCE}"\n'), "", "compose user: gid ${PORTCULLIS_INSTANCE} must name an instance int option"),
+            ("group_add undeclared", p, svc('    group_add: ["${NOPE:-1000}"]\n'), "", "service extra: group_add ${NOPE} must name an instance int option of this template"),
+            ("group_add string option", with_string, svc("    group_add: [$NAME]\n", "NAME"), "", "group_add ${NAME} must name an instance int option"),
+            ("user :- default", p, svc('    user: "1000:${XG:-60001}"\n'), "", "service extra: compose user: gid 60001 (the default of ${XG}) is in 60000-60999 (shared folder groups)"),
+            ("user - default", p, svc('    user: "1000:${XG-60002}"\n'), "", "gid 60002 (the default of ${XG}) is in 60000-60999"),
+            ("user option default", fm("{key: pgid, label: G, type: int, default: 60003}", fp("media")), fc("PGID", extra=f_svc("extra", '    user: "1000:${PGID:-1000}"\n')), "", "service extra: compose user: gid ${PGID} is setting pgid, whose default 60003 is in 60000-60999 (shared folder groups)"),
+            ("user ok", p, svc('    user: "1000:${XG:-1000}"\n'), "", ""),
+            ("group_add literal", p, svc('    group_add: ["60001"]\n'), "", "service extra: group_add gid 60001 is in 60000-60999 (shared folder groups)"),
+            ("group_add int", p, svc("    group_add: [10001, 60999]\n"), "", "service extra: group_add gid 60999 is in 60000-60999"),
+            ("group_add default", p, svc('    group_add: ["${G:-60500}"]\n'), "", "service extra: group_add gid 60500 (the default of ${G}) is in 60000-60999"),
+            ("group_add option default", fm("{key: pgid, label: G, type: int, default: 60004}", fp("media")), fc("PGID", extra=f_svc("extra", '    group_add: ["${PGID}"]\n')), "", "service extra: group_add ${PGID} is setting pgid, whose default 60004 is in 60000-60999"),
+            ("group_add names ok", p, svc('    group_add: [video, "10001", "${G-1000}", $G]\n'), "", ""),
+            ("group_add plus", p, svc('    group_add: ["${G:+1000}"]\n'), "", 'group_add entry "${G:+1000}" must be'),
+            ("group_add plus bare", p, svc('    group_add: ["${G+1000}"]\n'), "", 'group_add entry "${G+1000}" must be'),
+            ("group_add escaped", p, svc('    group_add: ["$${G:-60500}"]\n'), "", 'service extra: group_add entry "$${G:-60500}" must be a whole number, a group name or exactly one ${NAME} / $NAME (no mixed forms)'),
+            ("group_add mixed", p, svc('    group_add: ["${XG:-6}0001"]\n'), "", 'service extra: group_add entry "${XG:-6}0001" must be a whole number, a group name or exactly one ${NAME} / $NAME (no mixed forms)'),
+            ("group_add nested", p, svc('    group_add: ["${XG:-${G:-60001}}"]\n'), "", 'group_add entry "${XG:-${G:-60001}}" must be'),
+            ("user mixed", p, svc('    user: "1000:${XG:-6}0001"\n'), "", 'service extra: compose user: gid "${XG:-6}0001" must be a whole number or exactly one ${NAME} / $NAME (no mixed forms)'),
+            ("user two refs", p, svc('    user: "1000:${XG}${G}"\n'), "", 'compose user: gid "${XG}${G}" must be'),
+            ("group_add text fallback", p, svc('    group_add: ["${G:-abc}"]\n'), "", 'group_add entry "${G:-abc}" must be'),
+            ("group_add empty fallback", p, svc('    group_add: ["${G:-}"]\n'), "", 'group_add entry "${G:-}" must be'),
+            ("group_add $ fallback", p, svc('    group_add: ["${G:-$U}"]\n'), "", 'group_add entry "${G:-$U}" must be'),
+            ("group_add error form", p, svc('    group_add: ["${G:?unset}"]\n'), "", 'group_add entry "${G:?unset}" must be'),
+            ("user forms ok", p, svc('    user: "${U}:${XG-1000}"\n'), "", ""),
+            ("user plus", p, svc('    user: "1000:${XG:+1000}"\n'), "", 'compose user: gid "${XG:+1000}" must be'),
+            ("user plus in range", p, svc('    user: "1000:${XG+60001}"\n'), "", 'compose user: gid "${XG+60001}" must be'),
+            ("uid mixed", p, svc('    user: "${XG:-6}0001:1000"\n'), "", 'service extra: compose user: uid "${XG:-6}0001" must be a whole number, a user name or exactly one ${NAME} / $NAME (no mixed forms)'),
+            ("uid plus", p, svc('    user: "${XG:+0}"\n'), "", 'compose user: uid "${XG:+0}" must be'),
+            ("uid colon fallback", p, svc('    user: "${XG:-1:60001}"\n'), "", 'service extra: compose user: "${XG:-1:60001}": a ${…} fallback may only be a whole number (no \':\', \'$\' or nesting)'),
+            ("uid dollar fallback", p, svc('    user: "${XG:-$G}:1000"\n'), "", "a ${…} fallback may only be a whole number"),
+            ("unterminated", p, svc('    user: "${XG:-1"\n'), "", "a ${…} fallback may only be a whole number"),
+            ("uid name ok", p, svc("    user: www-data\n"), "", ""),
+            ("uid forms ok", p, svc('    user: "${U-1000}:${G:-1000}"\n'), "", ""),
+            ("uid bare ok", p, svc('    user: "$U:1000"\n'), "", ""),
+            ("user text fallback", p, svc('    user: "1000:${XG:-x}"\n'), "", 'compose user: "1000:${XG:-x}": a ${…} fallback may only be a whole number'),
+            ("user gid name", p, svc('    user: "1000:staff"\n'), "", 'compose user: gid "staff" must be'),
+            ("group_add not a list", p, svc('    group_add: "60001"\n'), "", "service extra: group_add must be a list"),
+            ("group_add mapping entry", p, svc("    group_add: [{a: 1}]\n"), "", "service extra: group_add entries must be numbers or names"),
+            ("no settings at all", S_HDR, fc(extra=f_svc("extra", '    group_add: ["60001"]\n')), "", "service extra: group_add gid 60001 is in 60000-60999"),
+        ])
+
+    def test_folder_service_references_resolve(self) -> None:
+        m = fm(F_PUID, F_PGID, fp("media", "extra", F_RO))
+        c = ("PUID", "PGID")
+        self.cases([
+            ("unknown ref", m, fc(*c, extra=f_svc("extra", '    group_add: ["${NOPE:-1000}"]\n')), "", "service extra: group_add ${NOPE} must name an instance int option of this template"),
+            ("named group", m, fc(*c, extra=f_svc("extra", "    group_add: [video]\n")), "media", 'service extra\'s group_add entry "video" next to a folder block must be a number or ${NAME} of an instance int option'),
+            ("mixed", m, fc(*c, extra=f_svc("extra", '    group_add: ["1${PGID}"]\n')), "", 'group_add entry "1${PGID}" must be a whole number, a group name or exactly one'),
+            ("option ref ok", m, fc(*c, extra=f_svc("extra", '    group_add: ["${PGID:-1000}", "10001", 44]\n')), "", ""),
+            ("named group without folder", fm(F_PUID, F_PGID, fp("media", "extra")), fc(*c, extra=f_svc("extra", "    group_add: [video]\n")), "", ""),
+        ])
+
+    def test_group_add_resolves_strict_forms(self) -> None:
+        opts = [{"key": "pgid", "type": "int"}]
+        for e, ok in {"${PGID}": True, "$PGID": True, "${PGID:-1000}": True, "${PGID-1000}": True, "1000": True,
+                      "${PGID:+1000}": False, "${PGID+1000}": False, "${PGID:-abc}": False, "${PGID:-$X}": False,
+                      "${PGID:-${X}}": False, "${PGID?e}": False, "${NOPE}": False, "video": False, "x${PGID}": False}.items():
+            with self.subTest(e=e):
+                f = v.FolderCheck(opts, {}, {"s": [e]})
+                self.assertEqual(f.group_add_resolves("s") is None, ok, f.group_add_resolves("s"))
+
+    def test_compose_ids_forms(self) -> None:
+        two = lambda d="": fm("{key: g2, label: G, type: int" + d + ", delivery: [{env: FIRST}, {env: SECOND}]}", fp("media"))  # noqa: E731
+        anchors = 'x-u: &u "1000:60001"\nx-g: &g "60002"\n'
+
+        def svc(body: str, head: str = "") -> str:
+            return fc("FIRST", "SECOND", extra=f_svc("extra", body), head=head)
+        self.cases([
+            ("aliased user", two(), svc("    user: *u\n", anchors), "", "service extra: compose user: gid 60001 is in 60000-60999"),
+            ("aliased group_add entry", two(), svc("    group_add: [*g]\n", anchors), "", "service extra: group_add gid 60002 is in 60000-60999"),
+            ("aliased group_add list", two(), svc("    group_add: *l\n", "x-l: &l [\"60003\"]\n"), "", "service extra: group_add gid 60003 is in 60000-60999"),
+            # validate.py's loader refuses << merge keys outright (compose_ids follows them: below).
+            ("merged service", two(), fc("FIRST", "SECOND", extra="  extra:\n    <<: *base\n    image: " + F_IMG + "\n", head="x-base: &base\n  group_add: [\"60004\"]\n"), "", "YAML does not parse"),
+            ("octal group_add", two(), svc("    group_add: [0165141]\n"), "", "service extra: group_add gid 60001 is in 60000-60999"),
+            ("yaml 1.2 octal group_add", two(), svc("    group_add: [0o165141]\n"), "", "service extra: group_add"),
+            ("hex group_add", two(), svc("    group_add: [0xEA61]\n"), "", "service extra: group_add gid 60001 is in 60000-60999"),
+            ("underscore group_add", two(), svc("    group_add: [60_001]\n"), "", "service extra: group_add gid 60001 is in 60000-60999"),
+            ("08 is a float", two(), svc("    group_add: [08]\n"), "", "service extra: group_add entries must be numbers or names"),
+            ("float group_add", two(), svc("    group_add: [60001.0]\n"), "", "service extra: group_add entries must be numbers or names"),
+            ("explicit int", two(), svc('    group_add: [!!int "0165141"]\n'), "", "service extra: group_add gid 60001 is in 60000-60999"),
+            ("explicit int base 60", two(), svc('    group_add: [!!int "1:0"]\n'), "", "service extra: group_add entries must be numbers or names"),
+            ("explicit float user", two(), svc("    user: !!float 1000\n"), "", "service extra: user: want a string or a whole number, not !!float"),
+            ("null entry", two(), svc("    group_add: [~]\n"), "", "service extra: group_add entries must be numbers or names"),
+            ("str user ok", two(), svc("    user: !!str 1000\n"), "", ""),
+            ("octal user", two(), svc("    user: 0165141\n"), "", ""),
+            ("timestamp user", two(), svc("    user: 2001-12-14\n"), "", "service extra:"),
+            ("second env delivery ok", two(), svc('    user: "1000:${SECOND}"\n    group_add: [$SECOND]\n'), "", ""),
+            ("second env delivery default", two(", default: 60003"), svc('    group_add: ["${SECOND}"]\n'), "", "service extra: group_add ${SECOND} is setting g2, whose default 60003 is in 60000-60999"),
+        ])
+
+    def test_v3_scalar_resolution(self) -> None:
+        """yaml.v3's resolve() for plain scalars, as idScalar sees them."""
+        for val, want in {"0165141": ("int", 60001), "0o165141": ("int", 60001), "0xEA61": ("int", 60001), "60_001": ("int", 60001),
+                          "+60001": ("int", 60001), "-1": ("int", -1), "08": ("float", None), "1.5": ("float", None),
+                          ".5": ("float", None), "~": ("null", None), "": ("null", None), "null": ("null", None),
+                          "true": ("bool", None), "yes": ("str", None), "www-data": ("str", None), "0b11": ("int", 3),
+                          "18446744073709551615": ("int", 18446744073709551615), "2001-12-14": ("timestamp", None)}.items():
+            with self.subTest(val=val):
+                tag, n = v.v3_plain_resolve(val)
+                self.assertEqual(tag, want[0])
+                if want[1] is not None:
+                    self.assertEqual(n, want[1])
+
+    def test_binary_tag_refused(self) -> None:
+        p = fm(fp("media"))
+        self.cases([
+            ("group_add", p, fc(extra=f_svc("extra", "    group_add: [!!binary MDYwMDAx]\n")), "", "YAML tag !!binary is not allowed (a binary scalar decodes to text no check sees)"),
+            ("user", p, fc(extra=f_svc("extra", "    user: !!binary MTAwMDowNjAwMDE=\n")), "", "YAML tag !!binary is not allowed"),
+            ("manifest", S_HDR.replace("description: Demo app\n", "description: !!binary aGk=\n") + s_opts(fp("media")), fc(), "", "YAML tag !!binary is not allowed"),
+        ])
+
+    def test_compose_ids_merge_keys(self) -> None:
+        """yaml.v3 merges << into a service: explicit keys win, then the
+        merged maps, the first of a list first."""
+        base = 'x-a: &a {user: "1:2", group_add: ["3"]}\nx-b: &b {group_add: ["4"]}\n'
+        self.assertEqual(v.compose_ids(base + "services:\n  s:\n    <<: *a\n    user: '5:6'\n"), ({"s": "5:6"}, {"s": ["3"]}, ""))
+        self.assertEqual(v.compose_ids(base + "services:\n  s:\n    <<: [*b, *a]\n")[1], {"s": ["4"]})
+        self.assertEqual(v.compose_ids(base + "services:\n  s:\n    '<<': *a\n"), ({}, {}, ""))
+        self.assertTrue(v.compose_ids("services:\n  s:\n    <<: 1\n")[2])
+
+    def test_compose_ids_decode_error(self) -> None:
+        users, ga, err = v.compose_ids("services:\n  a: [1, 2]\n")
+        self.assertTrue(err, (users, ga))
+        users, ga, err = v.compose_ids("services:\n  s:\n    user: !!str 1000\n    group_add: [!!int 10001]\n")
+        self.assertEqual((users, ga, err), ({"s": "1000"}, {"s": ["10001"]}, ""))
+
+    def test_checks_catalog(self) -> None:
+        reason = ", reason: macOS clients store metadata in extended attributes"
+
+        def ck(c: str) -> str:
+            return ", checks: [{" + c + "}]"
+        wr = ", folder: {access: write, runs_as: {uid: 1, gid: 1}}"
+        person = lambda extra: ("{key: quota, label: Q, type: int, scope: person, default: 1, resolve: max, "  # noqa: E731
+                                "delivery: [{header: {name: X-Forwarded-Attr-Quota}}]" + extra + "}")
+        c = fc()
+        self.cases([
+            ("unknown kind", fm(fp("media", extra=F_RO + ck("kind: quota" + reason))), c, "media", 'checks[0]: unknown kind "quota" (the catalog: exclusive, filesystem, free_space, requires_group_value)'),
+            ("lan_only", fm(fp("media", extra=F_RO + ck("kind: lan_only" + reason))), c, "media", "checks[0]: kind lan_only is not an option check: set lan_only: true on the port"),
+            ("empty reason", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl], reason: ' '"))), c, "media", "checks[0] (filesystem): reason must be one line of 1-200 characters, without control characters"),
+            ("no reason", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl]"))), c, "", "reason"),
+            ("long reason", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl], reason: " + "a" * 201))), c, "media", "reason must be one line of 1-200 characters"),
+            ("newline reason", fm(fp("media", extra=F_RO + ck('kind: filesystem, needs: [acl], reason: "a\\nb"'))), c, "media", "reason must be one line"),
+            ("200 ok", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl], reason: " + "é" * 200))), c, "", ""),
+            ("filesystem ok", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl, xattr], not: [nfs]" + reason))), c, "", ""),
+            ("needs posix", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [posix]" + reason))), c, "media", 'checks[0] (filesystem): needs "posix" must be xattr or acl'),
+            ("not ext4", fm(fp("media", extra=F_RO + ck("kind: filesystem, not: [ext4]" + reason))), c, "media", 'not "ext4" must be nfs, cifs or fuse'),
+            ("needs twice", fm(fp("media", extra=F_RO + ck("kind: filesystem, needs: [acl, acl]" + reason))), c, "media", 'needs "acl" listed twice'),
+            ("filesystem empty", fm(fp("media", extra=F_RO + ck("kind: filesystem" + reason))), c, "media", "checks[0] (filesystem): filesystem needs needs or not (what to check)"),
+            ("filesystem no folder", fm(fp("media", extra=ck("kind: filesystem, needs: [acl]" + reason))), c, "media", "checks[0] (filesystem): needs a path option with a folder block"),
+            ("exclusive read", fm(fp("media", extra=F_RO + ck("kind: exclusive" + reason))), c, "media", "checks[0] (exclusive): needs a path option with folder.access: write"),
+            ("exclusive write", fm(fp("media", extra=wr + ck("kind: exclusive" + reason))), c, "", ""),
+            ("exclusive param", fm(fp("media", extra=wr + ck("kind: exclusive, min: 1GiB" + reason))), c, "media", "checks[0] (exclusive): exclusive takes no min"),
+            ("exclusive empty needs", fm(fp("media", extra=wr + ck("kind: exclusive, needs: []" + reason))), c, "media", "checks[0] (exclusive): exclusive takes no needs"),
+            ("free_space not", fm(fp("media", extra=wr + ck("kind: free_space, min: 1GiB, not: [nfs]" + reason))), c, "media", "checks[0] (free_space): free_space takes no not"),
+            ("free_space ok", fm(fp("media", extra=F_RO + ck("kind: free_space, min: 500GiB" + reason))), c, "", ""),
+            ("free_space no folder ok", fm(fp("media", extra=ck("kind: free_space, min: 500GiB" + reason))), c, "", ""),
+            ("free_space lots", fm(fp("media", extra=F_RO + ck("kind: free_space, min: lots" + reason))), c, "media", 'checks[0] (free_space): min "lots": "lots" is not a size'),
+            ("free_space GB", fm(fp("media", extra=F_RO + ck("kind: free_space, min: 500GB" + reason))), c, "media", 'min "500GB"'),
+            ("free_space zero", fm(fp("media", extra=F_RO + ck("kind: free_space, min: 0GiB" + reason))), c, "media", "checks[0] (free_space): min must be more than 0"),
+            ("free_space bytes ok", fm(fp("media", extra=F_RO + ck("kind: free_space, min: 1048576" + reason))), c, "", ""),
+            ("free_space no min", fm(fp("media", extra=F_RO + ck("kind: free_space" + reason))), c, "media", "checks[0] (free_space): free_space needs min (a size such as 500GiB)"),
+            ("free_space on string", fm("{key: theme, label: T, type: string" + ck("kind: free_space, min: 1GiB" + reason) + "}"), fc("THEME"), "theme", "checks[0] (free_space): needs a path option"),
+            ("requires_group_value instance", fm("{key: theme, label: T, type: string" + ck("kind: requires_group_value" + reason) + "}"), fc("THEME"), "theme", "checks[0] (requires_group_value): needs scope: person"),
+            ("requires_group_value person", fm(person(ck("kind: requires_group_value" + reason))), c, "", ""),
+            ("kind twice", fm(fp("media", extra=F_RO + ", checks: [{kind: free_space, min: 1GiB" + reason + "}, {kind: free_space, min: 2GiB" + reason + "}]")), c, "media", "checks[1] (free_space): listed twice"),
+            ("unknown field", fm(fp("media", extra=F_RO + ck("kind: free_space, min: 1GiB, max: 2GiB" + reason))), c, "", "max"),
+        ])
+        self.assertEqual(sorted(v.CHECK_KINDS), ["exclusive", "filesystem", "free_space", "requires_group_value"])
+
+    def test_folder_ref_values(self) -> None:
+        """A folder: value is the Hub's (settings.ParseFolderRef): a path
+        option's default can't name one."""
+        self.cases([
+            ("default", fm(fp("media", extra=', default: "folder:media"')), fc(), "media", 'default folder:media: "folder:media": a shared folder value is resolved by the Hub'),
+        ])
+
+    def test_lan_only_port(self) -> None:
+        ports = ("ports:\n  - {key: SMB, label: SMB, container: 445, default: 445, protocol: tcp, service: demo, lan_only: true}\n"
+                 "  - {key: WEB, label: W, container: 80, default: 8080, protocol: tcp, service: demo}\n")
+        self.cases([
+            ("lan_only", S_HDR + ports, fc(), "", ""),
+            ("not a bool", S_HDR + ports.replace("lan_only: true", "lan_only: yes"), fc(), "", "lan_only"),
+        ])
+
+    def test_folder_schema(self) -> None:
+        """The schema takes the folder block, checks and lan_only (and
+        refuses unknown fields in them)."""
+        self.cases([
+            ("unknown folder field", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: 1}, owner: 1}")), fc(), "", "owner"),
+            ("unknown runs_as field", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1, gid: 1, user: 1}}")), fc(), "", "user"),
+            ("must_own not a bool", fm(fp("media", extra=", folder: {access: write, runs_as: {uid: 1, gid: 1}, must_own: yes}")), fc(), "", "must_own"),
+        ])
+
+    def test_real_templates_declare_folders(self) -> None:
+        """Every path option of the real templates has a folder block
+        (preflight D17 / ruling 13), with the conversions of Task 15."""
+        import yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        want = {
+            ("immich", "external_library"): {"access": "read", "runs_as": {"uid": 0, "gid": 0}},
+            ("jellyfin", "movies_path"): {"access": "read", "runs_as": {"uid": 0, "gid": 0}, "joins_group": "group_add"},
+            ("jellyfin", "tv_path"): {"access": "read", "runs_as": {"uid": 0, "gid": 0}, "joins_group": "group_add"},
+            ("jellyfin", "music_path"): {"access": "read", "runs_as": {"uid": 0, "gid": 0}, "joins_group": "group_add"},
+            ("plex", "movies_path"): {"access": "read", "runs_as": {"uid_env": "PLEX_UID", "gid_env": "PLEX_GID"}, "joins_group": "gid_env"},
+            ("plex", "tv_path"): {"access": "read", "runs_as": {"uid_env": "PLEX_UID", "gid_env": "PLEX_GID"}, "joins_group": "gid_env"},
+            ("plex", "music_path"): {"access": "read", "runs_as": {"uid_env": "PLEX_UID", "gid_env": "PLEX_GID"}, "joins_group": "gid_env"},
+            ("motioneye", "media_path"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
+        }
+        seen = set()
+        for app in sorted(os.listdir(root)):
+            path = os.path.join(root, app, "manifest.yaml")
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                m = yaml.safe_load(f)
+            for o in ((m.get("settings") or {}).get("options") or []):
+                if o.get("type") != "path":
+                    continue
+                seen.add((app, o["key"]))
+                self.assertIn((app, o["key"]), want, f"{app} {o['key']}: a path option without a declared folder block")
+                self.assertEqual(o.get("folder"), want[(app, o["key"])], f"{app} {o['key']}")
+                for f in ("mode", "needs", "writes_as"):
+                    self.assertNotIn(f, o, f"{app} {o['key']}")
+        self.assertEqual(seen, set(want))
 
 
 if __name__ == "__main__":
