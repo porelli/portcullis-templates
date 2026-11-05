@@ -607,13 +607,17 @@ if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then pass "tamp
 if wait_healthy unhealthy; then pass "healthcheck: unhealthy while smb.conf doesn't verify"; else fail "healthcheck: $HEALTH"; fi
 hook settings_change > /dev/null
 if wait_listening; then pass "the next hook run rewrites smb.conf and smbd is back"; else fail "smbd not back after the hook"; fi
-# runit's view of a stop (diagnostic only: fail closed doesn't rely on it).
-SVD=$(docker exec "$C" sv down /run/portcullis-sv/smbd 2>&1; echo "rc=$?")
-sleep 3
-info "sv down: $(tr '\n' ' ' <<< "$SVD")/ sv status: $(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)"
+# runit's own stop: sv down keeps smbd down, and runsv survives it (smbd
+# runs in its own process group). Fail closed doesn't rely on it (below).
+docker exec "$C" sv down /run/portcullis-sv/smbd > /dev/null 2>&1
+for _ in $(seq 1 10); do listening || break; sleep 1; done
+sleep 2
+HEARD=
+for _ in $(seq 1 8); do listening && HEARD=1; sleep 1; done
+SVS=$(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)
+if [ -z "$HEARD" ] && grep -q '^down: ' <<< "$SVS"; then pass "sv down: smbd stays down, runsv alive ($SVS)"; else fail "sv down: $SVS"; fi
 docker exec "$C" sv up /run/portcullis-sv/smbd > /dev/null 2>&1
-wait_listening > /dev/null || docker exec "$C" sh -c 'for p in $(pidof smbd); do kill -KILL $p; done'
-if wait_listening; then pass "smbd serves again after the diagnostic"; else fail "smbd not back after sv up"; fi
+if wait_listening; then pass "sv up: smbd back"; else fail "smbd not back after sv up: $(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)"; fi
 
 # ── hook-time fail closed under runit ────────────────────────
 # smb.conf replaced by a directory: the run changes the passdb, then the
