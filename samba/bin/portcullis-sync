@@ -527,7 +527,6 @@ render_global() {
    server smb encrypt = required
    server signing = mandatory
    ntlm auth = ntlmv2-only
-   lanman auth = no
    map to guest = never
    restrict anonymous = 2
    disable netbios = yes
@@ -556,7 +555,6 @@ expect global 'server min protocol' SMB3
 expect global 'server smb encrypt' required
 expect global 'server signing' required
 expect global 'ntlm auth' ntlmv2-only
-expect global 'lanman auth' No
 expect global 'map to guest' Never
 expect global 'restrict anonymous' 2
 expect global 'disable netbios' Yes

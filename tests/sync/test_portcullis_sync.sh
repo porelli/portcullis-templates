@@ -247,7 +247,7 @@ test_hardened_global() {
   check '[ "$RC" = 0 ]' "boot exits 0 (rc $RC: $ERR)"
   local l
   for l in 'server min protocol = SMB3' 'server smb encrypt = required' 'server signing = mandatory' \
-      'ntlm auth = ntlmv2-only' 'lanman auth = no' 'map to guest = never' 'restrict anonymous = 2' \
+      'ntlm auth = ntlmv2-only' 'map to guest = never' 'restrict anonymous = 2' \
       'disable netbios = yes' 'smb ports = 445' 'wide links = no' \
       'hosts allow = 192.168.0.0/16 fd00:1::/64' 'hosts deny = 0.0.0.0/0 ::/0' 'guest ok = no' \
       'follow symlinks = no' 'smb3 unix extensions = no'; do
