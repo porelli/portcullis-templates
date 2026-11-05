@@ -48,7 +48,7 @@ setup() {
   export PORTCULLIS_USERNAME_PATTERN='^[a-z_][a-z0-9_.-]{0,31}$'
   export PORTCULLIS_USERNAME_RESERVED='root bin daemon nobody timemachine wheel users'
   export MIMIC_MODEL='TimeCapsule8,119'
-  unset STUB_TESTPARM_DROP STUB_TESTPARM_SET STUB_SMBD_RUNNING 2>/dev/null || true
+  unset STUB_TESTPARM_DROP STUB_TESTPARM_SET STUB_SMBD_RUNNING STUB_SMBSTATUS_FAIL STUB_SMBSTATUS_STICKY 2>/dev/null || true
   for n in 1 2 3 4 5 6 7 8; do unset "PORTCULLIS_FOLDER_GID_SHARE${n}_FOLDER" 2>/dev/null || true; done
   SLEEPERS=()
 }
@@ -82,7 +82,10 @@ write_stubs() {
   stub pidof '[ -n "${STUB_SMBD_RUNNING:-}" ] && exit 0; exit 1'
   # stat -c '%u %g %a %d' PATH: from the owners table, else the caller.
   stub stat 'p=; for a do p=$a; done; l=$(awk -v p="$p" '"'"'$1 == p { l = $2 " " $3 " " $4 " " $5 } END { print l }'"'"' "$STUB_T/owners"); if [ -n "$l" ]; then echo "$l"; else echo "$(id -u) $(id -g) 700 1"; fi'
-  stub smbstatus 'echo; echo "Samba version 4.23.8"; echo "PID     Username     Group        Machine"; echo "-------------------------------------"; while read -r pid uid; do [ -n "$pid" ] && echo "$pid     $uid        $uid        192.168.1.20 (ipv4:192.168.1.20:50000)  SMB3_11  AES-128-GCM  partial(AES-128-GMAC)"; done < "$STUB_T/smbstatus"; exit 0'
+  # smbstatus -p -n: the live sessions (like the real one, which drops
+  # dead processes); STUB_SMBSTATUS_STICKY lists dead ones too (a session
+  # that survived), STUB_SMBSTATUS_FAIL fails.
+  stub smbstatus '[ -z "${STUB_SMBSTATUS_FAIL:-}" ] || exit 1; echo; echo "Samba version 4.23.8"; echo "PID     Username     Group        Machine"; echo "-------------------------------------"; while read -r pid uid; do [ -n "$pid" ] || continue; [ -n "${STUB_SMBSTATUS_STICKY:-}" ] || kill -0 "$pid" 2>/dev/null || continue; echo "$pid     $uid        $uid        192.168.1.20 (ipv4:192.168.1.20:50000)  SMB3_11  AES-128-GCM  partial(AES-128-GMAC)"; done < "$STUB_T/smbstatus"; exit 0'
   # Accounts: the busybox tools, writing the scratch /etc files.
   stub addgroup 'g=; n=; while [ $# -gt 0 ]; do case "$1" in -g) g=$2; shift 2 ;; *) n=$1; shift ;; esac; done; echo "$n:x:$g:" >> "$PORTCULLIS_SYNC_ROOT/etc/group"'
   stub adduser 'u=; n=; while [ $# -gt 0 ]; do case "$1" in -u|-G|-s|-h) [ "$1" = -u ] && u=$2; shift 2 ;; -*) shift ;; *) n=$1; shift ;; esac; done; echo "$n:x:$u:$u::/nonexistent:/bin/false" >> "$PORTCULLIS_SYNC_ROOT/etc/passwd"'
@@ -123,6 +126,7 @@ BEGIN { split(set, st, "|") }
   i = index(line, "="); if (i == 0) next
   k = substr(line, 1, i - 1); v = substr(line, i + 1)
   sub(/[ \t]+$/, "", k); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+  if (k == "smb ports") k = "server smb transports"   # a synonym (Samba 4.23)
   if (st[1] == s && st[2] == k) next
   emit(s, k, norm(v))
 }
@@ -295,6 +299,14 @@ test_folder_checks() {
   check 'has "$r" "\"code\":\"owner_unwritable\",\"severity\":\"problem\",\"subject\":\"dan\""' "dan owner_unwritable"
   check 'has "$r" "\"subject\":\"eve\",\"message\":\"eve'"'"'s Time Machine folder is its own filesystem"' "eve's own filesystem named"
   check '! grep -q "^chown.*opt/\(bob\|dan\|eve\)" "$LOG"' "existing folders never chowned"
+  # A chown that fails leaves no root-owned folder behind.
+  people 'person|fay|uid|20005'
+  nt fay "$H_CAROL"
+  stub chown 'exit 1'
+  run
+  check '[ ! -e "$R/opt/fay" ] && has "$(report)" "\"code\":\"owner_unwritable\",\"severity\":\"problem\",\"subject\":\"fay\""' "failed chown: folder removed, owner_unwritable"
+  stub chown 'o=${1%%:*}; g=${1#*:}; echo "$2 $o $g 700 1" >> "$STUB_T/owners"'
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' 'person|dan|uid|20003' 'person|eve|uid|20004'
   # A symlink in place of a folder is never served.
   rm -rf "$R/opt/alice"; ln -s /etc "$R/opt/alice"
   run
@@ -327,7 +339,7 @@ test_removed_person_dropped() {
   check 'alive "$pa"' "alice's session kept"
   check 'grep -q "^smbstatus -p -n" "$LOG"' "sessions from smbstatus -p -n"
   # Accounts are removed before sessions end (a revocation must be quick).
-  check '[ "$(grep -n "^deluser bob" "$LOG" | cut -d: -f1)" -lt "$(grep -n "^smbstatus" "$LOG" | cut -d: -f1)" ]' "deluser before smbstatus"
+  check '[ "$(grep -n "^deluser bob" "$LOG" | cut -d: -f1)" -lt "$(grep -n "^smbstatus" "$LOG" | head -n 1 | cut -d: -f1)" ]' "deluser before smbstatus"
   # Managed leftovers (uid in the managed range, not in the Hub's file) go too.
   echo 'mallory:x:30000:30000::/:/bin/false' >> "$R/etc/passwd"
   echo 'mallory:x:30000:' >> "$R/etc/group"
@@ -338,6 +350,32 @@ test_removed_person_dropped() {
   people
   STUB_SMBD_RUNNING=1 run
   check '[ -z "$(passdb)" ] && ! alive "$pa"' "nobody left: empty passdb, alice's session ended"
+}
+
+test_session_end_fails_closed() {
+  people 'person|alice|uid|20000' 'person|bob|uid|20001'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"
+  run --boot
+  session 20001
+  rm "$R/portcullis/secrets/bob.nt"
+  : > "$LOG"
+  # smbstatus fails while bob's sessions must end: not applied live.
+  STUB_SMBD_RUNNING=1 STUB_SMBSTATUS_FAIL=1 run
+  check '[ "$RC" != 0 ]' "smbstatus failing: non-zero exit (rc $RC)"
+  check 'has "$ERR" "can'"'"'t list the SMB sessions"' "a fixed message: $ERR"
+  check 'grep -q "^s6-svc -d" "$LOG"' "smbd brought down"
+  check '! has "$OUT" PORTCULLIS-REPORT' "no report"
+  check '! grep -qiE "[0-9a-f]{32}" "$T/out" "$T/err"' "no hash printed"
+  # A session that survives TERM and KILL: non-zero, named by username.
+  session 20000
+  nt alice "$H_ALICE2"
+  : > "$LOG"
+  STUB_SMBD_RUNNING=1 STUB_SMBSTATUS_STICKY=1 run
+  check '[ "$RC" != 0 ]' "a surviving session: non-zero exit (rc $RC)"
+  check 'has "$ERR" "a session of alice couldn'"'"'t be ended"' "logged by username: $ERR"
+  check '! has "$ERR" 20000' "by username only, no uid: $ERR"
+  check 'grep -q "^s6-svc -d" "$LOG"' "smbd brought down"
+  check '! grep -qiE "[0-9a-f]{32}" "$T/out" "$T/err"' "no hash printed"
 }
 
 test_uid_rules() {

@@ -334,6 +334,8 @@ if [ -d "$TDIR" ] && [ ! -L "$TDIR" ]; then
       if mkdir -m 0700 "$d" 2> /dev/null && chown "$uid:$uid" "$d"; then
         printf '%s\n' "$u" >> "$WORK/home.served"
       else
+        # Never leave a root-owned folder that would read as a former account.
+        rmdir "$d" 2> /dev/null || true
         finding owner_unwritable problem "$u" "$u's $LABEL folder can't be created" "$TREE_OPT"
       fi
       continue
@@ -446,7 +448,9 @@ expect global 'lanman auth' No
 expect global 'map to guest' Never
 expect global 'restrict anonymous' 2
 expect global 'disable netbios' Yes
-expect global 'smb ports' 445
+# smb ports is a synonym of server smb transports in Samba 4.23: testparm
+# prints the canonical name.
+expect global 'server smb transports' 445
 expect global 'wide links' No
 expect global 'hosts allow' "$NETS"
 expect global 'hosts deny' '0.0.0.0/0 ::/0'
@@ -603,20 +607,39 @@ touch "$STATE/sha" "$STATE/served"
 } | sort -u | while IFS= read -r u; do
   awk -F "$TAB" -v u="$u" '$1 == u { print $2 }' "$WORK/users.old"
 done >> "$WORK/end"
+# Every listed account's sessions must be gone; anything else (smbstatus
+# failing, a session left) is not a live revocation: smbd goes down and the
+# run fails, so the Hub stops and restarts the instance (§13.16 step 3).
+sessions() {  # sessions <file>: smbstatus -p -n, the end list's lines
+  timeout 5 smbstatus -p -n > "$WORK/status" 2> /dev/null || return 1
+  awk 'FILENAME == ARGV[1] { u[$1] = 1; next } $1 ~ /^[0-9]+$/ && ($2 in u) { print $1 "\t" $2 }' \
+    "$WORK/end" "$WORK/status" | sort -u > "$1"
+}
 if [ "$MODE" = hook ] && [ -s "$WORK/end" ] && smbd_running; then
-  timeout 5 smbstatus -p -n > "$WORK/status" 2> /dev/null || true
+  sessions "$WORK/targets" || fail_closed 1 "can't list the SMB sessions (smbstatus failed): sessions not ended"
   live=
-  for p in $(awk 'FILENAME == ARGV[1] { u[$1] = 1; next } $1 ~ /^[0-9]+$/ && ($2 in u) { print $1 }' "$WORK/end" "$WORK/status" | sort -u); do
+  while IFS="$TAB" read -r p _; do
     comm=$(cat "$R/proc/$p/comm" 2> /dev/null || true)
     case $comm in smbd*) ;; *) continue ;; esac
-    kill -TERM "$p" 2> /dev/null && live="$live $p"
-  done
+    if kill -TERM "$p" 2> /dev/null; then live="$live $p"; fi
+  done < "$WORK/targets"
   if [ -n "$live" ]; then
     sleep 2
     for p in $live; do
       if kill -0 "$p" 2> /dev/null; then kill -KILL "$p" 2> /dev/null || true; fi
     done
-    log "ended the sessions of $(sort -u "$WORK/end" | wc -l | tr -d ' ') account(s)"
+  fi
+  if [ -s "$WORK/targets" ]; then
+    [ -z "$live" ] || sleep 1
+    sessions "$WORK/left" || fail_closed 1 "can't re-check the SMB sessions (smbstatus failed): sessions not ended"
+    if [ -s "$WORK/left" ]; then
+      cut -f2 "$WORK/left" | sort -u | while IFS= read -r id; do
+        n=$(awk -F "$TAB" -v i="$id" '$2 == i { print $1; exit }' "$WORK/users.old")
+        log "a session of ${n:-a removed account} couldn't be ended"
+      done
+      fail_closed 1 "sessions survived: not applied live"
+    fi
+    log "ended the sessions of $(cut -f2 "$WORK/targets" | sort -u | wc -l | tr -d ' ') account(s)"
   fi
 fi
 mv -f "$WORK/sha" "$STATE/sha"
