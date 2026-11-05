@@ -803,6 +803,34 @@ test_samba_share_group_removal_ends_sessions() {
   check 'passdb | grep -q "^alice:20000:" && stanza Home | grep -qxF "   valid users = alice bob"' "alice keeps her account and [Home]"
 }
 
+test_writer_demoted_ends_sessions() {
+  # A writer who becomes a reader loses write access at once: an open
+  # session keeps the write list it connected with, so it is ended.
+  samba_env 1:60001
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' 'person|carol|uid|20002' \
+    'value|share1_name|Family' 'value|share1_readers|bob,carol' 'value|share1_writers|alice'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"; nt carol "$H_CAROL"
+  run --boot
+  session 20000; local pa=$LAST_PID
+  session 20001; local pb=$LAST_PID
+  session 20002; local pc=$LAST_PID
+  # alice: writer → reader; bob: reader → writer; carol unchanged.
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' 'person|carol|uid|20002' \
+    'value|share1_name|Family' 'value|share1_readers|alice,carol' 'value|share1_writers|bob'
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'stanza Family | grep -qxF "   write list = bob"' "write list = bob: $(stanza Family)"
+  check '! alive "$pa"' "alice demoted to reader: her session ended"
+  check 'alive "$pb"' "bob promoted to writer: his session kept"
+  check 'alive "$pc"' "carol unchanged: her session kept"
+  check 'grep -qxF "alice${TAB}Family${TAB}ro" "$R/run/portcullis/state/served"' "served state records the access level: $(cat "$R/run/portcullis/state/served")"
+  check 'grep -qxF "alice${TAB}Home${TAB}rw" "$R/run/portcullis/state/served"' "Home is rw"
+  # The same run again: nothing reduced, nobody's session ends.
+  session 20000; local pa2=$LAST_PID
+  STUB_SMBD_RUNNING=1 run
+  check 'alive "$pa2" && alive "$pb" && alive "$pc"' "no change: every session kept"
+}
+
 test_runit_supervisor() {
   # The Samba image supervises smbd with runit (/run/portcullis-sv), not s6.
   samba_env 1:60001

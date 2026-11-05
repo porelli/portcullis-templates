@@ -419,7 +419,8 @@ else
 fi
 
 # ── shares ───────────────────────────────────────────────────
-# served: user<TAB>share. Share names are refused case-insensitively when
+# served: user<TAB>share<TAB>rw|ro (the access level: a reduction ends
+# the person's sessions, which keep what they connected with). Share names are refused case-insensitively when
 # Samba reserves them or another share has them (F41).
 : > "$WORK/served"
 : > "$WORK/taken"
@@ -527,7 +528,7 @@ if [ "$FLAVOUR" = timemachine ]; then
     expect "$s" path "$TREE/$u"
     expect "$s" 'valid users' "$u"
     expect "$s" 'read only' No
-    printf '%s\t%s\n' "$u" "$s" >> "$WORK/served"
+    printf '%s\t%s\trw\n' "$u" "$s" >> "$WORK/served"
     printf '%s\n' "$s" >> "$WORK/shares"
   done < "$WORK/home.served"
 else
@@ -540,7 +541,7 @@ else
     expect Home path "$TREE/%u"
     expect Home 'valid users' "$hv"
     expect Home 'read only' No
-    sed 's/$/\tHome/' "$WORK/home.served" >> "$WORK/served"
+    sed 's/$/\tHome\trw/' "$WORK/home.served" >> "$WORK/served"
   fi
   # members <list>: the comma list's eligible people, one per line.
   members() {
@@ -574,7 +575,8 @@ else
     [ -z "$wl" ] || expect "$name" 'write list' "$wl"
     expect "$name" 'force group' "pfg$gid"
     printf 'pfg%s\t%s\n' "$gid" "$gid" >> "$WORK/groups.want"
-    sed "s/\$/\t$name/" "$WORK/v" >> "$WORK/served"
+    awk -v s="$name" 'FILENAME == ARGV[1] { w[$0] = 1; next } { print $0 "\t" s "\t" (($0 in w) ? "rw" : "ro") }' \
+      "$WORK/w" "$WORK/v" >> "$WORK/served"
   done
 fi
 sort -u "$WORK/served" -o "$WORK/served"
@@ -648,8 +650,10 @@ touch "$STATE/sha" "$STATE/served"
 {
   # A hash that changed.
   awk -F "$TAB" 'FILENAME == ARGV[1] { old[$1] = $2; next } ($1 in old) && old[$1] != $2 { print $1 }' "$STATE/sha" "$WORK/sha"
-  # A share that was served and isn't now.
-  minus "$WORK/served" "$STATE/served" | cut -f1
+  # A share that was served and isn't now, or was writable and is now
+  # read-only (an older line without a level counts as rw).
+  awk -F "$TAB" 'FILENAME == ARGV[1] { now[$1 FS $2] = $3; next }
+    !(($1 FS $2) in now) || ($3 != "ro" && now[$1 FS $2] == "ro") { print $1 }' "$WORK/served" "$STATE/served"
 } | sort -u | while IFS= read -r u; do
   awk -F "$TAB" -v u="$u" '$1 == u { print $2 }' "$WORK/users.old"
 done >> "$WORK/end"

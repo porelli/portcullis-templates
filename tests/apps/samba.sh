@@ -505,6 +505,19 @@ O=$(smb smb-cli-in Family bob "$PW_BOB" -c ls)
 if grep -q NT_STATUS_ACCESS_DENIED <<< "$O"; then pass "bob on Family after leaving its readers: ACCESS_DENIED"; else fail "bob on Family: $O"; fi
 works "bob keeps his Home" smb-cli-in Home bob "$PW_BOB" -c ls
 
+# ── a writer demoted to reader: sessions end, no more writes ─
+long_session alice "$PW_ALICE2" Family
+if wait_sessions 20000 some 15; then pass "alice (writer) has an open Family session"; else fail "no open session for alice: $(cat "$WORK/long-alice.log")"; fi
+people "${PEOPLE_ALL[@]}" \
+  'value|share1_name|Family' 'value|share1_readers|alice' 'value|share1_writers|' \
+  'value|share2_name|Photos' 'value|share2_readers|alice' 'value|share2_writers|'
+hook membership_change > /dev/null
+if wait_sessions 20000 none 10; then pass "alice demoted to reader: her open session dropped"; else fail "alice's writer session still open after the demotion"; fi
+kill "$LONG_PID" 2> /dev/null
+refused "alice (now a reader) writing to Family in a new session" smb-cli-in Family alice "$PW_ALICE2" -c "put $WORK/hello.txt demoted.txt"
+if docker exec -u 20001:60001 "$C" test -e /shares/1/demoted.txt; then fail "a demoted writer's file landed in Family"; else pass "nothing written after the demotion"; fi
+works "alice still reads Family" smb-cli-in Family alice "$PW_ALICE2" -c ls
+
 # ── a writer's files in a renamed slot keep the folder gid ───
 people "${PEOPLE_ALL[@]}" \
   'value|share1_name|Household' 'value|share1_writers|alice' \
