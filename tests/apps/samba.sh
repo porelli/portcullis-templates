@@ -607,16 +607,39 @@ if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then pass "tamp
 if wait_healthy unhealthy; then pass "healthcheck: unhealthy while smb.conf doesn't verify"; else fail "healthcheck: $HEALTH"; fi
 hook settings_change > /dev/null
 if wait_listening; then pass "the next hook run rewrites smb.conf and smbd is back"; else fail "smbd not back after the hook"; fi
-# sv down (the script's fail-closed stop under runit: sv down, then KILL
-# whatever smbd is left) keeps smbd down.
-docker exec "$C" sh -c 'sv down /run/portcullis-sv/smbd > /dev/null; for p in $(pidof smbd); do kill -KILL $p; done'
-for _ in $(seq 1 10); do listening || break; sleep 1; done
+# runit's view of a stop (diagnostic only: fail closed doesn't rely on it).
+SVD=$(docker exec "$C" sv down /run/portcullis-sv/smbd 2>&1; echo "rc=$?")
+sleep 3
+info "sv down: $(tr '\n' ' ' <<< "$SVD")/ sv status: $(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)"
+docker exec "$C" sv up /run/portcullis-sv/smbd > /dev/null 2>&1
+wait_listening > /dev/null || docker exec "$C" sh -c 'for p in $(pidof smbd); do kill -KILL $p; done'
+if wait_listening; then pass "smbd serves again after the diagnostic"; else fail "smbd not back after sv up"; fi
+
+# ── hook-time fail closed under runit ────────────────────────
+# smb.conf replaced by a directory: the run changes the passdb, then the
+# installed config doesn't verify (exit 4) and smbd is brought down. A
+# valid smb.conf put back behind the script's back still doesn't start it:
+# --check refuses until a run converges again (whatever runit does).
+docker exec "$C" sh -c 'cp /etc/samba/smb.conf /tmp/good.conf && rm -f /etc/samba/smb.conf && mkdir /etc/samba/smb.conf'
+OUT=$(hook settings_change 2>&1); RC=$?
+if [ "$RC" = 4 ] && grep -q "the installed smb.conf doesn't verify" <<< "$OUT" && grep -q 'bringing smbd down (fail closed)' <<< "$OUT"; then
+  pass "hook-time refusal: exit 4, smbd brought down"
+else
+  fail "hook-time refusal: rc $RC: $OUT"
+fi
+docker exec "$C" sh -c 'rm -rf /etc/samba/smb.conf && cp /tmp/good.conf /etc/samba/smb.conf'
 HEARD=
-for _ in $(seq 1 10); do listening && HEARD=1; sleep 1; done
-SVST=$(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)
-if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then pass "sv down: runit doesn't restart smbd ($SVST)"; else fail "smbd back after sv down: $SVST"; fi
-docker exec "$C" sv up /run/portcullis-sv/smbd > /dev/null
-if wait_listening; then pass "sv up: smbd back"; else fail "smbd not back after sv up"; fi
+for _ in $(seq 1 15); do listening && HEARD=1; sleep 1; done
+if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then
+  pass "after a fail-closed stop smbd stays down, even with a valid smb.conf back ($(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1))"
+else
+  fail "smbd came back after a fail-closed stop: $(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)"
+fi
+CK=$(docker exec "$C" /portcullis/bin/portcullis-sync --check 2>&1); RC=$?
+if [ "$RC" = 4 ] && grep -q 'brought down (fail closed)' <<< "$CK"; then pass "--check refuses after a fail-closed stop"; else fail "--check: rc $RC: $CK"; fi
+OUT=$(hook settings_change 2>&1); RC=$?
+if [ "$RC" = 0 ] && wait_listening; then pass "the next good run brings smbd back"; else fail "after the fail-closed stop: rc $RC: $OUT"; fi
+if docker exec "$C" /portcullis/bin/portcullis-sync --check > /dev/null 2>&1; then pass "--check passes again"; else fail "--check still refuses"; fi
 
 # ── stop: the Bonjour file goes ──────────────────────────────
 docker stop -t 20 "$C" > /dev/null

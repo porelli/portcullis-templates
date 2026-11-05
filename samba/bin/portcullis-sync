@@ -56,6 +56,10 @@ SECRETS=$R/portcullis/secrets
 AVAHI=$R/portcullis/avahi
 RUN=$R/run/portcullis
 STATE=$RUN/state
+# Written when smbd is brought down (fail closed): --check refuses while it
+# exists, so a supervisor that restarts smbd anyway can't serve again until
+# a run converges.
+DOWN=$RUN/down
 SMBCONF=$R/etc/samba/smb.conf
 PRIVATE=$R/var/lib/samba/private
 PASSDB_PATH=/var/lib/samba/private/smbpasswd
@@ -183,7 +187,8 @@ stop_smbd() {
   [ "$MODE" = hook ] || return 0
   STOPPED=1
   log "bringing smbd down (fail closed)"
-  svc down 2> /dev/null || true
+  : > "$DOWN" || log "can't write $DOWN"
+  svc down > /dev/null 2>&1 || log "the supervisor didn't take the stop: --check keeps smbd from starting"
   for p in $(pidof smbd 2> /dev/null || true); do kill -KILL "$p" 2> /dev/null || true; done
 }
 
@@ -238,6 +243,7 @@ verify() {
 }
 
 if [ "$MODE" = check ]; then
+  [ ! -e "$DOWN" ] || die 4 "smbd was brought down (fail closed): the next good run brings it back"
   [ -s "$RUN/expected" ] || die 4 "no verified configuration yet"
   verify "$SMBCONF" "$RUN/expected" || die 4 "the installed smb.conf differs from the hardened configuration"
   exit 0
@@ -634,6 +640,7 @@ mv -f "$CONF_TMP" "$SMBCONF" 2> /dev/null || fail_closed 4 "can't replace $SMBCO
 CONF_TMP=
 verify "$SMBCONF" "$WORK/expected" || fail_closed 4 "the installed smb.conf doesn't verify"
 cp "$WORK/expected" "$RUN/expected"
+rm -f "$DOWN"
 if [ "$MODE" = hook ]; then
   if smbd_running; then
     smbcontrol all reload-config > /dev/null || fail_closed 1 "smbcontrol reload-config failed"

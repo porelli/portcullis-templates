@@ -831,6 +831,34 @@ test_writer_demoted_ends_sessions() {
   check 'alive "$pa2" && alive "$pb" && alive "$pc"' "no change: every session kept"
 }
 
+test_fail_closed_survives_a_restart() {
+  # Bringing smbd down mustn't rely on the supervisor taking the stop: a
+  # supervisor that restarts smbd anyway runs --check first, which refuses
+  # until a run converges again.
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  run --boot
+  run --check
+  check '[ "$RC" = 0 ]' "--check passes after a good boot (rc $RC: $ERR)"
+  stub s6-svc 'exit 1'   # the stop isn't taken
+  STUB_SMBD_RUNNING=1 STUB_TESTPARM_DROP='server signing' run
+  check '[ "$RC" = 4 ]' "hook-time refusal (rc $RC)"
+  check 'has "$ERR" "the supervisor didn'"'"'t take the stop"' "the failed stop is logged: $ERR"
+  run --check
+  check '[ "$RC" = 4 ] && has "$ERR" "brought down (fail closed)"' "--check refuses after a fail-closed stop (rc $RC: $ERR)"
+  run --check
+  check '[ "$RC" = 4 ]' "--check keeps refusing (rc $RC)"
+  stub s6-svc ':'
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "the next good run (rc $RC: $ERR)"
+  run --check
+  check '[ "$RC" = 0 ]' "--check passes again (rc $RC: $ERR)"
+  # A refusal at boot (nothing to bring down) leaves no marker.
+  STUB_TESTPARM_DROP='server signing' run --boot
+  run --check
+  check '[ "$RC" = 0 ]' "boot refusal: the installed config still checks (rc $RC: $ERR)"
+}
+
 test_runit_supervisor() {
   # The Samba image supervises smbd with runit (/run/portcullis-sv), not s6.
   samba_env 1:60001
