@@ -487,14 +487,19 @@ fi
 : > "$WORK/served"
 : > "$WORK/taken"
 : > "$WORK/shares"
+# share_ok <share> [person]: the finding's subject is the person's exact
+# username when the share is derived from one (Time Machine's
+# <prefix>-<user>: the Hub keeps a name_refused only for a population
+# username or a share name, H8), else the share name.
 share_ok() {
   _l=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  _sub=${2:-$1}
   case $_l in
     global | homes | printers | 'print$' | 'ipc$' | home)
-      finding name_refused info "$1" "the share name $1 is reserved by Samba: it isn't served"; return 1 ;;
+      finding name_refused info "$_sub" "the share name $1 is reserved by Samba: it isn't served"; return 1 ;;
   esac
   if grep -qxF -e "$_l" "$WORK/taken"; then
-    finding name_refused info "$1" "the share name $1 is used twice: only the first is served"; return 1
+    finding name_refused info "$_sub" "the share name $1 is used twice: only the first is served"; return 1
   fi
   printf '%s\n' "$_l" >> "$WORK/taken"
 }
@@ -578,7 +583,7 @@ if [ "$FLAVOUR" = timemachine ]; then
   fi
   while IFS= read -r u; do
     s="$PREFIX-$u"
-    share_ok "$s" || continue
+    share_ok "$s" "$u" || continue
     mib=$(pval "$u" size_limit)
     # MiB (render unit MiB, integer), or "unlimited": no limit line.
     [ "$mib" != unlimited ] || mib=

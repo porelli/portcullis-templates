@@ -867,6 +867,34 @@ test_name_refused_username_subject() {
   check '[ "$(passdb | cut -d: -f1)" = alice ]' "only alice served"
 }
 
+test_name_refused_subjects() {
+  # A refusal about a person names that person's exact username (never a
+  # derived share name like <prefix>-<user>); a share-name refusal names
+  # the share (or the prefix).
+  people 'person|a..b|uid|20000' 'person|alice|uid|20001' 'value|share_prefix|TimeMachine'
+  nt a..b "$H_ALICE"; nt alice "$H_BOB"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20001 20001 700
+  run_in '{"trigger":"credential_change"}'
+  check 'has "$(report)" "\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"a..b\""' "person: subject is the username: $(report)"
+  check '! report | grep -q "\"subject\":\"TimeMachine-"' "no derived share name as a subject"
+  # share_ok refusing a derived <prefix>-<user> name reports the person.
+  check 'grep -q "share_ok \"\$s\" \"\$u\"" "$SCRIPT"' "Time Machine passes the username as the refusal subject"
+  people 'person|alice|uid|20001' 'value|share_prefix|bad prefix!'
+  run_in '{"trigger":"credential_change"}'
+  check 'has "$(report)" "\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"bad prefix!\""' "prefix: subject is the share name prefix: $(report)"
+  check '! report | grep -q "\"subject\":\"bad prefix!-alice\""' "never the derived name"
+  # Samba: a reserved / duplicate share name names the share.
+  samba_env 1:60001 2:60002
+  people 'person|alice|uid|20001' 'value|share1_name|Homes' 'value|share1_readers|alice' \
+    'value|share2_name|Data' 'value|share2_readers|alice' 'value|share3_name|data' 'value|share3_readers|alice'
+  mkdir -p "$R/homes/alice"; own "$R/homes/alice" 20001 20001 700
+  mkdir -p "$R/shares/3"; mounted /shares/3; export PORTCULLIS_FOLDER_GID_SHARE3_FOLDER=60003
+  run_in '{"trigger":"credential_change"}'
+  check 'has "$(report)" "\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"Homes\""' "samba reserved share: subject Homes: $(report)"
+  check 'has "$(report)" "\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"data\""' "samba duplicate share: subject data"
+  check '! report | grep -q "\"subject\":\"alice\""' "no person refusal for alice"
+}
+
 # ── Samba flavour (Task 17) ──────────────────────────────────
 samba_env() {  # samba_env <slot:gid>...: flavour samba, /homes, the slots' folders
   export PORTCULLIS_FLAVOUR=samba PORTCULLIS_INSTANCE=smb1
