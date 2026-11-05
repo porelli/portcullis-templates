@@ -1,0 +1,513 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Samba
+description: File sharing over SMB, a home folder per person and up to 8 shared folders, each person with their own file-share password
+icon: "\U0001F4C2"
+category: storage
+tags: [files, smb, samba, nas, file-sharing]
+links:
+  website: https://github.com/ServerContainers/samba
+  source: https://github.com/ServerContainers/samba
+instances: multi
+
+auth:
+  # Router-less (contract §3, §13.17): no web page, nothing behind Traefik.
+  # The access group is only who may create a file-share password on My apps.
+  method: custom
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_samba
+  notes: >-
+    No web page: file sharing over SMB. Each member of users_samba creates
+    their own file-share password on My apps (people.<domain>) after a fresh
+    passkey sign-in, and gets the share Home, their own folder
+    <homes>/<username> (owned by their Hub uid, mode 0700). Up to 8 shared
+    folders (slots 1-8): the admin assigns a slot a shared folder (Settings ->
+    Shared folders), a share name and reader and writer groups. Readers can
+    read, writers can also write, nobody else in the instance can open it;
+    files land as <the person's uid>:<the folder's gid> (force group), mode
+    0660, directories 2770. To share a folder with everyone who has access,
+    pick users_samba as its reader group. The password is shown once; the
+    Hub keeps only its NT hash on the hub_secrets volume, mounted read-only
+    here, never in a backup. Someone who leaves the access group, or whose
+    account is deleted, loses the password at once, and someone who leaves a
+    share's groups loses that share at once: the Hub's hook removes the
+    account or the share and ends their open sessions within seconds (a
+    change made directly in LLDAP within about a minute).
+    Image: ServerContainers samba (smbd-only, Samba 4.23 on Alpine); its
+    /container/scripts/entrypoint.sh never runs, so none of its ACCOUNT_*,
+    GROUP_*, SAMBA_* or AVAHI_* variables does anything (setting one is
+    ignored; an ACCOUNT_* would only put a password in docker inspect). The
+    container starts with portcullis-sync --boot (shared with the Time Machine
+    template), which writes the whole smb.conf, the passdb (smbpasswd on
+    tmpfs) and the Unix accounts from the Hub's people file and hash files,
+    then runit supervises smbd alone (no nmbd, avahi or wsdd2). The image has
+    no default account.
+    SMB is hardened and verified: SMB3 only (3.1.1), encryption and signing
+    required, NTLMv2 only, no guest or anonymous access, no NetBIOS, port 445
+    only, hosts allow = the Hub's Local networks (an empty list keeps the
+    instance from starting); testparm must show exactly these values or smbd
+    doesn't start. Publish 445 on the LAN or VPN only (lan_only); Docker's
+    published ports bypass ufw.
+    Capabilities: cap_drop ALL, then CHOWN (a new person's home folder is
+    created and given to their uid), SETUID and SETGID (smbd acts as each
+    person with the folder's group; the Hub's files and each folder's size are
+    read as their owner, a privilege drop with runit's chpst instead of
+    DAC_OVERRIDE / DAC_READ_SEARCH, which this container never has) and
+    NET_BIND_SERVICE (port 445). no-new-privileges. The root filesystem isn't
+    read-only: portcullis-sync writes /etc/passwd, /etc/group and /etc/shadow
+    (each person's Unix account and the pfg<gid> group of each shared folder)
+    and the start writes runit's service directory (/run/portcullis-sv); the
+    hashes, the passdb and Samba's state are on tmpfs, and /shares is a small
+    tmpfs, so a slot without a shared folder has nothing to serve. A
+    healthcheck reports unhealthy while smb.conf no longer verifies or smbd
+    isn't running.
+    A home folder that belongs to a former account (an account deleted and
+    created again gets a new uid) is never served; the File sharing tab and
+    the doctor show it. Share names are refused, case-insensitively, when
+    Samba reserves them (global, homes, printers, print$, ipc$, home) or
+    another slot has the same name; the doctor shows it. Bonjour is off by
+    default: people connect with the smb:// address shown on My apps
+    (Finder → Go → Connect to Server). Bonjour
+    opt-in mounts the host's Avahi services directory at /portcullis/avahi
+    and writes portcullis-<instance>.service there, not the image's fixed
+    samba.service (two instances would overwrite each other). Upstream tags
+    name the Alpine and Samba versions (smbd-only-a<alpine>-s<samba>-r<n>):
+    Dependabot follows them.
+
+tests:
+  signin:
+    skip: router-less file sharing, no web page (tests/apps/samba.sh tests SMB)
+
+ports:
+  - key: SAMBA_SMB
+    label: SMB
+    description: SMB (file sharing) on TCP; keep it on the LAN or VPN
+    container: 445
+    protocol: tcp
+    default: 445
+    service: samba
+    lan_only: true
+
+files:
+  - {name: people, service: samba, mount: /portcullis/data, format: tsv, on_membership_change: hook}
+
+hooks:
+  - name: sync
+    service: samba
+    command: [/portcullis/bin/portcullis-sync]
+    when: [start, settings_change, membership_change, credential_change]
+    timeout: 60s
+
+settings:
+  sections: [Access, Homes, Shared folders, Network]
+  options:
+    - key: share_password
+      label: File-share password
+      description: >-
+        Each person's own password for their Home share and the shared folders
+        they may use, created on My apps. The Hub keeps only its NT hash.
+      type: person_secret
+      hash: nt
+      length: 24
+      delivery: file
+      mount: {service: samba, path: /portcullis/secrets}
+      revoke_on_leave: true
+      on_restore: void
+      username:
+        pattern: "^[a-z_][a-z0-9_.-]{0,31}$"
+        # Every account and group of the image (tests/apps/samba.sh checks
+        # /etc/passwd and /etc/group).
+        reserved: [root, bin, daemon, sys, adm, tty, disk, lp, kmem, wheel, floppy, mail, news,
+                   uucp, cron, audio, cdrom, dialout, ftp, sshd, input, tape, video, netdev, kvm,
+                   games, shadow, www-data, users, ntp, abuild, utmp, ping, nogroup, nobody, sync,
+                   shutdown, halt, guest]
+        reason: "isn't a valid Samba and Unix name"
+      info:
+        - {label: Connect, value: "smb://{value:connect_address}{port_suffix:SAMBA_SMB:445}/Home"}
+        - {label: Username, value: "{user}"}
+      applies: live
+      section: Access
+    - key: uid
+      label: File owner id
+      type: person_id
+      pool: posix_uid
+      self_visible: false
+      delivery: [{file: {name: people, field: uid}}]
+    - key: homes
+      label: Home folders
+      description: >-
+        Host directory holding every person's home folder (<username>, owned
+        by their uid, mode 0700), shared as Home. Empty = a Docker volume.
+      type: path
+      target: {service: samba, mount: /homes}
+      folder:
+        access: write
+        runs_as: {uid_from: uid, gid_from: uid}
+        joins_group: template
+      checks:
+        - {kind: filesystem, needs: [xattr], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes"}
+      section: Homes
+      applies: restart
+    - key: share1_folder
+      label: Share 1 folder
+      description: >-
+        The shared folder slot 1 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/1}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE1_FOLDER
+      requires_any: [share1_readers, share1_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share1_name
+      label: Share 1 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share1_readers
+      label: Share 1 readers
+      description: Groups whose members can read share 1.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share1_writers
+      label: Share 1 writers
+      description: Groups whose members can read and write share 1.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share2_folder
+      label: Share 2 folder
+      description: >-
+        The shared folder slot 2 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/2}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE2_FOLDER
+      requires_any: [share2_readers, share2_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share2_name
+      label: Share 2 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share2_readers
+      label: Share 2 readers
+      description: Groups whose members can read share 2.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share2_writers
+      label: Share 2 writers
+      description: Groups whose members can read and write share 2.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share3_folder
+      label: Share 3 folder
+      description: >-
+        The shared folder slot 3 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/3}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE3_FOLDER
+      requires_any: [share3_readers, share3_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share3_name
+      label: Share 3 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share3_readers
+      label: Share 3 readers
+      description: Groups whose members can read share 3.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share3_writers
+      label: Share 3 writers
+      description: Groups whose members can read and write share 3.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share4_folder
+      label: Share 4 folder
+      description: >-
+        The shared folder slot 4 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/4}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE4_FOLDER
+      requires_any: [share4_readers, share4_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share4_name
+      label: Share 4 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share4_readers
+      label: Share 4 readers
+      description: Groups whose members can read share 4.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share4_writers
+      label: Share 4 writers
+      description: Groups whose members can read and write share 4.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share5_folder
+      label: Share 5 folder
+      description: >-
+        The shared folder slot 5 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/5}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE5_FOLDER
+      requires_any: [share5_readers, share5_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share5_name
+      label: Share 5 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share5_readers
+      label: Share 5 readers
+      description: Groups whose members can read share 5.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share5_writers
+      label: Share 5 writers
+      description: Groups whose members can read and write share 5.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share6_folder
+      label: Share 6 folder
+      description: >-
+        The shared folder slot 6 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/6}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE6_FOLDER
+      requires_any: [share6_readers, share6_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share6_name
+      label: Share 6 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share6_readers
+      label: Share 6 readers
+      description: Groups whose members can read share 6.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share6_writers
+      label: Share 6 writers
+      description: Groups whose members can read and write share 6.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share7_folder
+      label: Share 7 folder
+      description: >-
+        The shared folder slot 7 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/7}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE7_FOLDER
+      requires_any: [share7_readers, share7_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share7_name
+      label: Share 7 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share7_readers
+      label: Share 7 readers
+      description: Groups whose members can read share 7.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share7_writers
+      label: Share 7 writers
+      description: Groups whose members can read and write share 7.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share8_folder
+      label: Share 8 folder
+      description: >-
+        The shared folder slot 8 serves (assign it under Settings → Shared
+        folders). Files are written as each person's uid with the folder's
+        group. Not served without a name and a reader or writer group.
+      type: path
+      target: {service: samba, mount: /shares/8}
+      folder:
+        access: write
+        runs_as: {uid_from: uid}
+        joins_group: template   # force group from PORTCULLIS_FOLDER_GID_SHARE8_FOLDER
+      requires_any: [share8_readers, share8_writers]
+      checks:
+        - {kind: filesystem, needs: [xattr, acl], not: [nfs, cifs, fuse], reason: "macOS clients store metadata in extended attributes; the folder's group needs ACLs"}
+      section: Shared folders
+      applies: restart
+    - key: share8_name
+      label: Share 8 name
+      description: >-
+        The name people see (smb://<address>/<name>). Not global, homes,
+        printers, print$, ipc$ or home, and not another slot's name.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$"
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: share8_readers
+      label: Share 8 readers
+      description: Groups whose members can read share 8.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: share8_writers
+      label: Share 8 writers
+      description: Groups whose members can read and write share 8.
+      type: groups
+      section: Shared folders
+      applies: live
+      delivery: [{file: {name: people, render: {expand_members: true}}}]
+    - key: connect_address
+      label: Address people connect to
+      description: The server's name or IP address on your network, shown on My apps.
+      type: string
+      format: hostname
+      required: true
+      self_visible: true
+      section: Network
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: avahi_services_dir
+      label: Host Avahi services directory (Bonjour)
+      description: >-
+        For Bonjour advertising: the host's Avahi services directory (usually
+        /etc/avahi/services, writable by root). Empty = no advertising. Turn
+        Advertise off before clearing this setting, or the file stays there.
+      type: path
+      target: {service: samba, mount: /portcullis/avahi}
+      folder:
+        access: write
+        runs_as: {uid: 0, gid: 0}   # portcullis-sync writes the file as the container's root
+      section: Network
+      applies: restart
+    - key: advertise
+      label: Advertise with Bonjour
+      description: >-
+        Writes portcullis-<instance>.service into the Avahi directory above so
+        Macs see the server in Finder. Advertising shows the server to everyone
+        on the local network. Turn it off before clearing the directory.
+      type: bool
+      default: false
+      section: Network
+      applies: live
+      delivery: [{file: {name: people}}]

@@ -53,6 +53,7 @@ bash tests/compose-config.sh       # docker compose config for every template
 | **Forward Auth** | AdGuard, Pi-hole, Scrutiny |
 | **Header Auth** | CloudBeaver, Firefly III, Grafana, Guacamole, Kanboard |
 | **Custom/Public** | Plex (plex.tv accounts), Docs (public), Vault UI (mTLS, placeholder) |
+| **Router-less file sharing** | Samba, Time Machine (SMB, a file-share password per person from My apps) |
 
 \* Native OIDC plus forward-auth + group-gate on specific paths: GitLab,
 LiteLLM and Vaultwarden gate their login paths by group (`users_<app>`),

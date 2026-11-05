@@ -1,0 +1,11 @@
+#!/bin/sh
+# runit run script of smbd: the installed smb.conf must still verify
+# (portcullis-sync --check, testparm against the hardened table) before
+# every start or restart; otherwise smbd doesn't start (fail closed).
+if ! /portcullis/bin/portcullis-sync --check; then
+  sleep 5
+  exit 1
+fi
+# Debug levels above 3 log too much detail (names, paths); anything else is 1.
+case ${DEBUG_LEVEL:-1} in 0 | 1 | 2 | 3) level=${DEBUG_LEVEL:-1} ;; *) level=1 ;; esac
+exec /usr/sbin/smbd --foreground --no-process-group --debug-stdout --debuglevel="$level" < /dev/null

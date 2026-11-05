@@ -2111,11 +2111,8 @@ def check_cross(templates: List[Template], r: Report) -> None:
 
 
 # The file-sharing templates' converge script (contract §13.17): one
-# reviewed copy, byte-identical in exactly these templates. A member not in
-# the repo yet (plan 3 Tasks 16 / 17) is tolerated; once present it must
-# ship the script.
-# TODO(plan 3 Task 17): once samba exists, make a missing SYNC_TEMPLATES
-# member an error (the set of shippers must equal SYNC_TEMPLATES).
+# reviewed copy, byte-identical in exactly these templates, every one of
+# them in the repo and shipping it.
 SYNC_TEMPLATES = {"samba", "timemachine"}
 SYNC_SCRIPT = os.path.join("bin", "portcullis-sync")
 SYNC_HINT = ("portcullis-sync is shared by the file-sharing templates (contract §13.17): copy the reviewed one, "
@@ -2124,8 +2121,11 @@ SYNC_HINT = ("portcullis-sync is shared by the file-sharing templates (contract 
 
 def check_sync_copies(templates: List[Template], r: Report) -> None:
     """Every template that ships bin/portcullis-sync has the same bytes, and
-    those templates are exactly SYNC_TEMPLATES (of the ones present)."""
+    those templates are exactly SYNC_TEMPLATES (each one in the repo)."""
     ref: Optional[Tuple[str, bytes]] = None
+    present = {t.id for t in templates}
+    for missing in sorted(SYNC_TEMPLATES - present):
+        r.error(f"{missing}/", f"the file-sharing template {missing} is not in the repo (it ships {SYNC_SCRIPT})", SYNC_HINT)
     for t in sorted(templates, key=lambda x: x.id):
         path = os.path.join(t.dir, SYNC_SCRIPT)
         where = f"{t.id}/{SYNC_SCRIPT}"

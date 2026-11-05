@@ -552,7 +552,13 @@ the converge script are the template's.
   `PORTCULLIS-REPORT` line; its unit tests (`bash
   tests/sync/test_portcullis_sync.sh`, stubbed Samba and account tools, no
   root or Docker) run in lint, and each template's `tests/apps/<id>.sh`
-  talks SMB to the real image.
+  talks SMB to the real image. The script stops smbd through the
+  template's supervisor: runit (`/run/portcullis-sv`, Samba) or s6
+  (`/run/portcullis-s6`, Time Machine).
+- **Samba's share slots** are 8 fixed slots (`share<n>_folder`, `_name`,
+  `_readers`, `_writers`), not table rows; each folder option's gid reaches
+  the script as `${PORTCULLIS_FOLDER_GID_SHARE<n>_FOLDER}` in compose
+  `environment:`.
 
 `tests/validate.py` mirrors the Hub's rules with its messages (Hub
 `internal/templates/filesharing.go`, `reservedvars.go`); `TestFileSharing`

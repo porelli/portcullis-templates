@@ -55,6 +55,7 @@ updates:
       - "/pdfcraft"
       - "/photocraft"
       - "/pihole"
+      - "/samba"
       - "/plex"
       - "/scrutiny"
       - "/soundcraft"

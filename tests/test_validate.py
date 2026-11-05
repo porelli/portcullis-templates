@@ -2785,6 +2785,10 @@ class TestFolders(Case):
             ("motioneye", "media_path"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
             ("timemachine", "storage"): {"access": "write", "runs_as": {"uid_from": "uid", "gid_from": "uid"}, "joins_group": "template"},
             ("timemachine", "avahi_services_dir"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
+            ("samba", "homes"): {"access": "write", "runs_as": {"uid_from": "uid", "gid_from": "uid"}, "joins_group": "template"},
+            ("samba", "avahi_services_dir"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
+            **{("samba", f"share{n}_folder"): {"access": "write", "runs_as": {"uid_from": "uid"}, "joins_group": "template"}
+               for n in range(1, 9)},
         }
         seen = set()
         for app in sorted(os.listdir(root)):
@@ -3484,10 +3488,25 @@ settings:
         self.assertTrue([e for e in errors if e.startswith("timemachine/bin/portcullis-sync:")], "\n".join(errors))
         self.assertError(make({"samba": same, "timemachine": same, "demo": same}), "demo/bin/portcullis-sync")
         self.assertError(make({"samba": same}), "timemachine")
-        # Until the file-sharing templates land (plan 3 Tasks 16 / 17): none present is fine.
+        self.assertError(make({"timemachine": same}), "samba/")
+        # Both templates exist (Task 17): a member missing from the repo is an
+        # error too, and the shippers must be exactly SYNC_TEMPLATES.
         r = v.Report()
         v.check_sync_copies([v.Template("demo")], r)
-        self.assertClean(r.errors)
+        self.assertTrue([e for e in r.errors if e.startswith("samba/")], "\n".join(r.errors))
+        self.assertTrue([e for e in r.errors if e.startswith("timemachine/")], "\n".join(r.errors))
+        r = v.Report()
+        v.check_sync_copies([v.Template(a) for a in ("demo", "timemachine")], r)
+        self.assertTrue([e for e in r.errors if e.startswith("samba/") and "not in the repo" in e], "\n".join(r.errors))
+
+    def test_real_templates_ship_sync(self) -> None:
+        """The repo's shippers of bin/portcullis-sync are exactly samba and timemachine."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        shippers = {d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "bin", "portcullis-sync"))}
+        self.assertEqual(shippers, {"samba", "timemachine"})
+        with open(os.path.join(root, "samba", "bin", "portcullis-sync"), "rb") as a, \
+                open(os.path.join(root, "timemachine", "bin", "portcullis-sync"), "rb") as b:
+            self.assertEqual(a.read(), b.read(), "portcullis-sync differs between samba and timemachine")
 
 
 if __name__ == "__main__":

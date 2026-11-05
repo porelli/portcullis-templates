@@ -21,6 +21,9 @@
 # in 10000-60999, /run/portcullis (tmpfs), and
 # /portcullis/avahi/portcullis-<instance>.service.
 #
+# smbd's supervisor: s6 (/run/portcullis-s6, Time Machine) or runit
+# (/run/portcullis-sv, Samba); the container's start makes the one it uses.
+#
 # Never: a hash or password on argv or in output (hashes travel in files
 # only and are read by awk / shell builtins), an empty `valid users`, an
 # allow-all `hosts allow`, a username used as a path before it passed the
@@ -57,6 +60,7 @@ SMBCONF=$R/etc/samba/smb.conf
 PRIVATE=$R/var/lib/samba/private
 PASSDB_PATH=/var/lib/samba/private/smbpasswd
 S6=$R/run/portcullis-s6
+SV=$R/run/portcullis-sv
 
 log() { printf 'portcullis-sync: %s\n' "$*" >&2; }
 die() { _c=$1; shift; log "$*"; exit "$_c"; }
@@ -164,11 +168,22 @@ WORK=$(mktemp -d "$RUN/work.$$.XXXXXX")
 
 smbd_running() { pidof smbd > /dev/null 2>&1; }
 
+# svc <up|down>: smbd's supervisor; down keeps it from restarting smbd.
+svc() {
+  if [ -d "$SV/smbd" ]; then
+    sv "$1" "$SV/smbd" > /dev/null
+  elif [ "$1" = down ]; then
+    s6-svc -d "$S6/smbd"
+  elif [ -d "$S6/smbd" ]; then
+    s6-svc -u "$S6/smbd"
+  fi
+}
+
 stop_smbd() {
   [ "$MODE" = hook ] || return 0
   STOPPED=1
   log "bringing smbd down (fail closed)"
-  s6-svc -d "$S6/smbd" 2> /dev/null || true
+  svc down 2> /dev/null || true
   for p in $(pidof smbd 2> /dev/null || true); do kill -KILL "$p" 2> /dev/null || true; done
 }
 
@@ -240,8 +255,8 @@ START=$(date +%s)
 # drop [-t secs] <uid> <prog> [args]: run prog as uid:uid with no other
 # group (a privilege drop, never DAC_OVERRIDE / DAC_READ_SEARCH), under
 # timeout when -t is given. busybox setpriv can't change ids, so: s6's
-# s6-applyuidgid (the Time Machine image), runit's chpst, or util-linux
-# setpriv.
+# s6-applyuidgid (the Time Machine image), runit's chpst (the Samba image),
+# or util-linux setpriv.
 if command -v s6-applyuidgid > /dev/null 2>&1; then DROP=s6
 elif command -v chpst > /dev/null 2>&1; then DROP=chpst
 elif setpriv --help 2>&1 | grep -q -e --reuid; then DROP=setpriv
@@ -621,7 +636,7 @@ if [ "$MODE" = hook ]; then
   if smbd_running; then
     smbcontrol all reload-config > /dev/null || fail_closed 1 "smbcontrol reload-config failed"
   fi
-  if [ -d "$S6/smbd" ]; then s6-svc -u "$S6/smbd" 2> /dev/null || true; fi
+  svc up 2> /dev/null || true
 fi
 
 # ── sessions: removed accounts, new hashes, fewer shares (F23 F28 F29 F58)

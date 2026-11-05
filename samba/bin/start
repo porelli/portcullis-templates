@@ -1,0 +1,36 @@
+#!/bin/sh
+# Samba container start (contract §13.17, F59). ServerContainers'
+# /container/scripts/entrypoint.sh never runs: no ACCOUNT_* / GROUP_* /
+# SAMBA_* handling, no /.initialized, no default smb.conf (its [global] has
+# wide links and follow symlinks on), no avahi or wsdd2. portcullis-sync
+# renders the accounts, smb.conf and home folders from the Hub's files
+# before smbd exists; then runit supervises smbd alone.
+set -eu
+/portcullis/bin/portcullis-sync --boot
+
+# runit's service directory: smbd only (the image's own
+# /container/config/runit is never used). It lives on the container layer:
+# Docker's tmpfs is noexec, and runsv writes its supervise/ state here.
+SV=/run/portcullis-sv
+rm -rf "$SV"
+mkdir -p "$SV/smbd"
+# smbd re-verifies smb.conf before every (re)start.
+ln -s /portcullis/bin/smbd-run "$SV/smbd/run"
+
+# runsvdir has no finish hook: this shell stays PID 1, and on docker stop
+# it stops smbd (runsvdir's HUP = TERM to each runsv), then removes the
+# Bonjour file (F42). A container killed without a stop leaves it.
+runsvdir -P "$SV" &
+pid=$!
+stopping=
+trap 'stopping=1; kill -HUP "$pid" 2> /dev/null || true' TERM INT
+rc=0
+wait "$pid" || rc=$?
+if [ -n "$stopping" ]; then
+  wait "$pid" 2> /dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do pidof smbd > /dev/null 2>&1 || break; sleep 1; done
+  /portcullis/bin/portcullis-sync --stop || true
+  exit 0
+fi
+echo "start: runsvdir exited ($rc)" >&2
+exit 1

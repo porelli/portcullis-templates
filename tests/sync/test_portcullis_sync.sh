@@ -666,6 +666,183 @@ test_folder_sizes() {
   check 'printf "%s" "$r" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d[\"version\"] == 1"' "report is JSON"
 }
 
+# ── Samba flavour (Task 17) ──────────────────────────────────
+samba_env() {  # samba_env <slot:gid>...: flavour samba, /homes, the slots' folders
+  export PORTCULLIS_FLAVOUR=samba PORTCULLIS_INSTANCE=smb1
+  mkdir -p "$R/homes"
+  local s
+  for s in "$@"; do
+    mkdir -p "$R/shares/${s%%:*}"
+    export "PORTCULLIS_FOLDER_GID_SHARE${s%%:*}_FOLDER=${s#*:}"
+  done
+}
+stanza() { conf | awk -v s="[$1]" '$0 == s { on = 1; print; next } /^\[/ { on = 0 } on'; }
+
+test_shares_valid_users_and_write_list() {
+  samba_env 1:60001 2:60002
+  # carol has no password, zed isn't a person, dave is refused by name.
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' 'person|carol|uid|20002' 'person|Dave|uid|20003' \
+    'value|share1_name|Family' 'value|share1_readers|alice,carol,zed,Dave' 'value|share1_writers|bob' \
+    'value|share2_name|Photos Archive' 'value|share2_readers|bob,alice'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"; nt Dave "$H_CAROL"
+  run --boot
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  local f; f=$(stanza Family)
+  check 'grep -qxF "   path = /shares/1" <<< "$f"' "Family: path /shares/1: $f"
+  check 'grep -qxF "   valid users = alice bob" <<< "$f"' "Family: valid users = eligible readers ∪ writers: $f"
+  check 'grep -qxF "   write list = bob" <<< "$f"' "Family: write list = writers"
+  check 'grep -qxF "   read only = yes" <<< "$f"' "Family: read only = yes"
+  check 'grep -qxF "   guest ok = no" <<< "$f"' "Family: guest ok = no"
+  check 'grep -qxF "   create mask = 0660" <<< "$f" && grep -qxF "   directory mask = 2770" <<< "$f"' "Family: masks 0660 / 2770"
+  check '! grep -qE "carol|zed|Dave" <<< "$f"' "no ineligible name in Family"
+  local p; p=$(stanza 'Photos Archive')
+  check 'grep -qxF "   valid users = alice bob" <<< "$p"' "Photos Archive: readers only: $p"
+  check '! grep -q "write list" <<< "$p"' "Photos Archive: no writers, no write list line"
+  check 'grep -qxF "   path = /shares/2" <<< "$p"' "Photos Archive: /shares/2"
+  # [Home] for the people served, by name.
+  local h; h=$(stanza Home)
+  check 'grep -qxF "   path = /homes/%u" <<< "$h" && grep -qxF "   valid users = alice bob" <<< "$h"' "[Home]: /homes/%u, alice bob: $h"
+  check '! grep -q "%U" <<< "$(conf)"' "never %U"
+  # testparm must show every share line the script rendered: exit 4.
+  STUB_TESTPARM_DROP='write list' run
+  check '[ "$RC" = 4 ] && has "$ERR" "write list"' "write list missing from testparm: exit 4 (rc $RC: $ERR)"
+  STUB_TESTPARM_SET='Family|valid users|alice bob carol' run
+  check '[ "$RC" = 4 ]' "a widened valid users: exit 4 (rc $RC)"
+  STUB_TESTPARM_SET='Photos Archive|write list|alice' run
+  check '[ "$RC" = 4 ]' "a write list the script didn't render: exit 4 (rc $RC)"
+}
+
+test_slot_without_holders_absent() {
+  # F2: slots, not rows. A slot is rendered only with a name, a folder gid,
+  # a mounted /shares/<n> and at least one served person.
+  samba_env 1:60001 2:60002 3:60003 4:60004
+  rmdir "$R/shares/4"
+  people 'person|alice|uid|20000' 'person|carol|uid|20002' \
+    'value|share1_name|Nobody' 'value|share1_readers|carol' 'value|share1_writers|zed' \
+    'value|share2_name|Empty' \
+    'value|share3_readers|alice' \
+    'value|share4_name|Unmounted' 'value|share4_readers|alice' \
+    'value|share5_name|NoFolder' 'value|share5_writers|alice'
+  nt alice "$H_ALICE"
+  run --boot
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check '[ "$(conf | grep "^\[" | tr "\n" " ")" = "[global] [Home] " ]' "only [global] and [Home]: $(conf | grep "^\[" | tr "\n" " ")"
+  check '! grep -q "^addgroup -g 6000[1-5]" "$LOG"' "no folder group for an unrendered slot"
+  check '! conf | grep -qE "^ +valid users = *$"' "no empty valid users"
+  # Nobody at all: [global] alone, no [Home].
+  people 'value|share1_name|Nobody' 'value|share1_readers|alice'
+  run
+  check '[ "$RC" = 0 ] && [ "$(conf | grep -c "^\[")" = 1 ]' "nobody: [global] only (rc $RC)"
+  check '! conf | grep -qE "^ +valid users"' "nobody: no valid users line"
+}
+
+test_home_former_account_excluded() {
+  samba_env 1:60001
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' \
+    'value|share1_name|Family' 'value|share1_readers|alice,bob'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"
+  mkdir -p "$R/homes/alice" "$R/homes/bob"
+  own "$R/homes/alice" 20077 20077 700   # a former account's alice
+  own "$R/homes/bob" 20001 20001 700
+  run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'stanza Home | grep -qxF "   valid users = bob"' "[Home] serves bob only: $(stanza Home)"
+  local r; r=$(report)
+  check 'has "$r" "\"code\":\"former_account\",\"severity\":\"warning\",\"subject\":\"alice\""' "alice's home reported former_account: $r"
+  check 'has "$r" "\"option\":\"homes\",\"uid\":20077"' "the finding names the homes option and the owner"
+  check 'has "$r" "{\"option\":\"homes\",\"name\":\"alice\",\"uid\":20077,\"former\":true"' "folders[]: alice's former home: $r"
+  # Her shared folders aren't per-person: she keeps Family.
+  check 'stanza Family | grep -qxF "   valid users = alice bob"' "Family still serves alice"
+  # Only the former account left: no [Home] at all (never an empty list).
+  people 'person|alice|uid|20000' 'value|share1_name|Family' 'value|share1_readers|alice'
+  run
+  check '! conf | grep -q "^\[Home\]"' "no [Home] when nobody's home is served"
+}
+
+test_force_group_from_folder_gid() {
+  samba_env 1:60042
+  people 'person|alice|uid|20000' 'value|share1_name|Family' 'value|share1_writers|alice'
+  nt alice "$H_ALICE"
+  run --boot
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'stanza Family | grep -qxF "   force group = pfg60042"' "force group = pfg<gid>: $(stanza Family)"
+  check 'grep -qxF "addgroup -g 60042 pfg60042" "$LOG"' "the group pfg60042 created with gid 60042"
+  check 'grep -q "^pfg60042:x:60042:" "$R/etc/group"' "pfg60042 in /etc/group"
+  # Another folder assigned: the old group goes, the new one comes.
+  export PORTCULLIS_FOLDER_GID_SHARE1_FOLDER=60043
+  : > "$LOG"
+  run
+  check 'stanza Family | grep -qxF "   force group = pfg60043"' "force group follows the gid"
+  check 'grep -qxF "delgroup pfg60042" "$LOG" && ! grep -q "^pfg60042:" "$R/etc/group"' "the old folder group removed"
+  # A gid outside 60000-60999 (or none) serves nothing.
+  local g
+  for g in "" 1000 59999 61000 6004 600430 "60043 " "60043;x"; do
+    export PORTCULLIS_FOLDER_GID_SHARE1_FOLDER="$g"
+    run
+    check '[ "$RC" = 0 ] && ! conf | grep -q "^\[Family\]"' "gid '$g': Family not served (rc $RC)"
+  done
+  check '! grep -q "^pfg" "$R/etc/group"' "no folder group left"
+}
+
+test_samba_share_group_removal_ends_sessions() {
+  # F28: leaving a share's reader / writer groups ends that person's sessions.
+  samba_env 1:60001
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' \
+    'value|share1_name|Family' 'value|share1_readers|alice' 'value|share1_writers|bob'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"
+  run --boot
+  session 20000; local pa=$LAST_PID
+  session 20001; local pb=$LAST_PID
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' \
+    'value|share1_name|Family' 'value|share1_writers|bob'
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'stanza Family | grep -qxF "   valid users = bob"' "Family: bob only"
+  check '! alive "$pa"' "alice left the readers: her session ended"
+  check 'alive "$pb"' "bob's session kept"
+  check 'passdb | grep -q "^alice:20000:" && stanza Home | grep -qxF "   valid users = alice bob"' "alice keeps her account and [Home]"
+}
+
+test_runit_supervisor() {
+  # The Samba image supervises smbd with runit (/run/portcullis-sv), not s6.
+  samba_env 1:60001
+  stub sv ':'
+  mkdir -p "$R/run/portcullis-sv/smbd"
+  people 'person|alice|uid|20000' 'value|share1_name|Family' 'value|share1_readers|alice'
+  nt alice "$H_ALICE"
+  run --boot
+  : > "$LOG"
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'grep -qxF "sv up $R/run/portcullis-sv/smbd" "$LOG"' "runit: sv up after a good run: $(grep '^sv' "$LOG")"
+  check '! grep -q "^s6-svc" "$LOG"' "no s6-svc under runit"
+  : > "$LOG"
+  STUB_SMBD_RUNNING=1 STUB_TESTPARM_DROP='server signing' run
+  check '[ "$RC" = 4 ] && grep -qxF "sv down $R/run/portcullis-sv/smbd" "$LOG"' "runit: a refusal brings smbd down with sv down (rc $RC)"
+  check '! grep -q "^s6-svc" "$LOG"' "no s6-svc on the way down either"
+  : > "$LOG"
+  STUB_SMBD_RUNNING=1 STUB_CP_FAIL=1 run
+  check '[ "$RC" != 0 ] && grep -qxF "sv down $R/run/portcullis-sv/smbd" "$LOG"' "runit: the exit trap uses sv down (rc $RC)"
+}
+
+test_chpst_drop() {
+  # No s6-applyuidgid (the Samba image): runit's chpst drops to 10001.
+  rm -f "$STUBS/s6-applyuidgid"
+  if env PATH="$ORIG_PATH" sh -c 'command -v s6-applyuidgid' > /dev/null 2>&1; then
+    echo "    (skipped: a real s6-applyuidgid is on PATH)"; return 0
+  fi
+  stub chpst '[ "$1" = -u ] && shift 2; exec "$@"'
+  samba_env
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'grep -q "^chpst -u :10001:10001 cat -- $R/portcullis/data/people.tsv$" "$LOG"' "people file read through chpst -u :10001:10001: $(grep '^chpst' "$LOG" | head -2)"
+  check 'grep -q "^chpst -u :10001:10001 /bin/sh -c" "$LOG"' "hashes read through chpst"
+  check 'grep -q "^chpst -u :20000:20000 du -sk" "$LOG"' "du as the owner through chpst"
+  check 'stanza Home | grep -qxF "   valid users = alice"' "alice served"
+}
+
 # ── runner ───────────────────────────────────────────────────
 ALL=$(declare -F | awk '{print $3}' | grep '^test_')
 SEL=${*:-$ALL}
