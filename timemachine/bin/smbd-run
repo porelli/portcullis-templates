@@ -8,4 +8,6 @@ if ! /portcullis/bin/portcullis-sync --check; then
 fi
 # Debug levels above 3 log too much detail (names, paths); anything else is 1.
 case ${DEBUG_LEVEL:-1} in 0 | 1 | 2 | 3) level=${DEBUG_LEVEL:-1} ;; *) level=1 ;; esac
-exec /usr/sbin/smbd --foreground --no-process-group --debug-stdout --debuglevel="$level" < /dev/null
+# Its own process group (no --no-process-group): smbd signals its whole
+# group when it stops, which must never reach its supervisor.
+exec /usr/sbin/smbd --foreground --debug-stdout --debuglevel="$level" < /dev/null

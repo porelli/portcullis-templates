@@ -426,6 +426,35 @@ else
   fail "former account: $OUT"
 fi
 
+# ── hook-time fail closed under s6 ───────────────────────────
+# smb.conf replaced by a directory: the run changes the passdb, then the
+# installed config doesn't verify (exit 4) and smbd is brought down
+# (s6-svc -d, KILL, the down marker). A valid smb.conf put back behind the
+# script's back still doesn't start it until a run converges again.
+SVC=/run/portcullis-s6/smbd
+docker exec "$C" sh -c 'cp /etc/samba/smb.conf /tmp/good.conf && rm -f /etc/samba/smb.conf && mkdir /etc/samba/smb.conf'
+OUT=$(hook settings_change 2>&1); RC=$?
+if [ "$RC" = 4 ] && grep -q "the installed smb.conf doesn't verify" <<< "$OUT" && grep -q 'bringing smbd down (fail closed)' <<< "$OUT"; then
+  pass "hook-time refusal: exit 4, smbd brought down"
+else
+  fail "hook-time refusal: rc $RC: $OUT"
+fi
+docker exec "$C" sh -c 'rm -rf /etc/samba/smb.conf && cp /tmp/good.conf /etc/samba/smb.conf'
+HEARD=
+for _ in $(seq 1 15); do listening && HEARD=1; sleep 1; done
+SVST=$(docker exec "$C" s6-svstat "$SVC" 2>&1); SVRC=$?
+if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null && [ "$SVRC" = 0 ] && grep -q '^down' <<< "$SVST"; then
+  pass "after a fail-closed stop smbd stays down, s6-svstat: $SVST"
+else
+  fail "after a fail-closed stop: heard=${HEARD:-no} s6-svstat rc $SVRC: $SVST"
+fi
+if docker exec "$C" pidof s6-supervise > /dev/null; then pass "s6-supervise stays alive"; else fail "s6-supervise is gone"; fi
+CK=$(docker exec "$C" /portcullis/bin/portcullis-sync --check 2>&1); RC=$?
+if [ "$RC" = 4 ] && grep -q 'brought down (fail closed)' <<< "$CK"; then pass "--check refuses after a fail-closed stop"; else fail "--check: rc $RC: $CK"; fi
+OUT=$(hook settings_change 2>&1); RC=$?
+if [ "$RC" = 0 ] && wait_listening; then pass "the next good run brings smbd back ($(docker exec "$C" s6-svstat "$SVC" 2>&1))"; else fail "after the fail-closed stop: rc $RC: $OUT"; fi
+if docker exec "$C" /portcullis/bin/portcullis-sync --check > /dev/null 2>&1; then pass "--check passes again"; else fail "--check still refuses"; fi
+
 # ── stop: the Bonjour file goes ──────────────────────────────
 docker stop -t 20 "$C" > /dev/null
 if [ ! -e "$AVAHI_DIR/portcullis-timemachine.service" ]; then pass "container stop removes the Bonjour file"; else fail "Bonjour file left after stop"; fi

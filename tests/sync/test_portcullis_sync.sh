@@ -191,7 +191,8 @@ test_hardened_global() {
   for l in 'server min protocol = SMB3' 'server smb encrypt = required' 'server signing = mandatory' \
       'ntlm auth = ntlmv2-only' 'lanman auth = no' 'map to guest = never' 'restrict anonymous = 2' \
       'disable netbios = yes' 'smb ports = 445' 'wide links = no' \
-      'hosts allow = 192.168.0.0/16 fd00:1::/64' 'hosts deny = 0.0.0.0/0 ::/0' 'guest ok = no'; do
+      'hosts allow = 192.168.0.0/16 fd00:1::/64' 'hosts deny = 0.0.0.0/0 ::/0' 'guest ok = no' \
+      'follow symlinks = no' 'smb3 unix extensions = no'; do
     check 'conf | sed -n "/^\[global\]/,/^\[/p" | grep -qxF "   $l"' "[global] has '$l'"
   done
   check '! conf | grep -qi "^[[:space:]]*include"' "no include"
@@ -211,6 +212,13 @@ test_hardened_global() {
   # include / registry config in the effective configuration: exit 4.
   STUB_TESTPARM_SET='global|include|/tmp/evil.conf' run
   check '[ "$RC" = 4 ] && has "$ERR" include' "an include: exit 4 (rc $RC: $ERR)"
+  STUB_TESTPARM_SET='global|config backend|registry' run
+  check '[ "$RC" = 4 ]' "config backend registry: exit 4 (rc $RC)"
+  # follow symlinks / smb3 unix extensions are pinned too.
+  STUB_TESTPARM_SET='global|follow symlinks|Yes' run
+  check '[ "$RC" = 4 ] && has "$ERR" "follow symlinks"' "follow symlinks = Yes: exit 4 (rc $RC: $ERR)"
+  STUB_TESTPARM_DROP='smb3 unix extensions' run
+  check '[ "$RC" = 4 ] && has "$ERR" "smb3 unix extensions"' "smb3 unix extensions missing: exit 4 (rc $RC: $ERR)"
   STUB_TESTPARM_SET='global|config backend|registry' run
   check '[ "$RC" = 4 ]' "config backend registry: exit 4 (rc $RC)"
   # A share that testparm says opens guest access: exit 4.
@@ -582,6 +590,7 @@ test_avahi_file() {
 test_reserved_share_name_refused() {
   export PORTCULLIS_FLAVOUR=samba
   mkdir -p "$R/homes" "$R/shares/1" "$R/shares/2" "$R/shares/3" "$R/shares/4" "$R/shares/5"
+  local m; for m in 1 2 3 4 5; do echo "40 30 0:50 / /shares/$m rw - ext4 /dev/sdb1 rw" >> "$R/proc/self/mountinfo"; done
   export PORTCULLIS_FOLDER_GID_SHARE1_FOLDER=60001 PORTCULLIS_FOLDER_GID_SHARE2_FOLDER=60002 \
     PORTCULLIS_FOLDER_GID_SHARE3_FOLDER=60003 PORTCULLIS_FOLDER_GID_SHARE4_FOLDER=60004 PORTCULLIS_FOLDER_GID_SHARE5_FOLDER=60005
   people 'person|alice|uid|20000' 'person|bob|uid|20001' \
@@ -673,9 +682,12 @@ samba_env() {  # samba_env <slot:gid>...: flavour samba, /homes, the slots' fold
   local s
   for s in "$@"; do
     mkdir -p "$R/shares/${s%%:*}"
+    mounted "/shares/${s%%:*}"
     export "PORTCULLIS_FOLDER_GID_SHARE${s%%:*}_FOLDER=${s#*:}"
   done
 }
+# mounted <container path>: a mount point in the scratch /proc/self/mountinfo
+mounted() { echo "40 30 0:50 / $1 rw,relatime - ext4 /dev/sdb1 rw" >> "$R/proc/self/mountinfo"; }
 stanza() { conf | awk -v s="[$1]" '$0 == s { on = 1; print; next } /^\[/ { on = 0 } on'; }
 
 test_shares_valid_users_and_write_list() {
@@ -823,8 +835,8 @@ test_writer_demoted_ends_sessions() {
   check '! alive "$pa"' "alice demoted to reader: her session ended"
   check 'alive "$pb"' "bob promoted to writer: his session kept"
   check 'alive "$pc"' "carol unchanged: her session kept"
-  check 'grep -qxF "alice${TAB}Family${TAB}ro" "$R/run/portcullis/state/served"' "served state records the access level: $(cat "$R/run/portcullis/state/served")"
-  check 'grep -qxF "alice${TAB}Home${TAB}rw" "$R/run/portcullis/state/served"' "Home is rw"
+  check 'grep -qxF "alice${TAB}Family${TAB}1${TAB}ro" "$R/run/portcullis/state/served"' "served state records slot and access level: $(cat "$R/run/portcullis/state/served")"
+  check 'grep -qxF "alice${TAB}Home${TAB}Home${TAB}rw" "$R/run/portcullis/state/served"' "Home is rw"
   # The same run again: nothing reduced, nobody's session ends.
   session 20000; local pa2=$LAST_PID
   STUB_SMBD_RUNNING=1 run
@@ -857,6 +869,47 @@ test_fail_closed_survives_a_restart() {
   STUB_TESTPARM_DROP='server signing' run --boot
   run --check
   check '[ "$RC" = 0 ]' "boot refusal: the installed config still checks (rc $RC: $ERR)"
+}
+
+test_slot_move_ends_sessions() {
+  # A share name moved to another slot serves another folder: an open
+  # session still has the old folder, so it is ended.
+  samba_env 1:60001 2:60002
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' \
+    'value|share1_name|Family' 'value|share1_readers|alice,bob'
+  nt alice "$H_ALICE"; nt bob "$H_BOB"
+  run --boot
+  session 20000; local pa=$LAST_PID
+  people 'person|alice|uid|20000' 'person|bob|uid|20001' \
+    'value|share2_name|Family' 'value|share2_readers|alice,bob'
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'stanza Family | grep -qxF "   path = /shares/2"' "Family now serves /shares/2: $(stanza Family)"
+  check '! alive "$pa"' "the name moved to slot 2: alice's session on slot 1 ended"
+  check 'grep -qxF "alice${TAB}Family${TAB}2${TAB}ro" "$R/run/portcullis/state/served"' "state keyed on the slot: $(cat "$R/run/portcullis/state/served")"
+  # Same slot, same name, same level: nothing ends.
+  session 20000; local pa2=$LAST_PID
+  STUB_SMBD_RUNNING=1 run
+  check 'alive "$pa2"' "no change: session kept"
+}
+
+test_slot_must_be_a_mount() {
+  # /shares/<n> must be a mount point (the assigned folder), not just a
+  # directory left in the /shares tmpfs.
+  samba_env 1:60001
+  mkdir -p "$R/shares/3"
+  export PORTCULLIS_FOLDER_GID_SHARE3_FOLDER=60003
+  people 'person|alice|uid|20000' 'value|share1_name|Family' 'value|share1_readers|alice' \
+    'value|share3_name|Loose' 'value|share3_readers|alice'
+  nt alice "$H_ALICE"
+  run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'conf | grep -qxF "[Family]"' "the mounted slot is served"
+  check '! conf | grep -q "^\[Loose\]"' "a plain directory isn't served"
+  check 'has "$ERR" "/shares/3 isn'"'"'t mounted"' "logged: $ERR"
+  mounted /shares/3
+  run
+  check 'conf | grep -qxF "[Loose]"' "once mounted it is served"
 }
 
 test_runit_supervisor() {

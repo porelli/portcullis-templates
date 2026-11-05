@@ -425,8 +425,10 @@ else
 fi
 
 # ── shares ───────────────────────────────────────────────────
-# served: user<TAB>share<TAB>rw|ro (the access level: a reduction ends
-# the person's sessions, which keep what they connected with). Share names are refused case-insensitively when
+# served: user<TAB>share<TAB><slot>|Home<TAB>rw|ro (Home: a per-person
+# folder). A reduction ends the person's sessions, which keep what they
+# connected with: the share gone, rw -> ro, or another slot (another
+# folder) behind the same name. Share names are refused case-insensitively when
 # Samba reserves them or another share has them (F41).
 : > "$WORK/served"
 : > "$WORK/taken"
@@ -472,6 +474,8 @@ render_global() {
    disable netbios = yes
    smb ports = 445
    wide links = no
+   follow symlinks = no
+   smb3 unix extensions = no
    hosts allow = $NETS
    hosts deny = 0.0.0.0/0 ::/0
    guest ok = no
@@ -501,6 +505,8 @@ expect global 'disable netbios' Yes
 # prints the canonical name.
 expect global 'server smb transports' 445
 expect global 'wide links' No
+expect global 'follow symlinks' No
+expect global 'smb3 unix extensions' No
 expect global 'hosts allow' "$NETS"
 expect global 'hosts deny' '0.0.0.0/0 ::/0'
 expect global 'guest ok' No
@@ -534,7 +540,7 @@ if [ "$FLAVOUR" = timemachine ]; then
     expect "$s" path "$TREE/$u"
     expect "$s" 'valid users' "$u"
     expect "$s" 'read only' No
-    printf '%s\t%s\trw\n' "$u" "$s" >> "$WORK/served"
+    printf '%s\t%s\tHome\trw\n' "$u" "$s" >> "$WORK/served"
     printf '%s\n' "$s" >> "$WORK/shares"
   done < "$WORK/home.served"
 else
@@ -547,7 +553,7 @@ else
     expect Home path "$TREE/%u"
     expect Home 'valid users' "$hv"
     expect Home 'read only' No
-    sed 's/$/\tHome\trw/' "$WORK/home.served" >> "$WORK/served"
+    sed 's/$/\tHome\tHome\trw/' "$WORK/home.served" >> "$WORK/served"
   fi
   # members <list>: the comma list's eligible people, one per line.
   members() {
@@ -564,7 +570,9 @@ else
     share_ok "$name" || continue
     gid=$(eval "printf '%s' \"\${PORTCULLIS_FOLDER_GID_SHARE${n}_FOLDER:-}\"")
     if ! match '^60[0-9]{3}$' "$gid"; then log "share $n ($name) has no shared folder: not served"; continue; fi
-    if [ ! -d "$R/shares/$n" ] || [ -L "$R/shares/$n" ]; then log "share $n ($name): /shares/$n isn't mounted: not served"; continue; fi
+    if [ ! -d "$R/shares/$n" ] || [ -L "$R/shares/$n" ] || ! is_mount "/shares/$n"; then
+      log "share $n ($name): /shares/$n isn't mounted: not served"; continue
+    fi
     members "$(val "share${n}_readers")" > "$WORK/r"
     members "$(val "share${n}_writers")" > "$WORK/w"
     sort -u "$WORK/r" "$WORK/w" > "$WORK/v"
@@ -581,7 +589,7 @@ else
     [ -z "$wl" ] || expect "$name" 'write list' "$wl"
     expect "$name" 'force group' "pfg$gid"
     printf 'pfg%s\t%s\n' "$gid" "$gid" >> "$WORK/groups.want"
-    awk -v s="$name" 'FILENAME == ARGV[1] { w[$0] = 1; next } { print $0 "\t" s "\t" (($0 in w) ? "rw" : "ro") }' \
+    awk -v s="$name" -v n="$n" 'FILENAME == ARGV[1] { w[$0] = 1; next } { print $0 "\t" s "\t" n "\t" (($0 in w) ? "rw" : "ro") }' \
       "$WORK/w" "$WORK/v" >> "$WORK/served"
   done
 fi
@@ -657,10 +665,11 @@ touch "$STATE/sha" "$STATE/served"
 {
   # A hash that changed.
   awk -F "$TAB" 'FILENAME == ARGV[1] { old[$1] = $2; next } ($1 in old) && old[$1] != $2 { print $1 }' "$STATE/sha" "$WORK/sha"
-  # A share that was served and isn't now, or was writable and is now
-  # read-only (an older line without a level counts as rw).
-  awk -F "$TAB" 'FILENAME == ARGV[1] { now[$1 FS $2] = $3; next }
-    !(($1 FS $2) in now) || ($3 != "ro" && now[$1 FS $2] == "ro") { print $1 }' "$WORK/served" "$STATE/served"
+  # A share that was served and isn't now, now behind another slot, or
+  # was writable and is now read-only (a line of another shape counts as
+  # gone).
+  awk -F "$TAB" 'FILENAME == ARGV[1] { now[$1 FS $2 FS $3] = $4; next }
+    NF != 4 || !(($1 FS $2 FS $3) in now) || ($4 != "ro" && now[$1 FS $2 FS $3] == "ro") { print $1 }' "$WORK/served" "$STATE/served"
 } | sort -u | while IFS= read -r u; do
   awk -F "$TAB" -v u="$u" '$1 == u { print $2 }' "$WORK/users.old"
 done >> "$WORK/end"

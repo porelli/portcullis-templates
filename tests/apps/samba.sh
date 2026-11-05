@@ -405,6 +405,11 @@ if grep -qxF $'\tvalid users = alice' <<< "$S_PH" && grep -qxF $'\tforce group =
 else
   fail "testparm [Photos]: $S_PH"
 fi
+if grep -qxF $'\tfollow symlinks = No' <<< "$TP" && grep -qxF $'\tsmb3 unix extensions = No' <<< "$TP"; then
+  pass "testparm: follow symlinks = No, smb3 unix extensions = No"
+else
+  fail "testparm: $(grep -E 'follow symlinks|smb3 unix extensions' <<< "$TP" | tr '\n' ' ')"
+fi
 if grep -qE $'^\t(read only = No|guest ok = Yes)' <<< "$S_FAM$S_PH"; then fail "a shared folder is writable for all or guest"; else pass "shared folders: read only = yes, guest ok = no (testparm defaults)"; fi
 if [ -n "$(docker exec "$C" find /run/portcullis /etc/samba /tmp -type f -exec grep -lE "$(nthash "$PW_ALICE")" {} + 2> /dev/null)" ]; then
   fail "a hash outside the passdb"
@@ -517,6 +522,17 @@ kill "$LONG_PID" 2> /dev/null
 refused "alice (now a reader) writing to Family in a new session" smb-cli-in Family alice "$PW_ALICE2" -c "put $WORK/hello.txt demoted.txt"
 if docker exec -u 20001:60001 "$C" test -e /shares/1/demoted.txt; then fail "a demoted writer's file landed in Family"; else pass "nothing written after the demotion"; fi
 works "alice still reads Family" smb-cli-in Family alice "$PW_ALICE2" -c ls
+
+# ── a share name moved to another slot: sessions on the old folder end ──
+long_session alice "$PW_ALICE2" Family
+if wait_sessions 20000 some 15; then pass "alice has an open Family session (slot 1)"; else fail "no open session for alice: $(cat "$WORK/long-alice.log")"; fi
+people "${PEOPLE_ALL[@]}" \
+  'value|share1_name|' 'value|share2_name|Family' 'value|share2_readers|alice' 'value|share2_writers|'
+hook settings_change > /dev/null
+if wait_sessions 20000 none 10; then pass "Family moved to slot 2: alice's session on slot 1 dropped"; else fail "alice's slot-1 session still open after the move"; fi
+kill "$LONG_PID" 2> /dev/null
+O=$(smb smb-cli-in Family alice "$PW_ALICE2" -c ls)
+if ! grep -q NT_STATUS <<< "$O" && ! grep -q alice.txt <<< "$O"; then pass "Family now opens slot 2's folder"; else fail "Family after the move: $O"; fi
 
 # ── a writer's files in a renamed slot keep the folder gid ───
 people "${PEOPLE_ALL[@]}" \
