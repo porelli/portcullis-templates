@@ -13,6 +13,7 @@ cd "$(dirname "$0")/../.."
 REPO=$PWD
 SCRIPT="$REPO/timemachine/bin/portcullis-sync"
 
+ORIG_PATH=$PATH
 PASS=0
 FAIL=0
 FAILED=()
@@ -40,7 +41,7 @@ setup() {
   : > "$T/owners"     # fake stat: "<path> <uid> <gid> <mode> <dev>"
   : > "$T/smbstatus"  # fake sessions: "<pid> <uid>"
   write_stubs
-  export PATH="$STUBS:$PATH"
+  export PATH="$STUBS:$ORIG_PATH"
   export PORTCULLIS_SYNC_ROOT="$R" STUB_LOG="$LOG" STUB_T="$T"
   export PORTCULLIS_FLAVOUR=timemachine PORTCULLIS_INSTANCE=tm1
   export PORTCULLIS_LOCAL_NETWORKS='192.168.0.0/16,fd00:1::/64'
@@ -48,7 +49,7 @@ setup() {
   export PORTCULLIS_USERNAME_PATTERN='^[a-z_][a-z0-9_.-]{0,31}$'
   export PORTCULLIS_USERNAME_RESERVED='root bin daemon nobody timemachine wheel users'
   export MIMIC_MODEL='TimeCapsule8,119'
-  unset STUB_TESTPARM_DROP STUB_TESTPARM_SET STUB_SMBD_RUNNING STUB_SMBSTATUS_FAIL STUB_SMBSTATUS_STICKY 2>/dev/null || true
+  unset STUB_TESTPARM_DROP STUB_TESTPARM_SET STUB_SMBD_RUNNING STUB_SMBSTATUS_FAIL STUB_SMBSTATUS_STICKY STUB_CP_FAIL 2>/dev/null || true
   for n in 1 2 3 4 5 6 7 8; do unset "PORTCULLIS_FOLDER_GID_SHARE${n}_FOLDER" 2>/dev/null || true; done
   SLEEPERS=()
 }
@@ -74,6 +75,9 @@ write_stubs() {
   stub s6-applyuidgid 'while [ $# -gt 0 ]; do case "$1" in -u|-g|-G) shift 2 ;; *) break ;; esac; done; exec "$@"'
   stub timeout 'shift; exec "$@"'
   stub flock ':'
+  # cp: the real one, or a failure (STUB_CP_FAIL) mid-run.
+  REAL_CP=$(env PATH="$ORIG_PATH" sh -c "command -v cp")
+  stub cp "[ -z \"\${STUB_CP_FAIL:-}\" ] || exit 1; exec $REAL_CP \"\$@\""
   # chown <uid>:<gid> <path>: what stat then reports for the path.
   stub chown 'o=${1%%:*}; g=${1#*:}; echo "$2 $o $g 700 1" >> "$STUB_T/owners"'
   stub s6-svc ':'
@@ -376,6 +380,70 @@ test_session_end_fails_closed() {
   check '! has "$ERR" 20000' "by username only, no uid: $ERR"
   check 'grep -q "^s6-svc -d" "$LOG"' "smbd brought down"
   check '! grep -qiE "[0-9a-f]{32}" "$T/out" "$T/err"' "no hash printed"
+}
+
+test_failure_after_a_change_stops_smbd() {
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  run --boot
+  people 'person|alice|uid|20000' 'person|bob|uid|20001'
+  nt bob "$H_BOB"
+  : > "$LOG"
+  # A plain command failing (set -e) after the passdb changed.
+  STUB_SMBD_RUNNING=1 STUB_CP_FAIL=1 run
+  check '[ "$RC" != 0 ]' "cp failing mid-run: non-zero exit (rc $RC)"
+  check 'grep -q "^s6-svc -d" "$LOG"' "smbd brought down by the exit trap"
+  check '! has "$OUT" PORTCULLIS-REPORT' "no report"
+  # The same failure at boot: nothing to bring down, still non-zero.
+  : > "$LOG"
+  STUB_CP_FAIL=1 run --boot
+  check '[ "$RC" != 0 ] && ! grep -q "^s6-svc" "$LOG"' "boot: non-zero, no s6-svc (rc $RC)"
+}
+
+test_stale_tmpfs_files_removed() {
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/run/portcullis/work.OLD1"
+  echo "$H_ALICE" > "$R/run/portcullis/work.OLD1/hashes"
+  echo "alice:20000:X:$H_ALICE:" > "$R/var/lib/samba/private/.smbpasswd.OLD2"
+  echo junk > "$R/etc/samba/.smb.conf.OLD3"
+  run --boot
+  check '[ "$RC" = 0 ]' "boot (rc $RC: $ERR)"
+  check '[ ! -e "$R/run/portcullis/work.OLD1" ]' "a killed run's work dir removed"
+  check '[ ! -e "$R/var/lib/samba/private/.smbpasswd.OLD2" ]' "a killed run's passdb temp removed"
+  check '[ ! -e "$R/etc/samba/.smb.conf.OLD3" ]' "a killed run's smb.conf temp removed"
+  check '[ -z "$(find "$R/run/portcullis" -maxdepth 1 -name "work.*")" ]' "no work dir left after the run"
+}
+
+test_share_group_names_refused() {
+  people 'person|pfg60001|uid|20000' 'person|pfg1|uid|20001' 'person|pfgx|uid|20002'
+  nt pfg60001 "$H_ALICE"; nt pfg1 "$H_BOB"; nt pfgx "$H_CAROL"
+  run
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check '[ "$(passdb | cut -d: -f1)" = pfgx ]' "pfg<digits> names refused, pfgx kept: $(passdb | cut -d: -f1 | tr '\n' ' ')"
+  check 'has "$(report)" "\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"pfg60001\""' "reported name_refused"
+}
+
+test_account_match_is_exact() {
+  # A managed account whose name is a regex-alike of a person's must not
+  # count as that person's account.
+  people 'person|a.b|uid|20000'
+  nt a.b "$H_ALICE"
+  echo 'axb:x:20000:20000::/nonexistent:/bin/false' >> "$R/etc/passwd"
+  echo 'axb:x:20000:' >> "$R/etc/group"
+  run --boot
+  check '[ "$RC" = 0 ]' "boot (rc $RC: $ERR)"
+  check '! grep -q "^axb:" "$R/etc/passwd" "$R/etc/group"' "the look-alike account and group removed"
+  check 'grep -q "^a.b:x:20000:20000:" "$R/etc/passwd" && grep -qx "addgroup -g 20000 a.b" "$LOG"' "a.b created for real"
+}
+
+test_size_budget() {
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
+  run
+  check 'grep -qE "^timeout (20|1[0-9]|[1-9]) s6-applyuidgid -u 20000 .* du -sk" "$LOG"' "du under timeout <= 20: $(grep du "$LOG" | head -1)"
+  check 'grep -q "^SIZE_BUDGET=30 " "$SCRIPT"' "budget 30 s"
 }
 
 test_uid_rules() {

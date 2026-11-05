@@ -44,7 +44,12 @@ auth:
     and given to their uid), SETUID and SETGID (smbd acts as each person; the
     Hub's files and each folder's size are read as their owner, a privilege
     drop instead of DAC_OVERRIDE / DAC_READ_SEARCH, which this container never
-    has) and NET_BIND_SERVICE (port 445). no-new-privileges.
+    has) and NET_BIND_SERVICE (port 445). no-new-privileges. The root
+    filesystem isn't read-only: portcullis-sync writes /etc/passwd,
+    /etc/group and /etc/shadow (each person's Unix account) and the start
+    writes its copy of /etc/s6 (/run/portcullis-s6); the hashes, the passdb
+    and Samba's state are on tmpfs. A healthcheck reports unhealthy while
+    smb.conf no longer verifies or smbd isn't running.
     Backup size limit: Time Machine keeps backups within it (Samba's
     fruit:time machine max size, cooperative, not a hard quota). A folder
     that belongs to a former account (an account deleted and created again

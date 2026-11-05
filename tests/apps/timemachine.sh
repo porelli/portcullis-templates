@@ -230,7 +230,7 @@ long_session() {
   local pid
   pid=$(docker inspect -f '{{.State.Pid}}' tm-cli-in)
   # shellcheck disable=SC2024 # the log is the runner user's own file
-  (while :; do echo 'ls'; sleep 1; done) | sudo nsenter --net="/proc/$pid/ns/net" env PASSWD="$2" timeout 120 \
+  (while :; do echo 'ls' 2> /dev/null || exit 0; sleep 1; done) | sudo nsenter --net="/proc/$pid/ns/net" env PASSWD="$2" timeout 120 \
     smbclient "//$TM_IP/$3" -U "$1" --use-kerberos=disabled -m SMB3 --option='client smb encrypt=required' > "$WORK/long-$1.log" 2>&1 &
   LONG_PID=$!
 }
@@ -248,15 +248,23 @@ wait_sessions() {  # wait_sessions <uid> <want: some|none> <seconds>
 people 'value|share_prefix|TimeMachine' 'value|advertise|false'
 boot
 if wait_listening; then pass "smbd listens on 445 with nobody eligible"; else fail "smbd not listening"; exit 1; fi
+HEALTH=
+for _ in $(seq 1 45); do
+  HEALTH=$(docker inspect -f '{{.State.Health.Status}}' "$C" 2> /dev/null || true)
+  [ "$HEALTH" = healthy ] && break
+  sleep 2
+done
+if [ "$HEALTH" = healthy ]; then pass "healthcheck: healthy (smb.conf verifies, smbd runs)"; else fail "healthcheck: $HEALTH"; fi
 if [ -z "$(docker exec "$C" pdbedit -L 2> /dev/null)" ]; then pass "nobody: pdbedit -L empty"; else fail "nobody: passdb has $(docker exec "$C" pdbedit -L)"; fi
 if docker exec "$C" grep -q '^timemachine:' /etc/passwd; then fail "the image's timemachine account exists"; else pass "no timemachine account (nobody eligible)"; fi
-if docker exec "$C" awk -F: '$3 >= 10000 && $3 < 65534' /etc/passwd | grep -q .; then fail "an account with uid >= 10000 exists"; else pass "no person account"; fi
+if [ -n "$(docker exec "$C" awk -F: '$3 >= 10000 && $3 < 65534' /etc/passwd)" ]; then fail "an account with uid >= 10000 exists"; else pass "no person account"; fi
 if docker exec "$C" grep -q '^\[' /etc/samba/smb.conf && [ "$(docker exec "$C" grep -c '^\[' /etc/samba/smb.conf)" = 1 ]; then
   pass "smb.conf has [global] only"
 else
   fail "smb.conf sections: $(docker exec "$C" grep '^\[' /etc/samba/smb.conf | tr '\n' ' ')"
 fi
-if docker exec "$C" ps | grep -qE 'nmbd|avahi|dbus'; then fail "nmbd, avahi or dbus runs"; else pass "only smbd runs (no nmbd, avahi, dbus)"; fi
+PS=$(docker exec "$C" ps)
+if grep -qE 'nmbd|avahi|dbus' <<< "$PS"; then fail "nmbd, avahi or dbus runs"; else pass "only smbd runs (no nmbd, avahi, dbus)"; fi
 CAPEFF=$(docker exec "$C" awk '/^CapEff/ { print $2 }' /proc/1/status)
 CAPDEC=$((16#$CAPEFF))
 if [ $((CAPDEC & 6)) = 0 ]; then pass "CapEff $CAPEFF: no DAC_OVERRIDE, no DAC_READ_SEARCH"; else fail "CapEff $CAPEFF has DAC_OVERRIDE / DAC_READ_SEARCH"; fi
@@ -265,10 +273,12 @@ if [ "$CAPDEC" = $(((1 << 0) | (1 << 6) | (1 << 7) | (1 << 10))) ]; then
 else
   fail "CapEff $CAPEFF"
 fi
-if docker exec "$C" testparm -s -v 2> /dev/null | grep -qxF $'\thosts allow = '"$NET.48/28 fd00:1::/64"; then
+# Captured whole first: grep -q on a pipe can SIGPIPE testparm (pipefail).
+TP=$(docker exec "$C" testparm -s -v 2> /dev/null || true)
+if grep -qxF $'\thosts allow = '"$NET.48/28 fd00:1::/64" <<< "$TP"; then
   pass "testparm keeps the IPv6 CIDR as written (hosts allow = $NET.48/28 fd00:1::/64)"
 else
-  fail "testparm hosts allow: $(docker exec "$C" testparm -s -v 2> /dev/null | grep 'hosts allow')"
+  fail "testparm hosts allow: $(grep 'hosts allow' <<< "$TP")"
 fi
 
 # ── people ───────────────────────────────────────────────────
@@ -295,7 +305,7 @@ fi
 if docker exec "$C" grep -q '^timemachine:' /etc/passwd; then fail "the timemachine account exists"; else pass "no timemachine account (with people)"; fi
 if [ "$(docker exec "$C" stat -c '%u:%g %a' /opt/alice)" = "20000:20000 700" ]; then pass "/opt/alice is 20000:20000 0700"; else fail "/opt/alice: $(docker exec "$C" stat -c '%u:%g %a' /opt/alice)"; fi
 if docker exec "$C" grep -qxF '   fruit:time machine max size = 10240M' /etc/samba/smb.conf; then pass "alice's limit: 10240M"; else fail "max size missing"; fi
-if docker exec "$C" find /run/portcullis /etc/samba /tmp -type f -exec grep -lE "$(nthash "$PW_ALICE")" {} + 2> /dev/null | grep -q .; then
+if [ -n "$(docker exec "$C" find /run/portcullis /etc/samba /tmp -type f -exec grep -lE "$(nthash "$PW_ALICE")" {} + 2> /dev/null)" ]; then
   fail "a hash outside the passdb"
 else
   pass "no hash left under /run/portcullis, /etc/samba or /tmp"
@@ -340,7 +350,7 @@ fi
 # session smbstatus lists is AES-encrypted.
 pid=$(docker inspect -f '{{.State.Pid}}' tm-cli-in)
 # shellcheck disable=SC2024 # the log is the runner user's own file
-(while :; do echo 'ls'; sleep 1; done) | sudo nsenter --net="/proc/$pid/ns/net" env PASSWD="$PW_ALICE" timeout 120 \
+(while :; do echo 'ls' 2> /dev/null || exit 0; sleep 1; done) | sudo nsenter --net="/proc/$pid/ns/net" env PASSWD="$PW_ALICE" timeout 120 \
   smbclient //$TM_IP/TimeMachine-alice -U alice --use-kerberos=disabled -m SMB3 --option='client smb encrypt=off' > "$WORK/noenc.log" 2>&1 &
 LONG_PID=$!
 if wait_sessions 20000 some 15; then
@@ -355,7 +365,8 @@ else
 fi
 kill "$LONG_PID" 2> /dev/null || true
 wait_sessions 20000 none 15 || true
-if docker exec "$C" smbstatus -p -n 2> /dev/null | awk '$1 ~ /^[0-9]+$/' | grep -qvE 'AES-(128|256)-(GCM|CCM)'; then
+SESS=$(docker exec "$C" smbstatus -p -n 2> /dev/null | awk '$1 ~ /^[0-9]+$/')
+if [ -n "$SESS" ] && grep -qvE 'AES-(128|256)-(GCM|CCM)' <<< "$SESS"; then
   fail "a session without encryption: $(docker exec "$C" smbstatus -p -n 2> /dev/null)"
 else
   pass "no unencrypted session in smbstatus"
@@ -395,7 +406,8 @@ if wait_sessions 20000 none 10; then pass "revoked: alice's open session dropped
 kill "$LONG_PID" 2> /dev/null || true
 refused "alice after revocation" tm-cli-in Backups-alice alice "$PW_ALICE2" -c ls
 if docker exec "$C" grep -q '^alice:' /etc/passwd; then fail "alice's Unix account still exists"; else pass "alice's Unix account removed"; fi
-if docker exec "$C" pdbedit -L 2> /dev/null | grep -q '^alice:'; then fail "alice still in passdb"; else pass "alice removed from passdb"; fi
+PDB=$(docker exec "$C" pdbedit -L 2> /dev/null || true)
+if grep -q '^alice:' <<< "$PDB"; then fail "alice still in passdb"; else pass "alice removed from passdb"; fi
 if docker exec "$C" test -d /opt/alice; then pass "alice's folder stays on disk"; else fail "alice's folder was removed"; fi
 
 # From here on every check reports (no early exit), whatever fails.
@@ -417,6 +429,22 @@ fi
 # ── stop: the Bonjour file goes ──────────────────────────────
 docker stop -t 20 "$C" > /dev/null
 if [ ! -e "$AVAHI_DIR/portcullis-timemachine.service" ]; then pass "container stop removes the Bonjour file"; else fail "Bonjour file left after stop"; fi
+
+# ── removed while the container was down ─────────────────────
+# /etc/passwd lives on the container layer and survives a restart; the
+# boot converge must drop bob's account before smbd starts.
+sudo rm -f "$SECRETS_DIR/bob.nt"
+docker start "$C" > /dev/null
+if wait_listening; then
+  PW=$(docker exec "$C" cat /etc/passwd)
+  if grep -q '^bob:' <<< "$PW"; then fail "bob's account survived a removal while down"; else pass "removed while down: bob's account gone after the restart"; fi
+  PDB=$(docker exec "$C" pdbedit -L 2> /dev/null || true)
+  if grep -q '^bob:' <<< "$PDB"; then fail "bob still in passdb after the restart"; else pass "removed while down: bob not in passdb"; fi
+  refused "bob's old password after a removal while down" tm-cli-in Backups-bob bob "$PW_BOB" -c ls
+else
+  fail "no smbd after the restart"
+fi
+nt bob "$PW_BOB"   # back for the tamper checks
 
 # ── tamper: the image's own knob can't weaken it ─────────────
 boot "" "    environment:

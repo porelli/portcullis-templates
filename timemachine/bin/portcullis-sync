@@ -43,7 +43,7 @@ UID_MIN=20000             # pool posix_uid (contract §13.16)
 UID_MAX=59999
 ID_MIN=10000              # ids of the accounts and groups this script owns
 ID_MAX=60999              # (people 20000-59999, folder groups 60000-60999)
-SIZE_BUDGET=40            # seconds for all du runs of one hook run
+SIZE_BUDGET=30            # seconds for all du runs of one hook run (hook timeout 60 s)
 TAB=$(printf '\t')
 NL='
 '
@@ -129,19 +129,32 @@ set +f
 
 mkdir -p "$RUN" "$STATE"
 chmod 700 "$RUN" "$STATE"
-WORK=$(mktemp -d "$RUN/work.XXXXXX")
+WORK=
 CONF_TMP=
-cleanup() { rm -rf "$WORK"; [ -z "$CONF_TMP" ] || rm -f "$CONF_TMP"; }
+# CHANGED: a change has begun (passdb, accounts, smb.conf). Any non-zero
+# exit after that, set -e's included, brings smbd down at hook time.
+CHANGED=
+STOPPED=
+cleanup() {
+  _rc=$?
+  [ -z "$WORK" ] || rm -rf "$WORK"
+  [ -z "$CONF_TMP" ] || rm -f "$CONF_TMP"
+  if [ "$_rc" -ne 0 ] && [ -n "$CHANGED" ] && [ -z "$STOPPED" ]; then stop_smbd; fi
+}
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 exec 9> "$RUN/sync.lock"
 flock 9
+# A killed run's leftovers (hashes included) go before anything else.
+rm -rf "$RUN"/work.* "$R/var/lib/samba/private"/.smbpasswd.* "$R/etc/samba"/.smb.conf.* 2> /dev/null || true
+WORK=$(mktemp -d "$RUN/work.XXXXXX")
 
 smbd_running() { pidof smbd > /dev/null 2>&1; }
 
 stop_smbd() {
   [ "$MODE" = hook ] || return 0
+  STOPPED=1
   log "bringing smbd down (fail closed)"
   s6-svc -d "$S6/smbd" 2> /dev/null || true
   for p in $(pidof smbd 2> /dev/null || true); do kill -KILL "$p" 2> /dev/null || true; done
@@ -269,6 +282,8 @@ cut -f1 "$WORK/cand.raw" | sort -u > "$WORK/names.all"
 grep -Ex '[a-z0-9_][a-z0-9_.-]{0,63}' "$WORK/names.all" | grep -vF '..' | grep -E -e "$PAT" \
   | while IFS= read -r u; do
       case $RESERVED in *" $u "*) continue ;; esac
+      # pfg<gid> are the shared-folder groups (force group).
+      case $u in pfg*[!0-9]* | pfg) ;; pfg*) continue ;; esac
       grep -qxF -e "$u" "$WORK/system" && continue
       printf '%s\n' "$u"
     done > "$WORK/names.ok" || true
@@ -551,6 +566,7 @@ fi
 mkdir -p "$PRIVATE"
 chmod 700 "$PRIVATE"
 lct=$(printf 'LCT-%08X' "$(date +%s)")
+CHANGED=1
 pdb=$(mktemp "$PRIVATE/.smbpasswd.XXXXXX")
 awk -F "$TAB" -v lct="$lct" 'FILENAME == ARGV[1] { id[$1] = $2; next }
   ($1 in id) { printf "%s:%s:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:%s:\n", $1, id[$1], $2, lct }' \
@@ -571,14 +587,17 @@ while IFS="$TAB" read -r g id; do
   grep -qxF -e "$g$TAB$id" "$WORK/groups.want" && continue
   delgroup "$g" || fail_closed 1 "can't remove the group $g"
 done < "$WORK/groups.now"
+# has_group <name> <gid> / has_user <name> <uid>: an exact field match.
+has_group() { awk -F: -v n="$1" -v i="$2" '$1 == n && $3 == i { f = 1 } END { exit !f }' "$R/etc/group"; }
+has_user() { awk -F: -v n="$1" -v i="$2" '$1 == n && $3 == i && $4 == i { f = 1 } END { exit !f }' "$R/etc/passwd"; }
 while IFS="$TAB" read -r g id; do
-  grep -q "^$g:[^:]*:$id:" "$R/etc/group" && continue
+  has_group "$g" "$id" && continue
   addgroup -g "$id" "$g" || fail_closed 1 "can't add the group $g"
 done < "$WORK/groups.want"
 while IFS="$TAB" read -r u id; do
-  grep -q "^$u:[^:]*:$id:$id:" "$R/etc/passwd" && continue
+  has_user "$u" "$id" && continue
   adduser -D -H -h /nonexistent -u "$id" -G "$u" -s /bin/false "$u" || fail_closed 1 "can't add the account $u"
-  grep -q "^$u:[^:]*:$id:$id:" "$R/etc/passwd" || fail_closed 1 "the account $u didn't come out as $id:$id"
+  has_user "$u" "$id" || fail_closed 1 "the account $u didn't come out as $id:$id"
 done < "$WORK/eligible"
 
 # ── smb.conf ─────────────────────────────────────────────────
@@ -685,8 +704,10 @@ if [ "$TRIGGER" != credential_change ] && flock -n 8; then measure=1; fi
 : > "$WORK/sizes"
 while IFS="$TAB" read -r u ou former; do
   b=
-  if [ -n "$measure" ] && [ $(($(date +%s) - START)) -lt $SIZE_BUDGET ]; then
-    if kb=$(drop -t 20 "$ou" du -sk -- "$TDIR/$u" 2> /dev/null | cut -f1) \
+  left=$((SIZE_BUDGET - ($(date +%s) - START)))
+  [ "$left" -le 20 ] || left=20
+  if [ -n "$measure" ] && [ "$left" -ge 1 ]; then
+    if kb=$(drop -t "$left" "$ou" du -sk -- "$TDIR/$u" 2> /dev/null | cut -f1) \
         && match '^[0-9]+$' "$kb"; then
       b=$((kb * 1024))
     fi
