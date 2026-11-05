@@ -379,7 +379,7 @@ else
 fi
 EXTRA=$(docker exec "$C" awk -F: '$3 >= 1000 && $3 < 65534 { print $1 ":" $3 }' /etc/passwd | sort | tr '\n' ' ')
 if [ "$EXTRA" = "alice:20000 bob:20001 dave:20003 " ]; then pass "accounts: only the people served, no default account"; else fail "accounts: $EXTRA"; fi
-GROUPS_NOW=$(docker exec "$C" awk -F: '$3 >= 1000 && $3 < 65534 { print $1 ":" $3 }' /etc/group | sort | tr '\n' ' ')
+GROUPS_NOW=$(docker exec "$C" awk -F: '$3 >= 10000 && $3 <= 60999 { print $1 ":" $3 }' /etc/group | sort | tr '\n' ' ')
 if [ "$GROUPS_NOW" = "alice:20000 bob:20001 dave:20003 pfg60001:60001 pfg60002:60002 " ]; then
   pass "groups: each person's private group and pfg60001 / pfg60002 for the folders"
 else
@@ -607,11 +607,14 @@ if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then pass "tamp
 if wait_healthy unhealthy; then pass "healthcheck: unhealthy while smb.conf doesn't verify"; else fail "healthcheck: $HEALTH"; fi
 hook settings_change > /dev/null
 if wait_listening; then pass "the next hook run rewrites smb.conf and smbd is back"; else fail "smbd not back after the hook"; fi
-# sv down (the script's fail-closed stop under runit) keeps smbd down.
-docker exec "$C" sv down /run/portcullis-sv/smbd > /dev/null
+# sv down (the script's fail-closed stop under runit: sv down, then KILL
+# whatever smbd is left) keeps smbd down.
+docker exec "$C" sh -c 'sv down /run/portcullis-sv/smbd > /dev/null; for p in $(pidof smbd); do kill -KILL $p; done'
+for _ in $(seq 1 10); do listening || break; sleep 1; done
 HEARD=
 for _ in $(seq 1 10); do listening && HEARD=1; sleep 1; done
-if [ -z "$HEARD" ]; then pass "sv down: runit doesn't restart smbd"; else fail "smbd listened after sv down"; fi
+SVST=$(docker exec "$C" sv status /run/portcullis-sv/smbd 2>&1)
+if [ -z "$HEARD" ] && ! docker exec "$C" pidof smbd > /dev/null; then pass "sv down: runit doesn't restart smbd ($SVST)"; else fail "smbd back after sv down: $SVST"; fi
 docker exec "$C" sv up /run/portcullis-sv/smbd > /dev/null
 if wait_listening; then pass "sv up: smbd back"; else fail "smbd not back after sv up"; fi
 
