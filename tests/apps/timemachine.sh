@@ -308,7 +308,7 @@ else
 fi
 echo hello > "$WORK/hello.txt"
 if O=$(smb tm-cli-in TimeMachine-alice alice "$PW_ALICE" -c "put $WORK/hello.txt hello.txt") \
-    && [ "$(docker exec "$C" stat -c '%u' /opt/alice/hello.txt)" = 20000 ]; then
+    && [ "$(docker exec -u 20000:20000 "$C" stat -c '%u' /opt/alice/hello.txt)" = 20000 ]; then
   pass "a file alice writes is owned by her uid"
 else
   fail "write: $O"
@@ -321,7 +321,6 @@ refused() {  # refused <label> <smb args...>
 refused "-m SMB2" tm-cli-in TimeMachine-alice alice "$PW_ALICE" -m SMB2 -c ls
 refused "-m NT1" tm-cli-in TimeMachine-alice alice "$PW_ALICE" -m NT1 --option='client min protocol=NT1' -c ls
 refused "NTLMv1 (client ntlmv2 auth=no)" tm-cli-in TimeMachine-alice alice "$PW_ALICE" --option='client ntlmv2 auth=no' -c ls
-refused "unencrypted session" tm-cli-in TimeMachine-alice alice "$PW_ALICE" --option='client smb encrypt=off' -c ls
 refused "a wrong password" tm-cli-in TimeMachine-alice alice "$PW_BOB" -c ls
 refused "bob on alice's share" tm-cli-in TimeMachine-alice bob "$PW_BOB" -c ls
 refused "guest" tm-cli-in TimeMachine-alice guest "" -N -c ls
@@ -331,6 +330,32 @@ if [ -f "$AVAHI_DIR/portcullis-timemachine.service" ] && grep -q 'dk0=adVN=TimeM
   pass "Bonjour file written with _adisk entries"
 else
   fail "Bonjour file: $(cat "$AVAHI_DIR/portcullis-timemachine.service" 2> /dev/null)"
+fi
+
+# A client that asks for no encryption: the server's encrypt = required
+# still encrypts the session (Samba's client follows the server), so every
+# session smbstatus lists is AES-encrypted.
+pid=$(docker inspect -f '{{.State.Pid}}' tm-cli-in)
+# shellcheck disable=SC2024 # the log is the runner user's own file
+(while :; do echo 'ls'; sleep 1; done) | sudo nsenter --net="/proc/$pid/ns/net" env PASSWD="$PW_ALICE" timeout 120 \
+  smbclient //$TM_IP/TimeMachine-alice -U alice --use-kerberos=disabled -m SMB3 --option='client smb encrypt=off' > "$WORK/noenc.log" 2>&1 &
+LONG_PID=$!
+if wait_sessions 20000 some 15; then
+  ENC=$(docker exec "$C" smbstatus -p -n 2> /dev/null | awk '$1 ~ /^[0-9]+$/ && $2 == 20000')
+  if [ -n "$ENC" ] && ! grep -qvE 'AES-(128|256)-(GCM|CCM)' <<< "$ENC"; then
+    pass "a client asking for no encryption is encrypted anyway: $(awk '{ print $6, $7 }' <<< "$ENC" | sort -u | tr '\n' ' ')"
+  else
+    fail "an unencrypted session: $ENC"
+  fi
+else
+  pass "a client asking for no encryption is refused ($(grep -o 'NT_STATUS_[A-Z_]*' "$WORK/noenc.log" | head -1))"
+fi
+kill "$LONG_PID" 2> /dev/null || true
+wait_sessions 20000 none 15 || true
+if docker exec "$C" smbstatus -p -n 2> /dev/null | awk '$1 ~ /^[0-9]+$/' | grep -qvE 'AES-(128|256)-(GCM|CCM)'; then
+  fail "a session without encryption: $(docker exec "$C" smbstatus -p -n 2> /dev/null)"
+else
+  pass "no unencrypted session in smbstatus"
 fi
 
 # ── regenerated password: the old one and its sessions stop (F29) ──
@@ -370,9 +395,13 @@ if docker exec "$C" grep -q '^alice:' /etc/passwd; then fail "alice's Unix accou
 if docker exec "$C" pdbedit -L 2> /dev/null | grep -q '^alice:'; then fail "alice still in passdb"; else pass "alice removed from passdb"; fi
 if docker exec "$C" test -d /opt/alice; then pass "alice's folder stays on disk"; else fail "alice's folder was removed"; fi
 
+# From here on every check reports (no early exit), whatever fails.
+set +e
+
 # ── a former account's folder isn't served ───────────────────
 nt carol "$PW_CAROL"
-docker exec "$C" sh -c 'mkdir -p /opt/carol && chown 20099:20099 /opt/carol && chmod 700 /opt/carol'
+# chmod before chown: root has CHOWN but not FOWNER.
+docker exec "$C" sh -c 'mkdir -p -m 0700 /opt/carol && chown 20099:20099 /opt/carol' || fail "can't make carol's former-account folder"
 people 'value|share_prefix|Backups' 'value|advertise|true' 'person|bob|uid|20001' 'person|carol|uid|20002'
 OUT=$(hook membership_change)
 if grep -q '"code":"former_account","severity":"warning","subject":"carol"' <<< "$OUT" \
