@@ -19,6 +19,8 @@ done
 rm -f "$S6/smbd/run"
 ln -s /portcullis/bin/smbd-run "$S6/smbd/run"
 # The Bonjour file goes with the container (F42).
+# (The image's own .s6-svscan/finish only echoes.)
 mkdir -p "$S6/.s6-svscan"
+rm -f "$S6/.s6-svscan/finish"
 ln -s /portcullis/bin/svscan-finish "$S6/.s6-svscan/finish"
 exec s6-svscan "$S6"
