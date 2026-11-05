@@ -415,6 +415,41 @@ test_stale_tmpfs_files_removed() {
   check '[ -z "$(find "$R/run/portcullis" -maxdepth 1 -name "work.*")" ]' "no work dir left after the run"
 }
 
+test_live_work_dir_kept() {
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  run --boot
+  # The first run is in its report phase (lock released, its work dir in
+  # use); a dead run's dir is a leftover.
+  sleep 300 & local live=$!
+  disown "$live" 2>/dev/null || true
+  SLEEPERS+=("$live")
+  mkdir -p "$R/run/portcullis/work.$live.aaaaaa" "$R/run/portcullis/work.999999.bbbbbb"
+  echo x > "$R/run/portcullis/work.$live.aaaaaa/sizes"
+  run
+  check '[ "$RC" = 0 ]' "second run (rc $RC: $ERR)"
+  check '[ -f "$R/run/portcullis/work.$live.aaaaaa/sizes" ]' "the live run's work dir is left alone"
+  check '[ ! -e "$R/run/portcullis/work.999999.bbbbbb" ]' "a dead run's work dir is removed"
+  # --check never cleans up.
+  mkdir -p "$R/run/portcullis/work.999998.cccccc"
+  run --check
+  check '[ "$RC" = 0 ] && [ -d "$R/run/portcullis/work.999998.cccccc" ]' "--check removes nothing (rc $RC)"
+}
+
+test_report_failure_keeps_smbd() {
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
+  run --boot
+  rm -f "$R/run/portcullis/state/sizes"; mkdir -p "$R/run/portcullis/state/sizes"   # the sizes cache can't be written
+  : > "$LOG"
+  STUB_SMBD_RUNNING=1 run
+  check '[ "$RC" = 0 ]' "the converge applied: exit 0 (rc $RC: $ERR)"
+  check '! grep -q "^s6-svc -d" "$LOG"' "smbd left up"
+  check 'has "$ERR" "the report failed"' "logged: $ERR"
+  check '! has "$OUT" PORTCULLIS-REPORT' "no report line"
+}
+
 test_share_group_names_refused() {
   people 'person|pfg60001|uid|20000' 'person|pfg1|uid|20001' 'person|pfgx|uid|20002'
   nt pfg60001 "$H_ALICE"; nt pfg1 "$H_BOB"; nt pfgx "$H_CAROL"

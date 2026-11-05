@@ -146,9 +146,21 @@ trap 'exit 1' INT TERM HUP
 
 exec 9> "$RUN/sync.lock"
 flock 9
-# A killed run's leftovers (hashes included) go before anything else.
-rm -rf "$RUN"/work.* "$R/var/lib/samba/private"/.smbpasswd.* "$R/etc/samba"/.smb.conf.* 2> /dev/null || true
-WORK=$(mktemp -d "$RUN/work.XXXXXX")
+# A killed run's leftovers (hashes included) go before anything else:
+# work.<pid>.* only when that pid is gone (a run in its report phase has
+# released the lock but still uses its work dir); the passdb and smb.conf
+# temps live only inside the lock. --check never cleans up.
+if [ "$MODE" != check ]; then
+  for d in "$RUN"/work.*; do
+    [ -e "$d" ] || continue
+    _p=${d#"$RUN"/work.}
+    _p=${_p%%.*}
+    if match '^[0-9]+$' "$_p" && kill -0 "$_p" 2> /dev/null; then continue; fi
+    rm -rf "$d"
+  done
+  rm -f "$R/var/lib/samba/private"/.smbpasswd.* "$R/etc/samba"/.smb.conf.* 2> /dev/null || true
+fi
+WORK=$(mktemp -d "$RUN/work.$$.XXXXXX")
 
 smbd_running() { pidof smbd > /dev/null 2>&1; }
 
@@ -690,13 +702,17 @@ if [ -d "$AVAHI" ]; then
   fi
 fi
 
-# The converge is done: a waiting run (a revocation) may go on.
+# The converge is committed: a later failure (sizes, the report) no longer
+# brings smbd down, and a waiting run (a revocation) may go on.
+CHANGED=
 exec 9>&-
 [ "$MODE" = hook ] || exit 0
 
 # ── folder sizes, then the report (§13.8) ────────────────────
-# du as each folder's owner (no DAC capability), 20 s each, 40 s per run;
-# a credential change reports the last sizes (it must be fast).
+# du as each folder's owner (no DAC capability), at most 20 s each and 30 s
+# per run; a credential change reports the last sizes (it must be fast).
+# A failure here fails only the report (logged); the converge stands.
+report_phase() {
 touch "$STATE/sizes"
 exec 8> "$RUN/sizes.lock"
 measure=
@@ -727,4 +743,10 @@ exec 8>&-
     { printf "{\"option\":\"%s\",\"name\":\"%s\",\"uid\":%s,\"former\":%s,\"bytes\":%s}", o, $1, $2, $3, $4 }'
   printf ']}\n'
 }
+}
+set +e
+(set -e; report_phase) > "$WORK/report"
+_rc=$?
+set -e
+if [ "$_rc" -eq 0 ]; then cat "$WORK/report"; else log "the report failed (exit $_rc); the configuration was applied"; fi
 exit 0
