@@ -8,6 +8,8 @@
 #   portcullis-sync          the Hub's sync hook (stdin: HookInput JSON)
 #   portcullis-sync --check  re-verify the installed smb.conf (smbd's run)
 #   portcullis-sync --stop   remove the Bonjour file (container stop)
+#   portcullis-sync --sizes  measure the folder sizes (the hook starts it
+#                            detached; it holds no lock but its own)
 #
 # Inputs: /portcullis/data/people.tsv (the Hub's tsv people file, uid 10001,
 # 0640), /portcullis/secrets/<user>.nt (one NT hash per person, uid 10001,
@@ -46,7 +48,8 @@ UID_MIN=20000             # pool posix_uid (contract §13.16)
 UID_MAX=59999
 ID_MIN=10000              # ids of the accounts and groups this script owns
 ID_MAX=60999              # (people 20000-59999, folder groups 60000-60999)
-SIZE_BUDGET=30            # seconds for all du runs of one hook run (hook timeout 60 s)
+SIZE_BUDGET=30            # seconds for all du runs of one size job
+REPORT_MAX=61440          # bytes of the report line (the Hub refuses > 64 KiB)
 TAB=$(printf '\t')
 NL='
 '
@@ -84,13 +87,14 @@ safe() {
 }
 
 MODE=hook
-[ $# -le 1 ] || die 2 "usage: portcullis-sync [--boot|--check|--stop]"
+[ $# -le 1 ] || die 2 "usage: portcullis-sync [--boot|--check|--stop|--sizes]"
 case ${1:-} in
   "") ;;
   --boot) MODE=boot ;;
   --check) MODE=check ;;
   --stop) MODE=stop ;;
-  *) die 2 "usage: portcullis-sync [--boot|--check|--stop]" ;;
+  --sizes) MODE=sizes ;;
+  *) die 2 "usage: portcullis-sync [--boot|--check|--stop|--sizes]" ;;
 esac
 
 # ── configuration ────────────────────────────────────────────
@@ -152,13 +156,17 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
-exec 9> "$RUN/sync.lock"
-flock 9
+# The size job never takes this lock: a revocation never waits on du.
+if [ "$MODE" != sizes ]; then
+  exec 9> "$RUN/sync.lock"
+  flock 9
+fi
 # A killed run's leftovers (hashes included) go before anything else:
 # work.<pid>.* only when that pid is gone (a run in its report phase has
-# released the lock but still uses its work dir); the passdb and smb.conf
-# temps live only inside the lock. --check never cleans up.
-if [ "$MODE" != check ]; then
+# released the lock but still uses its work dir, and so does a size job);
+# the passdb and smb.conf temps live only inside the lock. --check and the
+# size job never clean up.
+if [ "$MODE" != check ] && [ "$MODE" != sizes ]; then
   for d in "$RUN"/work.*; do
     [ -e "$d" ] || continue
     _p=${d#"$RUN"/work.}
@@ -252,9 +260,20 @@ fi
 # ── the Hub's input ──────────────────────────────────────────
 TRIGGER=
 if [ "$MODE" = hook ] && [ ! -t 0 ]; then
-  # Only the trigger: a credential change must apply within 8 s (§13.16).
-  TRIGGER=$(head -c 1048576 | tr -d '\n' | grep -o '"trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"' | head -n 1 \
-    | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
+  # Only the trigger (a credential change starts no size job), and nothing
+  # of the input is stored. stdin is read whole. The Hub writes it as the
+  # first key (§13.8); an older Hub wrote it last, after the whole document
+  # (so: the leading key, else the last match). Escaped quotes inside
+  # values never match. Getting it wrong changes only whether sizes are
+  # measured.
+  TRIGGER=$(tr -d '\n' | awk '
+    function val(m) { sub(/"$/, "", m); sub(/.*"/, "", m); return m }
+    {
+      s = $0
+      if (match(s, /^[[:space:]]*[{][[:space:]]*"trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"/)) { t = val(substr(s, 1, RLENGTH)); next }
+      while (match(s, /"trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"/)) { t = val(substr(s, RSTART, RLENGTH)); s = substr(s, RSTART + RLENGTH) }
+    }
+    END { print t }' || true)
 fi
 START=$(date +%s)
 
@@ -280,6 +299,42 @@ drop() {
   esac
 }
 as_hub() { drop $HUB_UID "$@"; }
+TDIR=$R$TREE
+
+# ── the size job (--sizes, started detached by the hook) ─────
+# du as each folder's owner (no DAC capability), at most 20 s each and
+# SIZE_BUDGET per job, over the folder list the last hook run wrote. The
+# cache ($STATE/sizes: "measured <epoch>", then user<TAB>uid<TAB>bytes) is
+# replaced whole. A folder left out by the budget keeps its last size; a du
+# that fails gives none. Only its own lock: one job at a time, never the
+# converge's.
+if [ "$MODE" = sizes ]; then
+  exec 8> "$RUN/sizes.lock"
+  flock -n 8 || { log "folder sizes are already being measured"; exit 0; }
+  [ -s "$STATE/folders" ] || exit 0
+  cp "$STATE/folders" "$WORK/folders"
+  touch "$STATE/sizes"
+  : > "$WORK/sizes"
+  while IFS="$TAB" read -r u ou _; do
+    if ! match '^[a-z0-9_][a-z0-9_.-]{0,63}$' "$u" || ! match '^[0-9]+$' "$ou"; then continue; fi
+    b=
+    left=$((SIZE_BUDGET - ($(date +%s) - START)))
+    [ "$left" -le 20 ] || left=20
+    if [ "$left" -ge 1 ]; then
+      if kb=$(drop -t "$left" "$ou" du -sk -- "$TDIR/$u" 2> /dev/null | cut -f1) \
+          && match '^[0-9]+$' "$kb"; then
+        b=$((kb * 1024))
+      fi
+    else
+      b=$(awk -F "$TAB" -v u="$u" -v o="$ou" 'NR > 1 && $1 == u && $2 == o { print $3; exit }' "$STATE/sizes")
+    fi
+    [ -z "$b" ] || printf '%s\t%s\t%s\n' "$u" "$ou" "$b" >> "$WORK/sizes"
+  done < "$WORK/folders"
+  { printf 'measured\t%s\n' "$START"; cat "$WORK/sizes"; } > "$WORK/sizes.new"
+  mv -f "$WORK/sizes.new" "$STATE/sizes"
+  log "folder sizes measured ($(wc -l < "$WORK/sizes" | tr -d ' ') folder(s), $(($(date +%s) - START)) s)"
+  exit 0
+fi
 
 P=$WORK/people.tsv
 if ! as_hub cat -- "$DATA" > "$P" 2> /dev/null; then
@@ -365,7 +420,6 @@ uid_of() { awk -F "$TAB" -v u="$1" '$1 == u { print $2; exit }' "$WORK/eligible"
 is_eligible() { [ -n "$(uid_of "$1")" ]; }
 
 # ── per-person folders (§13.17) ──────────────────────────────
-TDIR=$R$TREE
 : > "$WORK/home.served"
 : > "$WORK/folders"
 st() { stat -c '%u %g %a %d' "$1"; }
@@ -737,47 +791,86 @@ if [ -d "$AVAHI" ]; then
   fi
 fi
 
-# The converge is committed: a later failure (sizes, the report) no longer
-# brings smbd down, and a waiting run (a revocation) may go on.
+# The converge is committed: a later failure (the size job, the report) no
+# longer brings smbd down, and a waiting run (a revocation) may go on.
 CHANGED=
+# The size job's folder list (current or former), written under the lock.
+if ! { cp "$WORK/folders" "$STATE/folders.new" && mv -f "$STATE/folders.new" "$STATE/folders"; }; then
+  log "can't write the folder list for the size job"
+fi
 exec 9>&-
+
+# ── folder sizes: a detached job (§13.17) ────────────────────
+# du can take the whole 30 s budget, and the Hub holds the instance's
+# delivery lock while the hook runs: the hook only starts the job and
+# reports the last sizes (the Hub's receive time stands for when). The job
+# holds none of the run's file descriptors (stdin, stdout, stderr: docker
+# exec's pipes, the lock), so the Hub's exec returns once the hook exits.
+# Its log goes to the container's log when PID 1's stderr can be opened.
+# Every boot and hook run starts one, except a credential change (it must
+# be fast, §13.16); one at a time (its lock), its result replaces the cache.
+if [ "$TRIGGER" != credential_change ] && [ -s "$WORK/folders" ]; then
+  jlog=/dev/null
+  if (: >> "$R/proc/1/fd/2") 2> /dev/null; then jlog=$R/proc/1/fd/2; fi
+  if command -v setsid > /dev/null 2>&1; then _ss=setsid; else _ss=; fi
+  if $_ss "$0" --sizes < /dev/null > /dev/null 2>> "$jlog" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & then
+    log "measuring folder sizes in the background"
+  else
+    log "can't start the size job"
+  fi
+fi
 [ "$MODE" = hook ] || exit 0
 
-# ── folder sizes, then the report (§13.8) ────────────────────
-# du as each folder's owner (no DAC capability), at most 20 s each and 30 s
-# per run; a credential change reports the last sizes (it must be fast).
-# A failure here fails only the report (logged); the converge stands.
+# ── the report (§13.8) ───────────────────────────────────────
+# One line, at most 500 findings and 500 folders and REPORT_MAX bytes.
+# Entries that don't fit are dropped: folders first, then findings from the
+# lowest severity (info, warning, problem); a plain line after the report
+# counts them. A failure here fails only the report (logged); the converge
+# stands.
 report_phase() {
-touch "$STATE/sizes"
-exec 8> "$RUN/sizes.lock"
-measure=
-if [ "$TRIGGER" != credential_change ] && flock -n 8; then measure=1; fi
-: > "$WORK/sizes"
-while IFS="$TAB" read -r u ou former; do
-  b=
-  left=$((SIZE_BUDGET - ($(date +%s) - START)))
-  [ "$left" -le 20 ] || left=20
-  if [ -n "$measure" ] && [ "$left" -ge 1 ]; then
-    if kb=$(drop -t "$left" "$ou" du -sk -- "$TDIR/$u" 2> /dev/null | cut -f1) \
-        && match '^[0-9]+$' "$kb"; then
-      b=$((kb * 1024))
-    fi
+  sz=$STATE/sizes
+  [ -e "$sz" ] || : > "$WORK/nosizes"
+  [ -e "$sz" ] || sz=$WORK/nosizes
+  at=$(awk -F "$TAB" 'NR == 1 && $1 == "measured" && $2 ~ /^[0-9]+$/ { print $2 }' "$sz")
+  if [ -n "$at" ]; then
+    log "folder sizes measured $(($(date +%s) - at)) s ago"
   else
-    b=$(awk -F "$TAB" -v u="$u" -v o="$ou" '$1 == u && $2 == o { print $3; exit }' "$STATE/sizes")
+    log "no folder sizes measured yet"
   fi
-  printf '%s\t%s\t%s\t%s\n' "$u" "$ou" "$former" "${b:-null}" >> "$WORK/sizes"
-done < "$WORK/folders"
-[ -z "$measure" ] || awk -F "$TAB" '$4 != "null" { print $1 "\t" $2 "\t" $4 }' "$WORK/sizes" > "$STATE/sizes"
-exec 8>&-
-
-{
-  printf 'PORTCULLIS-REPORT {"version":1,"findings":['
-  head -n 500 "$WORK/findings" | awk 'NR > 1 { printf "," } { printf "%s", $0 }'
-  printf '],"folders":['
-  head -n 500 "$WORK/sizes" | awk -F "$TAB" -v o="$TREE_OPT" 'NR > 1 { printf "," }
-    { printf "{\"option\":\"%s\",\"name\":\"%s\",\"uid\":%s,\"former\":%s,\"bytes\":%s}", o, $1, $2, $3, $4 }'
-  printf ']}\n'
-}
+  awk -F "$TAB" -v o="$TREE_OPT" -v max="$REPORT_MAX" '
+    FILENAME == ARGV[1] { if (FNR > 1) size[$1 FS $2] = $3; next }
+    FILENAME == ARGV[2] {
+      nf++; f[nf] = $0
+      rank[nf] = 2
+      if (index($0, "\"severity\":\"warning\"")) rank[nf] = 1
+      if (index($0, "\"severity\":\"problem\"")) rank[nf] = 0
+      next
+    }
+    { nd++; b = (($1 FS $2) in size) ? size[$1 FS $2] : "null"
+      d[nd] = sprintf("{\"option\":\"%s\",\"name\":\"%s\",\"uid\":%s,\"former\":%s,\"bytes\":%s}", o, $1, $2, $3, b) }
+    END {
+      head = "PORTCULLIS-REPORT {\"version\":1,\"findings\":["; mid = "],\"folders\":["; tail = "]}"
+      len = length(head) + length(mid) + length(tail)
+      # Findings by severity, then folders, while they fit.
+      k = 0
+      for (r = 0; r <= 2; r++) for (i = 1; i <= nf; i++) {
+        if (rank[i] != r || k >= 500 || len + length(f[i]) + 1 > max) continue
+        keep[i] = 1; len += length(f[i]) + 1; k++
+      }
+      out = head; k = 0; lost = 0
+      for (i = 1; i <= nf; i++) {
+        if (!(i in keep)) { lost++; continue }
+        out = out (k ? "," : "") f[i]; k++
+      }
+      # A dropped finding drops every folder (folders go first).
+      out = out mid; k = 0; flost = lost
+      for (i = 1; i <= nd; i++) {
+        if (flost || k >= 500 || len + length(d[i]) + 1 > max) { lost++; continue }
+        out = out (k ? "," : "") d[i]; len += length(d[i]) + 1; k++
+      }
+      print out tail
+      if (lost) printf "report truncated: %d entries dropped\n", lost
+    }' "$sz" "$WORK/findings" "$WORK/folders"
 }
 set +e
 (set -e; report_phase) > "$WORK/report"

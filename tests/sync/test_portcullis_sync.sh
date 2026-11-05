@@ -56,6 +56,7 @@ setup() {
 
 teardown() {
   local p
+  wait_jobs || true
   for p in ${SLEEPERS[@]+"${SLEEPERS[@]}"}; do kill -KILL "$p" 2>/dev/null || true; done
   rm -rf "$T"
 }
@@ -172,7 +173,64 @@ run() {  # run [args]: OUT, ERR, RC
   set -e
   OUT=$(cat "$T/out"); ERR=$(cat "$T/err")
 }
+run_in() {  # run_in <stdin text> [args]: run with the Hub's HookInput on stdin
+  local in=$1; shift
+  printf '%s' "$in" > "$T/in"
+  set +e
+  "$SCRIPT" "$@" > "$T/out" 2> "$T/err" < "$T/in"
+  RC=$?
+  set -e
+  OUT=$(cat "$T/out"); ERR=$(cat "$T/err")
+}
+# wait_sizes: the background size job has written the cache and is gone
+# (its work dir removed), at most 20 s.
+wait_sizes() {
+  local i
+  for i in $(seq 1 200); do
+    if [ -s "$R/run/portcullis/state/sizes" ] && ! pgrep -f -- "$SCRIPT --sizes" > /dev/null 2>&1 \
+        && ! ls -d "$R/run/portcullis"/work.* > /dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+# wait_jobs: no size job running and no work dir left, at most 20 s.
+wait_jobs() {
+  local i
+  for i in $(seq 1 200); do
+    if ! pgrep -f -- "$SCRIPT --sizes" > /dev/null 2>&1 && ! ls -d "$R/run/portcullis"/work.* > /dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
 report() { sed -n 's/^PORTCULLIS-REPORT //p' "$T/out"; }
+# hub_accepts: $T/out passes the Hub's ParseHookReport rules (settings/wire.go):
+# exactly one PORTCULLIS-REPORT line of at most 64 KiB, one strict JSON
+# document with only the known fields, version 1, at most 500 findings and
+# 500 folders, known codes and severities, strings of at most 200 runes
+# without control characters.
+hub_accepts() {
+  python3 - "$T/out" << 'PY'
+import json, sys
+lines = [l for l in open(sys.argv[1], "rb").read().split(b"\n") if l.startswith(b"PORTCULLIS-REPORT ")]
+assert len(lines) == 1, f"{len(lines)} report lines"
+assert len(lines[0]) <= 64 * 1024, f"{len(lines[0])} bytes"
+d = json.loads(lines[0][len(b"PORTCULLIS-REPORT "):])
+assert set(d) <= {"version", "findings", "folders"} and d["version"] == 1, d.keys()
+fs, ds = d.get("findings") or [], d.get("folders") or []
+assert len(fs) <= 500 and len(ds) <= 500, (len(fs), len(ds))
+def s(v):
+    assert isinstance(v, str) and len(v) <= 200 and not any(ord(c) < 32 or ord(c) == 127 for c in v), v
+for f in fs:
+    assert set(f) <= {"code", "severity", "subject", "message", "option", "uid", "former"}, f
+    assert f["code"] in ("former_account", "wrong_owner", "name_refused", "owner_unwritable"), f
+    assert f["severity"] in ("problem", "warning", "info"), f
+    s(f["subject"]); s(f["message"]); s(f.get("option", ""))
+for x in ds:
+    assert set(x) == {"option", "name", "uid", "former", "bytes"}, x
+    s(x["option"]); s(x["name"])
+    assert isinstance(x["uid"], int) and isinstance(x["former"], bool) and (x["bytes"] is None or isinstance(x["bytes"], int)), x
+PY
+}
 conf() { cat "$R/etc/samba/smb.conf"; }
 passdb() { cat "$R/var/lib/samba/private/smbpasswd" 2>/dev/null || true; }
 
@@ -449,9 +507,11 @@ test_report_failure_keeps_smbd() {
   nt alice "$H_ALICE"
   mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
   run --boot
-  rm -f "$R/run/portcullis/state/sizes"; mkdir -p "$R/run/portcullis/state/sizes"   # the sizes cache can't be written
+  wait_sizes || no "the boot's size job never finished"
+  touch "$R/run/portcullis/state/sizes"; chmod 000 "$R/run/portcullis/state/sizes"   # the sizes cache can't be read
   : > "$LOG"
-  STUB_SMBD_RUNNING=1 run
+  STUB_SMBD_RUNNING=1 run_in '{"trigger":"credential_change"}'
+  chmod 600 "$R/run/portcullis/state/sizes"
   check '[ "$RC" = 0 ]' "the converge applied: exit 0 (rc $RC: $ERR)"
   check '! grep -q "^s6-svc -d" "$LOG"' "smbd left up"
   check 'has "$ERR" "the report failed"' "logged: $ERR"
@@ -485,6 +545,7 @@ test_size_budget() {
   nt alice "$H_ALICE"
   mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
   run
+  wait_sizes || no "the size job never finished"
   check 'grep -qE "^timeout (20|1[0-9]|[1-9]) s6-applyuidgid -u 20000 .* du -sk" "$LOG"' "du under timeout <= 20: $(grep du "$LOG" | head -1)"
   check 'grep -q "^SIZE_BUDGET=30 " "$SCRIPT"' "budget 30 s"
 }
@@ -669,10 +730,141 @@ test_folder_sizes() {
   head -c 5000 /dev/zero > "$R/opt/alice/f"
   run
   local r; r=$(report)
+  check 'printf "%s" "$r" | grep -qE "\"name\":\"alice\",\"uid\":20000,\"former\":false,\"bytes\":null"' "no size measured yet: null ($r)"
+  wait_sizes || no "the size job never finished"
+  run_in '{"trigger":"credential_change"}'
+  r=$(report)
   check 'printf "%s" "$r" | grep -qE "\"name\":\"alice\",\"uid\":20000,\"former\":false,\"bytes\":[1-9][0-9]*"' "bytes from du: $r"
   check 'grep -q "^timeout 20 s6-applyuidgid -u 20000 -g 20000 -G 20000 du -sk" "$LOG"' "du as the owner under timeout 20"
   # The Hub reads the report as JSON.
   check 'printf "%s" "$r" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d[\"version\"] == 1"' "report is JSON"
+}
+
+# ── folder sizes in a background job (final fix T1) ─────────
+slow_du() {  # du takes 3 s (a large tree), then measures for real
+  local real; real=$(env PATH="$ORIG_PATH" sh -c "command -v du")
+  stub du "sleep 3; exec $real \"\$@\""
+}
+
+test_sizes_measured_in_background() {
+  slow_du
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
+  head -c 5000 /dev/zero > "$R/opt/alice/f"
+  run --boot
+  # Boot starts a job too.
+  check 'has "$ERR" "measuring folder sizes in the background"' "boot starts the size job: $ERR"
+  wait_sizes || no "the boot's size job never finished"
+  check 'grep -q "^alice${TAB}20000${TAB}[1-9]" "$R/run/portcullis/state/sizes"' "boot's job filled the cache: $(cat "$R/run/portcullis/state/sizes")"
+  rm -f "$R/run/portcullis/state/sizes"
+  # The hook's stdout and stderr are a pipe (docker exec): the size job must
+  # not hold it, or the Hub would wait for it.
+  local t0 t1
+  t0=$(date +%s)
+  set +e
+  printf '{"trigger":"settings_change","version":1}' | "$SCRIPT" 2>&1 | cat > "$T/out"
+  set -e
+  t1=$(date +%s)
+  OUT=$(cat "$T/out")
+  check '[ $((t1 - t0)) -lt 3 ]' "the hook returns before du finishes ($((t1 - t0)) s)"
+  check 'has "$(report)" "\"name\":\"alice\",\"uid\":20000,\"former\":false,\"bytes\":null"' "first report: no size yet: $(report)"
+  check '[ ! -e "$R/run/portcullis/state/sizes" ]' "no cache yet when the hook returns"
+  wait_sizes || no "the size job never finished"
+  check 'grep -qE "^timeout (20|1[0-9]|[1-9]) s6-applyuidgid -u 20000 -g 20000 -G 20000 du -sk" "$LOG"' "du as the owner under timeout <= 20 in the job"
+  # The next run (any trigger) reports the cache, with its age.
+  : > "$LOG"
+  run_in '{"trigger":"credential_change","version":1}'
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'printf "%s" "$(report)" | grep -qE "\"name\":\"alice\",\"uid\":20000,\"former\":false,\"bytes\":[1-9][0-9]{3,}"' "cached bytes reported: $(report)"
+  check 'has "$ERR" "folder sizes measured"' "the cache's age logged: $ERR"
+  check '! grep -q "du -sk" "$LOG"' "a credential change starts no measurement"
+  check '! has "$ERR" "measuring folder sizes in the background"' "no job on a credential change"
+}
+
+test_size_job_not_under_the_lock() {
+  # The converge (accounts, sessions) never waits on du: the job holds
+  # only its own lock.
+  slow_du
+  stub flock 'echo "flock $*" >> "$STUB_T/flock.log"'
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
+  run_in '{"trigger":"membership_change"}'
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  check 'has "$ERR" "measuring folder sizes in the background"' "job started: $ERR"
+  wait_sizes || no "the size job never finished"
+  check '[ "$(grep -c "^flock 9$" "$T/flock.log")" = 1 ]' "only the hook took the main lock: $(tr '\n' ';' < "$T/flock.log")"
+  check 'grep -q "^flock -n 8$" "$T/flock.log"' "the job took the sizes lock without waiting"
+}
+
+test_trigger_detection() {
+  # H16: trigger is the first key; an older Hub put it last. A nested
+  # "trigger" key elsewhere never wins over the leading one.
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  mkdir -p "$R/opt/alice"; own "$R/opt/alice" 20000 20000 700
+  run_in '{"trigger":"credential_change","values":{"x":{"trigger":"start"}},"people":{}}'
+  check '! has "$ERR" "measuring folder sizes"' "trigger first: credential_change ($ERR)"
+  run_in '{"version":1,"people":{},"trigger":"credential_change"}'
+  check '! has "$ERR" "measuring folder sizes"' "trigger last: credential_change ($ERR)"
+  # A large input (more than 1 MiB) with the trigger last is read whole.
+  { printf '{"version":1,"values":{"pad":"'; head -c 1200000 /dev/zero | tr '\0' a; printf '"},"trigger":"credential_change"}'; } > "$T/big"
+  run_in "$(cat "$T/big")"
+  check '! has "$ERR" "measuring folder sizes"' "big input, trigger last: credential_change"
+  run_in '{"trigger":"start","values":{"x":"\"trigger\":\"credential_change\""}}'
+  check 'has "$ERR" "measuring folder sizes in the background"' "an escaped value isn't the trigger ($ERR)"
+}
+
+test_report_capped_below_60k() {
+  # 600 refused names (info findings), 3 unusable folders (problem
+  # findings) and 450 folders: more than 64 KiB in full.
+  local i lines=() n kept total
+  for i in $(seq 1 600); do lines+=("person|Refused-user-with-a-long-name-$i|uid|$((20000 + i))"); done
+  for i in 1 2 3; do lines+=("person|p$i|uid|$((21000 + i))"); done
+  people "${lines[@]}"
+  for i in 1 2 3; do nt "p$i" "$H_ALICE"; mkdir -p "$R/opt/p$i"; own "$R/opt/p$i" $((21000 + i)) $((21000 + i)) 500; done
+  for i in $(seq 1 450); do mkdir -p "$R/opt/former-account-folder-$i"; done
+  run_in '{"trigger":"credential_change"}'
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  n=$(grep '^PORTCULLIS-REPORT ' "$T/out" | wc -c | tr -d ' ')
+  check '[ "$n" -le 61440 ]' "the report line is under 60 KiB ($n bytes)"
+  check 'hub_accepts' "the Hub's parser accepts it"
+  # Folders go first, then the lowest severity: every problem stays.
+  check 'report | python3 -c "import json,sys; d=json.load(sys.stdin); assert d[\"folders\"] == [], len(d[\"folders\"])"' "folders dropped first"
+  check '[ "$(report | grep -o "\"code\":\"owner_unwritable\",\"severity\":\"problem\"" | wc -l | tr -d " ")" = 3 ]' "the three problems kept"
+  kept=$(report | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["findings"]) + len(d["folders"]))')
+  total=$((600 + 3 + 453))
+  check 'grep -qx "report truncated: $((total - kept)) entries dropped" "$T/out"' "one plain line counts the dropped entries: $(grep truncated "$T/out")"
+  check '[ "$(grep -c "^PORTCULLIS-REPORT " "$T/out")" = 1 ]' "still one report line"
+  # Few findings: the folders fill what is left.
+  people 'person|alice|uid|20000'
+  nt alice "$H_ALICE"
+  rm -rf "$R/opt"/p[123]
+  for i in $(seq 451 700); do mkdir -p "$R/opt/former-account-folder-$i"; done
+  run_in '{"trigger":"credential_change"}'
+  check 'hub_accepts' "the Hub's parser accepts the folders-only report"
+  check 'report | python3 -c "import json,sys; d=json.load(sys.stdin); assert len(d[\"folders\"]) == 500, len(d[\"folders\"])"' "500 folders at most"
+  check 'grep -qx "report truncated: 201 entries dropped" "$T/out"' "701 folders: 201 dropped ($(grep truncated "$T/out"))"
+  # A small report is whole.
+  rm -rf "$R/opt"/former-account-folder-*
+  run_in '{"trigger":"credential_change"}'
+  check '! grep -q truncated "$T/out"' "a small report isn't truncated"
+  check 'hub_accepts' "the Hub's parser accepts the small report"
+}
+
+test_name_refused_username_subject() {
+  # T5: a refused username is reported with the username as the subject
+  # (the Hub keeps name_refused whose subject is a population member, H8).
+  people 'person|a..b|uid|20000' 'person|pfg2024|uid|20001' 'person|Upper|uid|20002' 'person|alice|uid|20003'
+  nt a..b "$H_ALICE"; nt pfg2024 "$H_BOB"; nt Upper "$H_CAROL"; nt alice "$H_ALICE2"
+  run_in '{"trigger":"credential_change"}'
+  check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
+  local u
+  for u in a..b pfg2024 Upper; do
+    check 'has "$(report)" "{\"code\":\"name_refused\",\"severity\":\"info\",\"subject\":\"$u\",\"message\":\"$u isn"' "name_refused with subject $u"
+  done
+  check '[ "$(passdb | cut -d: -f1)" = alice ]' "only alice served"
 }
 
 # ── Samba flavour (Task 17) ──────────────────────────────────
@@ -945,6 +1137,7 @@ test_chpst_drop() {
   people 'person|alice|uid|20000'
   nt alice "$H_ALICE"
   run
+  wait_sizes || no "the size job never finished"
   check '[ "$RC" = 0 ]' "exit 0 (rc $RC: $ERR)"
   check 'grep -q "^chpst -u :10001:10001 cat -- $R/portcullis/data/people.tsv$" "$LOG"' "people file read through chpst -u :10001:10001: $(grep '^chpst' "$LOG" | head -2)"
   check 'grep -q "^chpst -u :10001:10001 /bin/sh -c" "$LOG"' "hashes read through chpst"

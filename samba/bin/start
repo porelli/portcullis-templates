@@ -18,18 +18,19 @@ mkdir -p "$SV/smbd"
 ln -s /portcullis/bin/smbd-run "$SV/smbd/run"
 
 # runsvdir has no finish hook: this shell stays PID 1, and on docker stop
-# it stops smbd (runsvdir's HUP = TERM to each runsv), then removes the
-# Bonjour file (F42). A container killed without a stop leaves it.
+# it first removes the Bonjour file (F42), then stops smbd (runsvdir's HUP
+# = TERM to each runsv) and waits for it, all inside the compose
+# stop_grace_period (30 s). A container killed without a stop leaves the
+# Bonjour file.
 runsvdir -P "$SV" &
 pid=$!
 stopping=
-trap 'stopping=1; kill -HUP "$pid" 2> /dev/null || true' TERM INT
+trap 'stopping=1; /portcullis/bin/portcullis-sync --stop || true; kill -HUP "$pid" 2> /dev/null || true' TERM INT
 rc=0
 wait "$pid" || rc=$?
 if [ -n "$stopping" ]; then
   wait "$pid" 2> /dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do pidof smbd > /dev/null 2>&1 || break; sleep 1; done
-  /portcullis/bin/portcullis-sync --stop || true
   exit 0
 fi
 echo "start: runsvdir exited ($rc)" >&2

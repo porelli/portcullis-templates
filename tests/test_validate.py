@@ -3261,6 +3261,20 @@ settings:
             ("table into json", fmt("") + s_opts(FS_CONNECT, table_opt), c, "", ""),
         ])
 
+    def test_tsv_refuses_render_format(self) -> None:
+        """Hub H10 mirror: a tsv delivery is the default scalar / list text; any render.format is refused."""
+        def lst(f: str) -> str:
+            return "{key: tags, label: T, type: list, items: {type: string}, delivery: [{file: {name: people" + f + "}}]}"
+        c = FS_COMPOSE
+        self.cases([
+            ("list as text", FS_HEAD + s_opts(FS_CONNECT, lst("")), c, "", ""),
+            ("list join", FS_HEAD + s_opts(FS_CONNECT, lst(", render: {join: ','}")), c, "", ""),
+            ("json", FS_HEAD + s_opts(FS_CONNECT, lst(", render: {format: json}")), c, "tags", "file people is tsv: render.format json"),
+            ("yaml", FS_HEAD + s_opts(FS_CONNECT, lst(", render: {format: yaml}")), c, "tags", "file people is tsv: render.format yaml"),
+            ("csv", FS_HEAD + s_opts(FS_CONNECT, lst(", render: {format: csv}")), c, "tags", "file people is tsv: render.format csv"),
+            ("json into a json file", FS_HEAD.replace(", format: tsv}", "}", 1) + s_opts(FS_CONNECT, lst(", render: {format: json}")), c, "", ""),
+        ])
+
     def test_requires_any(self) -> None:
         """Hub TestRequiresAny: the generic option-level requires_any (F2's share slots)."""
         r = "{key: readers, label: R, type: groups, delivery: [{file: {name: people}}]}"

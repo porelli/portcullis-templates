@@ -43,6 +43,8 @@ services:
       timeout: 15s
       retries: 2
       start_period: 20s
+    # The stop removes the Bonjour file, then waits for smbd: inside 30 s.
+    stop_grace_period: 30s
     networks: [default]
     restart: unless-stopped
 

@@ -296,6 +296,17 @@ if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["version"] =
 else
   fail "report: $REPORT"
 fi
+# Folder sizes come from a detached job (final fix T1): the hook returned
+# without waiting for it, and a later run (even a credential change, which
+# starts none) reports what it measured.
+SIZES_OK=
+for _ in $(seq 1 30); do
+  OUT2=$(hook credential_change 2> /dev/null) || true
+  if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert any(f["name"] == "alice" and isinstance(f["bytes"], int) for f in d["folders"]), d' \
+      "$(sed -n 's/^PORTCULLIS-REPORT //p' <<< "$OUT2")" 2> /dev/null; then SIZES_OK=1; break; fi
+  sleep 1
+done
+if [ -n "$SIZES_OK" ]; then pass "folder sizes measured in the background, reported by a later run"; else fail "no folder size reported: $OUT2"; fi
 if grep -qiE '[0-9a-f]{32}' <<< "$OUT"; then fail "hook output holds a 32-hex string"; else pass "no hash in the hook output"; fi
 if [ "$(docker exec "$C" pdbedit -L 2> /dev/null | cut -d: -f1,2 | sort | tr '\n' ' ')" = "alice:20000 bob:20001 " ]; then
   pass "passdb: alice and bob (carol has no password)"

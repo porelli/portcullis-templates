@@ -5692,6 +5692,12 @@ class _SpecCheck:
                 raise _Refuse(f"file {fname} is tsv, which has no table rows: deliver a table to a JSON file")
             if o.get("type") == "secret":
                 raise _Refuse(f"file {fname} is tsv: a secret goes only to a JSON file's {fname}.secrets.json")
+            # Hub H10: a tsv value is the default scalar / list text; json,
+            # yaml or csv would be multi-line or structured text tsv can't hold.
+            tf = _str(fd.get("render") if isinstance(fd.get("render"), dict) else {}, "format")
+            if tf:
+                raise _Refuse(f"file {fname} is tsv: render.format {tf} can't be written to a tsv file (drop the format; "
+                              "lists are written as their comma-joined text)")
         scope = scope_of(o)
         if scope in ("instance", "group"):
             if _str(fd, "field"):
