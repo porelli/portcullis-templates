@@ -489,6 +489,65 @@ Say how the app uses it with a `folder` block, which replaces `mode`,
 what the Hub sees (a YAML 1.2 `0o…` int in `runs_as`, `<<` merge keys), it
 refuses more, never less.
 
+### File sharing templates
+
+The file-sharing templates (`samba`, `timemachine`) serve people over SMB
+with a per-person **file-share password** each person creates on My apps
+([integration contracts §13.2, §13.16 and §13.17](https://porelli.github.io/portcullis-docs/guides/integration-contracts/#1316-per-person-credentials-and-ids-new-file-sharing)).
+The Hub knows nothing about Samba: the username rule, the share names and
+the converge script are the template's.
+
+- **Router-less `custom`.** No Traefik router at all, `group_access: true`
+  and `access_group: users_<id>`, no `native_login` (the access group is
+  only the population: who gets a password). Every other auth method needs
+  at least one HTTP router, and a routed `custom` template with
+  `group_access` still needs `native_login`. No service joins
+  `portcullis-proxy`.
+- **`person_secret`**: `hash: nt`,
+  `length` ≥ 24 and a multiple of 4, exactly the scalar `delivery: file`,
+  `mount: {service, path}` (clear of data-file mounts, path targets and
+  other `person_secret` mounts on that service), `revoke_on_leave: true`,
+  `on_restore: void`, `applies` only `live`, and a hook on `mount.service`
+  whose `when` lists `credential_change`. No `scope`, `default`,
+  `required`, `resolve`, `resolve_choices`, `group_values`, `privileged`,
+  `requires`, `requires_any`, `self_visible`, `checks`, `admin_override`,
+  `unique`, `generate` or `writes_as`.
+- **`username`**: `pattern` is `^…$` with only literals, bracket classes
+  (POSIX classes `alnum`, `alpha`, `digit`, `lower`, `upper`, `xdigit`) and
+  `{m}` / `{m,n}` intervals (m ≤ n ≤ 1000), printable ASCII without spaces,
+  at most 500 characters: what Go RE2 and busybox ERE read alike. No `\`,
+  `.`, `(`, `)`, `|`, `*`, `+`, `?`, literal braces or brackets, `[.` or `[=`.
+  `reserved`: lowercase names (≤ 64 characters, no spaces). `reason` is
+  required (one line, ≤ 200). A compose `PORTCULLIS_USERNAME_PATTERN` must be
+  the pattern with every `$` written `$$`.
+- **`info`** lines (label ≤ 64, value ≤ 500) take only `{user}`,
+  `{value:<key>}` (an instance `string` / `int` / `enum` / `bool` option with
+  `self_visible: true`), `{port:<KEY>}` and `{port_suffix:<KEY>:<default>}`.
+- **`person_id`**: `pool: posix_uid`, `self_visible: false`, only
+  `{file: {name, field}}` deliveries (no `render` beside them); the same
+  refused fields as `person_secret` but `self_visible`. `folder.runs_as`
+  takes it as `uid_from` / `gid_from` (`gid_from` needs `uid_from` and
+  `joins_group: template`; `uid_from` is refused next to a compose `user:`).
+- **Data files** may be `format: tsv` (no `table` or `secret` options in
+  them). Share slots use the generic `requires_any` and
+  `render: {expand_members: true}` (file deliveries of instance `group` /
+  `groups` options).
+- **Reserved variables.** `${PORTCULLIS_LOCAL_NETWORKS}` only in exactly
+  that form (no default or alternate); `${PORTCULLIS_FOLDER_GID_<KEY>}` only
+  as a whole `environment:` value of the service whose path option `<KEY>`
+  has a folder block. The volume key `portcullis-hub-secrets` and core's
+  `hub_secrets` are never a template's.
+- **Isolation.** With a `person_secret`, no service uses `pid` / `ipc`
+  `host`, `container:*` or `service:*` (`ipc: shareable` / `none` are fine),
+  none takes the mounting service's volumes, and every port is
+  `lan_only: true`.
+- **One converge script.** `bin/portcullis-sync` is byte-identical in both
+  templates and shipped by no other (`check_sync_copies`).
+
+`tests/validate.py` mirrors the Hub's rules with its messages (Hub
+`internal/templates/filesharing.go`, `reservedvars.go`); `TestFileSharing`
+ports the Hub's test tables row for row.
+
 ## Compose rules
 
 `tests/validate.py` checks all of these.

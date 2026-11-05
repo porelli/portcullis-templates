@@ -1400,15 +1400,18 @@ class TestSettingsV3(Case):
         self.cases([
             ("folder", S_HDR + s_opts("{key: media, label: X, type: folder}"), c, "media",
              "type folder is reserved: a shared folder is a type: path option with a folder block (§13.15)"),
-            ("person_secret", S_HDR + s_opts("{key: smb, label: X, type: person_secret}"), c, "smb", "type person_secret needs file sharing (project 3)"),
-            ("person_id", S_HDR + s_opts("{key: uid, label: X, type: person_id}"), c, "uid", "type person_id needs file sharing (project 3)"),
+            # File sharing landed: person_secret / person_id are typed
+            # (TestFileSharing); on a routed template they are refused.
+            ("person_secret", S_HDR + s_opts("{key: smb, label: X, type: person_secret}"), c, "smb", "router-less"),
+            ("person_id", S_HDR + s_opts("{key: uid, label: X, type: person_id}"), c, "uid", "router-less"),
             ("folder block", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: read, runs_as: {uid: 0, gid: 0}}}"), c, "media", "!"),
             ("checks", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: write, runs_as: {uid: 0, gid: 0}}, checks: [{kind: exclusive, reason: one writer}]}"), c, "media", "!"),
-            ("hash", S_HDR + s_opts("{key: theme, label: X, type: string, hash: nt}"), c, "theme", "file sharing (project 3)"),
-            ("length", S_HDR + s_opts("{key: theme, label: X, type: string, length: 8}"), c, "theme", "length needs file sharing"),
-            ("revoke_on_leave", S_HDR + s_opts("{key: theme, label: X, type: string, revoke_on_leave: true}"), c, "theme", "file sharing"),
-            ("mount", S_HDR + s_opts("{key: theme, label: X, type: string, mount: {service: demo, path: /x}}"), c, "theme", "mount needs file sharing"),
-            ("bare delivery", S_HDR + s_opts("{key: theme, label: X, type: string, delivery: file}"), c, "theme", "file sharing (project 3)"),
+            ("uid_from", S_HDR + s_opts("{key: media, label: X, type: path, target: {service: demo, mount: /media}, folder: {access: write, runs_as: {uid_from: person_uid, gid: 0}}}"), c, "media", "uid_from person_uid is not a person_id option"),
+            ("hash", S_HDR + s_opts("{key: theme, label: X, type: string, hash: nt}"), c, "theme", "hash is for person_secret options"),
+            ("length", S_HDR + s_opts("{key: theme, label: X, type: string, length: 8}"), c, "theme", "length is for person_secret options"),
+            ("revoke_on_leave", S_HDR + s_opts("{key: theme, label: X, type: string, revoke_on_leave: true}"), c, "theme", "revoke_on_leave is for person_secret options"),
+            ("mount", S_HDR + s_opts("{key: theme, label: X, type: string, mount: {service: demo, path: /x}}"), c, "theme", "mount is for person_secret options"),
+            ("bare delivery", S_HDR + s_opts("{key: theme, label: X, type: string, delivery: file}"), c, "theme", "delivery: file is for person_secret options"),
         ])
 
     def test_person_scope_needs_default_and_person_delivery(self) -> None:
@@ -2412,7 +2415,7 @@ class TestFolders(Case):
 
     def test_runs_as_one_source_per_id(self) -> None:
         self.cases([
-            ("two uid sources", fm(F_PUID, fp("media", extra=", folder: {access: read, runs_as: {uid: 1, uid_env: PUID, gid: 1}}")), fc("PUID"), "media", "folder.runs_as.uid: exactly one of uid, uid_env (a number, or the env name of an instance int option)"),
+            ("two uid sources", fm(F_PUID, fp("media", extra=", folder: {access: read, runs_as: {uid: 1, uid_env: PUID, gid: 1}}")), fc("PUID"), "media", "folder.runs_as.uid: exactly one of uid, uid_env, uid_from (a number, the env name of an instance int option, or a person_id option)"),
             ("no uid source", fm(fp("media", extra=", folder: {access: read, runs_as: {gid: 1}}")), fc(), "media", "folder.runs_as.uid: exactly one of uid, uid_env"),
             ("no gid source", fm(fp("media", extra=", folder: {access: read, runs_as: {uid: 1}}")), fc(), "media", "folder.runs_as.gid: exactly one of gid, gid_env"),
         ])
@@ -2533,13 +2536,13 @@ class TestFolders(Case):
              fc(*base, extra=F_ENVUSER + f_svc("side", '    group_add: ["${PGID}"]\n')), "", ""),
         ])
 
-    def test_uid_from_reserved(self) -> None:
+    def test_uid_from_not_reserved(self) -> None:
+        """Hub TestUIDFromNotReserved: uid_from / gid_from are typed (file sharing)."""
         self.cases([
-            ("uid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid_from: person_uid, gid: 0}}")), fc(), "media", "folder.runs_as.uid_from needs file sharing (project 3), which this Hub doesn't implement"),
-            ("gid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid: 0, gid_from: person_gid}}")), fc(), "media", "folder.runs_as.gid_from needs file sharing (project 3)"),
+            ("uid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid_from: person_uid, gid: 0}}")), fc(), "media", "folder.runs_as.uid_from person_uid is not a person_id option"),
+            ("gid_from", fm(fp("media", extra=", folder: {access: write, runs_as: {uid: 0, gid_from: person_gid}}")), fc(), "media", "folder.runs_as.gid_from needs uid_from"),
         ])
-        self.assertEqual(v.reserved_use({"type": "path", "folder": {"runs_as": {"uid_from": "x"}}}), ("folder.runs_as.uid_from", v.FEATURE_SHARING))
-        self.assertEqual(v.reserved_use({"type": "path", "folder": {"access": "read"}, "checks": [{"kind": "exclusive"}]}), ("", ""))
+        self.assertFalse(hasattr(v, "reserved_use"), "only type folder is still reserved")
 
     def test_runs_as_non_integer_friendly(self) -> None:
         self.cases([
@@ -2797,6 +2800,664 @@ class TestFolders(Case):
                 for f in ("mode", "needs", "writes_as"):
                     self.assertNotIn(f, o, f"{app} {o['key']}")
         self.assertEqual(seen, set(want))
+
+
+
+# ── File sharing (contract §3 router-less, §13.2, §13.7, §13.8, §13.15–13.17) ──
+#
+# TestFileSharing mirrors the Hub's internal/templates/filesharing_test.go,
+# filesharing_vars_test.go and routerless_test.go row for row (the refusal
+# texts are the Hub's), plus the Hub's secrets-volume (F15) and shared
+# namespace (Task 6) refusals and the templates repo's own rules (shared
+# portcullis-sync, lan_only ports).
+
+FS_HEAD = """\
+name: Files
+description: File sharing
+icon: "x"
+category: storage
+tags: [files]
+links:
+  website: https://demo.example.org/
+  source: https://github.com/example/demo
+instances: multi
+auth:
+  method: custom
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_demo
+  notes: No web page.
+tests:
+  signin:
+    skip: router-less file sharing, no web page
+ports:
+  - {key: SMB, label: SMB, container: 445, default: 445, protocol: tcp, service: smb, lan_only: true}
+files:
+  - {name: people, service: smb, mount: /portcullis/data, format: tsv}
+hooks:
+  - {name: sync, service: smb, command: [/portcullis/portcullis-sync], when: [start, settings_change, membership_change, credential_change], timeout: 60s}
+"""
+FS_IMG = f"demo/smb:1.0.0@sha256:{S_DIGEST}"
+
+
+def fs_compose(smb: str = "", other: str = "", extra: str = "") -> str:
+    """Router-less: services smb and other, no Traefik router; smb / other
+    take extra lines (indented 4)."""
+    return f"services:\n  smb:\n    image: {FS_IMG}\n{smb}  other:\n    image: {FS_IMG}\n{other}{extra}"
+
+
+FS_COMPOSE = fs_compose()
+# FS_ROUTED adds a service with an HTTP router.
+FS_ROUTED = fs_compose(extra=(
+    f"  web:\n    image: {FS_IMG}\n    networks: [default, portcullis-proxy]\n    labels:\n"
+    "      traefik.enable: \"true\"\n"
+    "      traefik.http.routers.files.rule: Host(`${PORTCULLIS_HOST_FILES:-files.portcullis.local}`)\n"
+    "      traefik.http.routers.files.entrypoints: websecure\n"
+    "      traefik.http.routers.files.tls.options: authaware@file\n"
+    "      traefik.http.routers.files.middlewares: security-headers@file\n"
+    "      traefik.http.services.files.loadbalancer.server.port: \"80\"\n"
+    "networks:\n  portcullis-proxy:\n    external: true\n"))
+
+FS_PS = ("{key: share_password, label: File-share password, type: person_secret, hash: nt, length: 24, delivery: file, "
+         "mount: {service: smb, path: /portcullis/secrets}, revoke_on_leave: true, on_restore: void, applies: live, "
+         "username: {pattern: '^[a-z_][a-z0-9_.-]{0,31}$', reserved: [root, nobody], reason: \"isn't a valid Samba and Unix name\"}, "
+         "info: [{label: Address, value: 'smb://{value:connect_address}{port_suffix:SMB:445}/Home'}, {label: Username, value: '{user}'}, "
+         "{label: Port, value: '{port:SMB}'}]}")
+FS_UID = "{key: uid, label: File owner id, type: person_id, pool: posix_uid, self_visible: false, delivery: [{file: {name: people, field: uid}}]}"
+FS_CONNECT = ("{key: connect_address, label: Address people connect to, type: string, format: hostname, required: true, "
+              "self_visible: true, delivery: [{file: {name: people}}]}")
+FS_PATTERN = "'^[a-z_][a-z0-9_.-]{0,31}$'"
+FS_SLOT = ("{key: share1_folder, label: Share 1 folder, type: path, target: {service: smb, mount: /shares/1}, "
+           "folder: {access: write, runs_as: {uid_from: uid}, joins_group: template}}")
+
+
+def fs_edit(o: str, *pairs: str) -> str:
+    """The Hub test's edit: replace each old / new pair once; an old of "}"
+    appends new as extra fields of the flow mapping."""
+    for old, new in zip(pairs[::2], pairs[1::2]):
+        if old == "}":
+            o = o[:-1] + ", " + new + "}"
+            continue
+        assert old in o, f"no {old} in {o}"
+        o = o.replace(old, new, 1)
+    return o
+
+
+def fs_ps(*pairs: str) -> str:
+    return fs_edit(FS_PS, *pairs)
+
+
+def fs_uid(*pairs: str) -> str:
+    return fs_edit(FS_UID, *pairs)
+
+
+def fs_smb(*lines: str) -> str:
+    """FS_HEAD with connect_address, uid and the given options."""
+    return FS_HEAD + s_opts(FS_CONNECT, FS_UID, *lines)
+
+
+def fs_env(svc: str, val: str) -> str:
+    """A compose file whose service svc has environment KEY: val."""
+    line = f"    environment:\n      KEY: {val}\n"
+    return fs_compose(smb=line) if svc == "smb" else fs_compose(other=line)
+
+
+class TestFileSharing(Case):
+    run_raw = TestSettingsV3.run_raw
+    cases = TestSettingsV3.cases
+
+    def test_person_secret_rules(self) -> None:
+        """Hub TestPersonSecretRules."""
+        no_access = FS_HEAD.replace("  access_group: users_demo\n", "", 1)
+        no_group_access = FS_HEAD.replace("group_access: true", "group_access: false", 1)
+        no_cred_hook = FS_HEAD.replace(", credential_change]", "]", 1)
+        other_hook = FS_HEAD.replace("{name: sync, service: smb,", "{name: sync, service: other,", 1)
+        header_auth = FS_HEAD.replace("method: custom", "method: header-auth", 1)
+        json_file = FS_HEAD.replace("hooks:\n", "  - {name: json, service: other, mount: /json}\nhooks:\n", 1)
+        path_opt = "{key: data, label: Data, type: path, target: {service: smb, mount: /portcullis/secrets/x}}"
+        secret_opt = "{key: api, label: API, type: secret, delivery: [{file: {name: json}}]}"
+        plain_opt = "{key: motd, label: Motd, type: string, delivery: [{file: {name: people}}]}"
+        list_opt = "{key: names, label: Names, type: list, items: {type: string}, self_visible: true, delivery: [{file: {name: people}}]}"
+        c = FS_COMPOSE
+
+        def pat_env(val: str) -> str:
+            return fs_compose(smb=f"    environment:\n      PORTCULLIS_USERNAME_PATTERN: '{val}'\n")
+
+        def pat(p: str) -> str:
+            return fs_ps(FS_PATTERN, p)
+        S, PW = fs_smb, "share_password"
+        self.cases([
+            ("ok", S(fs_ps()), c, "", ""),
+            ("hash", S(fs_ps("hash: nt", "hash: md5")), c, PW, "hash must be nt"),
+            ("no hash", S(fs_ps("hash: nt, ", "")), c, PW, "hash must be nt"),
+            ("short", S(fs_ps("length: 24", "length: 20")), c, PW, "length 20 must be at least 24"),
+            ("not groups of 4", S(fs_ps("length: 24", "length: 26")), c, PW, "multiple of 4"),
+            ("long ok", S(fs_ps("length: 24", "length: 32")), c, "", ""),
+            ("delivery list", S(fs_ps("delivery: file", "delivery: [{file: {name: people}}]")), c, PW, "delivery: file"),
+            ("delivery hook", S(fs_ps("delivery: file", "delivery: hook")), c, PW, "delivery: file"),
+            ("delivery env", S(fs_ps("delivery: file", "delivery: [{env: X}]")), c, PW, "delivery: file"),
+            ("no delivery", S(fs_ps("delivery: file, ", "")), c, PW, "delivery: file"),
+            ("no mount", S(fs_ps("mount: {service: smb, path: /portcullis/secrets}, ", "")), c, PW, "needs mount"),
+            ("mount service", S(fs_ps("service: smb, path", "service: nope, path")), c, PW, "mount.service nope is not in compose.yml"),
+            ("mount relative", S(fs_ps("path: /portcullis/secrets", "path: portcullis/secrets")), c, PW, "mount.path"),
+            ("mount colon", S(fs_ps("path: /portcullis/secrets", "path: '/a:b'")), c, PW, "mount.path"),
+            ("mount unclean", S(fs_ps("path: /portcullis/secrets", "path: /portcullis//secrets")), c, PW, "mount.path"),
+            ("mount on the data file", S(fs_ps("path: /portcullis/secrets", "path: /portcullis")), c, PW, "collides with files[people]"),
+            ("mount on a path option", S(path_opt, fs_ps()), c, PW, "collides with setting data"),
+            ("two on one mount", S(fs_ps(), fs_ps("key: share_password", "key: other_password")), c, "other_password", "collides with setting share_password"),
+            ("mount elsewhere, hook not there", S(fs_ps("service: smb, path: /portcullis/secrets", "service: other, path: /portcullis/data")), c, PW, "credential_change"),
+            ("revoke_on_leave false", S(fs_ps("revoke_on_leave: true", "revoke_on_leave: false")), c, PW, "revoke_on_leave must be true"),
+            ("revoke_on_leave missing", S(fs_ps("revoke_on_leave: true, ", "")), c, PW, "revoke_on_leave must be true"),
+            ("on_restore", S(fs_ps("on_restore: void", "on_restore: keep")), c, PW, "on_restore must be void"),
+            ("on_restore missing", S(fs_ps("on_restore: void, ", "")), c, PW, "on_restore must be void"),
+            ("applies", S(fs_ps("applies: live", "applies: restart")), c, PW, "applies"),
+            ("applies omitted", S(fs_ps("applies: live, ", "")), c, "", ""),
+            ("scope", S(fs_ps("}", "scope: person")), c, PW, "takes no scope"),
+            ("default", S(fs_ps("}", "default: x")), c, PW, "takes no default"),
+            ("required", S(fs_ps("}", "required: true")), c, PW, "takes no required"),
+            ("resolve", S(fs_ps("}", "resolve: priority")), c, PW, "takes no resolve"),
+            ("resolve_choices", S(fs_ps("}", "resolve_choices: [priority]")), c, PW, "takes no resolve_choices"),
+            ("group_values", S(fs_ps("}", "group_values: {'{{ACCESS_GROUP}}': x}")), c, PW, "takes no group_values"),
+            ("privileged", S(fs_ps("}", "privileged: true")), c, PW, "takes no privileged"),
+            ("requires", S(fs_ps("}", "requires: [connect_address]")), c, PW, "takes no requires"),
+            ("requires_any", S(fs_ps("}", "requires_any: [connect_address]")), c, PW, "takes no requires_any"),
+            ("self_visible", S(fs_ps("}", "self_visible: false")), c, PW, "takes no self_visible"),
+            ("checks", S(fs_ps("}", "checks: [{kind: requires_group_value, reason: x}]")), c, PW, "takes no checks"),
+            # Stricter than the contract text (task-3-report §4): both types refuse these too.
+            ("admin_override", S(fs_ps("}", "admin_override: true")), c, PW, "takes no admin_override"),
+            ("unique", S(fs_ps("}", "unique: true")), c, PW, "takes no unique"),
+            ("generate", S(fs_ps("}", "generate: {length: 24, charset: hex}")), c, PW, "takes no generate"),
+            ("writes_as", S(fs_ps("}", "writes_as: {uid: 1}")), c, PW, "takes no writes_as"),
+            ("pool", S(fs_ps("}", "pool: posix_uid")), c, PW, "pool is for person_id"),
+            ("constraint", S(fs_ps("}", "max_len: 3")), c, PW, "max_len is not a constraint of type person_secret"),
+            ("no access group", no_access + s_opts(FS_CONNECT, fs_ps()), c, PW, "router-less"),
+            ("no group access", no_group_access + s_opts(FS_CONNECT, fs_ps()), c, PW, "router-less"),
+            ("with a router", FS_HEAD + s_opts(FS_CONNECT, fs_ps()), FS_ROUTED, PW, "router-less"),
+            ("header-auth", header_auth + s_opts(FS_CONNECT, fs_ps()), FS_ROUTED, PW, "router-less"),
+            ("no credential hook", no_cred_hook + s_opts(FS_CONNECT, fs_ps()), c, PW, "credential_change"),
+            ("hook on another service", other_hook + s_opts(FS_CONNECT, fs_ps()), c, PW, "credential_change"),
+            # The username pattern (Task 3 fix round 1): only what RE2 and busybox ERE read alike.
+            ("bad pattern", S(pat("'^[a-z$'")), c, PW, "username.pattern"),
+            ("unanchored pattern", S(pat("'[a-z]{1,8}'")), c, PW, "username.pattern"),
+            ("perl class", S(pat("'^\\w{1,8}$'")), c, PW, "username.pattern"),
+            ("escape", S(pat("'^a\\.b$'")), c, PW, "username.pattern"),
+            ("dot", S(pat("'^a.b$'")), c, PW, "username.pattern"),
+            ("alternation", S(pat("'^(a|b)$'")), c, PW, "username.pattern"),
+            ("star", S(pat("'^a*$'")), c, PW, "username.pattern"),
+            ("plus", S(pat("'^a+$'")), c, PW, "username.pattern"),
+            ("question", S(pat("'^a?$'")), c, PW, "username.pattern"),
+            ("flags", S(pat("'(?i)^a$'")), c, PW, "username.pattern"),
+            ("literals and repeats", S(pat("'^u-[a-z]{2}[0-9]{1,3}$'")), c, "", ""),
+            ("collating element", S(pat("'^[[.a.]]$'")), c, PW, "username.pattern"),
+            ("equivalence class", S(pat("'^[[=a=]]$'")), c, PW, "username.pattern"),
+            ("interval without m", S(pat("'^a{,3}$'")), c, PW, "username.pattern"),
+            ("interval not digits", S(pat("'^a{x}$'")), c, PW, "username.pattern"),
+            ("open interval", S(pat("'^a{1,}$'")), c, PW, "username.pattern"),
+            ("interval m > n", S(pat("'^a{3,2}$'")), c, PW, "username.pattern"),
+            ("interval over 1000", S(pat("'^a{1,1001}$'")), c, PW, "username.pattern"),
+            ("interval 1000", S(pat("'^a{1,1000}$'")), c, "", ""),
+            ("literal brace", S(pat("'^a}$'")), c, PW, "username.pattern"),
+            ("lone open brace", S(pat("'^{$'")), c, PW, "username.pattern"),
+            ("literal close bracket", S(pat("'^a]$'")), c, PW, "username.pattern"),
+            ("bracket in class", S(pat("'^[a[b]$'")), c, PW, "username.pattern"),
+            ("word class", S(pat("'^[[:word:]]{1,3}$'")), c, PW, "username.pattern"),
+            ("space class", S(pat("'^[[:space:]]{1,3}$'")), c, PW, "username.pattern"),
+            ("non-ASCII", S(pat("'^[é]{1,2}$'")), c, PW, "username.pattern"),
+            ("non-ASCII literal", S(pat("'^é$'")), c, PW, "username.pattern"),
+            ("empty class", S(pat("'^[]$'")), c, PW, "username.pattern"),
+            ("repeated interval", S(pat("'^a{1,2}{1,2}$'")), c, PW, "username.pattern"),
+            ("interval on the anchor", S(pat("'^{1,2}a$'")), c, PW, "username.pattern"),
+            ("space", S(pat("'^a b$'")), c, PW, "username.pattern"),
+            ("tab", S(pat('"^a\\tb$"')), c, PW, "username.pattern"),
+            ("too long", S(pat("'^" + "a" * 499 + "$'")), c, PW, "username.pattern"),
+            ("samba rule", S(pat("'^[a-z][a-z0-9._-]{0,31}$'")), c, "", ""),
+            ("posix lower", S(pat("'^[[:lower:]]{1,8}$'")), c, "", ""),
+            ("posix classes", S(pat("'^[[:alpha:]_][[:alnum:][:digit:][:upper:][:xdigit:].-]{0,31}$'")), c, "", ""),
+            ("negated class", S(pat("'^[^A-Z]{1,8}$'")), c, "", ""),
+            ("exact interval", S(pat("'^x[0-9]{4}$'")), c, "", ""),
+            ("reversed range", S(pat("'^[z-a]$'")), c, PW, "username.pattern"),
+            ("reserved upper", S(fs_ps("reserved: [root, nobody]", "reserved: [Root]")), c, PW, "username.reserved"),
+            ("reserved empty name", S(fs_ps("reserved: [root, nobody]", "reserved: ['']")), c, PW, "username.reserved"),
+            ("reserved with a space", S(fs_ps("reserved: [root, nobody]", "reserved: ['a b']")), c, PW, "username.reserved"),
+            ("reserved of 65", S(fs_ps("reserved: [root, nobody]", "reserved: [" + "a" * 65 + "]")), c, PW, "username.reserved"),
+            ("reserved of 64", S(fs_ps("reserved: [root, nobody]", "reserved: [" + "a" * 64 + "]")), c, "", ""),
+            ("reason too long", S(fs_ps('"isn\'t a valid Samba and Unix name"', "x" * 201)), c, PW, "username.reason"),
+            ("reason 200", S(fs_ps('"isn\'t a valid Samba and Unix name"', "x" * 200)), c, "", ""),
+            ("reason missing", S(fs_ps(', reason: "isn\'t a valid Samba and Unix name"', "")), c, PW, "username.reason"),
+            ("reason blank", S(fs_ps('"isn\'t a valid Samba and Unix name"', "'  '")), c, PW, "username.reason"),
+            ("username unknown key", S(fs_ps("reserved: [root, nobody]", "reserved: [root], max: 3")), c, "", "max"),
+            ("info unknown option", S(fs_ps("{value:connect_address}", "{value:nope}")), c, PW, "info[0]"),
+            ("info unknown port", S(fs_ps("{port:SMB}", "{port:NOPE}")), c, PW, "info[2]"),
+            ("info unknown suffix port", S(fs_ps("{port_suffix:SMB:445}", "{port_suffix:NOPE:445}")), c, PW, "info[0]"),
+            ("info bad default", S(fs_ps("{port_suffix:SMB:445}", "{port_suffix:SMB:70000}")), c, PW, "info[0]"),
+            ("info non-canonical default", S(fs_ps("{port_suffix:SMB:445}", "{port_suffix:SMB:0445}")), c, PW, "info[0]"),
+            ("info rows", S(fs_ps("{port:SMB}", "{rows:shares}")), c, PW, "info[2]"),
+            ("info stray brace", S(fs_ps("/Home", "/{Home")), c, PW, "info[0]"),
+            ("info stray close", S(fs_ps("/Home", "/Home}")), c, PW, "info[0]"),
+            ("info secret", json_file + s_opts(FS_CONNECT, FS_UID, secret_opt, fs_ps("{value:connect_address}", "{value:api}")), c, PW, "info[0]"),
+            ("info path option", S("{key: data, label: Data, type: path, self_visible: true, target: {service: other, mount: /data}}",
+                                   fs_ps("{value:connect_address}", "{value:data}")), c, PW, "info[0]"),
+            ("info not self_visible", S(plain_opt, fs_ps("{value:connect_address}", "{value:motd}")), c, PW, "self_visible: true"),
+            ("info list", S(list_opt, fs_ps("{value:connect_address}", "{value:names}")), c, PW, "info[0]"),
+            ("info person option", S(fs_ps("{value:connect_address}", "{value:uid}")), c, PW, "info[0]"),
+            ("info empty label", S(fs_ps("{label: Username,", "{label: '',")), c, PW, "info[1]"),
+            ("info empty value", S(fs_ps("value: '{user}'", "value: ''")), c, PW, "info[1]"),
+            ("info value of 501", S(fs_ps("value: '{user}'", "value: '" + "x" * 501 + "'")), c, PW, "info[1]"),
+            ("info value of 500", S(fs_ps("value: '{user}'", "value: '" + "x" * 500 + "'")), c, "", ""),
+            ("info label of 65", S(fs_ps("{label: Username,", "{label: " + "x" * 65 + ",")), c, PW, "info[1]"),
+            ("info unknown key", S(fs_ps("{label: Username,", "{label: Username, hint: x,")), c, "", "hint"),
+            ("pattern env matches", S(fs_ps()), pat_env("^[a-z_][a-z0-9_.-]{0,31}$$"), "", ""),
+            ("pattern env differs", S(fs_ps()), pat_env("^[a-z]{0,31}$$"), "", "PORTCULLIS_USERNAME_PATTERN"),
+            ("pattern env not escaped", S(fs_ps()), pat_env("^[a-z_][a-z0-9_.-]{0,31}$"), "", "PORTCULLIS_USERNAME_PATTERN"),
+            ("pattern env without a rule",
+             S(fs_ps("username: {pattern: '^[a-z_][a-z0-9_.-]{0,31}$', reserved: [root, nobody], reason: \"isn't a valid Samba and Unix name\"}, ", "")),
+             pat_env("^a$$"), "", "PORTCULLIS_USERNAME_PATTERN"),
+            # Fields of the two types on other types.
+            ("hash on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "hash: nt")), c, "connect_address", "hash is for person_secret"),
+            ("mount on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "mount: {service: smb, path: /x}")), c, "connect_address", "mount is for person_secret"),
+            ("info on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "info: [{label: a, value: b}]")), c, "connect_address", "info is for person_secret"),
+            ("username on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "username: {reason: x}")), c, "connect_address", "username is for person_secret"),
+            ("on_restore on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "on_restore: void")), c, "connect_address", "on_restore is for person_secret"),
+            ("bare delivery on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "delivery: [{file: {name: people}}]", "delivery: file")), c,
+             "connect_address", "delivery: file is for person_secret"),
+            ("pool on string", FS_HEAD + s_opts(fs_edit(FS_CONNECT, "}", "pool: posix_uid")), c, "connect_address", "pool is for person_id"),
+        ])
+
+    def test_username_pattern_grammar(self) -> None:
+        """The Hub's usernamePattern, called directly."""
+        for p in ("^a$", "^[a-z_][a-z0-9_.-]{0,31}$", "^[[:lower:]]{1,8}$", "^[^A-Z]{1,8}$", "^x[0-9]{4}$", "^$"):
+            self.assertEqual(v.username_pattern_problem(p), "", p)
+        for p in ("a", "^a", "a$", "^a{,3}$", "^[[.a.]]$", "^a|b$", "^[a\\]]$", "^a{1000,1001}$", "^a{00001}$"):
+            self.assertNotEqual(v.username_pattern_problem(p), "", p)
+
+    def test_time_machine_block(self) -> None:
+        """Hub TestTimeMachineBlock: the spec's Time Machine declaration (as
+        the contract and the rulings amend it) passes."""
+        m = FS_HEAD.split("ports:\n")[0] + """\
+ports:
+  - {key: TM_SMB, label: SMB, container: 445, default: 445, protocol: tcp, service: timemachine, lan_only: true}
+files:
+  - {name: people, service: timemachine, mount: /portcullis/data, format: tsv, on_membership_change: hook}
+hooks:
+  - name: sync
+    service: timemachine
+    command: [/portcullis/portcullis-sync]
+    when: [start, settings_change, membership_change, credential_change]
+    timeout: 60s
+settings:
+  sections: [Access, Backups, Network]
+  options:
+    - key: share_password
+      label: File-share password
+      type: person_secret
+      hash: nt
+      length: 24
+      delivery: file
+      mount: {service: timemachine, path: /portcullis/secrets}
+      revoke_on_leave: true
+      on_restore: void
+      username: {pattern: "^[a-z_][a-z0-9_.-]{0,31}$",
+                 reserved: [root, nobody, timemachine],
+                 reason: "isn't a valid Samba and Unix name"}
+      info:
+        - {label: Server, value: "smb://{value:connect_address}{port_suffix:TM_SMB:445}/{value:share_prefix}-{user}"}
+        - {label: Username, value: "{user}"}
+      applies: live
+      section: Access
+    - key: uid
+      label: File owner id
+      type: person_id
+      pool: posix_uid
+      self_visible: false
+      delivery: [{file: {name: people, field: uid}}]
+    - key: size_limit
+      label: Backup size limit
+      type: size
+      step: 1GiB
+      allow_unlimited: true
+      scope: person
+      default: 500GiB
+      resolve: max
+      section: Backups
+      applies: live
+      delivery: [{file: {name: people, field: size_limit, render: {unit: MiB, integer: true, unlimited: none}}}]
+      checks: [{kind: requires_group_value, reason: "Most people should get a deliberate limit"}]
+    - key: storage
+      label: Backup storage
+      type: path
+      target: {service: timemachine, mount: /opt}
+      folder:
+        access: write
+        runs_as: {uid_from: uid, gid_from: uid}
+        joins_group: template
+      checks:
+        - {kind: filesystem, needs: [xattr], not: [nfs, cifs, fuse], reason: "Time Machine stores metadata in extended attributes"}
+        - {kind: exclusive, reason: "Backup bundles must not be written by other apps"}
+    - key: share_prefix
+      label: Share name prefix
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$"
+      default: TimeMachine
+      applies: live
+      self_visible: true
+      delivery: [{file: {name: people}}]
+    - key: connect_address
+      label: Address people connect to
+      type: string
+      format: hostname
+      required: true
+      section: Network
+      self_visible: true
+      delivery: [{file: {name: people}}]
+    - key: avahi_services_dir
+      label: Host Avahi services directory (Bonjour advertising)
+      description: "Empty = off. Advertising shows every share name, which contains usernames, to everyone on the local network."
+      type: path
+      target: {service: timemachine, mount: /portcullis/avahi}
+      section: Network
+      applies: restart
+    - key: model
+      label: Shown in Finder as
+      type: enum
+      options: [{value: "TimeCapsule8,119", label: Time Capsule}, {value: "MacPro7,1", label: Mac Pro}]
+      default: "TimeCapsule8,119"
+      delivery: [{env: MIMIC_MODEL}]
+      applies: restart
+      section: Network
+"""
+        c = (f"services:\n  timemachine:\n    image: {FS_IMG}\n    environment:\n      MIMIC_MODEL: ${{MIMIC_MODEL}}\n"
+             "      PORTCULLIS_USERNAME_PATTERN: '^[a-z_][a-z0-9_.-]{0,31}$$'\n")
+        self.cases([("time machine", m, c, "", "")])
+        o = [x for x in v.setting_options(self._load(m)) if x.get("key") in ("share_password", "uid")]
+        for x in o:
+            self.assertEqual(v.scope_of(x), "person", x["key"])
+            self.assertEqual(v.option_env_names(x), [], x["key"])
+
+    def _load(self, text: str) -> dict:
+        import yaml
+        return yaml.safe_load(text)
+
+    def test_person_id_rules(self) -> None:
+        """Hub TestPersonIDRules."""
+        no_access = FS_HEAD.replace("  access_group: users_demo\n", "", 1)
+        hook_file = FS_HEAD.replace("format: tsv}", "format: tsv, on_membership_change: hook}", 1)
+        json_head = hook_file.replace("hooks:\n", "  - {name: json, service: other, mount: /json}\nhooks:\n", 1)
+
+        def one(o: str) -> str:
+            return hook_file + s_opts(FS_CONNECT, FS_PS, o)
+        two = one(FS_UID)[:-1] + "\n    - " + fs_uid("key: uid", "key: gid", "field: uid", "field: gid") + "\n"
+        twice = one(FS_UID)[:-1] + "\n    - " + fs_uid("key: uid", "key: gid") + "\n"
+        c, U = FS_COMPOSE, "uid"
+        self.cases([
+            ("ok", one(FS_UID), c, "", ""),
+            ("two ok", two, c, "", ""),
+            ("unknown pool", one(fs_uid("pool: posix_uid", "pool: posix_gid")), c, U, "pool must be posix_uid"),
+            ("no pool", one(fs_uid("pool: posix_uid, ", "")), c, U, "pool must be posix_uid"),
+            ("self_visible missing", one(fs_uid("self_visible: false, ", "")), c, U, "self_visible: false"),
+            ("self_visible true", one(fs_uid("self_visible: false", "self_visible: true")), c, U, "self_visible: false"),
+            ("hook delivery", one(fs_uid("delivery: [{file: {name: people, field: uid}}]", "delivery: [{hook: sync}]")), c, U, "only file deliveries"),
+            ("env delivery", one(fs_uid("delivery: [{file: {name: people, field: uid}}]", "delivery: [{env: UID}]")), c, U, "only file deliveries"),
+            ("file and hook", one(fs_uid("{file: {name: people, field: uid}}", "{file: {name: people, field: uid}}, {hook: sync}")), c, U, "only file deliveries"),
+            ("bare file", one(fs_uid("delivery: [{file: {name: people, field: uid}}]", "delivery: file")), c, U, "only file deliveries"),
+            ("delivery render", one(fs_uid("{file: {name: people, field: uid}}", "{file: {name: people, field: uid}, render: {unit: x}}")), c, U, "only file deliveries"),
+            ("no delivery", one(fs_uid(", delivery: [{file: {name: people, field: uid}}]", "")), c, U, "file delivery"),
+            ("default", one(fs_uid("}", "default: 20000")), c, U, "takes no default"),
+            ("scope", one(fs_uid("}", "scope: person")), c, U, "takes no scope"),
+            ("required", one(fs_uid("}", "required: true")), c, U, "takes no required"),
+            ("resolve", one(fs_uid("}", "resolve: max")), c, U, "takes no resolve"),
+            ("requires", one(fs_uid("}", "requires: [connect_address]")), c, U, "takes no requires"),
+            ("requires_any", one(fs_uid("}", "requires_any: [connect_address]")), c, U, "takes no requires_any"),
+            ("admin_override", one(fs_uid("}", "admin_override: true")), c, U, "takes no admin_override"),
+            ("unique", one(fs_uid("}", "unique: true")), c, U, "takes no unique"),
+            ("generate", one(fs_uid("}", "generate: {length: 24, charset: hex}")), c, U, "takes no generate"),
+            ("writes_as", one(fs_uid("}", "writes_as: {uid: 1}")), c, U, "takes no writes_as"),
+            ("hash", one(fs_uid("}", "hash: nt")), c, U, "hash is for person_secret"),
+            ("constraint", one(fs_uid("}", "min: 1")), c, U, "min is not a constraint of type person_id"),
+            ("applies live, hook file", one(fs_uid("}", "applies: live")), c, "", ""),
+            ("applies live, second file not hook",
+             json_head + s_opts(FS_CONNECT, FS_PS, fs_uid("{file: {name: people, field: uid}}", "{file: {name: people, field: uid}}, {file: {name: json}}", "}", "applies: live")),
+             c, U, "applies: live"),
+            ("applies live, first file not hook",
+             json_head + s_opts(FS_CONNECT, FS_PS, fs_uid("{file: {name: people, field: uid}}", "{file: {name: json}}, {file: {name: people, field: uid}}", "}", "applies: live")),
+             c, U, "applies: live"),
+            ("field twice", twice, c, "gid", "field uid is already written by setting uid"),
+            ("no access group", no_access + s_opts(FS_CONNECT, FS_UID), c, U, "router-less"),
+            ("with a router", FS_HEAD + s_opts(FS_CONNECT, FS_UID), FS_ROUTED, U, "router-less"),
+        ])
+
+    def test_credential_change_trigger(self) -> None:
+        """Hub TestCredentialChangeTrigger."""
+        when = "when: [start, settings_change, membership_change, credential_change]"
+        only = FS_HEAD.replace(when, "when: [credential_change]", 1)
+        bad = FS_HEAD.replace(when, "when: [credential]", 1)
+        self.assertIn("credential_change", v.HOOK_TRIGGERS)
+        self.cases([
+            ("credential_change only", only + s_opts(FS_CONNECT, FS_UID, FS_PS), FS_COMPOSE, "", ""),
+            ("unknown trigger", bad + s_opts(FS_CONNECT), FS_COMPOSE, "", 'when "credential" must be start, settings_change, membership_change or credential_change'),
+        ])
+
+    def test_data_file_format(self) -> None:
+        """Hub TestDataFileFormat: format json | tsv; tsv refuses tables and secrets."""
+        def fmt(f: str) -> str:
+            return FS_HEAD.replace(", format: tsv}", f + "}", 1)
+        secret_opt = "{key: api, label: API, type: secret, delivery: [{file: {name: people}}]}"
+        table_opt = "{key: shares, label: Shares, type: table, columns: [{name: name, label: Name, type: string}], delivery: [{file: {name: people}}]}"
+        c = FS_COMPOSE
+        self.cases([
+            ("tsv", fmt(", format: tsv") + s_opts(FS_CONNECT), c, "", ""),
+            ("json", fmt(", format: json") + s_opts(FS_CONNECT), c, "", ""),
+            ("default json", fmt("") + s_opts(FS_CONNECT), c, "", ""),
+            ("xml", fmt(", format: xml") + s_opts(FS_CONNECT), c, "", 'files[people]: format "xml" must be json or tsv'),
+            ("secret into tsv", FS_HEAD + s_opts(FS_CONNECT, secret_opt), c, "api", "tsv"),
+            ("secret into json", fmt(", format: json") + s_opts(FS_CONNECT, secret_opt), c, "", ""),
+            ("table into tsv", FS_HEAD + s_opts(FS_CONNECT, table_opt), c, "shares", "tsv"),
+            ("table into json", fmt("") + s_opts(FS_CONNECT, table_opt), c, "", ""),
+        ])
+
+    def test_requires_any(self) -> None:
+        """Hub TestRequiresAny: the generic option-level requires_any (F2's share slots)."""
+        r = "{key: readers, label: R, type: groups, delivery: [{file: {name: people}}]}"
+        w = "{key: writers, label: W, type: groups, delivery: [{file: {name: people}}]}"
+
+        def folder(extra: str) -> str:
+            return "{key: share1_folder, label: Folder, type: path, target: {service: smb, mount: /shares/1}" + extra + "}"
+        person = "{key: quota, label: Q, type: int, scope: person, default: 1, resolve: max, delivery: [{file: {name: people}}]}"
+        c = FS_COMPOSE
+        self.cases([
+            ("ok", FS_HEAD + s_opts(r, w, folder(", requires_any: [readers, writers]")), c, "", ""),
+            ("unknown", FS_HEAD + s_opts(r, folder(", requires_any: [readers, writers]")), c, "share1_folder", "requires_any writers: no such option"),
+            ("self", FS_HEAD + s_opts(r, folder(", requires_any: [share1_folder]")), c, "share1_folder", "requires_any names itself"),
+            ("person listed", FS_HEAD + s_opts(r, person, folder(", requires_any: [readers, quota]")), c, "share1_folder", "requires_any quota: not an instance option"),
+            ("on a person option", FS_HEAD + s_opts(r, fs_edit(person, "}", "requires_any: [readers]")), c, "quota", "requires_any is for instance options"),
+            ("empty", FS_HEAD + s_opts(r, folder(", requires_any: []")), c, "", ""),
+        ])
+
+    def test_runs_as_from(self) -> None:
+        """Hub TestRunsAsFrom: uid_from / gid_from name a person_id option."""
+        def fo(ra: str, join: str) -> str:
+            return "{key: storage, label: S, type: path, target: {service: smb, mount: /opt}, folder: {access: write, runs_as: " + ra + join + "}}"
+        tmpl = ", joins_group: template"
+        not_id = "{key: num, label: N, type: int, default: 1000, delivery: [{file: {name: people}}]}"
+        c, S = FS_COMPOSE, fs_smb
+        self.cases([
+            ("per-person tree", S(FS_PS, fo("{uid_from: uid, gid_from: uid}", tmpl)), c, "", ""),
+            ("shared folder slot", S(FS_PS, fo("{uid_from: uid}", tmpl)), c, "", ""),
+            ("uid_from with a gid", S(FS_PS, fo("{uid_from: uid, gid: 1000}", "")), c, "", ""),
+            ("uid_from, group_add, no gid", S(FS_PS, fo("{uid_from: uid}", "")), c, "storage", "folder.runs_as.gid"),
+            ("uid_from not a person_id", S(FS_PS, not_id, fo("{uid_from: num}", tmpl)), c, "storage", "uid_from num is not a person_id option"),
+            ("uid_from unknown", S(FS_PS, fo("{uid_from: nope}", tmpl)), c, "storage", "uid_from nope is not a person_id option"),
+            ("gid_from not a person_id", S(FS_PS, not_id, fo("{uid_from: uid, gid_from: num}", tmpl)), c, "storage", "gid_from num is not a person_id option"),
+            ("gid_from without uid_from", S(FS_PS, fo("{uid: 0, gid_from: uid}", tmpl)), c, "storage", "gid_from needs uid_from"),
+            ("gid_from with group_add", S(FS_PS, fo("{uid_from: uid, gid_from: uid}", "")), c, "storage", "gid_from needs joins_group: template"),
+            ("gid_from with gid_env", S(FS_PS, fo("{uid_from: uid, gid_from: uid}", ", joins_group: gid_env")), c, "storage", "joins_group"),
+            ("uid and uid_from", S(FS_PS, fo("{uid: 0, uid_from: uid}", tmpl)), c, "storage", "folder.runs_as.uid: exactly one of"),
+            ("uid_env and uid_from", S(FS_PS, not_id, fo("{uid_env: NUM, uid_from: uid}", tmpl)), c, "storage", "folder.runs_as.uid: exactly one of"),
+            ("gid and gid_from", S(FS_PS, fo("{uid_from: uid, gid: 0, gid_from: uid}", tmpl)), c, "storage", "folder.runs_as.gid: exactly one of"),
+            # Stricter than the contract text (task-3-report §4): uid_from next to a compose user:.
+            ("uid_from with compose user", S(FS_PS, fo("{uid_from: uid}", tmpl)), fs_compose(smb='    user: "1000:1000"\n'), "storage",
+             "folder.runs_as.uid_from: service smb's compose user"),
+        ])
+
+    def test_routerless_custom_group_access(self) -> None:
+        """Contract §3 / F1: a router-less custom template may set
+        group_access with an access group and no native_login; a routed
+        custom template still needs native_login for group_access."""
+        self.cases([
+            ("router-less", FS_HEAD, FS_COMPOSE, "", ""),
+            ("router-less with the types", fs_smb(FS_PS), FS_COMPOSE, "", ""),
+        ])
+        errors, _ = self.run_raw(FS_HEAD, FS_ROUTED)
+        self.assertError(errors, "auth.method custom with group_access: true needs auth.native_login.supported: true")
+
+    def test_zero_routers_need_custom(self) -> None:
+        """Hub TestZeroRoutersNeedCustom (F48)."""
+        for method in ("forward-auth", "header-auth", "native-oidc", "mtls", "public"):
+            with self.subTest(method):
+                errors, _ = self.run_raw(FS_HEAD.replace("method: custom", "method: " + method, 1), FS_COMPOSE)
+                self.assertError(errors, f"auth.method {method} needs at least one HTTP router")
+
+    def test_local_networks_var_forms(self) -> None:
+        """Hub TestLocalNetworksVarForms (F36): only exactly ${PORTCULLIS_LOCAL_NETWORKS}."""
+        m = fs_smb(fs_ps())
+        lan = "PORTCULLIS_LOCAL_NETWORKS"
+        exact = "only as exactly ${PORTCULLIS_LOCAL_NETWORKS}"
+        self.cases([
+            ("exact", m, fs_env("smb", "${" + lan + "}"), "", ""),
+            ("exact in text", m, fs_env("smb", "'allow ${" + lan + "} end'"), "", ""),
+            ("list form", m, fs_compose(smb="    environment:\n      - NETS=${" + lan + "}\n"), "", ""),
+            ("in a command", m, fs_compose(smb="    command: [run, '${" + lan + "}']\n"), "", ""),
+            ("default", m, fs_env("smb", "${" + lan + ":-0.0.0.0/0}"), "", exact),
+            ("dash default", m, fs_env("smb", "${" + lan + "-0.0.0.0/0}"), "", exact),
+            ("alternate", m, fs_env("smb", "${" + lan + ":+x}"), "", "only as exactly"),
+            ("plus", m, fs_env("smb", "${" + lan + "+x}"), "", "only as exactly"),
+            ("error form", m, fs_env("smb", "${" + lan + "?unset}"), "", "only as exactly"),
+            ("colon error form", m, fs_env("smb", "${" + lan + ":?unset}"), "", "only as exactly"),
+            ("bare", m, fs_env("smb", "$" + lan), "", "only as exactly"),
+            ("escaped is text", m, fs_env("smb", "$${" + lan + ":-x}"), "", ""),
+            ("declared in env", FS_HEAD + "env:\n  - {key: " + lan + ", description: x, generate: random}\n" + s_opts(FS_CONNECT, FS_UID, fs_ps()),
+             FS_COMPOSE, "", lan),
+        ])
+        self.assertTrue(v.reserved_var(lan))
+
+    def test_folder_gid_var_forms(self) -> None:
+        """Hub TestFolderGIDVarForms (F36, the plan 2 carry)."""
+        m = fs_smb(fs_ps(), FS_SLOT)
+        var = "PORTCULLIS_FOLDER_GID_SHARE1_FOLDER"
+        plain = "{key: data, label: Data, type: path, target: {service: smb, mount: /data}}"
+        self.cases([
+            ("on the folder's service", m, fs_env("smb", "${" + var + "}"), "", ""),
+            ("list form", m, fs_compose(smb="    environment:\n      - SHARE1_GID=${" + var + "}\n"), "", ""),
+            ("another service", m, fs_env("other", "${" + var + "}"), "", var),
+            ("default", m, fs_env("smb", "${" + var + ":-60001}"), "", var),
+            ("bare", m, fs_env("smb", "$" + var), "", var),
+            ("inside text", m, fs_env("smb", "'g${" + var + "}'"), "", var),
+            ("uid var", m, fs_env("smb", "${PORTCULLIS_FOLDER_UID_SHARE1_FOLDER}"), "", "PORTCULLIS_FOLDER_UID_SHARE1_FOLDER"),
+            ("unknown key", m, fs_env("smb", "${PORTCULLIS_FOLDER_GID_NOPE}"), "", "PORTCULLIS_FOLDER_GID_NOPE"),
+            ("no folder block", fs_smb(fs_ps(), plain), fs_env("smb", "${PORTCULLIS_FOLDER_GID_DATA}"), "", "PORTCULLIS_FOLDER_GID_DATA"),
+            ("in a command", m, fs_compose(smb="    command: ['${" + var + "}']\n"), "", var),
+            ("in a label too", m, fs_compose(smb="    environment:\n      G: ${" + var + "}\n    labels:\n      x: ${" + var + "}\n"), "", var),
+            ("another folder prefix", m, fs_env("smb", "${PORTCULLIS_FOLDER_X}"), "", "PORTCULLIS_FOLDER_X"),
+            ("no settings at all", FS_HEAD, fs_env("smb", "${PORTCULLIS_FOLDER_GID_X}"), "", "PORTCULLIS_FOLDER_GID_X"),
+        ])
+
+    def test_expand_members_rule(self) -> None:
+        """Hub TestExpandMembersRule (§13.5)."""
+        def readers(d: str) -> str:
+            return "{key: share1_readers, label: Readers, type: groups, delivery: [" + d + "]}"
+        S = fs_smb
+        self.cases([
+            ("file", S(fs_ps(), readers("{file: {name: people, render: {expand_members: true}}}")), FS_COMPOSE, "", ""),
+            ("group", S(fs_ps(), "{key: g, label: G, type: group, delivery: [{file: {name: people, render: {expand_members: true}}}]}"), FS_COMPOSE, "", ""),
+            ("env", S(fs_ps(), "{key: share1_readers, label: Readers, type: groups, delivery: [{env: R, render: {expand_members: true}}]}"),
+             fs_env("smb", "${R}"), "share1_readers", "expand_members is for file deliveries"),
+            ("hook", S(fs_ps(), readers("{hook: sync, render: {expand_members: true}}")), FS_COMPOSE, "share1_readers", "expand_members is for file deliveries"),
+            ("string", S(fs_ps(), "{key: s, label: S, type: string, delivery: [{file: {name: people, render: {expand_members: true}}}]}"),
+             FS_COMPOSE, "s", "expand_members is for group and groups options"),
+            ("join", S(fs_ps(), readers("{file: {name: people, render: {expand_members: true, join: ','}}}")), FS_COMPOSE,
+             "share1_readers", "expand_members renders the member list: no join or format"),
+        ])
+
+    def test_secrets_volume_reserved(self) -> None:
+        """Hub TestDiscoverRefusesBypasses sec-* rows (F15): the Hub's
+        secrets volume key and core's hub_secrets are never a template's."""
+        key = "names the Hub's secrets volume"
+        self.cases([
+            ("key", FS_HEAD, fs_compose(extra="volumes:\n  portcullis-hub-secrets: {}\n"), "", "portcullis-hub-secrets is the Hub's secrets volume"),
+            ("key case", FS_HEAD, fs_compose(extra="volumes:\n  Portcullis-Hub-Secrets: {}\n"), "", "the Hub's secrets volume"),
+            ("short", FS_HEAD, fs_compose(smb="    volumes: [\"portcullis-hub-secrets:/x:ro\"]\n"), "", key),
+            ("long", FS_HEAD, fs_compose(smb="    volumes:\n      - {type: volume, source: portcullis-hub-secrets, target: /x}\n"), "", key),
+            ("interpolated", FS_HEAD, fs_compose(smb="    volumes: [\"${S:-portcullis-hub-secrets}:/x\"]\n"), "", key),
+            ("volumes_from", FS_HEAD, fs_compose(smb="    volumes_from: [portcullis-hub-secrets]\n"), "", key),
+            ("core hub_secrets", FS_HEAD, fs_compose(smb="    volumes: [hub_secrets:/x]\n", extra="volumes:\n  hub_secrets: {}\n"), "", "volumes.hub_secrets is core's"),
+        ])
+
+    def test_shared_namespaces_with_person_secret(self) -> None:
+        """Hub secretsmount (Task 6 fix round 1b): with a person_secret
+        mount, every service's pid / ipc stays private and no service takes
+        the mounter's volumes."""
+        m = fs_smb(fs_ps())
+        ns = "shares the"
+        self.cases([
+            ("private", m, fs_compose(other="    pid: private\n    ipc: private\n"), "", ""),
+            ("ipc shareable", m, fs_compose(smb="    ipc: shareable\n"), "", ""),
+            ("ipc none", m, fs_compose(other="    ipc: none\n"), "", ""),
+            ("pid host", m, fs_compose(other="    pid: host\n"), "", ns),
+            ("ipc host", m, fs_compose(smb="    ipc: host\n"), "", ns),
+            ("pid service", m, fs_compose(other="    pid: \"service:smb\"\n"), "", ns),
+            ("ipc service", m, fs_compose(smb="    ipc: \"service:other\"\n"), "", ns),
+            ("volumes_from the mounter", m, fs_compose(other="    volumes_from: [smb]\n"), "", "takes the volumes of smb"),
+            ("volumes_from service form", m, fs_compose(other="    volumes_from: [\"service:smb:ro\"]\n"), "", "takes the volumes of"),
+            ("no person_secret", FS_HEAD, fs_compose(other="    pid: host\n"), "", ""),
+        ])
+
+    def test_lan_only_required_for_person_secret_ports(self) -> None:
+        """Contract §13.17 (a templates-repo rule; the Hub doesn't enforce it):
+        a template with a person_secret publishes only lan_only ports."""
+        m = fs_smb(fs_ps())
+        self.cases([
+            ("lan_only", m, FS_COMPOSE, "", ""),
+            ("not lan_only", m.replace(", lan_only: true}", "}", 1), FS_COMPOSE, "", "port SMB: a template with a person_secret option"),
+            ("false", m.replace("lan_only: true", "lan_only: false", 1), FS_COMPOSE, "", "lan_only: true"),
+            ("no person_secret", FS_HEAD.replace(", lan_only: true}", "}", 1), FS_COMPOSE, "", ""),
+        ])
+
+    def test_no_proxy_network_when_routerless(self) -> None:
+        """Contract §3: a router-less template has no frontend, so no service
+        joins portcullis-proxy (the internal-service rule)."""
+        errors, _ = self.run_raw(fs_smb(fs_ps()), fs_compose(
+            smb="    networks: [default, portcullis-proxy]\n", extra="networks:\n  portcullis-proxy:\n    external: true\n"))
+        self.assertError(errors, "internal service is on portcullis-proxy")
+
+    def test_sync_copies_identical(self) -> None:
+        """check_sync_copies: every template shipping bin/portcullis-sync has
+        the same bytes, and those templates are exactly SYNC_TEMPLATES."""
+        self.assertEqual(v.SYNC_TEMPLATES, {"samba", "timemachine"})
+
+        def make(files: dict) -> List[str]:
+            for app in ("samba", "timemachine", "demo"):
+                d = os.path.join(self.tmp.name, app, "bin")
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, "portcullis-sync")
+                if os.path.exists(p):
+                    os.remove(p)
+                if app in files:
+                    with open(p, "wb") as f:
+                        f.write(files[app])
+            r = v.Report()
+            v.check_sync_copies([v.Template(a) for a in ("samba", "timemachine", "demo")], r)
+            return r.errors
+        same = b"#!/bin/sh\necho sync\n"
+        self.assertClean(make({"samba": same, "timemachine": same}))
+        errors = make({"samba": same, "timemachine": same[:-1] + b"!"})
+        self.assertError(errors, "timemachine/bin/portcullis-sync")
+        self.assertError(errors, "samba/bin/portcullis-sync")
+        self.assertError(make({"samba": same, "timemachine": same, "demo": same}), "demo/bin/portcullis-sync")
+        self.assertError(make({"samba": same}), "timemachine")
+        # Until the file-sharing templates land (plan 3 Tasks 16 / 17): none present is fine.
+        r = v.Report()
+        v.check_sync_copies([v.Template("demo")], r)
+        self.assertClean(r.errors)
 
 
 if __name__ == "__main__":

@@ -66,7 +66,12 @@ CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "
 # Contract v2 (contracts §3.1): instance-scoped variables the Hub writes into
 # every instance's .env. Templates use them in the default form with the
 # default instance's value and never declare them in the manifest.
-INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP"}
+# PORTCULLIS_LOCAL_NETWORKS (file sharing, F36): read only as exactly
+# ${PORTCULLIS_LOCAL_NETWORKS} (check_reserved_var_refs), never in the
+# default form the other instance variables take.
+VAR_LOCAL_NETWORKS = "PORTCULLIS_LOCAL_NETWORKS"
+INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
+                 VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
 V2_HINT = f"see {DOCS_URL}/integration-contracts/#31-template-contract-v2-instances-and-hostname-variables-new-contract-v2"
 # Default subdomain: a single DNS label.
@@ -734,9 +739,6 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if auth.get("sso") is not False:
             r.error(t.m_where, "auth.native_login requires auth.sso: false",
                     "an app with SSO must not offer its own login without Portcullis")
-    if auth.get("method") == "custom" and auth.get("group_access") and not (isinstance(nl, dict) and nl.get("supported") is True):
-        r.error(t.m_where, "auth.method custom with group_access: true needs auth.native_login.supported: true",
-                "group-gate only runs when the Hub puts Portcullis sign-in in front of the app (native_login)")
 
     if auth.get("method") in ("forward-auth", "header-auth") and auth.get("group_access") is False:
         r.warn(t.m_where, f"auth.method {auth['method']} with group_access: false lets every Portcullis user in",
@@ -890,8 +892,8 @@ def check_compose(t: Template, r: Report) -> None:
 
     # Variable interpolation
     for name, op, rest in iter_var_refs(t.compose_values):
-        if is_instance_var(name):
-            continue  # check_instance_vars
+        if is_instance_var(name) or name.startswith(FOLDER_VAR_PREFIX):
+            continue  # check_instance_vars; check_settings (reserved variable forms, F36)
         if name in CORE_VARS:
             if op != ":-":
                 r.error(t.c_where, f"${{{name}}} must use the default form ${{{name}:-{CORE_VARS[name]}}}",
@@ -954,6 +956,18 @@ def check_compose(t: Template, r: Report) -> None:
         check_traefik_names(t, labels, where, r)
         if not enabled and any(k.startswith("traefik.http.") for k in labels):
             r.error(where, "has traefik.http.* labels but not traefik.enable: \"true\"")
+
+    # Only method custom may have no HTTP router (§3, F48): a gateway method
+    # with none would protect nothing. A router-less custom template (the
+    # file-sharing templates) may set group_access with an access group and
+    # no native_login: the access group is only its population (§3, F1).
+    if not routers and method != "custom":
+        r.error(t.c_where, f"auth.method {method} needs at least one HTTP router (only custom templates may have none)", HUB_HINT)
+    nl = auth.get("native_login")
+    if method == "custom" and routers and auth.get("group_access") and not (isinstance(nl, dict) and nl.get("supported") is True):
+        r.error(t.m_where, "auth.method custom with group_access: true needs auth.native_login.supported: true",
+                "group-gate only runs when the Hub puts Portcullis sign-in in front of the app (native_login); a router-less "
+                "custom template (no web page, §3) is the exception")
 
     check_routers(t, routers, r)
     check_immutable_hosts(t, r)
@@ -1045,8 +1059,8 @@ def check_instance_vars(t: Template, r: Report) -> None:
                         "(or under the app's own name), and substitute it when the file is rendered")
     for where, text in [(t.c_where, t.compose_values)]:
         for name, op, rest in iter_var_refs(text):
-            if not is_instance_var(name):
-                continue
+            if not is_instance_var(name) or name == VAR_LOCAL_NETWORKS:
+                continue   # PORTCULLIS_LOCAL_NETWORKS: exactly ${PORTCULLIS_LOCAL_NETWORKS} (check_settings)
             want = expected.get(name)
             if want is None:
                 msg = (f"${{{name}}} is not set for this template",
@@ -2091,6 +2105,38 @@ def check_cross(templates: List[Template], r: Report) -> None:
                     "every template's gate.sh must be byte-identical; copy the reviewed one")
 
 
+# The file-sharing templates' converge script (contract §13.17): one
+# reviewed copy, byte-identical in exactly these templates. A member not in
+# the repo yet (plan 3 Tasks 16 / 17) is tolerated; once present it must
+# ship the script.
+SYNC_TEMPLATES = {"samba", "timemachine"}
+SYNC_SCRIPT = os.path.join("bin", "portcullis-sync")
+SYNC_HINT = ("portcullis-sync is shared by the file-sharing templates (contract §13.17): copy the reviewed one, "
+             "byte for byte, and change both together")
+
+
+def check_sync_copies(templates: List[Template], r: Report) -> None:
+    """Every template that ships bin/portcullis-sync has the same bytes, and
+    those templates are exactly SYNC_TEMPLATES (of the ones present)."""
+    ref: Optional[Tuple[str, bytes]] = None
+    for t in sorted(templates, key=lambda x: x.id):
+        path = os.path.join(t.dir, SYNC_SCRIPT)
+        where = f"{t.id}/{SYNC_SCRIPT}"
+        if not os.path.isfile(path):
+            if t.id in SYNC_TEMPLATES:
+                r.error(f"{t.id}/", f"missing {SYNC_SCRIPT} (every file-sharing template ships the shared script)", SYNC_HINT)
+            continue
+        if t.id not in SYNC_TEMPLATES:
+            r.error(where, f"only the file-sharing templates ({', '.join(sorted(SYNC_TEMPLATES))}) ship {SYNC_SCRIPT}", SYNC_HINT)
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        if ref is None:
+            ref = (t.id, data)
+        elif data != ref[1]:
+            r.error(where, f"{where} differs from {ref[0]}/{SYNC_SCRIPT}", SYNC_HINT)
+
+
 CORE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
 
@@ -2136,7 +2182,10 @@ CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgre
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
-                "prometheus_data", "alertmanager_data", "grafana_data"}
+                "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets"}
+# The Hub override's top-level key for its secrets volume (F15,
+# templates.SecretsVolumeKey): no template names it (folded, embedded).
+SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting"}
 RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-")
@@ -2282,6 +2331,8 @@ def check_hub_rules(t: Template, r: Report) -> None:
 
     for k, v in (data.get("volumes") or {}).items():
         literal("volume key", k)
+        if names_secrets_volume_key(str(k)):
+            r.error(where, f"volume {k} is reserved: {SECRETS_VOLUME_KEY} is the Hub's secrets volume", HUB_HINT)
         if fold_key(str(k).strip()) in CORE_VOLUMES:
             r.error(where, f"volumes.{k} is core's (portcullis_{k})", HUB_HINT)
         v = v if isinstance(v, dict) else {}
@@ -2336,7 +2387,17 @@ def check_hub_rules(t: Template, r: Report) -> None:
                 r.error(sw, f"{field}: the DNS name {val!r} is core's (reserved)", HUB_HINT)
             if field in ("network_mode", "pid", "ipc") and val.strip().lower().startswith("container:"):
                 r.error(sw, f"{field} {val} joins another container's namespace", HUB_HINT)
+        for vol in as_list(svc.get("volumes")):
+            src = ""
+            if isinstance(vol, str):
+                src = vol if vol.strip().startswith("${") else vol.split(":", 1)[0]   # a ${X:-…} source may hold colons
+            elif isinstance(vol, dict):
+                src = scalar_text(vol.get("source")) if vol.get("source") is not None else ""
+            if names_secrets_volume_key(src):
+                r.error(sw, f"volume {src} names the Hub's secrets volume ({SECRETS_VOLUME_KEY}): only the Hub mounts it", HUB_HINT)
         for x in as_list(svc.get("volumes_from")):
+            if names_secrets_volume_key(scalar_text(x)):
+                r.error(sw, f"volumes_from {x} names the Hub's secrets volume", HUB_HINT)
             if literal("volumes_from", x) and str(x).strip().lower().startswith("container:"):
                 r.error(sw, f"volumes_from {x} mounts another container's volumes", HUB_HINT)
         nets = svc.get("networks")
@@ -2452,7 +2513,8 @@ HOSTNAME_RE = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0
 ID_NORMAL_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 BUILTIN_TYPES = {"string", "int", "size", "duration", "bool", "enum", "multi_enum", "list", "table", "path",
-                 "secret", "group", "groups", "user", "users"}
+                 "secret", "group", "groups", "user", "users", "person_secret", "person_id"}
+PERSON_TYPES = ("person_secret", "person_id")   # file sharing (§13.2): one value per person, set by the Hub
 OLD_TYPES = {"text": "use string", "boolean": "use bool", "select": "use enum (options: [{value, label}])",
              "paths": "use path (one option per directory)"}
 SCOPES = ("instance", "person", "group", "person_entered")
@@ -2464,12 +2526,11 @@ RESOLVE_TYPES: Dict[str, Optional[Set[str]]] = {
     "union": {"list", "multi_enum", "groups"}, "intersection": {"list", "multi_enum", "groups"},
     "any": {"bool"}, "all": {"bool"},
 }
-HOOK_TRIGGERS = ("start", "settings_change", "membership_change")
+HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change")
 RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
 GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
 CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
 PLACEHOLDER_ACCESS, PLACEHOLDER_ADMIN = "{{ACCESS_GROUP}}", "{{ADMIN_GROUP}}"
-FEATURE_FOLDERS, FEATURE_SHARING = "type: path with a folder block", "file sharing (project 3)"
 INDEX_SUFFIX, MAX_INDEXED = "_{n}", 64
 HOOK_DEFAULT_TIMEOUT, HOOK_MAX_TIMEOUT = 30 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
 RESERVED_CLAIMS = {
@@ -3130,6 +3191,8 @@ def _kind_check(o: Dict[str, Any]) -> None:
             raise SettingError(f"needs {json.dumps(needs)} must be read or write")
         if mode == "ro" and needs == "write":
             raise SettingError("needs: write with mode: ro: the app could never write there")
+    elif t in PERSON_TYPES:
+        _only_fields(o)
     elif t == "secret":
         _only_fields(o, "min_len", "max_len")
         if _has(o, "default"):
@@ -3321,6 +3384,9 @@ LIST_LIKE = {"list", "multi_enum", "groups", "users"}
 
 
 def scope_of(o: Dict[str, Any]) -> str:
+    """EffectiveScope: person for person_secret / person_id (their scope field is refused)."""
+    if o.get("type") in PERSON_TYPES:
+        return "person"
     return _str(o, "scope") or "instance"
 
 
@@ -3390,6 +3456,13 @@ def _check_render(o: Dict[str, Any], d: Dict[str, Any], rd: Dict[str, Any]) -> N
             raise SettingError("join must be a non-empty separator without newlines or control characters")
         if _str(rd, "format"):
             raise SettingError("join and format exclude each other")
+    if rd.get("expand_members") is True:
+        if t not in ("group", "groups") or scope_of(o) != "instance":
+            raise SettingError("expand_members is for group and groups options of scope instance")
+        if kind != "file":
+            raise SettingError("expand_members is for file deliveries (a data file holds the members)")
+        if _has(rd, "join") or _str(rd, "format"):
+            raise SettingError("expand_members renders the member list: no join or format")
     fmt = _str(rd, "format")
     if fmt in ("yaml", "csv"):
         # Only env carries a person_entered collection; elsewhere it is the person's own (scalar) value.
@@ -3696,6 +3769,8 @@ def option_env_names(o: Dict[str, Any]) -> List[str]:
     NAME_{n} expanded to NAME_1 … NAME_<max_items>); an instance option
     without deliveries writes UPPER(key) (a path none)."""
     out: List[str] = []
+    if o.get("type") in PERSON_TYPES:
+        return out   # no env (F5): their own checks refuse an env delivery
 
     def add(n: str) -> None:
         if n.endswith(INDEX_SUFFIX):
@@ -3730,31 +3805,27 @@ def reserved_var(k: str) -> bool:
     return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_")
 
 
-def reserved_use(o: Dict[str, Any]) -> Tuple[str, str]:
-    """reservedUse: what of o is reserved (projects 2 / 3), and for which feature."""
+def _set(o: Dict[str, Any], k: str) -> bool:
+    """A Go slice / map / pointer field that is set: present and not null
+    (an empty list counts, like a non-nil empty slice)."""
+    return k in o and o[k] is not None
+
+
+def file_sharing_fields(o: Dict[str, Any]) -> str:
+    """fileSharingFields: the two types' own fields on any other type."""
     t = o.get("type")
-    if t == "folder":
-        return "type folder", FEATURE_FOLDERS
-    if t in ("person_secret", "person_id"):
-        return f"type {t}", FEATURE_SHARING
-    f = o.get("folder")
-    ra = f.get("runs_as") if isinstance(f, dict) else None
-    if isinstance(ra, dict):
-        for k in ("uid_from", "gid_from"):
-            if _str(ra, k):
-                return "folder.runs_as." + k, FEATURE_SHARING
-    for f, feat, on in (("hash", FEATURE_SHARING, _str(o, "hash") != ""),
-                        ("length", FEATURE_SHARING, o.get("length") not in (None, 0)),
-                        ("revoke_on_leave", FEATURE_SHARING, _has(o, "revoke_on_leave")),
-                        ("on_restore", FEATURE_SHARING, _str(o, "on_restore") != ""),
-                        ("pool", FEATURE_SHARING, _str(o, "pool") != ""),
-                        ("username", FEATURE_SHARING, _has(o, "username")),
-                        ("mount", FEATURE_SHARING, _has(o, "mount"))):
-        if on:
-            return f, feat
-    if isinstance(o.get("delivery"), str):
-        return "delivery: " + o["delivery"], FEATURE_SHARING
-    return "", ""
+    if t != "person_secret":
+        for f, on in (("hash", _str(o, "hash") != ""), ("length", o.get("length") not in (None, 0)),
+                      ("revoke_on_leave", _has(o, "revoke_on_leave")), ("on_restore", _str(o, "on_restore") != ""),
+                      ("username", _has(o, "username")), ("mount", _has(o, "mount")), ("info", _set(o, "info"))):
+            if on:
+                return f"{f} is for person_secret options"
+        if isinstance(o.get("delivery"), str) and t != "person_id":
+            return (f"delivery: {o['delivery']} is for person_secret options (as delivery: file); other options take a list "
+                    "of deliveries")
+    if t != "person_id" and _str(o, "pool") != "":
+        return "pool is for person_id options"
+    return ""
 
 
 def applies_of(o: Dict[str, Any]) -> str:
@@ -4280,11 +4351,25 @@ class FolderCheck:
         ra = runs_as_of(o)
         if ra is None:
             return "folder.runs_as is required (the uid and gid the app uses on the mount)"
+        join = _str(f, "joins_group")
         for what in ("uid", "gid"):
-            num, env = ra.get(what), _str(ra, what + "_env")
-            if (num is not None) == (env != ""):
-                return (f"folder.runs_as.{what}: exactly one of {what}, {what}_env (a number, or the env name of an instance "
-                        "int option)")
+            num, env, frm = ra.get(what), _str(ra, what + "_env"), _str(ra, what + "_from")
+            n = (num is not None) + (env != "") + (frm != "")
+            # Each person's files: the template applies the folder gid itself.
+            if what == "gid" and n == 0 and _str(ra, "uid_from") and join == JOIN_TEMPLATE:
+                continue
+            if n != 1:
+                return (f"folder.runs_as.{what}: exactly one of {what}, {what}_env, {what}_from (a number, the env name of an "
+                        "instance int option, or a person_id option)")
+            if frm:
+                if what == "gid" and not _str(ra, "uid_from"):
+                    return "folder.runs_as.gid_from needs uid_from (a per-person tree: each person's private group is their uid)"
+                if what == "gid" and join != JOIN_TEMPLATE:
+                    return "folder.runs_as.gid_from needs joins_group: template"
+                ro = next((x for x in self.options if _str(x, "key") == frm), None)
+                if ro is None or ro.get("type") != "person_id":
+                    return f"folder.runs_as.{what}_from {frm} is not a person_id option of this template"
+                continue
             if num is not None:
                 if not 0 <= num <= MAX_RUNS_AS_ID:
                     return f"folder.runs_as.{what} {num} is not a valid id (0-{MAX_RUNS_AS_ID})"
@@ -4302,7 +4387,6 @@ class FolderCheck:
                         f"{quote_default(ro['default'])} is not a whole number")
             if inr and what == "gid":
                 return f"folder.runs_as.{what}_env {env} names setting {_str(ro, 'key')}, whose default {d} is in {GID_RANGE_TEXT}"
-        join = _str(f, "joins_group")
         if join == JOIN_GID_ENV:
             if _str(ra, "gid_env") == "":
                 return "folder.joins_group: gid_env needs runs_as.gid_env (the variable the folder gid is written to)"
@@ -4327,6 +4411,9 @@ class FolderCheck:
         u = self.users.get(svc, "")
         if u == "":
             return None
+        if _str(ra, "uid_from"):
+            return (f"folder.runs_as.uid_from: service {svc}'s compose user: {_q(u)} runs every process as one uid: each "
+                    "person's own uid needs the service to start as root (no user:)")
         us, gs, has_gid = split_user(u)
         ids = [("uid", us, ra.get("uid"), _str(ra, "uid_env"))]
         if has_gid:
@@ -4512,6 +4599,149 @@ class _Refuse(Exception):
     pass
 
 
+# ── file sharing (contract §3 router-less, §13.2 person_secret / person_id;
+# Hub internal/templates/filesharing.go and reservedvars.go) ──
+
+USERNAME_REASON_MAX, USERNAME_PATTERN_MAX, RESERVED_NAME_MAX = 200, 500, 64
+INFO_LABEL_MAX, INFO_VALUE_MAX = 64, 500
+PERSON_SECRET_MIN_LENGTH = 24
+PERSON_ID_POOLS = {"posix_uid": (20000, 59999)}
+USERNAME_PATTERN_VAR = "PORTCULLIS_USERNAME_PATTERN"
+PATTERN_SPECIAL = "\\.[]{}()|*+?^$"
+PATTERN_CLASSES = {"alnum", "alpha", "digit", "lower", "upper", "xdigit"}
+PORT_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+INFO_VALUE_TYPES = {"string", "int", "enum", "bool"}
+SHARING_HINT = f"see {DOCS_URL}/integration-contracts/#1316-per-person-credentials-and-ids-new-file-sharing"
+
+
+def _pattern_class(s: bytes) -> Tuple[int, str]:
+    """patternClass: the length of the bracket class at the start of s, or a problem."""
+    i, items = 1, 0
+    if i < len(s) and s[i:i + 1] == b"^":
+        i += 1
+    while i < len(s):
+        c = s[i:i + 1]
+        if c == b"]":
+            if items == 0:
+                return 0, "an empty bracket class"
+            return i + 1, ""
+        if s.startswith(b"[:", i):
+            end = s.find(b":]", i + 2)
+            if end < 0 or s[i + 2:end].decode() not in PATTERN_CLASSES:
+                return 0, "a bracket class names only [:alnum:], [:alpha:], [:digit:], [:lower:], [:upper:] or [:xdigit:]"
+            i = end + 2
+        elif c in (b"[", b"\\"):
+            return 0, f"'{c.decode()}' inside a bracket class (no collating elements [. .] or equivalence classes [= =])"
+        else:
+            i += 1
+        items += 1
+    return 0, "an unclosed bracket class"
+
+
+def _pattern_count(s: bytes) -> Optional[int]:
+    if not s or len(s) > 4 or s.strip(b"0123456789"):
+        return None
+    n = int(s)
+    return n if n <= 1000 else None
+
+
+def _pattern_interval(s: bytes) -> Tuple[int, str]:
+    """patternInterval: the length of the {m} / {m,n} at the start of s, or a problem."""
+    bad = "an interval is {m} or {m,n} with m <= n <= 1000"
+    end = s.find(b"}")
+    if end < 0:
+        return 0, bad
+    ms, two, ns = s[1:end].partition(b",")
+    if not two:
+        ns = ms
+    m, n = _pattern_count(ms), _pattern_count(ns)
+    if m is None or n is None or m > n:
+        return 0, bad
+    return end + 1, ""
+
+
+def username_pattern_problem(p: str) -> str:
+    """usernamePattern (F37, Task 3 fix round 1): only the patterns Go's RE2
+    and busybox ERE read alike:
+
+        pattern  = "^" atom* "$"
+        atom     = (literal | class) [interval]
+        literal  = a byte 0x21-0x7E other than \\ . [ ] { } ( ) | * + ? ^ $
+        class    = "[" ["^"] item+ "]"
+        item     = "[:" name ":]" | a byte 0x21-0x7E other than \\ [ ]
+        name     = alnum | alpha | digit | lower | upper | xdigit
+        interval = "{" m "}" | "{" m "," n "}"   (decimal, m <= n <= 1000)
+
+    then RE2 must compile it. "" = accepted."""
+    b = p.encode("utf-8", "surrogatepass")
+    if len(b) > USERNAME_PATTERN_MAX:
+        return f"at most {USERNAME_PATTERN_MAX} characters"
+    if len(b) < 2 or b[:1] != b"^" or b[-1:] != b"$":
+        return "must be anchored (^…$)"
+    if any(c < 0x21 or c > 0x7E for c in b):
+        return "only printable ASCII without spaces"
+    body = b[1:-1]
+    i = 0
+    while i < len(body):
+        c = body[i:i + 1]
+        if c == b"[":
+            n, why = _pattern_class(body[i:])
+        elif c.decode() not in PATTERN_SPECIAL:
+            n, why = 1, ""
+        else:
+            n, why = 0, (f"'{c.decode()}' at {i + 1} is not a literal, a bracket class or an interval after one (only what "
+                         "RE2 and busybox ERE read alike)")
+        if why:
+            return why
+        i += n
+        if i < len(body) and body[i:i + 1] == b"{":
+            n, why = _pattern_interval(body[i:])
+            if why:
+                return why
+            i += n
+    try:
+        re2.compile(p, _RE2_OPTIONS)
+    except re2.error as e:
+        msg = e.args[0].decode() if e.args and isinstance(e.args[0], bytes) else str(e)
+        return f"error parsing regexp: {msg}"
+    return ""
+
+
+def go_var_refs(s: str) -> List[Tuple[str, bool]]:
+    """varRefs: the interpolations of compose value s ($$ is a literal $):
+    (name, exactly ${NAME})."""
+    out: List[Tuple[str, bool]] = []
+    i = 0
+    while i < len(s):
+        if s[i] != "$":
+            i += 1
+            continue
+        if i + 1 < len(s) and s[i + 1] == "$":
+            i += 2
+            continue
+        j = i + 1
+        braced = j < len(s) and s[j] == "{"
+        if braced:
+            j += 1
+        k = j
+        while k < len(s) and (s[k] == "_" or "A" <= s[k] <= "Z" or "a" <= s[k] <= "z" or "0" <= s[k] <= "9"):
+            k += 1
+        if k > j:
+            out.append((s[j:k], braced and k < len(s) and s[k] == "}"))
+        i += 1
+    return out
+
+
+def folder_gid_var(key: str) -> str:
+    """FolderGIDVar: the variable the Hub writes a folder option's gid to."""
+    return FOLDER_VAR_PREFIX + "GID_" + key.upper()
+
+
+def names_secrets_volume_key(s: Any) -> bool:
+    """NamesSecretsVolumeKey: s (folded) names or embeds the Hub's secrets volume key."""
+    return isinstance(s, str) and SECRETS_VOLUME_KEY in fold_key(s.strip())
+
+
 class _SpecCheck:
     """ValidateSettingsSpec over one template (contract §13)."""
 
@@ -4547,10 +4777,20 @@ class _SpecCheck:
     def err(self, msg: str, hint: str = SETTINGS_HINT) -> None:
         self.r.error(self.t.m_where, msg, hint)
 
+    def cerr(self, msg: str, hint: str = SETTINGS_HINT) -> None:
+        self.r.error(self.t.c_where, msg, hint)
+
+    @property
+    def routerless(self) -> bool:
+        """routerlessOf: method custom and no HTTP router (§3)."""
+        return _str(self.auth, "method") == "custom" and not self.routers
+
     def run(self) -> None:
+        self.check_reserved_var_refs()
         self.check_files()
         self.check_hooks()
         self.check_reload()
+        self.check_secret_mounters()
         spec = self.m.get("settings")
         if not isinstance(spec, dict):
             return
@@ -4592,6 +4832,279 @@ class _SpecCheck:
                 self.err(f"setting {_str(o, 'key')}: {e}")
                 continue
             self.warnings(o)
+        self.check_username_pattern_env()
+
+    # file sharing: compose-level rules
+
+    def check_reserved_var_refs(self) -> None:
+        """reservedVarRefs (F36): ${PORTCULLIS_LOCAL_NETWORKS} only exactly so;
+        ${PORTCULLIS_FOLDER_GID_<KEY>} only as a whole environment: value of
+        the service <KEY>'s folder block targets; no other PORTCULLIS_FOLDER_*."""
+        allowed: Dict[str, List[str]] = {}
+        for o in setting_options(self.m):
+            tg = o.get("target")
+            if o.get("type") == "path" and isinstance(o.get("folder"), dict) and isinstance(tg, dict) and _str(tg, "service"):
+                allowed.setdefault(folder_gid_var(_str(o, "key")), []).append(_str(tg, "service"))
+        ok_count: Dict[str, int] = {}
+        for svc in sorted(self.env):
+            for val in self.env[svc].values():
+                if val is None:
+                    continue
+                for name, svcs in allowed.items():
+                    if val == "${" + name + "}" and svc in svcs:
+                        ok_count[name] = ok_count.get(name, 0) + 1
+
+        def folder_refusal(name: str) -> None:
+            self.cerr(f"{name} is set by the Hub: only ${{PORTCULLIS_FOLDER_GID_<KEY>}} may be read, exactly so, as a whole "
+                      "environment: value of the service that <KEY>'s folder block targets",
+                      "PORTCULLIS_FOLDER_GID_<KEY> is for a template that applies a path option's folder gid itself "
+                      "(folder.joins_group: template); " + FOLDERS_HINT)
+        seen: Dict[str, int] = {}
+        for sc in self.scalars:
+            for name, exact in go_var_refs(sc):
+                if name == VAR_LOCAL_NETWORKS:
+                    if not exact:
+                        self.cerr(f"{VAR_LOCAL_NETWORKS} may appear only as exactly ${{{VAR_LOCAL_NETWORKS}}} (no default or "
+                                  f"alternate form, no bare ${VAR_LOCAL_NETWORKS})",
+                                  "the Hub always writes it (an empty value means loopback only): a default would widen what "
+                                  "the app allows; " + FOLDERS_HINT)
+                        return
+                elif name.startswith(FOLDER_VAR_PREFIX):
+                    ref = "${" + name + "}"
+                    whole = sc == ref or (sc.endswith("=" + ref) and bool(ENV_KEY_RE.fullmatch(sc[:-len("=" + ref)])))
+                    if not exact or not whole or not allowed.get(name):
+                        folder_refusal(name)
+                        return
+                    seen[name] = seen.get(name, 0) + 1
+        for name in sorted(seen):
+            if seen[name] > ok_count.get(name, 0):
+                folder_refusal(name)
+                return
+
+    def secret_mounters(self) -> Set[str]:
+        return {_str(o["mount"], "service") for o in setting_options(self.m)
+                if o.get("type") == "person_secret" and isinstance(o.get("mount"), dict)}
+
+    def check_secret_mounters(self) -> None:
+        """The Hub's pre-up check (secretsmount.go, Task 6 fix round 1b): with
+        a person_secret mount, every service's pid / ipc stays private (no
+        host, container:* or service:*, in either direction) and no service
+        takes a mounter's volumes; and (contract §13.17, this repo's rule)
+        every published port is lan_only."""
+        mounters = self.secret_mounters()
+        if not mounters:
+            return
+        hint = ("a shared pid or ipc namespace reaches the hash files of the service mounting a person_secret "
+                "(/proc/<pid>/root) or its memory; " + SHARING_HINT)
+        for n in sorted(self.services):
+            svc = self.services[n]
+            for field in ("pid", "ipc"):
+                val = svc.get(field)
+                lv = scalar_text(val).strip().lower() if val is not None else ""
+                if lv in ("", "private") or (field == "ipc" and lv in ("shareable", "none")):
+                    continue
+                self.cerr(f"service {n} shares the {field} namespace {scalar_text(val)}: the Hub refuses to start a "
+                          "template with a person_secret mount whose services share a pid or ipc namespace", hint)
+            for vf in as_list(svc.get("volumes_from")):
+                vf = scalar_text(vf)
+                src = vf[len("service:"):] if vf.startswith("service:") else vf
+                src = src.split(":", 1)[0]
+                if vf.startswith("container:") or src in mounters:
+                    self.cerr(f"service {n} takes the volumes of {vf} (volumes_from): it would read the person_secret "
+                              "hash files", hint)
+        for p in self.m.get("ports") or []:
+            if isinstance(p, dict) and p.get("lan_only") is not True:
+                self.err(f"port {_str(p, 'key')}: a template with a person_secret option publishes only lan_only ports: "
+                         "set lan_only: true", "file-sharing ports are for the local networks only (contract §13.17); "
+                         "the doctor judges their binding (§14.7)")
+
+    def check_username_pattern_env(self) -> None:
+        """usernamePatternEnv: a compose PORTCULLIS_USERNAME_PATTERN is a
+        person_secret's username.pattern with every $ written $$ (§13.2)."""
+        patterns = set()
+        for o in setting_options(self.m):
+            u = o.get("username")
+            if o.get("type") == "person_secret" and isinstance(u, dict) and _str(u, "pattern"):
+                patterns.add(_str(u, "pattern"))
+        for svc in sorted(self.env):
+            if USERNAME_PATTERN_VAR not in self.env[svc]:
+                continue
+            val = self.env[svc][USERNAME_PATTERN_VAR]
+            if val is None or "$" in val.replace("$$", "") or val.replace("$$", "$") not in patterns:
+                self.cerr(f"service {svc}: {USERNAME_PATTERN_VAR} must be a person_secret option's username.pattern with "
+                          "every $ written as $$", "the script and the Hub apply one username rule; " + SHARING_HINT)
+
+    # file sharing: the two types (filesharing.go)
+
+    def file_sharing_template(self, o: Dict[str, Any]) -> None:
+        """F1: a router-less custom template whose access group is the population."""
+        if not self.routerless or self.auth.get("group_access") is not True or not _str(self.auth, "access_group"):
+            raise _Refuse(f"{o.get('type')} needs a router-less template: auth.method custom with no HTTP router, "
+                          "group_access: true and an auth.access_group (who gets one)")
+
+    @staticmethod
+    def person_fields_refused(o: Dict[str, Any], *extra: Tuple[str, bool]) -> None:
+        fs = [("scope", _str(o, "scope") != ""), ("default", _has(o, "default")), ("required", o.get("required") is True),
+              ("resolve", _str(o, "resolve") != ""), ("resolve_choices", _set(o, "resolve_choices")),
+              ("group_values", _set(o, "group_values")), ("privileged", o.get("privileged") is True),
+              ("requires", _set(o, "requires")), ("requires_any", _set(o, "requires_any")),
+              ("admin_override", o.get("admin_override") is True), ("unique", o.get("unique") is True),
+              ("generate", _has(o, "generate")), ("writes_as", _has(o, "writes_as"))]
+        for f, on in fs + list(extra):
+            if on:
+                raise _Refuse(f"{o.get('type')} takes no {f} (the Hub sets one value per person)")
+
+    def person_secret(self, o: Dict[str, Any]) -> None:
+        self.file_sharing_template(o)
+        self.person_fields_refused(o, ("self_visible", _has(o, "self_visible")), ("checks", _set(o, "checks")))
+        if _str(o, "hash") != "nt":
+            raise _Refuse("hash must be nt (the NT hash)")
+        length = o.get("length") if isinstance(o.get("length"), int) and not isinstance(o.get("length"), bool) else 0
+        if length < PERSON_SECRET_MIN_LENGTH:
+            raise _Refuse(f"length {length} must be at least {PERSON_SECRET_MIN_LENGTH}")
+        if length % 4:
+            raise _Refuse(f"length {length} must be a multiple of 4 (the password is shown in groups of 4)")
+        if o.get("delivery") != "file":
+            raise _Refuse("a person_secret takes exactly delivery: file (its hash files are mounted at mount); env, claim, "
+                          "header, hook and data-file deliveries are refused")
+        applies = _str(o, "applies")
+        if applies not in ("", "live"):
+            raise _Refuse(f"applies {applies}: a person_secret applies live (its credential_change hook)")
+        mt = self.secret_mount(o)
+        if o.get("revoke_on_leave") is not True:
+            raise _Refuse("revoke_on_leave must be true (a person who leaves loses the password)")
+        if _str(o, "on_restore") != "void":
+            raise _Refuse("on_restore must be void (a restore voids every password)")
+        self.username_rule(o.get("username"))
+        for i, line in enumerate(o.get("info") or []):
+            try:
+                self.info_line(line if isinstance(line, dict) else {})
+            except _Refuse as e:
+                raise _Refuse(f"info[{i}]: {e}") from None
+        svc = _str(mt, "service")
+        for h in self.m.get("hooks") or []:
+            if isinstance(h, dict) and _str(h, "service") == svc and "credential_change" in (h.get("when") or []):
+                return
+        raise _Refuse(f"a person_secret needs a hook on service {svc} (its mount.service) whose when lists credential_change: "
+                      "it applies revocations live")
+
+    def secret_mount(self, o: Dict[str, Any]) -> Dict[str, Any]:
+        mt = o.get("mount")
+        if not isinstance(mt, dict):
+            raise _Refuse("a person_secret needs mount {service, path}: where its hash files are mounted read-only")
+        svc, path = _str(mt, "service"), _str(mt, "path")
+        if svc not in self.services:
+            raise _Refuse(f"mount.service {svc} is not in compose.yml")
+        if not valid_mount(path):
+            raise _Refuse(f"mount.path {_q(path)} must be an absolute, clean container directory (no ':')")
+        for f in self.m.get("files") or []:
+            if isinstance(f, dict) and _str(f, "service") == svc and _nested(_str(f, "mount"), path):
+                raise _Refuse(f"mount.path {path} collides with files[{_str(f, 'name')}] ({_str(f, 'mount')}) on service {svc}")
+        options = setting_options(self.m)
+        mine = next((i for i, x in enumerate(options) if x is o), len(options))
+        for i, p in enumerate(options):
+            if p is o or _str(p, "key") == _str(o, "key"):
+                continue
+            tg, pm = p.get("target"), p.get("mount")
+            if p.get("type") == "path" and isinstance(tg, dict) and _str(tg, "service") == svc and _nested(_str(tg, "mount"), path):
+                raise _Refuse(f"mount.path {path} collides with setting {_str(p, 'key')}'s target {_str(tg, 'mount')} on service {svc}")
+            if p.get("type") == "person_secret" and isinstance(pm, dict) and _str(pm, "service") == svc \
+                    and _nested(_str(pm, "path"), path) and i < mine:
+                raise _Refuse(f"mount.path {path} collides with setting {_str(p, 'key')}'s mount {_str(pm, 'path')} on service {svc}")
+        return mt
+
+    @staticmethod
+    def username_rule(u: Any) -> None:
+        """checkUsernameRule (None = no rule)."""
+        if not isinstance(u, dict):
+            return
+        pat = _str(u, "pattern")
+        if pat:
+            why = username_pattern_problem(pat)
+            if why:
+                raise _Refuse(f"username.pattern {_q(pat)}: {why}")
+        for r in u.get("reserved") or []:
+            r = scalar_text(r)
+            if r == "" or blen(r) > RESERVED_NAME_MAX or r != r.lower() or has_control(r) or " " in r or "\t" in r:
+                raise _Refuse(f"username.reserved {_q(r)}: want lowercase names (at most {RESERVED_NAME_MAX} characters, no spaces)")
+        reason = _str(u, "reason")
+        if reason.strip() == "" or len(reason) > USERNAME_REASON_MAX or has_control(reason):
+            raise _Refuse(f"username.reason must be one line of 1-{USERNAME_REASON_MAX} characters (shown to a person whose "
+                          "name the app can't serve)")
+
+    def info_line(self, line: Dict[str, Any]) -> None:
+        label, value = _str(line, "label"), _str(line, "value")
+        if label.strip() == "" or len(label) > INFO_LABEL_MAX or has_control(label):
+            raise _Refuse(f"label must be one line of 1-{INFO_LABEL_MAX} characters")
+        if value == "" or len(value) > INFO_VALUE_MAX or has_control(value):
+            raise _Refuse(f"value must be one line of 1-{INFO_VALUE_MAX} characters")
+        i = 0
+        while i < len(value):
+            c = value[i]
+            if c == "}":
+                raise _Refuse(f"value {_q(value)}: a }} outside a placeholder")
+            if c == "{":
+                j = value.find("}", i)
+                if j < 0:
+                    raise _Refuse(f"value {_q(value)}: an unclosed {{")
+                why = self.placeholder(value[i + 1:j])
+                if why:
+                    raise _Refuse(f"value {_q(value)}: {why}")
+                i = j
+            i += 1
+
+    def placeholder(self, p: str) -> str:
+        """One {…} of an info value (without the braces): the problem, or ""."""
+        def port(k: str) -> str:
+            if not PORT_KEY_RE.fullmatch(k):
+                return f"{{{p}}}: {_q(k)} is not a port key"
+            if any(isinstance(pt, dict) and _str(pt, "key") == k for pt in self.m.get("ports") or []):
+                return ""
+            return f"{{{p}}}: no declared port {k} (ports[].key)"
+        if p == "user":
+            return ""
+        if p.startswith("value:"):
+            k = p[len("value:"):]
+            o = self.opts.get(k)
+            if o is None:
+                return f"{{{p}}}: no such option"
+            if scope_of(o) != "instance" or o.get("type") not in INFO_VALUE_TYPES:
+                return f"{{{p}}}: only an instance string, int, enum or bool option may be shown"
+            if o.get("self_visible") is not True:
+                return f"{{{p}}}: setting {k} must set self_visible: true to be shown"
+            return ""
+        if p.startswith("port:"):
+            return port(p[len("port:"):])
+        if p.startswith("port_suffix:"):
+            k, colon, d = p[len("port_suffix:"):].partition(":")
+            if not colon:
+                return f"{{{p}}}: want {{port_suffix:<KEY>:<default port>}}"
+            if not re.fullmatch(r"[1-9][0-9]{0,4}", d, re.ASCII) or int(d) > 65535:
+                return f"{{{p}}}: default {_q(d)} must be a port number (1-65535)"
+            return port(k)
+        return f"{{{p}}} is not a placeholder ({{user}}, {{value:<key>}}, {{port:<KEY>}}, {{port_suffix:<KEY>:<default>}})"
+
+    def person_id(self, o: Dict[str, Any]) -> None:
+        self.file_sharing_template(o)
+        self.person_fields_refused(o)
+        if _str(o, "pool") not in PERSON_ID_POOLS:
+            raise _Refuse("pool must be posix_uid (the Hub-wide uid pool)")
+        if o.get("self_visible") is not False:
+            raise _Refuse("a person_id needs self_visible: false (never shown on My apps)")
+        why = self.folders.checks(o)
+        if why:
+            raise _Refuse(why)
+        raw = o.get("delivery")
+        ds = [raw] if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+        if not ds:
+            raise _Refuse("a person_id needs a file delivery ({file: {name, field}}: the people section of a data file)")
+        for d in ds:
+            if not isinstance(d, dict) or not isinstance(d.get("file"), dict) or any(_has(d, k) for k in ("env", "claim", "header", "hook", "render")):
+                raise _Refuse("a person_id takes only file deliveries ({file: {name, field}})")
+            self.file(o, d["file"])
+            fname = _str(d["file"], "name")
+            if _str(o, "applies") == "live" and _str(self.files[fname], "on_membership_change") != "hook":
+                raise _Refuse(f"applies: live means a hook applies it: file {fname} needs on_membership_change: hook")
 
     # files / hooks / reload
 
@@ -4613,6 +5126,8 @@ class _SpecCheck:
                 problems.append(f"service {svc} is not in compose.yml")
             if not valid_mount(mount):
                 problems.append(f"mount {json.dumps(mount)} must be an absolute, clean container directory (no ':')")
+            if _str(f, "format") not in ("", "json", "tsv"):
+                problems.append(f"format {json.dumps(_str(f, 'format'))} must be json or tsv")
             if omc in ("", "none", "restart"):
                 pass
             elif omc == "reload":
@@ -4654,10 +5169,11 @@ class _SpecCheck:
                 problems.append("user contains control characters")
             when = h.get("when") or []
             if not when:
-                problems.append("when must list at least one trigger (start, settings_change, membership_change)")
+                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change)")
             for tr in when:
                 if tr not in HOOK_TRIGGERS:
-                    problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change or membership_change")
+                    problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change, membership_change or "
+                                    "credential_change")
             if _has(h, "timeout"):
                 try:
                     ns = go_parse_duration(scalar_text(h["timeout"]))
@@ -4696,9 +5212,9 @@ class _SpecCheck:
             return f"type {t} is template contract v2: {OLD_TYPES[t]}"
         if t == "folder":
             return FOLDER_TYPE_REFUSAL
-        what, feat = reserved_use(o)
-        if feat:
-            return f"{what} needs {feat}, which this Hub doesn't implement"
+        why = file_sharing_fields(o)
+        if why:
+            return why
         if t not in BUILTIN_TYPES:
             return f"unknown type {json.dumps(t)}"
         return ""
@@ -4717,8 +5233,8 @@ class _SpecCheck:
             if isinstance(c, dict) and _str(c, "secret_env"):
                 owner[_str(c, "secret_env")] = f"keycloak client {_str(c, 'client_id')} secret_env"
         for i, o in enumerate(options):
-            if i in bad:
-                continue
+            if i in bad or o.get("type") in PERSON_TYPES:
+                continue   # person_secret / person_id: no env (their own checks refuse an env delivery)
             key = _str(o, "key")
             try:
                 for d in o.get("delivery") if isinstance(o.get("delivery"), list) else []:
@@ -4774,23 +5290,29 @@ class _SpecCheck:
         sec = _str(o, "section")
         if sec and sec not in self.sections:
             raise _Refuse(f"section {json.dumps(sec)} is not listed in settings.sections")
+        applies = _str(o, "applies")
+        if applies and applies not in APPLIES:
+            raise _Refuse(f"applies {json.dumps(applies)} must be live, reload, next_request, next_sign_in, restart or account_creation")
+        if o.get("type") == "person_secret":
+            return self.person_secret(o)
+        if o.get("type") == "person_id":
+            return self.person_id(o)
         scope = scope_of(o)
         if scope not in SCOPES:
             raise _Refuse(f"scope {json.dumps(_str(o, 'scope'))} must be instance, person, group or person_entered")
         why = self.folders.folder_option(o) or self.folders.checks(o)
         if why:
             raise _Refuse(why)
-        applies = _str(o, "applies")
-        if applies and applies not in APPLIES:
-            raise _Refuse(f"applies {json.dumps(applies)} must be live, reload, next_request, next_sign_in, restart or account_creation")
         if scope == "person_entered":
             self.person_entered(o)
         t = o.get("type")
         sv = o.get("self_visible")
         if o.get("privileged") and scope != "person":
             raise _Refuse("privileged needs scope: person")
-        if sv is not None and scope != "person" and not (scope == "person_entered" and sv):
-            raise _Refuse("self_visible needs scope: person")
+        # An instance option may set self_visible: true (never false) for a
+        # person_secret info line's {value:<key>} (§13.1).
+        if sv is not None and scope != "person" and not (scope in ("person_entered", "instance") and sv is True):
+            raise _Refuse("self_visible needs scope: person (an instance option may only set self_visible: true)")
         if (_str(o, "resolve") or o.get("resolve_choices")) and scope != "person":
             raise _Refuse("resolve and resolve_choices need scope: person")
         if _has(o, "group_values") and scope != "person":
@@ -4936,17 +5458,19 @@ class _SpecCheck:
             raise _Refuse("privileged is for enum and bool options (a role, an admin flag)")
 
     def requires(self, o: Dict[str, Any]) -> None:
-        reqs = [scalar_text(k) for k in o.get("requires") or []]
-        if reqs and scope_of(o) != "instance":
-            raise _Refuse("requires is for instance options")
-        for k in reqs:
-            ro = self.opts.get(k)
-            if k == _str(o, "key"):
-                raise _Refuse("requires names itself")
-            if ro is None:
-                raise _Refuse(f"requires {k}: no such option")
-            if scope_of(ro) != "instance":
-                raise _Refuse(f"requires {k}: not an instance option")
+        """requires and requires_any (§13.9): instance options naming other instance options."""
+        for field in ("requires", "requires_any"):
+            reqs = [scalar_text(k) for k in o.get(field) or []]
+            if reqs and scope_of(o) != "instance":
+                raise _Refuse(f"{field} is for instance options")
+            for k in reqs:
+                ro = self.opts.get(k)
+                if k == _str(o, "key"):
+                    raise _Refuse(f"{field} names itself")
+                if ro is None:
+                    raise _Refuse(f"{field} {k}: no such option")
+                if scope_of(ro) != "instance":
+                    raise _Refuse(f"{field} {k}: not an instance option")
 
     def path_and_secret(self, o: Dict[str, Any]) -> None:
         if o.get("type") == "path":
@@ -5136,6 +5660,11 @@ class _SpecCheck:
         fname = _str(fd, "name")
         if fname not in self.files:
             raise _Refuse(f"file {fname} is not declared in files")
+        if _str(self.files[fname], "format") == "tsv":
+            if o.get("type") == "table":
+                raise _Refuse(f"file {fname} is tsv, which has no table rows: deliver a table to a JSON file")
+            if o.get("type") == "secret":
+                raise _Refuse(f"file {fname} is tsv: a secret goes only to a JSON file's {fname}.secrets.json")
         scope = scope_of(o)
         if scope in ("instance", "group"):
             if _str(fd, "field"):
@@ -5284,6 +5813,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     check_dependabot(all_ids, r)
     cross = Report()
     check_cross(list(templates.values()), cross)
+    check_sync_copies(list(templates.values()), cross)
     r.errors += [e for e in cross.errors if e.split("/", 1)[0] in ids]
 
     for w in r.warnings:
