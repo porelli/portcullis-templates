@@ -1,0 +1,42 @@
+services:
+  timemachine:
+    image: mbentley/timemachine:smb-20261104@sha256:0085d47ff4eedac257dd814465190286138cb5631045364ec8d33a0f2c4dde90
+    # mbentley's /entrypoint.sh never runs (contract §13.17): portcullis-sync
+    # renders everything, then s6 runs smbd alone.
+    entrypoint: ["/portcullis/bin/start"]
+    command: []
+    environment:
+      PORTCULLIS_FLAVOUR: timemachine
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-timemachine}
+      PORTCULLIS_LOCAL_NETWORKS: ${PORTCULLIS_LOCAL_NETWORKS}
+      PORTCULLIS_SMB_PORT: ${TM_SMB:-445}
+      # = settings share_password.username (tests/validate.py checks both).
+      PORTCULLIS_USERNAME_PATTERN: '^[a-z_][a-z0-9_.-]{0,31}$$'
+      PORTCULLIS_USERNAME_RESERVED: >-
+        root bin daemon sys adm tty disk lp kmem wheel floppy mail news uucp cron
+        audio cdrom dialout ftp sshd input tape video netdev kvm games shadow www-data
+        users ntp abuild utmp ping nogroup nobody avahi messagebus catchlog sync
+        shutdown halt guest timemachine
+      MIMIC_MODEL: ${MIMIC_MODEL:-TimeCapsule8,119}
+    volumes:
+      - ./templates/timemachine/bin:/portcullis/bin:ro
+      # The storage setting replaces this with its host path.
+      - timemachine-data:/opt
+    # Passdb and Samba's state on tmpfs: no hash reaches a volume or a backup.
+    tmpfs:
+      - /run/portcullis:mode=0700
+      - /run/samba:mode=0755
+      - /var/lib/samba:mode=0755
+      - /var/cache/samba:mode=0755
+      - /var/log/samba:mode=0755
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    cap_drop: [ALL]
+    # Why each one: auth.notes.
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    networks: [default]
+    restart: unless-stopped
+
+volumes:
+  timemachine-data: {}

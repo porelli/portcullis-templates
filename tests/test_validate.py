@@ -2783,6 +2783,8 @@ class TestFolders(Case):
             ("plex", "tv_path"): {"access": "read", "runs_as": {"uid_env": "PLEX_UID", "gid_env": "PLEX_GID"}, "joins_group": "gid_env"},
             ("plex", "music_path"): {"access": "read", "runs_as": {"uid_env": "PLEX_UID", "gid_env": "PLEX_GID"}, "joins_group": "gid_env"},
             ("motioneye", "media_path"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
+            ("timemachine", "storage"): {"access": "write", "runs_as": {"uid_from": "uid", "gid_from": "uid"}, "joins_group": "template"},
+            ("timemachine", "avahi_services_dir"): {"access": "write", "runs_as": {"uid": 0, "gid": 0}},
         }
         seen = set()
         for app in sorted(os.listdir(root)):
@@ -3310,6 +3312,33 @@ settings:
         errors, _ = self.run_raw(FS_HEAD, FS_ROUTED)
         self.assertError(errors, "auth.method custom with group_access: true needs auth.native_login.supported: true")
 
+    def test_routerless_group_access_without_person_type_warns(self) -> None:
+        """Task 15 Low: a router-less template's access group only decides
+        who gets a person_secret / person_id; without one, group_access
+        gates nothing (a warning)."""
+        _, warnings = self.run_raw(FS_HEAD, FS_COMPOSE)
+        self.assertTrue([w for w in warnings if "gates nothing" in w], "\n".join(warnings))
+        _, warnings = self.run_raw(fs_smb(FS_PS), FS_COMPOSE)
+        self.assertFalse([w for w in warnings if "gates nothing" in w], "\n".join(warnings))
+        _, warnings = self.run_raw(FS_HEAD.replace("group_access: true", "group_access: false", 1), FS_COMPOSE)
+        self.assertFalse([w for w in warnings if "gates nothing" in w], "\n".join(warnings))
+
+    def test_username_reserved_env(self) -> None:
+        """A compose PORTCULLIS_USERNAME_RESERVED is the person_secret's
+        username.reserved, space-separated (the script refuses the same
+        names as the Hub)."""
+        def env(val: str) -> str:
+            return fs_compose(smb=f"    environment:\n      PORTCULLIS_USERNAME_RESERVED: '{val}'\n")
+        m = fs_smb(FS_PS)
+        self.cases([
+            ("equal", m, env("root nobody"), "", ""),
+            ("unset", m, FS_COMPOSE, "", ""),
+            ("missing a name", m, env("root"), "", "PORTCULLIS_USERNAME_RESERVED"),
+            ("another order", m, env("nobody root"), "", "PORTCULLIS_USERNAME_RESERVED"),
+            ("extra space", m, env("root  nobody"), "", "PORTCULLIS_USERNAME_RESERVED"),
+            ("without a person_secret", fs_smb(), env("root nobody"), "", "PORTCULLIS_USERNAME_RESERVED"),
+        ])
+
     def test_zero_routers_need_custom(self) -> None:
         """Hub TestZeroRoutersNeedCustom (F48)."""
         for method in ("forward-auth", "header-auth", "native-oidc", "mtls", "public"):
@@ -3450,8 +3479,9 @@ settings:
         same = b"#!/bin/sh\necho sync\n"
         self.assertClean(make({"samba": same, "timemachine": same}))
         errors = make({"samba": same, "timemachine": same[:-1] + b"!"})
-        self.assertError(errors, "timemachine/bin/portcullis-sync")
-        self.assertError(errors, "samba/bin/portcullis-sync")
+        # Filed under both templates (Task 15 Low): each one's error list shows it.
+        self.assertTrue([e for e in errors if e.startswith("samba/bin/portcullis-sync:")], "\n".join(errors))
+        self.assertTrue([e for e in errors if e.startswith("timemachine/bin/portcullis-sync:")], "\n".join(errors))
         self.assertError(make({"samba": same, "timemachine": same, "demo": same}), "demo/bin/portcullis-sync")
         self.assertError(make({"samba": same}), "timemachine")
         # Until the file-sharing templates land (plan 3 Tasks 16 / 17): none present is fine.

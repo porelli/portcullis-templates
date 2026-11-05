@@ -1,0 +1,9 @@
+#!/bin/sh
+# s6 run script of smbd: the installed smb.conf must still verify
+# (portcullis-sync --check, testparm against the hardened table) before
+# every start or restart; otherwise smbd doesn't start (fail closed).
+if ! /portcullis/bin/portcullis-sync --check; then
+  sleep 5
+  exit 1
+fi
+exec /usr/sbin/smbd --foreground --no-process-group --debug-stdout --debuglevel="${DEBUG_LEVEL:-1}" < /dev/null

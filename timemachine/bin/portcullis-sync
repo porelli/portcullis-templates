@@ -1,0 +1,686 @@
+#!/bin/sh
+# portcullis-sync: converge Samba to the Hub's desired state (contract
+# §13.17). One reviewed copy, byte-identical in the samba and timemachine
+# templates (tests/validate.py check_sync_copies); unit tests in
+# tests/sync/test_portcullis_sync.sh.
+#
+#   portcullis-sync --boot   before smbd starts (the container's start)
+#   portcullis-sync          the Hub's sync hook (stdin: HookInput JSON)
+#   portcullis-sync --check  re-verify the installed smb.conf (smbd's run)
+#   portcullis-sync --stop   remove the Bonjour file (container stop)
+#
+# Inputs: /portcullis/data/people.tsv (the Hub's tsv people file, uid 10001,
+# 0640), /portcullis/secrets/<user>.nt (one NT hash per person, uid 10001,
+# 0600), env PORTCULLIS_FLAVOUR, PORTCULLIS_INSTANCE,
+# PORTCULLIS_LOCAL_NETWORKS, PORTCULLIS_SMB_PORT,
+# PORTCULLIS_USERNAME_PATTERN, PORTCULLIS_USERNAME_RESERVED, MIMIC_MODEL
+# (+ PORTCULLIS_FOLDER_GID_SHARE<n>_FOLDER for samba).
+#
+# Owns, entirely: /etc/samba/smb.conf, the smbpasswd passdb
+# (/var/lib/samba/private, tmpfs), every Unix account and group with an id
+# in 10000-60999, /run/portcullis (tmpfs), and
+# /portcullis/avahi/portcullis-<instance>.service.
+#
+# Never: a hash or password on argv or in output (hashes travel in files
+# only and are read by awk / shell builtins), an empty `valid users`, an
+# allow-all `hosts allow`, a username used as a path before it passed the
+# username rule, a chown of a folder it didn't just create.
+#
+# Exit: 0 applied; 2 bad configuration (env); 3 Local networks empty or
+# invalid; 4 smb.conf refused (testparm differs from the hardened table, or
+# it can't be installed); 1 anything else. At hook time every failure after
+# a change started brings smbd down (fail closed).
+set -eu
+umask 077
+LC_ALL=C
+export LC_ALL
+
+# A scratch root for the unit tests; empty in the containers.
+R=${PORTCULLIS_SYNC_ROOT:-}
+
+HUB_UID=10001             # owner of the Hub's files (contract §13.7)
+UID_MIN=20000             # pool posix_uid (contract §13.16)
+UID_MAX=59999
+ID_MIN=10000              # ids of the accounts and groups this script owns
+ID_MAX=60999              # (people 20000-59999, folder groups 60000-60999)
+SIZE_BUDGET=40            # seconds for all du runs of one hook run
+TAB=$(printf '\t')
+NL='
+'
+
+DATA=$R/portcullis/data/people.tsv
+SECRETS=$R/portcullis/secrets
+AVAHI=$R/portcullis/avahi
+RUN=$R/run/portcullis
+STATE=$RUN/state
+SMBCONF=$R/etc/samba/smb.conf
+PRIVATE=$R/var/lib/samba/private
+PASSDB_PATH=/var/lib/samba/private/smbpasswd
+S6=$R/run/portcullis-s6
+
+log() { printf 'portcullis-sync: %s\n' "$*" >&2; }
+die() { _c=$1; shift; log "$*"; exit "$_c"; }
+
+# match <ERE> <string>: the whole one-line string matches.
+match() {
+  case $2 in *"$NL"*) return 1 ;; esac
+  printf '%s\n' "$2" | grep -Eq -e "$1"
+}
+
+# safe <string>: fit for the report as is (printable ASCII without " and \,
+# 1-64 bytes), so no JSON escaping is ever needed.
+safe() {
+  [ -n "$1" ] && [ "${#1}" -le 64 ] || return 1
+  case $1 in *[\"\\]*) return 1 ;; esac
+  match '^[ -~]+$' "$1"
+}
+
+MODE=hook
+[ $# -le 1 ] || die 2 "usage: portcullis-sync [--boot|--check|--stop]"
+case ${1:-} in
+  "") ;;
+  --boot) MODE=boot ;;
+  --check) MODE=check ;;
+  --stop) MODE=stop ;;
+  *) die 2 "usage: portcullis-sync [--boot|--check|--stop]" ;;
+esac
+
+# ── configuration ────────────────────────────────────────────
+INST=${PORTCULLIS_INSTANCE:-}
+{ match '^[a-z0-9]+(-[a-z0-9]+)*$' "$INST" && [ "${#INST}" -le 63 ]; } \
+  || die 2 "PORTCULLIS_INSTANCE is not an instance id"
+AVAHI_FILE=$AVAHI/portcullis-$INST.service
+
+if [ "$MODE" = stop ]; then
+  if [ -e "$AVAHI_FILE" ]; then rm -f "$AVAHI_FILE" || die 1 "can't remove $AVAHI_FILE"; fi
+  exit 0
+fi
+
+case ${PORTCULLIS_FLAVOUR:-} in
+  timemachine) TREE=/opt; TREE_OPT=storage; LABEL="Time Machine" ;;
+  samba) TREE=/homes; TREE_OPT=homes; LABEL=home ;;
+  *) die 2 "PORTCULLIS_FLAVOUR must be samba or timemachine" ;;
+esac
+FLAVOUR=$PORTCULLIS_FLAVOUR
+
+PORT=${PORTCULLIS_SMB_PORT:-445}
+{ match '^[1-9][0-9]{0,4}$' "$PORT" && [ "$PORT" -le 65535 ]; } || die 2 "PORTCULLIS_SMB_PORT is not a port"
+MODEL=${MIMIC_MODEL:-TimeCapsule8,119}
+match '^[A-Za-z0-9,]{1,64}$' "$MODEL" || die 2 "MIMIC_MODEL is not a model identifier"
+PAT=${PORTCULLIS_USERNAME_PATTERN:-}
+{ [ -n "$PAT" ] && case $PAT in *"$NL"*) false ;; esac; } || die 2 "PORTCULLIS_USERNAME_PATTERN is not set"
+RESERVED=" $(printf '%s' "${PORTCULLIS_USERNAME_RESERVED:-}" | tr -s ' \t\n' '   ') "
+
+# Local networks (§14.7): comma-separated CIDRs -> hosts allow. Empty (or
+# anything that isn't a list of networks) never becomes an allow-all.
+NETS=
+set -f
+_ifs=$IFS
+IFS=,
+for n in ${PORTCULLIS_LOCAL_NETWORKS:-}; do
+  [ -n "$n" ] || continue
+  match '^[0-9A-Fa-f:.]+/[0-9]{1,3}$' "$n" || die 3 "Local networks: '$n' is not a network; file sharing is off"
+  match '/0+$' "$n" && die 3 "Local networks: $n allows every address; file sharing is off"
+  NETS="$NETS${NETS:+ }$n"
+done
+IFS=$_ifs
+set +f
+[ -n "$NETS" ] || die 3 "Local networks is empty; file sharing is off"
+
+mkdir -p "$RUN" "$STATE"
+chmod 700 "$RUN" "$STATE"
+WORK=$(mktemp -d "$RUN/work.XXXXXX")
+CONF_TMP=
+cleanup() { rm -rf "$WORK"; [ -z "$CONF_TMP" ] || rm -f "$CONF_TMP"; }
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+exec 9> "$RUN/sync.lock"
+flock 9
+
+smbd_running() { pidof smbd > /dev/null 2>&1; }
+
+stop_smbd() {
+  [ "$MODE" = hook ] || return 0
+  log "bringing smbd down (fail closed)"
+  s6-svc -d "$S6/smbd" 2> /dev/null || true
+  for p in $(pidof smbd 2> /dev/null || true); do kill -KILL "$p" 2> /dev/null || true; done
+}
+
+# fail_closed <code> <message>: after a change started.
+fail_closed() { _c=$1; shift; log "$*"; stop_smbd; exit "$_c"; }
+
+# ── smb.conf verification (testparm, F38) ────────────────────
+# Keys a share may print only when the script rendered them: anything else
+# would loosen what [global] says.
+SHARE_GUARDED='hosts allow|hosts deny|guest ok|guest only|wide links|force user|admin users|include|root preexec|root postexec|preexec|postexec|force group|write list|read only|valid users|invalid users|path|server smb encrypt|smb encrypt|vfs objects|follow symlinks'
+
+# verify <smb.conf> <expected>: testparm's effective values hold every
+# expected line (testparm's spellings), the sections are exactly the
+# rendered ones, no include / registry config, no share loosens [global].
+verify() {
+  if ! testparm -s -v "$1" > "$WORK/testparm.out" 2> "$WORK/testparm.err"; then
+    log "testparm refused $1: $(tail -n 3 "$WORK/testparm.err" | tr '\n' ' ')"
+    return 1
+  fi
+  awk -v OFS="$TAB" '
+    /^\[/ { s = $0; sub(/^\[/, "", s); sub(/\][[:space:]]*$/, "", s); next }
+    /^[[:space:]]*#/ { next }
+    s != "" {
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      i = index(line, " ="); if (!i) next
+      k = substr(line, 1, i - 1); v = substr(line, i + 2); sub(/^ /, "", v)
+      print s, k, v
+    }' "$WORK/testparm.out" > "$WORK/params"
+  awk -F "$TAB" -v guarded="$SHARE_GUARDED" '
+    BEGIN { n = split(guarded, g, "|"); for (i = 1; i <= n; i++) G[g[i]] = 1 }
+    FILENAME == ARGV[1] { want[$1 FS $2] = $3; wsec[$1] = 1; next }
+    {
+      line[$0] = 1; have[$1 FS $2] = $3; hsec[$1] = 1
+      if ($2 == "include" && $3 != "") bad = bad sprintf("[%s] include = %s: an include is refused\n", $1, $3)
+      if ($2 == "config backend" && $3 != "file") bad = bad sprintf("[%s] config backend = %s: only file\n", $1, $3)
+      if ($2 == "registry shares" && $3 != "No") bad = bad sprintf("[%s] registry shares = %s: refused\n", $1, $3)
+      if ($1 != "global" && ($2 in G) && !(($1 FS $2) in want)) bad = bad sprintf("[%s] %s = %s: not rendered by portcullis-sync\n", $1, $2, $3)
+    }
+    END {
+      for (k in want) if (!((k FS want[k]) in line)) {
+        split(k, a, FS)
+        bad = bad sprintf("[%s] %s: testparm shows \"%s\", expected \"%s\"\n", a[1], a[2], ((k in have) ? have[k] : "(absent)"), want[k])
+      }
+      for (s in hsec) if (!(s in wsec)) bad = bad sprintf("[%s]: a section portcullis-sync did not render\n", s)
+      for (s in wsec) if (!(s in hsec)) bad = bad sprintf("[%s]: missing from testparm\n", s)
+      printf "%s", bad
+    }' "$2" "$WORK/params" > "$WORK/verify"
+  if [ -s "$WORK/verify" ]; then
+    while IFS= read -r l; do log "smb.conf refused: $l"; done < "$WORK/verify"
+    return 1
+  fi
+}
+
+if [ "$MODE" = check ]; then
+  [ -s "$RUN/expected" ] || die 4 "no verified configuration yet"
+  verify "$SMBCONF" "$RUN/expected" || die 4 "the installed smb.conf differs from the hardened configuration"
+  exit 0
+fi
+
+# ── the Hub's input ──────────────────────────────────────────
+TRIGGER=
+if [ "$MODE" = hook ] && [ ! -t 0 ]; then
+  # Only the trigger: a credential change must apply within 8 s (§13.16).
+  TRIGGER=$(head -c 1048576 | tr -d '\n' | grep -o '"trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"' | head -n 1 \
+    | sed 's/.*"\([a-z_]*\)"$/\1/' || true)
+fi
+START=$(date +%s)
+
+# drop [-t secs] <uid> <prog> [args]: run prog as uid:uid with no other
+# group (a privilege drop, never DAC_OVERRIDE / DAC_READ_SEARCH), under
+# timeout when -t is given. busybox setpriv can't change ids, so: s6's
+# s6-applyuidgid (the Time Machine image), runit's chpst, or util-linux
+# setpriv.
+if command -v s6-applyuidgid > /dev/null 2>&1; then DROP=s6
+elif command -v chpst > /dev/null 2>&1; then DROP=chpst
+elif setpriv --help 2>&1 | grep -q -e --reuid; then DROP=setpriv
+else die 1 "no tool to drop privileges (s6-applyuidgid, chpst, util-linux setpriv)"
+fi
+drop() {
+  _t=
+  if [ "$1" = -t ]; then _t="timeout $2"; shift 2; fi
+  _u=$1
+  shift
+  case $DROP in
+    s6) $_t s6-applyuidgid -u "$_u" -g "$_u" -G "$_u" "$@" ;;
+    chpst) $_t chpst -u ":$_u:$_u" "$@" ;;
+    *) $_t setpriv --reuid="$_u" --regid="$_u" --clear-groups "$@" ;;
+  esac
+}
+as_hub() { drop $HUB_UID "$@"; }
+
+P=$WORK/people.tsv
+if ! as_hub cat -- "$DATA" > "$P" 2> /dev/null; then
+  log "can't read the people file: serving nobody"
+  : > "$P"
+fi
+if [ "$(head -n 2 "$P" | tr '\t\n' '  ')" != "version 1 instance $INST " ]; then
+  [ -s "$P" ] && log "the people file isn't a version 1 file of instance $INST: serving nobody"
+  : > "$P"
+fi
+val() { awk -F "$TAB" -v k="$1" 'NR > 2 && $1 == "value" && $2 == k { print $3; exit }' "$P"; }
+pval() { awk -F "$TAB" -v u="$1" -v k="$2" 'NR > 2 && $1 == "person" && $2 == u && $3 == k { print $4; exit }' "$P"; }
+
+: > "$WORK/findings"
+finding() {  # finding <code> <severity> <subject> <message> [option] [uid]
+  safe "$3" || { log "$1 for a name the report can't carry"; return 0; }
+  _j="{\"code\":\"$1\",\"severity\":\"$2\",\"subject\":\"$3\",\"message\":\"$4\""
+  [ -z "${5:-}" ] || _j="$_j,\"option\":\"$5\""
+  [ -z "${6:-}" ] || _j="$_j,\"uid\":$6"
+  printf '%s}\n' "$_j" >> "$WORK/findings"
+}
+
+# ── who: the username rule before any use of a name (F37) ────
+# Accounts of the image (ids outside what this script owns) are never
+# touched and their names are never a person's.
+awk -F: -v lo=$ID_MIN -v hi=$ID_MAX '!($3 ~ /^[0-9]+$/ && $3 + 0 >= lo && $3 + 0 <= hi) { print $1 }' \
+  "$R/etc/passwd" "$R/etc/group" | sort -u > "$WORK/system"
+awk -F "$TAB" 'NR > 2 && $1 == "person" && $3 == "uid" { print $2 "\t" $4 }' "$P" > "$WORK/cand.raw"
+cut -f1 "$WORK/cand.raw" | sort -u > "$WORK/names.all"
+# Hard rule (the Hub's safe path names, no "..", no leading "-" or "."),
+# then the template's pattern (busybox ERE = RE2 subset), then reserved
+# and the image's accounts.
+grep -Ex '[a-z0-9_][a-z0-9_.-]{0,63}' "$WORK/names.all" | grep -vF '..' | grep -E -e "$PAT" \
+  | while IFS= read -r u; do
+      case $RESERVED in *" $u "*) continue ;; esac
+      grep -qxF -e "$u" "$WORK/system" && continue
+      printf '%s\n' "$u"
+    done > "$WORK/names.ok" || true
+# minus <a> <b>: the lines of b that aren't lines of a (awk: busybox grep
+# -vx -f misreads an empty pattern file).
+minus() { awk 'FILENAME == ARGV[1] { k[$0] = 1; next } !($0 in k)' "$1" "$2"; }
+minus "$WORK/names.ok" "$WORK/names.all" > "$WORK/names.refused"
+while IFS= read -r u; do
+  finding name_refused info "$u" "$u isn't a valid name for file sharing"
+done < "$WORK/names.refused"
+# One whole-number uid per person, inside the pool, used by nobody else.
+awk -F "$TAB" -v lo=$UID_MIN -v hi=$UID_MAX '
+  FILENAME == ARGV[1] { ok[$1] = 1; next }
+  ($1 in ok) { n++; name[n] = $1; id[n] = $2; byname[$1]++; byid[$2]++ }
+  END {
+    for (i = 1; i <= n; i++) {
+      if (id[i] !~ /^[1-9][0-9]*$/ || length(id[i]) > 5 || id[i] + 0 < lo || id[i] + 0 > hi) { print "bad uid for " name[i] > "/dev/stderr"; continue }
+      if (byname[name[i]] > 1 || byid[id[i]] > 1) { print "uid " id[i] " / " name[i] " not unique" > "/dev/stderr"; continue }
+      print name[i] "\t" id[i]
+    }
+  }' "$WORK/names.ok" "$WORK/cand.raw" 2> "$WORK/uid.err" | sort > "$WORK/cand"
+while IFS= read -r l; do log "refused: $l"; done < "$WORK/uid.err"
+
+# The hashes, read as the Hub's uid into a root-only tmpfs file.
+: > "$WORK/hashes.raw"
+if [ -s "$WORK/cand" ]; then
+  set -f
+  # shellcheck disable=SC2046 # names passed the rule: no space, no glob
+  set -- $(cut -f1 "$WORK/cand")
+  set +f
+  # shellcheck disable=SC2016 # the inner script's own variables
+  as_hub /bin/sh -c 'd=$1; shift
+    for u do
+      f="$d/$u.nt"; h=
+      [ -f "$f" ] || continue
+      IFS= read -r h < "$f" || [ -n "$h" ] || continue
+      printf "%s\t%s\n" "$u" "$h"
+    done' portcullis-read "$SECRETS" "$@" > "$WORK/hashes.raw" 2> /dev/null || log "can't read every hash file"
+fi
+awk -F "$TAB" 'NF == 2 && length($2) == 32 && $2 !~ /[^0-9A-Fa-f]/ { print $1 "\t" toupper($2) }' \
+  "$WORK/hashes.raw" > "$WORK/hashes"
+rm -f "$WORK/hashes.raw"
+# Eligible: a valid name, a uid and a hash. user<TAB>uid
+awk -F "$TAB" 'FILENAME == ARGV[1] { h[$1] = 1; next } ($1 in h)' "$WORK/hashes" "$WORK/cand" > "$WORK/eligible"
+uid_of() { awk -F "$TAB" -v u="$1" '$1 == u { print $2; exit }' "$WORK/eligible"; }
+is_eligible() { [ -n "$(uid_of "$1")" ]; }
+
+# ── per-person folders (§13.17) ──────────────────────────────
+TDIR=$R$TREE
+: > "$WORK/home.served"
+: > "$WORK/folders"
+st() { stat -c '%u %g %a %d' "$1"; }
+is_mount() { awk -v p="$1" '$5 == p { f = 1 } END { exit !f }' "$R/proc/self/mountinfo" 2> /dev/null; }
+if [ -d "$TDIR" ] && [ ! -L "$TDIR" ]; then
+  tree_dev=$(st "$TDIR" | cut -d' ' -f4)
+  while IFS="$TAB" read -r u uid; do
+    d=$TDIR/$u
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+      finding wrong_owner problem "$u" "$u's $LABEL folder isn't a directory: it isn't served" "$TREE_OPT"
+      continue
+    fi
+    if [ ! -e "$d" ]; then
+      if mkdir -m 0700 "$d" 2> /dev/null && chown "$uid:$uid" "$d"; then
+        printf '%s\n' "$u" >> "$WORK/home.served"
+      else
+        finding owner_unwritable problem "$u" "$u's $LABEL folder can't be created" "$TREE_OPT"
+      fi
+      continue
+    fi
+    # shellcheck disable=SC2046
+    set -- $(st "$d")
+    ou=$1 og=$2 om=$3 od=$4
+    if [ "$ou" != "$uid" ]; then
+      finding former_account warning "$u" "$u's $LABEL folder belongs to a former account (uid $ou)" "$TREE_OPT" "$ou"
+      continue
+    fi
+    match '^[0-7]{3,4}$' "$om" || om=0
+    ownfs=
+    if [ "$od" != "$tree_dev" ] || is_mount "$TREE/$u"; then ownfs=1; fi
+    if [ $((0$om & 0700)) -ne $((0700)) ]; then
+      finding owner_unwritable problem "$u" "$u's $LABEL folder can't be used by its owner (mode $om)${ownfs:+; it is its own filesystem: fix it on the host}" "$TREE_OPT"
+    elif [ "$og" != "$uid" ] || [ "$om" != 700 ]; then
+      if [ -n "$ownfs" ]; then
+        finding wrong_owner warning "$u" "$u's $LABEL folder is its own filesystem: set it to $uid:$uid mode 0700 on the host (it is $ou:$og mode $om)" "$TREE_OPT"
+      else
+        finding wrong_owner warning "$u" "$u's $LABEL folder is $ou:$og mode $om, expected $uid:$uid mode 0700" "$TREE_OPT"
+      fi
+    fi
+    printf '%s\n' "$u" >> "$WORK/home.served"
+  done < "$WORK/eligible"
+  # Every top-level directory, for the report (current or former).
+  for d in "$TDIR"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    u=${d##*/}
+    match '^[a-z0-9_][a-z0-9_.-]{0,63}$' "$u" || continue
+    ou=$(st "$d" | cut -d' ' -f1)
+    match '^[0-9]+$' "$ou" || continue
+    cu=$(awk -F "$TAB" -v u="$u" '$1 == u { print $2; exit }' "$WORK/cand")
+    if [ -n "$cu" ] && [ "$cu" = "$ou" ]; then former=false; else former=true; fi
+    printf '%s\t%s\t%s\n' "$u" "$ou" "$former" >> "$WORK/folders"
+  done
+else
+  log "$TREE isn't a directory: no $LABEL folders served"
+fi
+
+# ── shares ───────────────────────────────────────────────────
+# served: user<TAB>share. Share names are refused case-insensitively when
+# Samba reserves them or another share has them (F41).
+: > "$WORK/served"
+: > "$WORK/taken"
+: > "$WORK/shares"
+share_ok() {
+  _l=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case $_l in
+    global | homes | printers | 'print$' | 'ipc$' | home)
+      finding name_refused info "$1" "the share name $1 is reserved by Samba: it isn't served"; return 1 ;;
+  esac
+  if grep -qxF -e "$_l" "$WORK/taken"; then
+    finding name_refused info "$1" "the share name $1 is used twice: only the first is served"; return 1
+  fi
+  printf '%s\n' "$_l" >> "$WORK/taken"
+}
+[ "$FLAVOUR" = samba ] && printf 'home\n' >> "$WORK/taken"
+
+render_global() {
+  cat << EOF
+# Written by portcullis-sync: every run replaces this file.
+[global]
+   server role = standalone server
+   security = user
+   workgroup = WORKGROUP
+   server string = Portcullis
+   passdb backend = smbpasswd:$PASSDB_PATH
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   log file = /dev/stdout
+   access based share enum = yes
+   hide unreadable = yes
+   invalid users = root
+   usershare max shares = 0
+   server min protocol = SMB3
+   server smb encrypt = required
+   server signing = mandatory
+   ntlm auth = ntlmv2-only
+   lanman auth = no
+   map to guest = never
+   restrict anonymous = 2
+   disable netbios = yes
+   smb ports = 445
+   wide links = no
+   hosts allow = $NETS
+   hosts deny = 0.0.0.0/0 ::/0
+   guest ok = no
+   ea support = yes
+   vfs objects = catia fruit streams_xattr
+   fruit:aapl = yes
+   fruit:metadata = stream
+   fruit:model = $MODEL
+   fruit:posix_rename = yes
+   fruit:veto_appledouble = no
+   fruit:wipe_intentionally_left_blank_rfork = yes
+   fruit:delete_empty_adfiles = yes
+EOF
+}
+# expect <section> <key> <value>: testparm -s -v must show exactly this.
+expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$WORK/expected"; }
+: > "$WORK/expected"
+expect global 'server min protocol' SMB3
+expect global 'server smb encrypt' required
+expect global 'server signing' required
+expect global 'ntlm auth' ntlmv2-only
+expect global 'lanman auth' No
+expect global 'map to guest' Never
+expect global 'restrict anonymous' 2
+expect global 'disable netbios' Yes
+expect global 'smb ports' 445
+expect global 'wide links' No
+expect global 'hosts allow' "$NETS"
+expect global 'hosts deny' '0.0.0.0/0 ::/0'
+expect global 'guest ok' No
+expect global 'passdb backend' "smbpasswd:$PASSDB_PATH"
+expect global 'usershare max shares' 0
+
+: > "$WORK/groups.want"
+render_global > "$WORK/smb.conf"
+if [ "$FLAVOUR" = timemachine ]; then
+  PREFIX=$(val share_prefix)
+  [ -n "$PREFIX" ] || PREFIX=TimeMachine
+  if ! match '^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$' "$PREFIX"; then
+    finding name_refused info "$PREFIX" "the share name prefix $PREFIX isn't a valid share name: no share is served"
+    : > "$WORK/home.served"
+  fi
+  while IFS= read -r u; do
+    s="$PREFIX-$u"
+    share_ok "$s" || continue
+    mib=$(pval "$u" size_limit)
+    # MiB (render unit MiB, integer), or "unlimited": no limit line.
+    [ "$mib" != unlimited ] || mib=
+    if [ -n "$mib" ] && ! match '^[1-9][0-9]{0,11}$' "$mib"; then log "size limit of $u isn't a MiB count: left out"; mib=; fi
+    {
+      printf '\n[%s]\n' "$s"
+      printf '   path = %s/%s\n   valid users = %s\n   read only = no\n   guest ok = no\n' "$TREE" "$u" "$u"
+      printf '   create mask = 0600\n   directory mask = 0700\n   inherit permissions = no\n'
+      printf '   fruit:time machine = yes\n'
+      [ -z "$mib" ] || printf '   fruit:time machine max size = %sM\n' "$mib"
+      printf '   durable handles = yes\n   kernel oplocks = no\n   kernel share modes = no\n   posix locking = no\n'
+    } >> "$WORK/smb.conf"
+    expect "$s" path "$TREE/$u"
+    expect "$s" 'valid users' "$u"
+    expect "$s" 'read only' No
+    printf '%s\t%s\n' "$u" "$s" >> "$WORK/served"
+    printf '%s\n' "$s" >> "$WORK/shares"
+  done < "$WORK/home.served"
+else
+  if [ -s "$WORK/home.served" ]; then
+    hv=$(sort "$WORK/home.served" | tr '\n' ' ' | sed 's/ $//')
+    {
+      printf '\n[Home]\n   path = %s/%%u\n   valid users = %s\n   read only = no\n   guest ok = no\n' "$TREE" "$hv"
+      printf '   create mask = 0600\n   directory mask = 0700\n'
+    } >> "$WORK/smb.conf"
+    expect Home path "$TREE/%u"
+    expect Home 'valid users' "$hv"
+    expect Home 'read only' No
+    sed 's/$/\tHome/' "$WORK/home.served" >> "$WORK/served"
+  fi
+  # members <list>: the comma list's eligible people, one per line.
+  members() {
+    printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r m; do
+      [ -n "$m" ] && is_eligible "$m" && printf '%s\n' "$m"
+    done | sort -u
+  }
+  for n in 1 2 3 4 5 6 7 8; do
+    name=$(val "share${n}_name")
+    [ -n "$name" ] || continue
+    if ! match '^[A-Za-z0-9][A-Za-z0-9 _.-]{0,62}$' "$name"; then
+      finding name_refused info "$name" "the share name $name isn't a valid share name: it isn't served"; continue
+    fi
+    share_ok "$name" || continue
+    gid=$(eval "printf '%s' \"\${PORTCULLIS_FOLDER_GID_SHARE${n}_FOLDER:-}\"")
+    if ! match '^60[0-9]{3}$' "$gid"; then log "share $n ($name) has no shared folder: not served"; continue; fi
+    if [ ! -d "$R/shares/$n" ] || [ -L "$R/shares/$n" ]; then log "share $n ($name): /shares/$n isn't mounted: not served"; continue; fi
+    members "$(val "share${n}_readers")" > "$WORK/r"
+    members "$(val "share${n}_writers")" > "$WORK/w"
+    sort -u "$WORK/r" "$WORK/w" > "$WORK/v"
+    if [ ! -s "$WORK/v" ]; then log "share $n ($name) has nobody to serve: not rendered"; continue; fi
+    vu=$(tr '\n' ' ' < "$WORK/v" | sed 's/ $//')
+    wl=$(tr '\n' ' ' < "$WORK/w" | sed 's/ $//')
+    {
+      printf '\n[%s]\n   path = /shares/%s\n   valid users = %s\n' "$name" "$n" "$vu"
+      [ -z "$wl" ] || printf '   write list = %s\n' "$wl"
+      printf '   read only = yes\n   force group = pfg%s\n   create mask = 0660\n   directory mask = 2770\n   guest ok = no\n' "$gid"
+    } >> "$WORK/smb.conf"
+    expect "$name" path "/shares/$n"
+    expect "$name" 'valid users' "$vu"
+    [ -z "$wl" ] || expect "$name" 'write list' "$wl"
+    expect "$name" 'force group' "pfg$gid"
+    printf 'pfg%s\t%s\n' "$gid" "$gid" >> "$WORK/groups.want"
+    sed "s/\$/\t$name/" "$WORK/v" >> "$WORK/served"
+  done
+fi
+sort -u "$WORK/served" -o "$WORK/served"
+
+# Verify the rendered file before anything changes.
+CONF_TMP=$(mktemp "$R/etc/samba/.smb.conf.XXXXXX")
+cat "$WORK/smb.conf" > "$CONF_TMP"
+chmod 644 "$CONF_TMP"
+if ! verify "$CONF_TMP" "$WORK/expected"; then
+  fail_closed 4 "the rendered smb.conf doesn't verify: nothing applied"
+fi
+
+# ── accounts first (a revocation must apply within 8 s) ──────
+# The passdb is rendered whole from the eligible people: an entry can't
+# outlive its person. Hashes go file to file, never through argv.
+mkdir -p "$PRIVATE"
+chmod 700 "$PRIVATE"
+lct=$(printf 'LCT-%08X' "$(date +%s)")
+pdb=$(mktemp "$PRIVATE/.smbpasswd.XXXXXX")
+awk -F "$TAB" -v lct="$lct" 'FILENAME == ARGV[1] { id[$1] = $2; next }
+  ($1 in id) { printf "%s:%s:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:%s:\n", $1, id[$1], $2, lct }' \
+  "$WORK/eligible" "$WORK/hashes" > "$pdb"
+mv -f "$pdb" "$R$PASSDB_PATH" || fail_closed 1 "can't write the passdb"
+
+awk -F: -v lo=$ID_MIN -v hi=$ID_MAX '$3 ~ /^[0-9]+$/ && $3 + 0 >= lo && $3 + 0 <= hi { print $1 "\t" $3 }' "$R/etc/passwd" > "$WORK/users.old"
+cat "$WORK/eligible" >> "$WORK/groups.want"
+sort -u "$WORK/groups.want" -o "$WORK/groups.want"
+: > "$WORK/end"
+while IFS="$TAB" read -r u id; do
+  grep -qxF -e "$u$TAB$id" "$WORK/eligible" && continue
+  deluser "$u" || fail_closed 1 "can't remove the account $u"
+  printf '%s\n' "$id" >> "$WORK/end"
+done < "$WORK/users.old"
+awk -F: -v lo=$ID_MIN -v hi=$ID_MAX '$3 ~ /^[0-9]+$/ && $3 + 0 >= lo && $3 + 0 <= hi { print $1 "\t" $3 }' "$R/etc/group" > "$WORK/groups.now"
+while IFS="$TAB" read -r g id; do
+  grep -qxF -e "$g$TAB$id" "$WORK/groups.want" && continue
+  delgroup "$g" || fail_closed 1 "can't remove the group $g"
+done < "$WORK/groups.now"
+while IFS="$TAB" read -r g id; do
+  grep -q "^$g:[^:]*:$id:" "$R/etc/group" && continue
+  addgroup -g "$id" "$g" || fail_closed 1 "can't add the group $g"
+done < "$WORK/groups.want"
+while IFS="$TAB" read -r u id; do
+  grep -q "^$u:[^:]*:$id:$id:" "$R/etc/passwd" && continue
+  adduser -D -H -h /nonexistent -u "$id" -G "$u" -s /bin/false "$u" || fail_closed 1 "can't add the account $u"
+  grep -q "^$u:[^:]*:$id:$id:" "$R/etc/passwd" || fail_closed 1 "the account $u didn't come out as $id:$id"
+done < "$WORK/eligible"
+
+# ── smb.conf ─────────────────────────────────────────────────
+mv -f "$CONF_TMP" "$SMBCONF" 2> /dev/null || fail_closed 4 "can't replace $SMBCONF (mounted read-only?)"
+CONF_TMP=
+verify "$SMBCONF" "$WORK/expected" || fail_closed 4 "the installed smb.conf doesn't verify"
+cp "$WORK/expected" "$RUN/expected"
+if [ "$MODE" = hook ]; then
+  if smbd_running; then
+    smbcontrol all reload-config > /dev/null || fail_closed 1 "smbcontrol reload-config failed"
+  fi
+  if [ -d "$S6/smbd" ]; then s6-svc -u "$S6/smbd" 2> /dev/null || true; fi
+fi
+
+# ── sessions: removed accounts, new hashes, fewer shares (F23 F28 F29 F58)
+while IFS="$TAB" read -r u h; do
+  printf '%s\t%s\n' "$u" "$(printf '%s' "$h" | sha256sum | cut -c1-64)"
+done < "$WORK/hashes" > "$WORK/sha"
+rm -f "$WORK/hashes"
+touch "$STATE/sha" "$STATE/served"
+{
+  # A hash that changed.
+  awk -F "$TAB" 'FILENAME == ARGV[1] { old[$1] = $2; next } ($1 in old) && old[$1] != $2 { print $1 }' "$STATE/sha" "$WORK/sha"
+  # A share that was served and isn't now.
+  minus "$WORK/served" "$STATE/served" | cut -f1
+} | sort -u | while IFS= read -r u; do
+  awk -F "$TAB" -v u="$u" '$1 == u { print $2 }' "$WORK/users.old"
+done >> "$WORK/end"
+if [ "$MODE" = hook ] && [ -s "$WORK/end" ] && smbd_running; then
+  timeout 5 smbstatus -p -n > "$WORK/status" 2> /dev/null || true
+  live=
+  for p in $(awk 'FILENAME == ARGV[1] { u[$1] = 1; next } $1 ~ /^[0-9]+$/ && ($2 in u) { print $1 }' "$WORK/end" "$WORK/status" | sort -u); do
+    comm=$(cat "$R/proc/$p/comm" 2> /dev/null || true)
+    case $comm in smbd*) ;; *) continue ;; esac
+    kill -TERM "$p" 2> /dev/null && live="$live $p"
+  done
+  if [ -n "$live" ]; then
+    sleep 2
+    for p in $live; do
+      if kill -0 "$p" 2> /dev/null; then kill -KILL "$p" 2> /dev/null || true; fi
+    done
+    log "ended the sessions of $(sort -u "$WORK/end" | wc -l | tr -d ' ') account(s)"
+  fi
+fi
+mv -f "$WORK/sha" "$STATE/sha"
+cp "$WORK/served" "$STATE/served"
+
+# ── Bonjour (F42) ────────────────────────────────────────────
+if [ -d "$AVAHI" ]; then
+  if [ "$(val advertise)" = true ]; then
+    a=$(mktemp "$AVAHI/.portcullis-$INST.XXXXXX")
+    {
+      printf '<?xml version="1.0" standalone="no"?>\n<!DOCTYPE service-group SYSTEM "avahi-service.dtd">\n'
+      printf '<!-- Written by portcullis-sync (instance %s). -->\n<service-group>\n' "$INST"
+      printf '  <name replace-wildcards="yes">%%h (%s)</name>\n' "$INST"
+      printf '  <service>\n    <type>_smb._tcp</type>\n    <port>%s</port>\n  </service>\n' "$PORT"
+      if [ "$FLAVOUR" = timemachine ]; then
+        printf '  <service>\n    <type>_device-info._tcp</type>\n    <port>9</port>\n    <txt-record>model=%s</txt-record>\n  </service>\n' "$MODEL"
+        if [ -s "$WORK/shares" ]; then
+          printf '  <service>\n    <type>_adisk._tcp</type>\n    <port>9</port>\n    <txt-record>sys=adVF=0x100</txt-record>\n'
+          awk '{ printf "    <txt-record>dk%d=adVN=%s,adVF=0x82</txt-record>\n", NR - 1, $0 }' "$WORK/shares"
+          printf '  </service>\n'
+        fi
+      fi
+      printf '</service-group>\n'
+    } > "$a"
+    chmod 644 "$a"
+    mv -f "$a" "$AVAHI_FILE" || { rm -f "$a"; log "can't write $AVAHI_FILE"; }
+  elif [ -e "$AVAHI_FILE" ]; then
+    rm -f "$AVAHI_FILE" || log "can't remove $AVAHI_FILE"
+  fi
+fi
+
+# The converge is done: a waiting run (a revocation) may go on.
+exec 9>&-
+[ "$MODE" = hook ] || exit 0
+
+# ── folder sizes, then the report (§13.8) ────────────────────
+# du as each folder's owner (no DAC capability), 20 s each, 40 s per run;
+# a credential change reports the last sizes (it must be fast).
+touch "$STATE/sizes"
+exec 8> "$RUN/sizes.lock"
+measure=
+if [ "$TRIGGER" != credential_change ] && flock -n 8; then measure=1; fi
+: > "$WORK/sizes"
+while IFS="$TAB" read -r u ou former; do
+  b=
+  if [ -n "$measure" ] && [ $(($(date +%s) - START)) -lt $SIZE_BUDGET ]; then
+    if kb=$(drop -t 20 "$ou" du -sk -- "$TDIR/$u" 2> /dev/null | cut -f1) \
+        && match '^[0-9]+$' "$kb"; then
+      b=$((kb * 1024))
+    fi
+  else
+    b=$(awk -F "$TAB" -v u="$u" -v o="$ou" '$1 == u && $2 == o { print $3; exit }' "$STATE/sizes")
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$u" "$ou" "$former" "${b:-null}" >> "$WORK/sizes"
+done < "$WORK/folders"
+[ -z "$measure" ] || awk -F "$TAB" '$4 != "null" { print $1 "\t" $2 "\t" $4 }' "$WORK/sizes" > "$STATE/sizes"
+exec 8>&-
+
+{
+  printf 'PORTCULLIS-REPORT {"version":1,"findings":['
+  head -n 500 "$WORK/findings" | awk 'NR > 1 { printf "," } { printf "%s", $0 }'
+  printf '],"folders":['
+  head -n 500 "$WORK/sizes" | awk -F "$TAB" -v o="$TREE_OPT" 'NR > 1 { printf "," }
+    { printf "{\"option\":\"%s\",\"name\":\"%s\",\"uid\":%s,\"former\":%s,\"bytes\":%s}", o, $1, $2, $3, $4 }'
+  printf ']}\n'
+}
+exit 0

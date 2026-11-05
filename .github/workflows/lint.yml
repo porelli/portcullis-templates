@@ -48,7 +48,12 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh .github/automerge/*.sh
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh .github/automerge/*.sh tests/sync/*.sh ./*/bin/*
+
+      # portcullis-sync (the file-sharing templates' converge script) with
+      # stubbed Samba / account tools: no root, no Docker.
+      - name: portcullis-sync unit tests
+        run: bash tests/sync/test_portcullis_sync.sh
 
       # Dependabot auto-merge decisions (fake gh + fixtures, no network).
       - name: auto-merge tests

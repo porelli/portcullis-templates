@@ -1,0 +1,6 @@
+#!/bin/sh
+# s6-svscan's finish (container stop): remove this instance's Bonjour file
+# from the host's Avahi directory (F42). A container killed without a stop
+# leaves it: turn advertising off before clearing the directory.
+/portcullis/bin/portcullis-sync --stop || true
+exit 0

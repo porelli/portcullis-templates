@@ -963,6 +963,11 @@ def check_compose(t: Template, r: Report) -> None:
     # no native_login: the access group is only its population (§3, F1).
     if not routers and method != "custom":
         r.error(t.c_where, f"auth.method {method} needs at least one HTTP router (only custom templates may have none)", HUB_HINT)
+    if not routers and method == "custom" and auth.get("group_access") is True \
+            and not any(o.get("type") in PERSON_TYPES for o in setting_options(t.manifest)):
+        r.warn(t.m_where, "a router-less template's group_access gates nothing without a person_secret or person_id option",
+               "the access group of a template with no web page only decides who gets a per-person credential or id "
+               "(contract §3); set group_access: false, or add the option")
     nl = auth.get("native_login")
     if method == "custom" and routers and auth.get("group_access") and not (isinstance(nl, dict) and nl.get("supported") is True):
         r.error(t.m_where, "auth.method custom with group_access: true needs auth.native_login.supported: true",
@@ -2109,6 +2114,8 @@ def check_cross(templates: List[Template], r: Report) -> None:
 # reviewed copy, byte-identical in exactly these templates. A member not in
 # the repo yet (plan 3 Tasks 16 / 17) is tolerated; once present it must
 # ship the script.
+# TODO(plan 3 Task 17): once samba exists, make a missing SYNC_TEMPLATES
+# member an error (the set of shippers must equal SYNC_TEMPLATES).
 SYNC_TEMPLATES = {"samba", "timemachine"}
 SYNC_SCRIPT = os.path.join("bin", "portcullis-sync")
 SYNC_HINT = ("portcullis-sync is shared by the file-sharing templates (contract §13.17): copy the reviewed one, "
@@ -2134,6 +2141,8 @@ def check_sync_copies(templates: List[Template], r: Report) -> None:
         if ref is None:
             ref = (t.id, data)
         elif data != ref[1]:
+            # Under both templates: either one's errors show the drift.
+            r.error(f"{ref[0]}/{SYNC_SCRIPT}", f"{ref[0]}/{SYNC_SCRIPT} differs from {where}", SYNC_HINT)
             r.error(where, f"{where} differs from {ref[0]}/{SYNC_SCRIPT}", SYNC_HINT)
 
 
@@ -4607,6 +4616,7 @@ INFO_LABEL_MAX, INFO_VALUE_MAX = 64, 500
 PERSON_SECRET_MIN_LENGTH = 24
 PERSON_ID_POOLS = {"posix_uid": (20000, 59999)}
 USERNAME_PATTERN_VAR = "PORTCULLIS_USERNAME_PATTERN"
+USERNAME_RESERVED_VAR = "PORTCULLIS_USERNAME_RESERVED"
 PATTERN_SPECIAL = "\\.[]{}()|*+?^$"
 PATTERN_CLASSES = {"alnum", "alpha", "digit", "lower", "upper", "xdigit"}
 PORT_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
@@ -4833,6 +4843,7 @@ class _SpecCheck:
                 continue
             self.warnings(o)
         self.check_username_pattern_env()
+        self.check_username_reserved_env()
 
     # file sharing: compose-level rules
 
@@ -4933,6 +4944,22 @@ class _SpecCheck:
             if val is None or "$" in val.replace("$$", "") or val.replace("$$", "$") not in patterns:
                 self.cerr(f"service {svc}: {USERNAME_PATTERN_VAR} must be a person_secret option's username.pattern with "
                           "every $ written as $$", "the script and the Hub apply one username rule; " + SHARING_HINT)
+
+    def check_username_reserved_env(self) -> None:
+        """A compose PORTCULLIS_USERNAME_RESERVED is a person_secret's
+        username.reserved joined by single spaces, in order (portcullis-sync
+        refuses the same names as the Hub, F37)."""
+        lists = set()
+        for o in setting_options(self.m):
+            u = o.get("username")
+            if o.get("type") == "person_secret" and isinstance(u, dict) and isinstance(u.get("reserved"), list):
+                lists.add(" ".join(str(x) for x in u["reserved"]))
+        for svc in sorted(self.env):
+            if USERNAME_RESERVED_VAR not in self.env[svc]:
+                continue
+            if self.env[svc][USERNAME_RESERVED_VAR] not in lists:
+                self.cerr(f"service {svc}: {USERNAME_RESERVED_VAR} must be a person_secret option's username.reserved "
+                          "joined by single spaces, in order", "the script and the Hub refuse the same names; " + SHARING_HINT)
 
     # file sharing: the two types (filesharing.go)
 

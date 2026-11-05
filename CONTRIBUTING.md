@@ -519,7 +519,10 @@ the converge script are the template's.
   `.`, `(`, `)`, `|`, `*`, `+`, `?`, literal braces or brackets, `[.` or `[=`.
   `reserved`: lowercase names (≤ 64 characters, no spaces). `reason` is
   required (one line, ≤ 200). A compose `PORTCULLIS_USERNAME_PATTERN` must be
-  the pattern with every `$` written `$$`.
+  the pattern with every `$` written `$$`; a compose
+  `PORTCULLIS_USERNAME_RESERVED` must be `reserved` joined by single spaces.
+  A router-less template with `group_access` but no `person_secret` /
+  `person_id` gets a warning: its access group gates nothing.
 - **`info`** lines (label ≤ 64, value ≤ 500) take only `{user}`,
   `{value:<key>}` (an instance `string` / `int` / `enum` / `bool` option with
   `self_visible: true`), `{port:<KEY>}` and `{port_suffix:<KEY>:<default>}`.
@@ -542,7 +545,14 @@ the converge script are the template's.
   none takes the mounting service's volumes, and every port is
   `lan_only: true`.
 - **One converge script.** `bin/portcullis-sync` is byte-identical in both
-  templates and shipped by no other (`check_sync_copies`).
+  templates and shipped by no other (`check_sync_copies`). It renders the
+  whole `smb.conf`, the passdb and the Unix accounts from the people file
+  and the hash files, verifies `testparm -s -v` against the hardened table
+  (exit 4), refuses an empty Local networks (exit 3) and prints one
+  `PORTCULLIS-REPORT` line; its unit tests (`bash
+  tests/sync/test_portcullis_sync.sh`, stubbed Samba and account tools, no
+  root or Docker) run in lint, and each template's `tests/apps/<id>.sh`
+  talks SMB to the real image.
 
 `tests/validate.py` mirrors the Hub's rules with its messages (Hub
 `internal/templates/filesharing.go`, `reservedvars.go`); `TestFileSharing`

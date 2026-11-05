@@ -1,0 +1,197 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Time Machine
+description: Mac backups over SMB, one backup share per person with their own file-share password
+icon: "\U0001F570"
+category: storage
+tags: [backup, time-machine, macos, smb, samba]
+links:
+  website: https://github.com/mbentley/docker-timemachine
+  source: https://github.com/mbentley/docker-timemachine
+instances: multi
+
+auth:
+  # Router-less (contract §3, §13.17): no web page, nothing behind Traefik.
+  # The access group is only who may create a file-share password on My apps.
+  method: custom
+  sso: false
+  group_access: true
+  group_admin: false
+  access_group: users_timemachine
+  notes: >-
+    No web page: file sharing over SMB. Each member of users_timemachine
+    creates their own file-share password on My apps (people.<domain>) after a
+    fresh passkey sign-in, and gets one Time Machine share,
+    <prefix>-<username>, in their own folder <storage>/<username> (owned by
+    their Hub uid, mode 0700). The password is shown once; the Hub keeps only
+    its NT hash on the hub_secrets volume, mounted read-only here, never in a
+    backup. Someone who leaves the access group, or whose account is deleted,
+    loses the password at once: the Hub's credential_change hook removes the
+    account and ends their open sessions within seconds (a removal made
+    directly in LLDAP within about a minute).
+    Image: mbentley/timemachine (smb variant, Samba 4.23 on Alpine); its
+    /entrypoint.sh never runs. The container starts with portcullis-sync
+    --boot (shared with the Samba template), which writes the whole smb.conf,
+    the passdb (smbpasswd on tmpfs) and the Unix accounts from the Hub's
+    people file and hash files, then s6 supervises smbd alone (no nmbd, avahi
+    or dbus). The image's default timemachine account is never created.
+    SMB is hardened and verified: SMB3 only (3.1.1), encryption and signing
+    required, NTLMv2 only, no guest or anonymous access, no NetBIOS, port 445
+    only, hosts allow = the Hub's Local networks (an empty list keeps the
+    instance from starting); testparm must show exactly these values or smbd
+    doesn't start. Publish 445 on the LAN or VPN only (lan_only); Docker's
+    published ports bypass ufw.
+    Capabilities: cap_drop ALL, then CHOWN (a new person's folder is created
+    and given to their uid), SETUID and SETGID (smbd acts as each person; the
+    Hub's files and each folder's size are read as their owner, a privilege
+    drop instead of DAC_OVERRIDE / DAC_READ_SEARCH, which this container never
+    has) and NET_BIND_SERVICE (port 445). no-new-privileges.
+    Backup size limit: Time Machine keeps backups within it (Samba's
+    fruit:time machine max size, cooperative, not a hard quota). A folder
+    that belongs to a former account (an account deleted and created again
+    gets a new uid) is never served; the File sharing tab and the doctor show
+    it. Bonjour is off by default: people connect with the smb:// address
+    shown on My apps (Finder → Go → Connect to Server, then System Settings →
+    Time Machine → Add Backup Disk). Upstream tags are dated (smb-YYYYMMDD):
+    Dependabot follows the digest.
+
+tests:
+  signin:
+    skip: router-less file sharing, no web page (tests/apps/timemachine.sh tests SMB)
+
+ports:
+  - key: TM_SMB
+    label: SMB
+    description: SMB (Time Machine) on TCP; keep it on the LAN or VPN
+    container: 445
+    protocol: tcp
+    default: 445
+    service: timemachine
+    lan_only: true
+
+files:
+  - {name: people, service: timemachine, mount: /portcullis/data, format: tsv, on_membership_change: hook}
+
+hooks:
+  - name: sync
+    service: timemachine
+    command: [/portcullis/bin/portcullis-sync]
+    when: [start, settings_change, membership_change, credential_change]
+    timeout: 60s
+
+settings:
+  sections: [Access, Backups, Network]
+  options:
+    - key: share_password
+      label: File-share password
+      description: >-
+        Each person's own password for their Time Machine share, created on My
+        apps. The Hub keeps only its NT hash.
+      type: person_secret
+      hash: nt
+      length: 24
+      delivery: file
+      mount: {service: timemachine, path: /portcullis/secrets}
+      revoke_on_leave: true
+      on_restore: void
+      username:
+        pattern: "^[a-z_][a-z0-9_.-]{0,31}$"
+        # Every account and group of the image (tests/apps/timemachine.sh
+        # checks /etc/passwd and /etc/group), and its default account.
+        reserved: [root, bin, daemon, sys, adm, tty, disk, lp, kmem, wheel, floppy, mail, news, uucp, cron,
+                   audio, cdrom, dialout, ftp, sshd, input, tape, video, netdev, kvm, games, shadow, www-data,
+                   users, ntp, abuild, utmp, ping, nogroup, nobody, avahi, messagebus, catchlog, sync,
+                   shutdown, halt, guest, timemachine]
+        reason: "isn't a valid Samba and Unix name"
+      info:
+        - {label: Connect, value: "smb://{value:connect_address}{port_suffix:TM_SMB:445}/{value:share_prefix}-{user}"}
+        - {label: Username, value: "{user}"}
+      applies: live
+      section: Access
+    - key: uid
+      label: File owner id
+      type: person_id
+      pool: posix_uid
+      self_visible: false
+      delivery: [{file: {name: people, field: uid}}]
+    - key: size_limit
+      label: Backup size limit
+      description: Time Machine keeps backups within this size (not a hard quota).
+      type: size
+      step: 1GiB
+      allow_unlimited: true
+      scope: person
+      default: 500GiB
+      resolve: max
+      section: Backups
+      applies: live
+      delivery: [{file: {name: people, field: size_limit, render: {unit: MiB, integer: true, unlimited: unlimited}}}]
+      checks: [{kind: requires_group_value, reason: "Most people should get a deliberate limit"}]
+    - key: storage
+      label: Backup storage
+      description: >-
+        Host directory holding every person's backup folder (<username>, owned
+        by their uid, mode 0700). Empty = a Docker volume.
+      type: path
+      target: {service: timemachine, mount: /opt}
+      folder:
+        access: write
+        runs_as: {uid_from: uid, gid_from: uid}
+        joins_group: template
+      checks:
+        - {kind: filesystem, needs: [xattr], not: [nfs, cifs, fuse], reason: "Time Machine stores metadata in extended attributes"}
+        - {kind: exclusive, reason: "Backup bundles must not be written by other apps"}
+      section: Backups
+      applies: restart
+    - key: share_prefix
+      label: Share name prefix
+      description: Each person's share is <prefix>-<username>.
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$"
+      default: TimeMachine
+      applies: live
+      self_visible: true
+      section: Backups
+      delivery: [{file: {name: people}}]
+    - key: connect_address
+      label: Address people connect to
+      description: The server's name or IP address on your network, shown on My apps.
+      type: string
+      format: hostname
+      required: true
+      self_visible: true
+      section: Network
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: avahi_services_dir
+      label: Host Avahi services directory (Bonjour)
+      description: >-
+        For Bonjour advertising: the host's Avahi services directory (usually
+        /etc/avahi/services, writable by root). Empty = no advertising. Turn
+        Advertise off before clearing this setting, or the file stays there.
+      type: path
+      target: {service: timemachine, mount: /portcullis/avahi}
+      folder:
+        access: write
+        runs_as: {uid: 0, gid: 0}   # portcullis-sync writes the file as the container's root
+      section: Network
+      applies: restart
+    - key: advertise
+      label: Advertise with Bonjour
+      description: >-
+        Writes portcullis-<instance>.service into the Avahi directory above so
+        Macs see the shares in Finder and Time Machine. Advertising shows
+        every share name, which contains usernames, to everyone on the local
+        network. Turn it off before clearing the directory.
+      type: bool
+      default: false
+      section: Network
+      applies: live
+      delivery: [{file: {name: people}}]
+    - key: model
+      label: Shown in Finder as
+      type: enum
+      options: [{value: "TimeCapsule8,119", label: Time Capsule}, {value: "MacPro7,1", label: Mac Pro}]
+      default: "TimeCapsule8,119"
+      delivery: [{env: MIMIC_MODEL}]
+      applies: restart
+      section: Network

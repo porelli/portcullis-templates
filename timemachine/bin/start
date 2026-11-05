@@ -1,0 +1,24 @@
+#!/bin/sh
+# Time Machine container start (contract §13.17, F39). mbentley's
+# /entrypoint.sh never runs: no throwaway passwords, no EXTERNAL_CONF, no
+# default `timemachine` account. portcullis-sync renders the accounts,
+# smb.conf and folders from the Hub's files before smbd exists; then
+# s6-svscan supervises smbd alone (no avahi, dbus or nmbd).
+set -eu
+/portcullis/bin/portcullis-sync --boot
+
+S6=/run/portcullis-s6
+rm -rf "$S6"
+cp -a /etc/s6 "$S6"
+rm -rf "$S6/avahi" "$S6/dbus" "$S6/nmbd"
+for d in "$S6"/*; do
+  # A service a newer image adds is never started unreviewed.
+  [ "${d##*/}" = smbd ] || { echo "start: unexpected s6 service ${d##*/} in /etc/s6" >&2; exit 1; }
+done
+# smbd re-verifies smb.conf before every (re)start.
+rm -f "$S6/smbd/run"
+ln -s /portcullis/bin/smbd-run "$S6/smbd/run"
+# The Bonjour file goes with the container (F42).
+mkdir -p "$S6/.s6-svscan"
+ln -s /portcullis/bin/svscan-finish "$S6/.s6-svscan/finish"
+exec s6-svscan "$S6"
