@@ -190,6 +190,9 @@ networks:
 EOF
 }
 
+# logs_have <text>: the container log holds text (read whole first: grep -q
+# would close a pipe from docker logs early and fail it under pipefail).
+logs_have() { docker logs "$C" > "$WORK/container.log" 2>&1; grep -qF -- "$1" "$WORK/container.log"; }
 listening() { docker exec "$C" sh -c 'grep -qE "^ *[0-9]+: [0-9A-F]+:01BD [0-9A-F]+:0000 0A" /proc/net/tcp /proc/net/tcp6' 2> /dev/null; }
 wait_listening() {
   local _
@@ -325,7 +328,7 @@ refused "a wrong password" tm-cli-in TimeMachine-alice alice "$PW_BOB" -c ls
 refused "bob on alice's share" tm-cli-in TimeMachine-alice bob "$PW_BOB" -c ls
 refused "guest" tm-cli-in TimeMachine-alice guest "" -N -c ls
 refused "a client outside Local networks ($OUT_IP)" tm-cli-out TimeMachine-alice alice "$PW_ALICE" -c ls
-if docker logs "$C" 2>&1 | grep -q "Denied connection from $OUT_IP"; then pass "smbd logged the denied address"; else info "no 'Denied connection' line in the log"; fi
+if logs_have "Denied connection from $OUT_IP"; then pass "smbd logged the denied address"; else info "no 'Denied connection' line in the log"; fi
 if [ -f "$AVAHI_DIR/portcullis-timemachine.service" ] && grep -q 'dk0=adVN=TimeMachine-alice,adVF=0x82' "$AVAHI_DIR/portcullis-timemachine.service"; then
   pass "Bonjour file written with _adisk entries"
 else
@@ -443,11 +446,11 @@ exited_nonzero() {
   [ -z "$heard" ] && { grep -q 'restarts=[1-9]' <<< "$STATE" || ! grep -q 'exit=0' <<< "$STATE"; }
 }
 if exited_nonzero; then pass "read-only weakened smb.conf: exits non-zero, nothing listens on 445 ($STATE)"; else fail "weakened smb.conf: $STATE"; fi
-if docker logs "$C" 2>&1 | grep -q "can't replace /etc/samba/smb.conf"; then pass "portcullis-sync refuses to serve a config it can't own"; else fail "no refusal in the log: $(docker logs --tail 5 "$C" 2>&1)"; fi
+if logs_have "can't replace /etc/samba/smb.conf"; then pass "portcullis-sync refuses to serve a config it can't own"; else fail "no refusal in the log: $(docker logs --tail 5 "$C" 2>&1)"; fi
 
 # ── empty Local networks: the container doesn't start ────────
 PORTCULLIS_LOCAL_NETWORKS='' boot
-if exited_nonzero && docker logs "$C" 2>&1 | grep -q 'Local networks is empty; file sharing is off'; then
+if exited_nonzero && logs_have 'Local networks is empty; file sharing is off'; then
   pass "empty Local networks: refused, nothing listens ($STATE)"
 else
   fail "empty Local networks: $STATE"
