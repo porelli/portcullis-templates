@@ -850,13 +850,17 @@ def check_compose(t: Template, r: Report) -> None:
     top_nets = data.get("networks") or {}
     if "portcullis" in top_nets:
         r.error(t.c_where, "network 'portcullis' is wrong; frontends join the external network 'portcullis-proxy'")
+    trust_nets = trust_networks(t, services)
     for name, spec in top_nets.items():
+        if name in trust_nets:
+            continue  # check_ai's check_trust_network judges it
         if name == PROXY_NET:
             if not (isinstance(spec, dict) and spec.get("external") is True):
                 r.error(t.c_where, f"networks.{PROXY_NET} must be declared 'external: true'",
                         "core creates portcullis-proxy (fixed subnet, Traefik's static IP); templates only attach to it")
         elif name != "default":
-            r.error(t.c_where, f"networks.{name}: templates may only use 'default' and '{PROXY_NET}'")
+            r.error(t.c_where, f"networks.{name}: templates may only use 'default' and '{PROXY_NET}' (and an "
+                    "identity_headers AI companion's trust network)")
         elif isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
             r.error(t.c_where, "networks.default must stay the project's own network (no name:, no external:)",
                     "a named or external default network is shared with other projects (portcullis-proxy, "
@@ -963,8 +967,9 @@ def check_compose(t: Template, r: Report) -> None:
                 r.error(where, f"network_mode {nm!r}: only none, host or service:<another service of this template>, exactly, in lower case",
                         "any other value names a network (e.g. portcullis-proxy) the service would join unchecked")
         elif enabled:
-            if PROXY_NET not in nets or "default" not in nets:
-                r.error(where, f"Traefik-routed service must use networks: [default, {PROXY_NET}]")
+            if PROXY_NET not in nets or ("default" not in nets and not trust_nets & set(nets)):
+                r.error(where, f"Traefik-routed service must use networks: [default, {PROXY_NET}] "
+                        "(or [portcullis-proxy, <its AI companion's trust network>])")
         elif PROXY_NET in nets:
             r.error(where, f"internal service is on {PROXY_NET}",
                     "only services with traefik.enable=true join portcullis-proxy; databases, caches and sidecars stay on default")
@@ -1344,17 +1349,43 @@ INTERNAL_SUFFIX = "-internal"
 # the Hub rules); anything else is a network name.
 NETWORK_MODE_RE = re.compile(r"^(none|host|service:[a-z0-9][a-z0-9_.-]*)$")
 NO_DNS_MODE_RE = re.compile(r"^(none|host|service:.*|container:.*)$")
-DNS_HINT = ("names ending in -internal (a gate's upstream) are declared as aliases on the default network only; "
+DNS_HINT = ("names ending in -internal (a gate's upstream) are declared as aliases on the default network "
+            "(or an internal: true project network) only; "
             "a name on portcullis-proxy could catch another app's gated traffic")
+
+
+def trust_networks(t: "Template", services: Dict[str, Any]) -> Set[str]:
+    """The sole network of each identity_headers kind-companion service
+    (contracts §3.2 trust network; _AICheck.check_trust_network validates it)."""
+    out: Set[str] = set()
+    ai = (t.manifest or {}).get("ai")
+    for c in (ai.get("mcp") or []) if isinstance(ai, dict) and isinstance(ai.get("mcp"), list) else []:
+        if not isinstance(c, dict) or c.get("kind") != "companion":
+            continue
+        ident = c.get("identity") if isinstance(c.get("identity"), dict) else {}
+        svc = services.get(str(c.get("service"))) if isinstance(c.get("service"), str) else None
+        if ident.get("mode") == "identity_headers" and isinstance(svc, dict):
+            nets = networks_of(svc)
+            if len(nets) == 1 and nets[0] not in ("default", PROXY_NET):
+                out.add(nets[0])
+    return out
 
 
 def private_networks(compose: Optional[Dict[str, Any]]) -> Set[str]:
     """Service network keys that are the project's own network: 'default',
-    unless the top level renames it or makes it external (then shared)."""
-    spec = ((compose or {}).get("networks") or {}).get("default")
-    if isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
-        return set()
-    return {"default"}
+    unless the top level renames it or makes it external (then shared), and
+    every network declared internal: true without name / external (Hub
+    checkInternalNames: e.g. an identity_headers companion's trust network)."""
+    nets = (compose or {}).get("networks") or {}
+    nets = nets if isinstance(nets, dict) else {}
+    out: Set[str] = set()
+    spec = nets.get("default")
+    if not (isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False))):
+        out.add("default")
+    for k, spec in nets.items():
+        if isinstance(spec, dict) and spec.get("internal") is True and "name" not in spec and "external" not in spec:
+            out.add(str(k))
+    return out
 
 
 def dns_names(sname: str, svc: Dict[str, Any]) -> Dict[str, Set[str]]:
@@ -6132,6 +6163,37 @@ class _AICheck:
                 elif k.upper().startswith(VAR_AI_PROVIDER):
                     self.cerr(f"service {svc} sets {k}: PORTCULLIS_AI_PROVIDER_* variables are set only by the Hub (on ai.chat.env's service)")
 
+    def check_trust_network(self, w: str, svc: str, router: str) -> None:
+        """Hub checkTrustNetwork: an identity_headers companion joins exactly
+        one network, an internal: true project network whose members are
+        exactly the companion and the service(s) of its router."""
+        nets = sorted(networks_of(self.services[svc]))
+        if len(nets) != 1 or nets[0] in ("default", PROXY_NET):
+            self.err(f"{w}: identity_headers companion service {svc} must join exactly one network, its trust network "
+                     f"(an internal: true project network shared only with the app that trusts the headers), not {nets}")
+            return
+        trust = nets[0]
+        top = (self.t.compose or {}).get("networks") or {}
+        spec = top.get(trust) if isinstance(top, dict) else None
+        if not (isinstance(spec, dict) and spec.get("internal") is True and "name" not in spec and "external" not in spec):
+            self.err(f"{w}: the trust network {trust} must be declared at the top level with internal: true (and no name or external)")
+            return
+        want = {svc} | {_str(rt, "_service") for n, rt in self.routers.items() if n == router}
+        if len(want) < 2:
+            self.err(f"{w}: no compose service carries router {router} (the app that trusts the identity headers)")
+            return
+        for name in sorted(self.services):
+            s = self.services[name]
+            inside = trust in networks_of(s)
+            if inside and name not in want:
+                self.err(f"{w}: service {name} joins the trust network {trust}: only the companion {svc} and the service(s) "
+                         f"of router {router} may (any other member could send identity headers the app trusts)")
+            elif not inside and name in want:
+                self.err(f"{w}: service {name} (router {router}) must join the trust network {trust}")
+            mode = s.get("network_mode")
+            if isinstance(mode, str) and mode.startswith("service:") and mode[len("service:"):] in want:
+                self.err(f"{w}: service {name} uses network_mode {mode}: it would share an address on the trust network {trust}")
+
     def check_companions(self, companions: List[Dict[str, Any]]) -> None:
         auth = self.m.get("auth") if isinstance(self.m.get("auth"), dict) else {}
         method = _str(auth, "method")
@@ -6216,6 +6278,8 @@ class _AICheck:
                 if self.services[oname].get("network_mode") == f"service:{svc}":
                     self.err(f"{w}: service {oname} uses network_mode service:{svc}, the companion service's network namespace "
                              "(it would reach the companion past the gate)")
+        if kind == "companion" and mode == "identity_headers" and svc in self.services:
+            self.check_trust_network(w, svc, _str(c, "router"))
         service_use[svc] = name
         port = c.get("port", 0)
         port = port if isinstance(port, int) and not isinstance(port, bool) else -1

@@ -158,26 +158,60 @@ else
   pass "no hooks (identity_headers)"
 fi
 
-# Runtime: what Grafana trusts.
-NET=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$M" | tr ' ' '\n' | grep -m1 .)
-MCP_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$M")
-gf_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$D" 2>/dev/null || true; }
-GF_DEF_IP=$(gf_ip)
-GF_PROXY_IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "portcullis-proxy").IPAddress}}' "$D")
+# Runtime. The Hub attaches the companion to portcullis-proxy while AI
+# support is on (its override; contracts §3.2): do the same.
+TRUST_NET=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$M" | tr ' ' '\n' | grep -m1 .)
+DEF_NET=$(docker network ls --format '{{.Name}}' | grep -x "$(sed 's/_mcp-trust$//' <<<"$TRUST_NET")_default" || true)
+docker network connect portcullis-proxy "$M"
+net_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$2\").IPAddress}}" "$1" 2>/dev/null || true; }
+MCP_IP=$(net_ip "$M" portcullis-proxy)
+MCP_TRUST_IP=$(net_ip "$M" "$TRUST_NET")
+GF_TRUST_IP=$(net_ip "$D" "$TRUST_NET")
+GF_PROXY_IP=$(net_ip "$D" portcullis-proxy)
+SUBNET=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$TRUST_NET" | awk '{print $1}')
+GATEWAY=$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' "$TRUST_NET" | awk '{print $1}')
+INTERNAL=$(docker network inspect -f '{{.Internal}}' "$TRUST_NET")
+info "trust network $TRUST_NET ($SUBNET, gateway ${GATEWAY:-none}, internal $INTERNAL): Grafana $GF_TRUST_IP, companion $MCP_TRUST_IP"
+[ "$INTERNAL" = true ] && pass "$TRUST_NET is internal" || fail "$TRUST_NET is not internal"
+MEMBERS=$(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$TRUST_NET" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
+[ "$MEMBERS" = "$D $M " ] && pass "$TRUST_NET members: exactly dashboards and grafana-mcp" || fail "$TRUST_NET members: $MEMBERS"
+DNETS=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$D" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
+[ "$DNETS" = "$(printf '%s\n' portcullis-proxy "$TRUST_NET" | sort | tr '\n' ' ')" ] && pass "dashboards joins exactly portcullis-proxy and $TRUST_NET" || fail "dashboards networks: $DNETS"
 allowlist() { docker exec "$D" sh -c 'tr "\0" "\n" < /proc/1/environ' 2>/dev/null | sed -n 's/^GF_AUTH_PROXY_WHITELIST=//p'; }
-# wait_allowlist WANT SECONDS: until Grafana (PID 1) runs with that allowlist and answers.
+# wait_allowlist PREDICATE SECONDS: until Grafana (PID 1) runs with an
+# allowlist PREDICATE accepts and answers.
 wait_allowlist() {
   for _ in $(seq 1 "$2"); do
-    GF_DEF_IP=$(gf_ip)
-    if [ "$(allowlist)" = "$1" ] && curl -sf -o /dev/null "http://${GF_DEF_IP}:3000/api/health"; then return 0; fi
+    GF_TRUST_IP=$(net_ip "$D" "$TRUST_NET")
+    if "$1" "$(allowlist)" && docker exec "$D" curl -sf -o /dev/null http://127.0.0.1:3000/api/health 2>/dev/null; then return 0; fi
     sleep 1
   done
   return 1
 }
-if wait_allowlist "$TRAEFIK_IP,$MCP_IP" 90; then
-  pass "Grafana trusts exactly Traefik and the companion: $(allowlist)"
+# The allowlist is Traefik plus the trust subnet without its network
+# address, gateway, broadcast and Grafana's own address; the companion's
+# address is in it.
+trust_ok() {
+  python3 - "$1" "$TRAEFIK_IP" "$SUBNET" "$GATEWAY" "$GF_TRUST_IP" "$MCP_TRUST_IP" <<'PY'
+import ipaddress, sys
+wl, traefik, subnet, gw, own, comp = sys.argv[1:7]
+parts = [p for p in wl.split(",") if p]
+if not parts or parts[0] != traefik:
+    sys.exit(1)
+net = ipaddress.ip_network(subnet)
+nets = [ipaddress.ip_network(p) for p in parts[1:]]
+if not nets or any(not n.subnet_of(net) for n in nets):
+    sys.exit(1)
+inside = lambda a: any(ipaddress.ip_address(a) in n for n in nets)
+bad = [a for a in (str(net.network_address), str(net.broadcast_address), gw, own) if a and inside(a)]
+sys.exit(1 if bad or not inside(comp) else 0)
+PY
+}
+traefik_only() { [ "$1" = "$TRAEFIK_IP" ]; }
+if wait_allowlist trust_ok 90; then
+  pass "Grafana trusts Traefik and $SUBNET without its network, gateway, broadcast and own address (companion $MCP_TRUST_IP in it)"
 else
-  fail "allowlist '$(allowlist)', expected '$TRAEFIK_IP,$MCP_IP'"
+  fail "allowlist '$(allowlist)' (subnet $SUBNET, gateway $GATEWAY, Grafana $GF_TRUST_IP, companion $MCP_TRUST_IP)"
   docker logs "$D" 2>&1 | grep portcullis-trust | tail -5 || true
 fi
 
@@ -193,27 +227,35 @@ not_admin() { # label output
   if [ "$login" = admin ] || [[ "$code" == 2* ]]; then
     fail "$1: X-Forwarded-User: admin signed in (HTTP $code, login '$login')"
   else
-    pass "$1: X-Forwarded-User: admin refused (HTTP $code)"
+    pass "$1: X-Forwarded-User: admin not signed in (HTTP $code)"
   fi
 }
-not_admin "another container on the instance network" \
-  "$(probe "$NET" "http://${GF_DEF_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
-not_admin "another container on the instance network, by name" \
-  "$(probe "$NET" "http://dashboards-internal:3000/api/user" -H 'X-Forwarded-User: admin')"
+if [ -n "$DEF_NET" ]; then
+  not_admin "another container on the project's default network" \
+    "$(probe "$DEF_NET" "http://${GF_PROXY_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
+  not_admin "another container on the project's default network, to Grafana's trust address" \
+    "$(probe "$DEF_NET" "http://${GF_TRUST_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
+else
+  info "no ${TRUST_NET%_mcp-trust}_default network (no service joins it): checked from portcullis-proxy and the host instead"
+fi
 not_admin "a container on portcullis-proxy" \
   "$(probe portcullis-proxy "http://${GF_PROXY_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
-# The companion's network namespace (its address) is trusted. Setup below
-# goes through it; nothing but the companion may share it (validate.py).
+not_admin "the host (the trust network's gateway side)" \
+  "$(curl -s --max-time 10 -w '\n%{http_code}' -H 'X-Forwarded-User: admin' "http://${GF_TRUST_IP}:3000/api/user" 2>/dev/null || echo 000)"
+not_admin "Grafana itself, to its own trust address (a data source pointing at Grafana)" \
+  "$(docker exec "$D" curl -s --max-time 10 -w '\n%{http_code}' -H 'X-Forwarded-User: admin' "http://${GF_TRUST_IP}:3000/api/user" 2>/dev/null || echo 000)"
+# The companion's network namespace (its trust address) is trusted. Setup
+# below goes through it; nothing but the companion may share it.
 gfc() { # METHOD PATH USER [JSON]
   local data=()
   if [ -n "${4:-}" ]; then data=(-H 'Content-Type: application/json' -d "$4"); fi
-  probe "container:$M" "http://${GF_DEF_IP}:3000$2" -X "$1" -H "X-Forwarded-User: $3" ${data[@]+"${data[@]}"}
+  probe "container:$M" "http://${GF_TRUST_IP}:3000$2" -X "$1" -H "X-Forwarded-User: $3" ${data[@]+"${data[@]}"}
 }
 OUT=$(gfc GET /api/user admin)
 if [ "$(sed '$d' <<<"$OUT" | jq -r .login 2>/dev/null)" = admin ]; then
-  pass "from the companion's address: X-Forwarded-User honoured (signed in as admin)"
+  pass "from the companion's trust address: X-Forwarded-User honoured (signed in as admin)"
 else
-  fail "from the companion's address: $(head -c 300 <<<"$OUT")"
+  fail "from the companion's trust address: $(head -c 300 <<<"$OUT")"
 fi
 
 # Data: a folder only admins can open, a dashboard in it, one in a folder
@@ -293,12 +335,12 @@ LIST='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 mcp "$MCP_IP" "$TOKEN" alice "$LIST" > "$TMP/tools-ro.json"
 probe_mcp() { # NAME extra-flags…
   local name="$1"; shift
-  docker run -d --rm --name "$name" --network "$NET" --read-only --tmpfs /tmp \
+  docker run -d --rm --name "$name" --network portcullis-proxy --read-only --tmpfs /tmp \
     --security-opt no-new-privileges:true --cap-drop ALL \
     -e GRAFANA_URL=http://dashboards-internal:3000 -e MCP_GRAFANA_SERVER_TOKEN \
     --entrypoint /app/mcp-grafana "$MCP_IMAGE" \
     -t streamable-http --address 0.0.0.0:8000 --allowed-hosts '*' --usage-stats=disabled "$@" >/dev/null
-  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name"
+  net_ip "$name" portcullis-proxy
 }
 RW_IP=$(probe_mcp portcullis-t-grafana-mcp-rw --disable-write=false --disable-api)
 FULL_IP=$(probe_mcp portcullis-t-grafana-mcp-full --disable-write=false)
@@ -362,38 +404,30 @@ else
   fail "tool classes do not match mcp-grafana's tools (above)"
 fi
 
-# The companion's address changes when it restarts: Grafana follows, and
-# trusts only the new one.
+# A companion restart may change its address; the subnet stays: no Grafana
+# restart, and it still works.
+STARTED=$(docker inspect -f '{{.State.StartedAt}}' "$D")
 docker restart "$M" >/dev/null
-NEW_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$M")
-info "companion address $MCP_IP -> $NEW_IP after a restart"
-if wait_allowlist "$TRAEFIK_IP,$NEW_IP" 120; then
-  pass "after a companion restart Grafana trusts exactly Traefik and $NEW_IP"
+MCP_IP=$(net_ip "$M" portcullis-proxy)
+MCP_TRUST_IP=$(net_ip "$M" "$TRUST_NET")
+wait_for_url "http://${MCP_IP}:8000/healthz" 60 grafana-mcp || true
+T=$(mcp "$MCP_IP" "$TOKEN" alice "$SEARCH" | text)
+if grep -q 'Team dashboard' <<<"$T" && [ "$(docker inspect -f '{{.State.StartedAt}}' "$D")" = "$STARTED" ]; then
+  pass "after a companion restart ($MCP_TRUST_IP) grafana-mcp works as alice, Grafana not restarted"
 else
-  fail "after a companion restart: allowlist '$(allowlist)', expected '$TRAEFIK_IP,$NEW_IP'"
+  fail "after a companion restart: search as alice: $(head -c 300 <<<"$T")"
 fi
-wait_for_url "http://${NEW_IP}:8000/healthz" 60 grafana-mcp || true
-T=$(mcp "$NEW_IP" "$TOKEN" alice "$SEARCH" | text)
-grep -q 'Team dashboard' <<<"$T" && pass "grafana-mcp works again as alice" || fail "after the restart, search as alice: $(head -c 300 <<<"$T")"
-# Gone: back to Traefik only.
-docker stop "$M" >/dev/null
-if wait_allowlist "$TRAEFIK_IP" 120; then
-  pass "companion stopped -> Grafana trusts Traefik only"
-else
-  fail "companion stopped: allowlist '$(allowlist)'"
-fi
-docker start "$M" >/dev/null
-# AI support off (PORTCULLIS_AI_ENABLED unset = false): even a running
-# companion is not trusted.
+# AI support off (PORTCULLIS_AI_ENABLED unset = false): Traefik only, even
+# with the companion running.
 unset PORTCULLIS_AI_ENABLED
 compose_up "$APP_ID"
 wait_for_container "$M" 30 || true
-if wait_allowlist "$TRAEFIK_IP" 120; then
-  pass "AI support off -> Traefik only, although the companion runs"
+if wait_allowlist traefik_only 120; then
+  pass "AI support off -> Grafana trusts Traefik only, although the companion runs"
 else
   fail "AI support off: allowlist '$(allowlist)'"
 fi
-not_admin "AI off, from the companion's address" "$(gfc GET /api/user admin)"
+not_admin "AI off, from the companion's trust address" "$(gfc GET /api/user admin)"
 rm -rf "$TMP"
 
 clear_public_policy

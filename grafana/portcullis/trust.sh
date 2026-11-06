@@ -5,98 +5,72 @@
 # GF_AUTH_PROXY_WHITELIST, read once at start. compose sets it to Traefik's
 # static IP (core's PORTCULLIS_TRAEFIK_IP), which forward-auth relies on.
 # While AI support is on (PORTCULLIS_AI_ENABLED), this script adds the
-# current address of this instance's mcp-grafana companion (contracts §3.2,
-# identity_headers), and nothing else:
+# instance's trust network mcp-trust (contracts §3.2, identity_headers):
 #
-# - The companion is found by its alias grafana-mcp-internal, which exists
-#   on the instance's own default network only (validate.py and the Hub
-#   refuse a *-internal name on any other network, so no container on
-#   portcullis-proxy can answer to it).
-# - Each address must be directly connected (no gateway), not one of
-#   Grafana's own addresses, and on another interface than the one Traefik
-#   is on. Anything else is dropped.
-# - No subnet is ever trusted, so no other container on either network
-#   (and no host process, which comes from the network's gateway) can sign
-#   in by sending the header. Docker gives the companion a new address when
-#   it restarts, so a background check restarts Grafana (SIGTERM to PID 1;
-#   restart: unless-stopped starts it again) when the set changes, also when
-#   the companion goes away: then only Traefik is trusted again.
-# Fails closed: anything unexpected leaves Traefik's address alone.
+# - mcp-trust is internal: true and project-scoped; its only members are
+#   this service and the grafana-mcp companion (validate.py and the Hub
+#   refuse any other member, and the Hub refuses foreign network names, so
+#   nothing outside the project can join it). Docker keeps a network's
+#   subnet for the network's lifetime; the subnet is read here, at every
+#   start, from this container's own interface: nothing is pinned.
+# - Trusted: that subnet without its network address, the gateway (the
+#   host's side of the bridge, Docker's first address: host processes and
+#   host-network containers would come from it), the broadcast address and
+#   Grafana's own address (a data source pointing at Grafana itself).
+# - dashboards joins exactly portcullis-proxy and mcp-trust: the interface
+#   whose subnet holds Traefik's address is portcullis-proxy, the other one
+#   is mcp-trust. Anything else (another count of IPv4 addresses, Traefik
+#   on neither or both, an odd prefix) refuses to start: fail closed.
 set -eu
 
-ALIAS=grafana-mcp-internal
-POLL=5    # seconds between checks
-WAIT=60   # seconds to wait for the companion at start while AI is on
-
-log() { printf 'portcullis-trust: %s\n' "$*" >&2; }
-
-ipv4() {
-  printf '%s\n' "$1" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$'
-}
-
-# The interface of a directly connected address that isn't local, else
-# nothing (ip prints "local …", "broadcast …" or "… via <gw> …" otherwise).
-route_dev() {
-  ip -4 route get "$1" 2>/dev/null | awk -v a="$1" '
-    NR == 1 && $1 == a {
-      for (i = 2; i < NF; i++) { if ($i == "via") exit; if ($i == "dev") d = $(i + 1) }
-      if (d != "") print d
-    }' || true
-}
+die() { printf 'portcullis-trust: %s\n' "$*" >&2; exit 1; }
 
 TRAEFIK=${GF_AUTH_PROXY_WHITELIST:-}
-if ! ipv4 "$TRAEFIK"; then
-  log "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')"
-  exit 1
+printf '%s\n' "$TRAEFIK" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$' \
+  || die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')"
+
+if [ "${PORTCULLIS_AI_ENABLED:-false}" != true ]; then
+  printf 'portcullis-trust: AI support off; Grafana accepts X-Forwarded-User from %s only\n' "$TRAEFIK" >&2
+  exec /run.sh "$@"
 fi
 
-# The companion's valid addresses, sorted, one per line.
-companions() {
-  proxy_dev=$(route_dev "$TRAEFIK")
-  [ -n "$proxy_dev" ] || return 0
-  getent hosts "$ALIAS" 2>/dev/null | awk '{ print $1 }' | sort -u | while read -r a; do
-    ipv4 "$a" || continue
-    d=$(route_dev "$a")
-    if [ -n "$d" ] && [ "$d" != "$proxy_dev" ]; then printf '%s\n' "$a"; fi
-  done
-  return 0
-}
+ADDRS=$(ip -4 -o addr show scope global) || die "can't list this container's addresses"
+TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
+  function fail(m) { print "portcullis-trust: " m > "/dev/stderr"; bad = 1; exit 1 }
+  function n4(s,  a) { if (split(s, a, ".") != 4) fail("bad address " s); return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4] }
+  function ip4(n) { return sprintf("%d.%d.%d.%d", int(n / 16777216) % 256, int(n / 65536) % 256, int(n / 256) % 256, n % 256) }
+  function p2(k,  r) { r = 1; while (k-- > 0) r *= 2; return r }
+  # The fewest CIDRs covering [start, start + 2^(32-len)) minus x[1..nx].
+  function cover(start, len,   size, i) {
+    size = p2(32 - len)
+    for (i = 1; i <= nx; i++) if (x[i] >= start && x[i] < start + size) break
+    if (i > nx) { out = out (out == "" ? "" : ",") ip4(start) "/" len; return }
+    if (len < 32) { cover(start, len + 1); cover(start + size / 2, len + 1) }
+  }
+  {
+    for (i = 1; i < NF; i++) if ($i == "inet") break
+    if (i >= NF || split($(i + 1), p, "/") != 2) fail("unreadable address line: " $0)
+    n++; addr[n] = n4(p[1]); plen[n] = p[2] + 0
+  }
+  END {
+    if (bad) exit 1
+    if (n != 2) fail("want exactly two IPv4 addresses (portcullis-proxy and mcp-trust), got " n + 0)
+    tn = n4(t); k = 0
+    for (i = 1; i <= 2; i++) {
+      size = p2(32 - plen[i]); base = addr[i] - addr[i] % size
+      if (tn >= base && tn < base + size) { proxy = i; k++ }
+    }
+    if (k != 1) fail("Traefik (" t ") must be on exactly one of the two networks")
+    j = 3 - proxy; len = plen[j]
+    if (len < 8 || len > 29) fail("the trust network prefix /" len " is outside /8../29")
+    size = p2(32 - len); self = addr[j]; base = self - self % size
+    nx = 4; x[1] = base; x[2] = base + 1; x[3] = self; x[4] = base + size - 1
+    cover(base, len)
+    print out
+  }') || die "can't determine the trust network; refusing to start"
+[ -n "$TRUST" ] || die "empty trust network; refusing to start"
 
-TRUSTED=""
-if [ "${PORTCULLIS_AI_ENABLED:-false}" = true ]; then
-  waited=0
-  while :; do
-    TRUSTED=$(companions)
-    [ -n "$TRUSTED" ] && break
-    if [ "$waited" -ge "$WAIT" ]; then
-      log "AI support is on but the companion ($ALIAS) isn't reachable yet; trusting Traefik only"
-      break
-    fi
-    sleep "$POLL"
-    waited=$((waited + POLL))
-  done
-fi
-
-LIST=$TRAEFIK
-for a in $TRUSTED; do LIST="$LIST,$a"; done
-GF_AUTH_PROXY_WHITELIST=$LIST
+GF_AUTH_PROXY_WHITELIST="$TRAEFIK,$TRUST"
 export GF_AUTH_PROXY_WHITELIST
-log "Grafana accepts X-Forwarded-User from: $LIST"
-
-if [ "${PORTCULLIS_AI_ENABLED:-false}" = true ]; then
-  (
-    changed=0
-    while sleep "$POLL"; do
-      now=$(companions)
-      if [ "$now" = "$TRUSTED" ]; then changed=0; continue; fi
-      # Twice in a row, so a single failed lookup doesn't restart Grafana.
-      changed=$((changed + 1))
-      [ "$changed" -ge 2 ] || continue
-      log "companion address changed ($(printf '%s' "$TRUSTED" | tr '\n' ' ') -> $(printf '%s' "$now" | tr '\n' ' ')); restarting Grafana to re-read its allowlist"
-      kill -TERM 1
-      exit 0
-    done
-  ) &
-fi
-
+printf 'portcullis-trust: Grafana accepts X-Forwarded-User from %s\n' "$GF_AUTH_PROXY_WHITELIST" >&2
 exec /run.sh "$@"

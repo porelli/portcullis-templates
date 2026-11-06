@@ -57,10 +57,10 @@ auth:
   notes: >-
     Proxy auth with X-Forwarded-User header, accepted only from Traefik
     (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP) and, while AI support
-    is on, from the instance's grafana-mcp companion: at every start
-    trust.sh adds the companion's current address (alias
-    grafana-mcp-internal, default network only; never a subnet) and
-    restarts Grafana when that address changes. Auto-creates users.
+    is on, from the instance's grafana-mcp companion: its trust network
+    mcp-trust (internal, members dashboards and grafana-mcp only) is added
+    by trust.sh at every start, read from Grafana's own interface, without
+    the gateway, broadcast and Grafana's own address. Auto-creates users.
     Each person's organization role (Viewer, Editor or Admin) comes from the
     instance's Role setting: group-gate sends it as
     X-Forwarded-Attr-Grafana-Role on every request and Grafana syncs it on
@@ -117,8 +117,8 @@ tests:
 # AI support (contracts §3.2, §15.5): the official mcp-grafana, identity
 # headers. The gate sends X-Forwarded-User (and the Role header) plus the
 # caller secret; mcp-grafana forwards the two headers to Grafana, which
-# trusts them only from Traefik and the companion's own address
-# (portcullis/trust.sh). Every call runs as the person, with their role.
+# trusts them only from Traefik and the companion's trust network
+# mcp-trust (portcullis/trust.sh). Every call runs as the person, with their role.
 ai:
   mcp:
     - name: grafana
