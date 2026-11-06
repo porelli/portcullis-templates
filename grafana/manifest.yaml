@@ -56,7 +56,11 @@ auth:
         supporting: true
   notes: >-
     Proxy auth with X-Forwarded-User header, accepted only from Traefik
-    (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP). Auto-creates users.
+    (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP) and, while AI support
+    is on, from the instance's grafana-mcp companion: at every start
+    trust.sh adds the companion's current address (alias
+    grafana-mcp-internal, default network only; never a subnet) and
+    restarts Grafana when that address changes. Auto-creates users.
     Each person's organization role (Viewer, Editor or Admin) comes from the
     instance's Role setting: group-gate sends it as
     X-Forwarded-Attr-Grafana-Role on every request and Grafana syncs it on
@@ -93,6 +97,9 @@ env:
   - key: GRAFANA_ADMIN_PASSWORD
     description: Password of Grafana's built-in admin (never used for sign-in; basic auth and the login form are off)
     generate: random
+  - key: MCP_GRAFANA_SERVER_TOKEN
+    description: Caller secret of the grafana-mcp AI companion (the gate sends it; mcp-grafana refuses every request without it)
+    generate: random
 keycloak_clients: []
 config_files: []
 
@@ -107,6 +114,38 @@ tests:
     signed_in:
       json: {url: /api/user, field: login}
 
-# AI support (contracts §3.2): why the AI can't act in this app.
+# AI support (contracts §3.2, §15.5): the official mcp-grafana, identity
+# headers. The gate sends X-Forwarded-User (and the Role header) plus the
+# caller secret; mcp-grafana forwards the two headers to Grafana, which
+# trusts them only from Traefik and the companion's own address
+# (portcullis/trust.sh). Every call runs as the person, with their role.
 ai:
-  unsupported: "AI support is being added"
+  mcp:
+    - name: grafana
+      label: Grafana
+      kind: companion
+      service: grafana-mcp
+      port: 8000
+      path: /mcp
+      router: grafana                # https://<grafana host>/mcp
+      public_path: /mcp
+      upstream: official
+      source: https://github.com/grafana/mcp-grafana
+      protocol: ["2026-07-28", "2025-11-25"]
+      modes: [read_only, read_write]
+      default_mode: read_only
+      identity:
+        mode: identity_headers
+        caller_secret: {env: MCP_GRAFANA_SERVER_TOKEN, header: Authorization, format: "Bearer {secret}"}
+      # mcp-grafana 2.2.0's tools (tests/apps/grafana.sh checks these
+      # against the real tools/list of both modes). alerting_rules_write
+      # and alerting_silences_write delete through an `operation` argument
+      # (not `method`), so the whole tool is confirmed.
+      tools:
+        writes: ["create_*", "update_*", "delete_*", "*_write", "add_activity_to_incident", "install_plugin"]
+        confirm: ["delete_*", "alerting_rules_write", "alerting_silences_write"]
+        # grafana_api_request sends arbitrary request headers (the Role
+        # header among them; also off with --disable-api);
+        # alerting_routing_write creates contact points, whose settings
+        # carry webhook / chat credentials the model would see.
+        never: ["grafana_api_request", "alerting_routing_write"]
