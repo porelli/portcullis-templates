@@ -6175,8 +6175,11 @@ class _AICheck:
         trust = nets[0]
         top = (self.t.compose or {}).get("networks") or {}
         spec = top.get(trust) if isinstance(top, dict) else None
-        if not (isinstance(spec, dict) and spec.get("internal") is True and "name" not in spec and "external" not in spec):
-            self.err(f"{w}: the trust network {trust} must be declared at the top level with internal: true (and no name or external)")
+        # Exactly {internal: true}: an address plan or driver option could
+        # make the subnet the app trusts cover other addresses.
+        if not (isinstance(spec, dict) and spec.get("internal") is True and len(spec) == 1):
+            self.err(f"{w}: the trust network {trust} must be declared at the top level as exactly {{internal: true}} "
+                     "(no ipam, driver, driver_opts, enable_ipv6, attachable, labels, name or external)")
             return
         want = {svc} | {_str(rt, "_service") for n, rt in self.routers.items() if n == router}
         if len(want) < 2:
@@ -6280,6 +6283,13 @@ class _AICheck:
                              "(it would reach the companion past the gate)")
         if kind == "companion" and mode == "identity_headers" and svc in self.services:
             self.check_trust_network(w, svc, _str(c, "router"))
+        if mode == "identity_headers":
+            # A host-network service sends from the host's address, the
+            # trust network's gateway side included.
+            for oname in sorted(self.services):
+                if self.services[oname].get("network_mode") == "host":
+                    self.err(f"{w}: service {oname} uses network_mode host: not allowed next to an identity_headers companion "
+                             "(it reaches the app from the host's addresses)")
         service_use[svc] = name
         port = c.get("port", 0)
         port = port if isinstance(port, int) and not isinstance(port, bool) else -1

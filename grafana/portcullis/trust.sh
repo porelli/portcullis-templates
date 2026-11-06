@@ -13,10 +13,23 @@
 #   nothing outside the project can join it). Docker keeps a network's
 #   subnet for the network's lifetime; the subnet is read here, at every
 #   start, from this container's own interface: nothing is pinned.
-# - Trusted: that subnet without its network address, the gateway (the
-#   host's side of the bridge, Docker's first address: host processes and
-#   host-network containers would come from it), the broadcast address and
-#   Grafana's own address (a data source pointing at Grafana itself).
+# - Trusted: that exact prefix, as this container's interface reports it
+#   (address and mask), without Grafana's own address (a data source
+#   pointing at Grafana itself would come from it), the network and
+#   broadcast addresses and the bridge gateway: the host's side of the
+#   bridge, which host processes and host-network containers come from
+#   (CI shows the host reaching Grafana there). The container can't read
+#   the gateway (an internal network adds no route through it; IPAM data
+#   isn't visible inside), so this relies on Docker's builtin IPAM, which
+#   gives the gateway the prefix's first address of a network without an
+#   ipam block; compose.yml can't change that (the trust network is exactly
+#   {internal: true}: no ipam, no driver), and tests/apps/grafana.sh checks
+#   it against `docker network inspect` and sends the header from the
+#   host's namespace.
+# - Refused (exit 1, Grafana doesn't start): not exactly two IPv4
+#   addresses, Traefik on neither or both networks, more than one IPv4 or
+#   any global IPv6 address on the trust interface, a prefix broader than
+#   /16 (Docker's default pools hand out /16 and /20) or narrower than /29.
 # - dashboards joins exactly portcullis-proxy and mcp-trust: the interface
 #   whose subnet holds Traefik's address is portcullis-proxy, the other one
 #   is mcp-trust. Anything else (another count of IPv4 addresses, Traefik
@@ -49,8 +62,8 @@ TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
   }
   {
     for (i = 1; i < NF; i++) if ($i == "inet") break
-    if (i >= NF || split($(i + 1), p, "/") != 2) fail("unreadable address line: " $0)
-    n++; addr[n] = n4(p[1]); plen[n] = p[2] + 0
+    if (i >= NF || split($(i + 1), p, "/") != 2 || p[2] !~ /^[0-9]+$/) fail("unreadable address line: " $0)
+    n++; addr[n] = n4(p[1]); plen[n] = p[2] + 0; dev[n] = $2; sub(/:$/, "", dev[n]); sub(/@.*/, "", dev[n])
   }
   END {
     if (bad) exit 1
@@ -62,13 +75,19 @@ TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
     }
     if (k != 1) fail("Traefik (" t ") must be on exactly one of the two networks")
     j = 3 - proxy; len = plen[j]
-    if (len < 8 || len > 29) fail("the trust network prefix /" len " is outside /8../29")
+    if (len < 16 || len > 29) fail("the trust network prefix /" len " is outside /16../29")
     size = p2(32 - len); self = addr[j]; base = self - self % size
     nx = 4; x[1] = base; x[2] = base + 1; x[3] = self; x[4] = base + size - 1
     cover(base, len)
-    print out
+    print dev[j], out
   }') || die "can't determine the trust network; refusing to start"
-[ -n "$TRUST" ] || die "empty trust network; refusing to start"
+DEV=${TRUST%% *}
+TRUST=${TRUST#* }
+[ -n "$DEV" ] && [ -n "$TRUST" ] && [ "$DEV" != "$TRUST" ] || die "empty trust network; refusing to start"
+# Unambiguous: the trust interface carries this one IPv4 address and no
+# global IPv6 one (an IPv6 peer would not be judged by the IPv4 prefix).
+[ "$(ip -4 -o addr show dev "$DEV" | grep -c ' inet ')" = 1 ] || die "the trust interface $DEV has more than one IPv4 address; refusing to start"
+[ -z "$(ip -6 -o addr show dev "$DEV" scope global 2>/dev/null)" ] || die "the trust interface $DEV has a global IPv6 address; refusing to start"
 
 GF_AUTH_PROXY_WHITELIST="$TRAEFIK,$TRUST"
 export GF_AUTH_PROXY_WHITELIST

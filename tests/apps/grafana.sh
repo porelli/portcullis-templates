@@ -173,6 +173,10 @@ GATEWAY=$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}'
 INTERNAL=$(docker network inspect -f '{{.Internal}}' "$TRUST_NET")
 info "trust network $TRUST_NET ($SUBNET, gateway ${GATEWAY:-none}, internal $INTERNAL): Grafana $GF_TRUST_IP, companion $MCP_TRUST_IP"
 [ "$INTERNAL" = true ] && pass "$TRUST_NET is internal" || fail "$TRUST_NET is not internal"
+# trust.sh excludes the prefix's first address as the bridge gateway
+# (Docker's builtin IPAM; the network is exactly {internal: true}).
+FIRST=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1])[1])' "$SUBNET")
+[ -n "$GATEWAY" ] && [ "$GATEWAY" = "$FIRST" ] && pass "the trust network's gateway is its first address ($GATEWAY)" || fail "trust network gateway '$GATEWAY', first address $FIRST"
 MEMBERS=$(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$TRUST_NET" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
 [ "$MEMBERS" = "$D $M " ] && pass "$TRUST_NET members: exactly dashboards and grafana-mcp" || fail "$TRUST_NET members: $MEMBERS"
 DNETS=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$D" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
@@ -242,6 +246,8 @@ not_admin "a container on portcullis-proxy" \
   "$(probe portcullis-proxy "http://${GF_PROXY_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
 not_admin "the host (the trust network's gateway side)" \
   "$(curl -s --max-time 10 -w '\n%{http_code}' -H 'X-Forwarded-User: admin' "http://${GF_TRUST_IP}:3000/api/user" 2>/dev/null || echo 000)"
+not_admin "a container in the host's network namespace (network_mode: host), to Grafana's trust address" \
+  "$(probe host "http://${GF_TRUST_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
 not_admin "Grafana itself, to its own trust address (a data source pointing at Grafana)" \
   "$(docker exec "$D" curl -s --max-time 10 -w '\n%{http_code}' -H 'X-Forwarded-User: admin' "http://${GF_TRUST_IP}:3000/api/user" 2>/dev/null || echo 000)"
 # The companion's network namespace (its trust address) is trusted. Setup
