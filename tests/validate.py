@@ -58,6 +58,9 @@ CORE_VARS = {
     "PORTCULLIS_PROXY_SUBNET": "172.31.250.0/24",
     "PORTCULLIS_PROXY_IP_RANGE": "172.31.250.128/25",
     "PORTCULLIS_TRAEFIK_IP": "172.31.250.2",
+    # AI support (§2): mcp-gate's address on portcullis-proxy. Referencing
+    # it is allowed; declaring it is not (ai_reserved_var).
+    "PORTCULLIS_MCP_GATE_IP": "172.31.250.3",
 }
 
 # Subdomains owned by core (group-gate-map.conf); templates must not route them.
@@ -5879,15 +5882,18 @@ def single_line(s: Any, limit: int) -> bool:
     return isinstance(s, str) and s.strip() != "" and len(s) <= limit and not has_control(s)
 
 
+# HTTPS_URL_RE: never looser than the Hub's httpsURL (Go url.Parse + https
+# + host + no userinfo): a host of letters, digits, '.' and '-' or a
+# bracketed IPv6 address, an optional all-digit port, then a path / query
+# / fragment whose every '%' starts a two-hex-digit escape, no whitespace,
+# backslashes or control characters.
+HTTPS_URL_RE = re.compile(r"https://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?"
+                          r"(?:[/?#](?:[^\s%\\]|%[0-9A-Fa-f]{2})*)?")
+
+
 def https_url(s: Any) -> bool:
     """httpsURL: an absolute https URL with a host and no userinfo."""
-    if not isinstance(s, str) or has_control(s) or " " in s or "\t" in s:
-        return False
-    try:
-        u = urlsplit(s)
-    except ValueError:
-        return False
-    return u.scheme == "https" and bool(u.netloc) and "@" not in u.netloc
+    return isinstance(s, str) and not has_control(s) and bool(HTTPS_URL_RE.fullmatch(s))
 
 
 def valid_mcp_path(p: Any) -> bool:
@@ -5965,11 +5971,24 @@ class _AICheck:
         # A core subdomain (mcp included) as a default subdomain:
         # check_rule_forms ("subdomain ... belongs to core").
         a = m.get("ai")
-        if "ai" not in m or not isinstance(a, dict) or "ai" in self.t.schema_errors:
-            # Missing or misshapen: the schema errors say what to fix.
-            # Without a usable block the compose side is checked as if
-            # the template had no companions.
+        if "ai" not in m or not isinstance(a, dict):
+            # Missing: the schema error says so; the compose side is
+            # checked as if the template had no companions.
             self.check_var_refs([])
+            self.check_ai_hooks()
+            return
+        if "ai" in self.t.schema_errors:
+            # Misshapen: the schema errors say what to fix. The companions
+            # and hooks are read from the raw block, so a shape error
+            # doesn't turn into "only AI variables …" / "no ai: field
+            # names it" errors.
+            raw = [c for c in as_list(a.get("mcp")) if isinstance(c, dict) and isinstance(c.get("name"), str)]
+            for c in raw:
+                ident = c.get("identity") if isinstance(c.get("identity"), dict) else {}
+                self.named.update(n for n in (ident.get("mint"), ident.get("revoke")) if isinstance(n, str))
+            if isinstance(a.get("on_change"), str):
+                self.named.add(a["on_change"])
+            self.check_var_refs(raw)
             self.check_ai_hooks()
             return
         has_mcp, has_unsup = "mcp" in a, "unsupported" in a
@@ -6163,6 +6182,10 @@ class _AICheck:
                 self.err(f"{w}: companion service {svc} may not set {' or '.join(named)}")
             if "ports" in s:
                 self.err(f"{w}: companion service {svc} may not publish ports (the gate is the only way in)")
+            for oname in sorted(self.services):
+                if self.services[oname].get("network_mode") == f"service:{svc}":
+                    self.err(f"{w}: service {oname} uses network_mode service:{svc}, the companion service's network namespace "
+                             "(it would reach the companion past the gate)")
         service_use[svc] = name
         port = c.get("port", 0)
         port = port if isinstance(port, int) and not isinstance(port, bool) else -1

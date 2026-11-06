@@ -621,7 +621,7 @@ The reviewer checks, and the template's docs page records why it passed:
 Also refused: `ai.mcp` with `auth.admin_paths`, with method `public` or
 `mtls`, or on a router-less template; a `companion` service with any
 `traefik.*` label, on `portcullis-proxy`, with `network_mode`,
-`container_name`, `hostname` or `ports`; `portcullis-mcp-` anywhere in
+`container_name`, `hostname` or `ports`, or whose network namespace another service joins (`network_mode: service:<companion>`); `portcullis-mcp-` anywhere in
 `compose.yml`; `keycloak_clients[].client_id` starting `portcullis-ai-`;
 `mcp` as a subdomain; declaring `PORTCULLIS_AI_*` or
 `PORTCULLIS_MCP_GATE_IP`; reading `PORTCULLIS_AI_ENABLED` other than as

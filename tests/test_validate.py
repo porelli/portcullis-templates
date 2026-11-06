@@ -3676,7 +3676,6 @@ class AITests(Case):
             ("two lines", "unsupported", ["unsupported: test fixture", 'unsupported: "a\\nb"'], [], "ai.unsupported"),
             ("control char", "unsupported", ["unsupported: test fixture", 'unsupported: "No MCP\\a server"'], [], "ai.unsupported"),
             ("line separator", "unsupported", ["unsupported: test fixture", 'unsupported: "No MCP\\u2028server"'], [], "ai.unsupported"),
-            ("empty mcp", "companion", ["ai:\n  mcp:\n", "ai:\n  mcp: []\n  x-old:\n"], [], "ai"),
             ("empty mcp list", "unsupported", [AI_UNSUP, "ai:\n  mcp: []\n"], [], "ai.mcp: list at least one companion"),
             ("unknown key", "unsupported", ["ai:\n", "ai:\n  bogus: 1\n"], [], "bogus"),
             ("200 runes ok", "unsupported", ["unsupported: test fixture", "unsupported: " + "é" * 200], [], ""),
@@ -3688,6 +3687,19 @@ class AITests(Case):
              "ai.alternative is only allowed with ai.unsupported"),
             ("alternative without source", "alternative", ['source: "https://example.org/plain-mcp", ', ""], [], "source"),
             ("alternative http source", "alternative", ['"https://example.org/plain-mcp"', '"http://example.org/plain-mcp"'], [], "ai.alternative.source"),
+            ("alternative bad escape", "alternative", ['"https://example.org/plain-mcp"', '"https://x/%zz"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative trailing %", "alternative", ['"https://example.org/plain-mcp"', '"https://x/%"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative escape in host", "alternative", ['"https://example.org/plain-mcp"', '"https://ex%41mple.com/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative non-numeric port", "alternative", ['"https://example.org/plain-mcp"', '"https://example.com:abc/x"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative doubled port", "alternative", ['"https://example.org/plain-mcp"', '"https://x:80:80/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative userinfo", "alternative", ['"https://example.org/plain-mcp"', '"https://u:p@example.org/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative empty host", "alternative", ['"https://example.org/plain-mcp"', '"https:///x"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative port, query, escape, IPv6 ok", "alternative", ['"https://example.org/plain-mcp"', '"https://[::1]:8443/a%2Fb?q=1#f"'], [], ""),
+        ] + [
+            (f"alternative host with {ch}", "alternative", ['"https://example.org/plain-mcp"', f'"https://exa{ch}mple.org/"'], [], "ai.alternative.source must be an https:// URL")
+            for ch in ("|", "{", "^", "`")
+        ] + [
+            ("companion source bad escape", "companion", ["https://example.org/demo-mcp", "https://x/%zz"], [], "ai.mcp[demo]: source must be an https:// URL"),
             ("alternative long name", "alternative", ["name: plain-mcp", "name: " + "n" * 65], [], "ai.alternative.name"),
             ("alternative long note", "alternative", ['note: "community, 12 stars, API token per person"', "note: " + "n" * 201], [], "ai.alternative.note"),
             ("on_change with unsupported", "unsupported", ["ai:\n", "ai:\n  on_change: x\n"], [], "ai.on_change is only allowed with ai.mcp"),
@@ -3709,7 +3721,7 @@ class AITests(Case):
             ("duplicate name", "headers", ["  mcp:\n", '  mcp:\n    - {name: wiki, label: W, kind: builtin, service: demo, port: 1, router: demo, public_path: /other, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_only], aggregate: false, identity: {mode: identity_headers, caller_secret: {env: DEMO_SECRET}}}\n'], [],
              "ai.mcp[wiki]: name declared twice"),
             ("label empty", comp, ["      label: Demo\n", '      label: ""\n'], [], "ai.mcp[demo]: label"),
-            ("bad kind", comp, ["kind: companion", "kind: sidecar"], [], "kind"),
+            ("bad kind", comp, ["kind: companion", "kind: sidecar"], [], "ai.mcp.0.kind: 'sidecar' is not one of ['companion', 'builtin']"),
             ("service not in compose", comp, ["service: demo-mcp", "service: nope"], [], "ai.mcp[demo]: service nope is not in compose.yml"),
             ("service shape", comp, ["service: demo-mcp", "service: demo_mcp"], ["  demo-mcp:\n", "  demo_mcp:\n"], "ai.mcp[demo]: service demo_mcp must match"),
             ("companion service twice", comp, ["  mcp:\n", '  mcp:\n    - {name: other, label: O, kind: companion, service: demo-mcp, port: 8080, router: demo, public_path: /other, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], identity: {mode: app_token, format: "Bearer {credential}", mint: mcp-mint, revoke: mcp-revoke}}\n'], [],
@@ -3724,6 +3736,10 @@ class AITests(Case):
              "ai.mcp[demo]: companion service demo-mcp may not set hostname"),
             ("companion with network_mode", comp, [], ["    networks: [default]\n", "    network_mode: none\n"],
              "ai.mcp[demo]: companion service demo-mcp may not set network_mode"),
+            ("service in the companion's namespace", comp, [], [S_INIT, S_INIT + "    network_mode: service:demo-mcp\n"],
+             "ai.mcp[demo]: service init uses network_mode service:demo-mcp"),
+            ("builtin namespace ok", "headers", [], ["  init:\n    image: demo/init:1.0.0@sha256:" + S_DIGEST + "\n",
+                                                     "  init:\n    image: demo/init:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: service:demo\n"], ""),
             ("companion publishes ports", comp, [], ["    networks: [default]\n", "    networks: [default]\n    ports: [\"8080:8080\"]\n"],
              "ai.mcp[demo]: companion service demo-mcp may not publish ports"),
             ("companion image unpinned", comp, [], [f"demo/mcp:1.0.0@sha256:{S_DIGEST}", "demo/mcp:1.0.0"], "sha256"),
@@ -3750,7 +3766,8 @@ class AITests(Case):
                 "      router: demo\n", "      router: demo\n      public_path: /s/mcp\n"], [],
              "ai.mcp[demo]: public_path /s/mcp overlaps the auth.public_access path /s"),
             ("nested public_path", comp, ["  mcp:\n", other_builtin], [], "overlaps companion"),
-            ("same public_path twice", comp, ["  mcp:\n", other_builtin.replace("public_path: /mcp/other, ", "")], [], "public_path"),
+            ("same public_path twice", comp, ["  mcp:\n", other_builtin.replace("public_path: /mcp/other, ", "")], [],
+             "ai.mcp[demo]: endpoint path (public_path, or path for app_oauth) /mcp on router demo overlaps companion other's /mcp"),
             ("app_oauth path vs public_path", "oauth", ["  mcp:\n", '  mcp:\n    - {name: tok, label: T, kind: builtin, service: demo, port: 8080, router: demo, public_path: /mcp, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], identity: {mode: app_token, format: "Bearer {credential}", mint: revoke-all, revoke: toggle}}\n', "  on_change: toggle\n", ""], [],
              "overlaps companion"),
             ("on_change hook not ai", "oauth", ["{name: toggle, service: demo, command: [/toggle], when: [ai]}", "{name: toggle, service: demo, command: [/toggle], when: [settings_change]}"], [],
@@ -3797,10 +3814,10 @@ class AITests(Case):
             ("app_token caller_secret", comp, ["        mint: mcp-mint\n", "        mint: mcp-mint\n        caller_secret: {env: X}\n"], [],
              "ai.mcp[demo]: identity.caller_secret is not a parameter of mode app_token"),
             ("scopes key not a mode", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: [read_write]"], [], "ai.mcp[demo]: identity.scopes key \"read_only\""),
-            ("bad identity mode", comp, ["mode: app_token", "mode: shared_admin"], [], "mode"),
+            ("bad identity mode", comp, ["mode: app_token", "mode: shared_admin"], [], "ai.mcp.0.identity.mode: 'shared_admin' is not one of"),
             ("modes empty", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: []"], [], "ai.mcp[demo]: modes"),
             ("modes repeat", comp, ["modes: [read_only, read_write]", "modes: [read_write, read_write]"], [], "ai.mcp[demo]: modes"),
-            ("modes unknown", comp, ["modes: [read_only, read_write]", "modes: [read_only, admin]"], [], "modes"),
+            ("modes unknown", comp, ["modes: [read_only, read_write]", "modes: [read_only, admin]"], [], "ai.mcp.0.modes.1: 'admin' is not one of ['read_only', 'read_write']"),
             ("default_mode not in modes", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: [read_only]\n      default_mode: read_write"], [],
              "ai.mcp[demo]: default_mode \"read_write\" is not one of modes"),
             ("default_mode missing with two", comp, ["      default_mode: read_write\n", ""], [], "ai.mcp[demo]: default_mode is required when modes has two entries"),
@@ -3808,7 +3825,7 @@ class AITests(Case):
             ("community companion ok", comp, ["upstream: official", "upstream: community"], [], ""),
             ("upstream missing", comp, ["      upstream: official\n", ""], [], "'upstream' is a required property"),
             ("protocol empty", comp, ['protocol: ["2026-07-28", "2025-11-25"]', "protocol: []"], [], "ai.mcp[demo]: protocol must list at least one"),
-            ("protocol unknown", comp, ['protocol: ["2026-07-28", "2025-11-25"]', 'protocol: ["2024-11-05"]'], [], "protocol"),
+            ("protocol unknown", comp, ['protocol: ["2026-07-28", "2025-11-25"]', 'protocol: ["2024-11-05"]'], [], "ai.mcp.0.protocol.0: '2024-11-05' is not one of"),
             ("protocol twice", comp, ['protocol: ["2026-07-28", "2025-11-25"]', 'protocol: ["2025-11-25", "2025-11-25"]'], [], "ai.mcp[demo]: protocol \"2025-11-25\" must be one of"),
             ("tool pattern", comp, ['writes: ["create_*", "delete_*"]', 'writes: ["create *"]'], [], "ai.mcp[demo]: tools.writes pattern"),
             ("too many tool patterns", comp, ['never: []', "never: [" + ", ".join(f"t{i}" for i in range(257)) + "]"], [], "ai.mcp[demo]: tools.never lists more than 256"),
@@ -3831,6 +3848,26 @@ class AITests(Case):
                                                           "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      AI: ${PORTCULLIS_AI_ENABLED:-false}\n"],
              "PORTCULLIS_AI_ENABLED may appear only as exactly ${PORTCULLIS_AI_ENABLED:-false}, in a template with ai.mcp"),
         ])
+
+    def test_misshapen_block(self) -> None:
+        """A schema error under ai: says what to fix; no follow-on errors
+        about the companions' variables or hooks."""
+        fx = ai_fixtures()
+        m, c = fx["companion"]
+        errors, _ = self.run_raw(self.edit(m, ["kind: companion", "kind: sidecar"]), c)
+        self.assertError(errors, "ai.mcp.0.kind: 'sidecar' is not one of")
+        self.assertFalse([e for e in errors if "only AI variables" in e or "no ai: field names it" in e
+                          or "may appear only as exactly" in e], "\n".join(errors))
+
+    def test_mcp_gate_ip_is_a_core_variable(self) -> None:
+        fx = ai_fixtures()
+        m, c = fx["unsupported"]
+        env = "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n"
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}\n"]))
+        self.assertClean(errors)
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP}\n"]))
+        self.assertError(errors, "${PORTCULLIS_MCP_GATE_IP} must use the default form ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}")
+        self.assertEqual(v.CORE_VARS[v.VAR_MCP_GATE_IP], "172.31.250.3")
 
     def test_alias_limit(self) -> None:
         fx = ai_fixtures()
@@ -3919,7 +3956,8 @@ class AITests(Case):
             ("mcp default subdomain", plain, ["{{HOST_DEMO}}", "{{HOST_DEMO}}"], ["demo.portcullis.local}`)", "mcp.portcullis.local}`)"], "subdomain 'mcp' belongs to core"),
             ("core service mcp-gate", plain, [], ["  init:\n", "  mcp-gate:\n"], "the DNS name 'mcp-gate' is core's"),
             ("core volume mcp_gate_data", plain, [], ["  demo-data: {}\n", "  demo-data: {}\n  mcp_gate_data: {}\n"], "volumes.mcp_gate_data is core's"),
-            ("core router mcp", plain, [], ["routers.demo.", "routers.mcp."] * 4, "mcp"),
+            ("core router mcp", plain, [], ["routers.demo.", "routers.mcp."] * 4, "Traefik label 'traefik.http.routers.mcp.rule': router 'mcp' is core's (reserved)"),
+            ("core service mcp-gate label", plain, [], ["traefik.http.services.demo.", "traefik.http.services.mcp-gate."], "service 'mcp-gate' is core's (reserved)"),
         ])
         for k in ("PORTCULLIS_AI_ENABLED", "PORTCULLIS_AI_READONLY_GITEA", "PORTCULLIS_AI_PROVIDER_X", "PORTCULLIS_AI_ANYTHING", "PORTCULLIS_MCP_GATE_IP"):
             self.assertTrue(v.reserved_var(k), k)
