@@ -244,6 +244,9 @@ else
 fi
 not_admin "a container on portcullis-proxy" \
   "$(probe portcullis-proxy "http://${GF_PROXY_IP}:3000/api/user" -H 'X-Forwarded-User: admin')"
+not_admin "a container on portcullis-proxy claiming the companion's address (X-Real-IP / X-Forwarded-For)" \
+  "$(probe portcullis-proxy "http://${GF_PROXY_IP}:3000/api/user" -H 'X-Forwarded-User: admin' \
+      -H "X-Real-IP: ${MCP_TRUST_IP}" -H "X-Forwarded-For: ${MCP_TRUST_IP}")"
 not_admin "the host (the trust network's gateway side)" \
   "$(curl -s --max-time 10 -w '\n%{http_code}' -H 'X-Forwarded-User: admin' "http://${GF_TRUST_IP}:3000/api/user" 2>/dev/null || echo 000)"
 not_admin "a container in the host's network namespace (network_mode: host), to Grafana's trust address" \

@@ -9,13 +9,33 @@ trap 'rm -rf "$T"' EXIT
 sed 's|exec /run.sh "\$@"|printf "RESULT %s\\n" "$GF_AUTH_PROXY_WHITELIST"; exit 0|' grafana/portcullis/trust.sh > "$T/trust.sh"
 grep -q '^printf "RESULT' "$T/trust.sh" || { echo "FAIL could not stub /run.sh"; exit 1; }
 FAILS=0
-# case NAME EXPECT(RESULT line | "refused") V4LINES [V6_ON_TRUST] [AI]
+# The connected route of each "inet a/p" line, as `ip -4 route show` prints it.
+cat > "$T/routes.py" <<'PY'
+import ipaddress, sys
+out = []
+for line in sys.stdin:
+    f = line.split()
+    if "inet" not in f:
+        continue
+    try:
+        n = ipaddress.ip_interface(f[f.index("inet") + 1]).network
+    except ValueError:
+        continue
+    out.append("%s dev %s proto kernel scope link src x" % (n, f[1].rstrip(":")))
+sys.stdout.write("\\n".join(out) + "\\n")
+PY
+# case NAME EXPECT(RESULT line | "refused") V4LINES [V6_ON_TRUST] [AI] [ROUTES]
+# ROUTES defaults to a default route on eth0 and each address's connected prefix.
 case_() {
-  local name="$1" want="$2" v4="$3" v6="${4:-}" ai="${5:-true}" out rc=0
+  local name="$1" want="$2" v4="$3" v6="${4:-}" ai="${5:-true}" routes="${6:-}" out rc=0
+  if [ -z "$routes" ]; then
+    routes="default via 172.31.250.1 dev eth0\\n$(printf '%b' "$v4" | python3 "$T/routes.py")"
+  fi
   cat > "$T/ip" <<STUB
 #!/bin/sh
-# ip -4 -o addr show scope global | ip -4 -o addr show dev X | ip -6 -o addr show dev X scope global
+# ip -4 -o addr show scope global | ip -4 -o addr show dev X | ip -6 -o addr show dev X scope global | ip -4 route show
 if [ "\$1" = -6 ]; then printf '%b' '$v6'; exit 0; fi
+if [ "\$2" = route ]; then printf '%b' '$routes'; exit 0; fi
 if [ "\$5" = dev ]; then printf '%b' '$v4' | awk -v d="\$6" '\$2 == d || \$2 == d":"'; exit 0; fi
 printf '%b' '$v4'
 STUB
@@ -47,10 +67,32 @@ case_ "Traefik on both networks" refused "${P}3: eth1    inet 172.31.250.141/24 
 case_ "prefix broader than /16" refused "${P}3: eth1    inet 10.0.0.2/8 scope global eth1\n"
 case_ "prefix narrower than /29" refused "${P}3: eth1    inet 10.0.0.2/30 scope global eth1\n"
 case_ "global IPv6 on the trust interface" refused "${P}3: eth1    inet 172.20.0.2/29 scope global eth1\n" "3: eth1    inet6 fd00::2/64 scope global\n"
+T29="${P}3: eth1    inet 172.20.0.2/29 brd 172.20.0.7 scope global eth1\n"
+OK29=172.31.250.2,172.20.0.3/32,172.20.0.4/31,172.20.0.6/32
+case_ "explicit good routes" "$OK29" "$T29" "" true \
+  "default via 172.31.250.1 dev eth0\n172.31.250.0/24 dev eth0 proto kernel scope link src 172.31.250.140\n172.20.0.0/29 dev eth1 proto kernel scope link src 172.20.0.2\n"
+case_ "default route on the trust interface" refused "$T29" "" true \
+  "default via 172.20.0.1 dev eth1\n172.31.250.0/24 dev eth0 scope link\n172.20.0.0/29 dev eth1 scope link\n"
+case_ "no default route" refused "$T29" "" true "172.31.250.0/24 dev eth0 scope link\n172.20.0.0/29 dev eth1 scope link\n"
+case_ "two default routes" refused "$T29" "" true \
+  "default via 172.31.250.1 dev eth0\ndefault via 172.20.0.1 dev eth1 metric 10\n172.31.250.0/24 dev eth0 scope link\n172.20.0.0/29 dev eth1 scope link\n"
+case_ "an extra route on the trust interface" refused "$T29" "" true \
+  "default via 172.31.250.1 dev eth0\n172.31.250.0/24 dev eth0 scope link\n172.20.0.0/29 dev eth1 scope link\n10.0.0.0/8 via 172.20.0.1 dev eth1\n"
+case_ "no connected route on the trust interface" refused "$T29" "" true \
+  "default via 172.31.250.1 dev eth0\n172.31.250.0/24 dev eth0 scope link\n"
+case_ "an octet over 255" refused "${P}3: eth1    inet 172.20.0.300/29 scope global eth1\n"
+case_ "a non-digit octet" refused "${P}3: eth1    inet 172.20.0.x2/29 scope global eth1\n"
 case_ "unreadable address" refused "${P}3: eth1    inet 172.20.0/29 scope global eth1\n"
 cat > "$T/ip" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
+for bad in 172.31.250.0/24 "172.31.250.2 " "172.31.250.2,10.0.0.1" 172.31.250.256 ""; do
+  if PATH="$T:$PATH" GF_AUTH_PROXY_WHITELIST="$bad" PORTCULLIS_AI_ENABLED=false sh "$T/trust.sh" >/dev/null 2>&1; then
+    echo "  FAIL Traefik value '$bad' accepted"; FAILS=$((FAILS + 1))
+  else
+    echo "  PASS Traefik value '$bad' refused"
+  fi
+done
 out=$(PATH="$T:$PATH" GF_AUTH_PROXY_WHITELIST=172.31.250.0/24 PORTCULLIS_AI_ENABLED=false sh "$T/trust.sh" 2>/dev/null) && { echo "  FAIL a subnet as Traefik's address accepted: $out"; FAILS=$((FAILS + 1)); } || echo "  PASS a non-address GF_AUTH_PROXY_WHITELIST refused"
 [ "$FAILS" = 0 ] && echo "trust.sh: all cases pass" || { echo "trust.sh: $FAILS case(s) failed"; exit 1; }

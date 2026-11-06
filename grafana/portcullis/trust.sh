@@ -27,7 +27,9 @@
 #   it against `docker network inspect` and sends the header from the
 #   host's namespace.
 # - Refused (exit 1, Grafana doesn't start): not exactly two IPv4
-#   addresses, Traefik on neither or both networks, more than one IPv4 or
+#   addresses, Traefik on neither or both networks, a default route not on
+#   portcullis-proxy (or not exactly one), any route on the trust interface
+#   but its connected prefix, more than one IPv4 or
 #   any global IPv6 address on the trust interface, a prefix broader than
 #   /16 (Docker's default pools hand out /16 and /20) or narrower than /29.
 # - dashboards joins exactly portcullis-proxy and mcp-trust: the interface
@@ -39,6 +41,9 @@ set -eu
 die() { printf 'portcullis-trust: %s\n' "$*" >&2; exit 1; }
 
 TRAEFIK=${GF_AUTH_PROXY_WHITELIST:-}
+case "$TRAEFIK" in
+  '' | *[!0-9.]*) die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')" ;;
+esac
 printf '%s\n' "$TRAEFIK" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$' \
   || die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')"
 
@@ -50,7 +55,11 @@ fi
 ADDRS=$(ip -4 -o addr show scope global) || die "can't list this container's addresses"
 TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
   function fail(m) { print "portcullis-trust: " m > "/dev/stderr"; bad = 1; exit 1 }
-  function n4(s,  a) { if (split(s, a, ".") != 4) fail("bad address " s); return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4] }
+  function n4(s,  a, i) {
+    if (split(s, a, ".") != 4) fail("bad address " s)
+    for (i = 1; i <= 4; i++) if (a[i] !~ /^[0-9]+$/ || length(a[i]) > 3 || a[i] + 0 > 255) fail("bad address " s)
+    return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4]
+  }
   function ip4(n) { return sprintf("%d.%d.%d.%d", int(n / 16777216) % 256, int(n / 65536) % 256, int(n / 256) % 256, n % 256) }
   function p2(k,  r) { r = 1; while (k-- > 0) r *= 2; return r }
   # The fewest CIDRs covering [start, start + 2^(32-len)) minus x[1..nx].
@@ -79,11 +88,28 @@ TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
     size = p2(32 - len); self = addr[j]; base = self - self % size
     nx = 4; x[1] = base; x[2] = base + 1; x[3] = self; x[4] = base + size - 1
     cover(base, len)
-    print dev[j], out
+    print dev[j], dev[proxy], ip4(base) "/" len, out
   }') || die "can't determine the trust network; refusing to start"
-DEV=${TRUST%% *}
-TRUST=${TRUST#* }
-[ -n "$DEV" ] && [ -n "$TRUST" ] && [ "$DEV" != "$TRUST" ] || die "empty trust network; refusing to start"
+# shellcheck disable=SC2086 # four space-free fields from the awk above
+set -- $TRUST
+[ "$#" = 4 ] || die "can't determine the trust network; refusing to start"
+DEV=$1 PROXY_DEV=$2 PREFIX=$3 TRUST=$4
+# Routes: the default route goes through portcullis-proxy (Traefik's
+# network), and the trust interface carries only its connected prefix —
+# nothing else is reached (or trusted to be) through it.
+ROUTES=$(ip -4 route show) || die "can't read the routing table; refusing to start"
+printf '%s\n' "$ROUTES" | awk -v dev="$DEV" -v pdev="$PROXY_DEV" -v prefix="$PREFIX" '
+  function fail(m) { print "portcullis-trust: " m > "/dev/stderr"; bad = 1; exit 1 }
+  function devof(  i) { for (i = 1; i < NF; i++) if ($i == "dev") return $(i + 1); return "" }
+  function has(w,  i) { for (i = 1; i <= NF; i++) if ($i == w) return 1; return 0 }
+  NF == 0 { next }
+  $1 == "default" { defaults++; if (devof() != pdev) fail("the default route is not on portcullis-proxy (" pdev "): " $0) }
+  devof() == dev { trust++; if ($1 != prefix || has("via")) fail("the trust interface " dev " carries a route other than " prefix ": " $0) }
+  END {
+    if (bad) exit 1
+    if (defaults != 1) fail("want exactly one default route (through portcullis-proxy), got " defaults + 0)
+    if (trust != 1) fail("want exactly the connected route " prefix " on the trust interface " dev ", got " trust + 0)
+  }' || die "unexpected routes; refusing to start"
 # Unambiguous: the trust interface carries this one IPv4 address and no
 # global IPv6 one (an IPv6 peer would not be judged by the IPv4 prefix).
 [ "$(ip -4 -o addr show dev "$DEV" | grep -c ' inet ')" = 1 ] || die "the trust interface $DEV has more than one IPv4 address; refusing to start"

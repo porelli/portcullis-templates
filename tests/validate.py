@@ -487,6 +487,16 @@ def networks_of(svc: Dict[str, Any]) -> List[str]:
     return [str(n) for n in nets]
 
 
+def var_names_deep(text: str) -> Set[str]:
+    """Every variable name text interpolates, nested defaults included
+    (${A:-${B}} gives A and B); $$ is a literal dollar."""
+    out: Set[str] = set()
+    for name, _op, rest in iter_var_refs(text):
+        out.add(name)
+        out |= var_names_deep(rest)
+    return out
+
+
 def iter_var_refs(text: str) -> Iterable[Tuple[str, str, str]]:
     """Yield (name, operator, rest) for each compose interpolation in text.
 
@@ -1374,7 +1384,7 @@ def trust_networks(t: "Template", services: Dict[str, Any]) -> Set[str]:
 def private_networks(compose: Optional[Dict[str, Any]]) -> Set[str]:
     """Service network keys that are the project's own network: 'default',
     unless the top level renames it or makes it external (then shared), and
-    every network declared internal: true without name / external (Hub
+    every network declared exactly {internal: true} (Hub
     checkInternalNames: e.g. an identity_headers companion's trust network)."""
     nets = (compose or {}).get("networks") or {}
     nets = nets if isinstance(nets, dict) else {}
@@ -1383,7 +1393,7 @@ def private_networks(compose: Optional[Dict[str, Any]]) -> Set[str]:
     if not (isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False))):
         out.add("default")
     for k, spec in nets.items():
-        if isinstance(spec, dict) and spec.get("internal") is True and "name" not in spec and "external" not in spec:
+        if isinstance(spec, dict) and spec.get("internal") is True and len(spec) == 1:
             out.add(str(k))
     return out
 
@@ -6196,6 +6206,9 @@ class _AICheck:
             mode = s.get("network_mode")
             if isinstance(mode, str) and mode.startswith("service:") and mode[len("service:"):] in want:
                 self.err(f"{w}: service {name} uses network_mode {mode}: it would share an address on the trust network {trust}")
+            pid = s.get("pid")
+            if isinstance(pid, str) and pid.startswith("service:") and pid[len("service:"):] in want:
+                self.err(f"{w}: service {name} uses pid {pid}: it would share the process namespace of a trust network member ({trust})")
 
     def check_companions(self, companions: List[Dict[str, Any]]) -> None:
         auth = self.m.get("auth") if isinstance(self.m.get("auth"), dict) else {}
@@ -6284,12 +6297,20 @@ class _AICheck:
         if kind == "companion" and mode == "identity_headers" and svc in self.services:
             self.check_trust_network(w, svc, _str(c, "router"))
         if mode == "identity_headers":
-            # A host-network service sends from the host's address, the
+            # A host-network service sends from the host's addresses, the
             # trust network's gateway side included.
             for oname in sorted(self.services):
                 if self.services[oname].get("network_mode") == "host":
                     self.err(f"{w}: service {oname} uses network_mode host: not allowed next to an identity_headers companion "
                              "(it reaches the app from the host's addresses)")
+                if self.services[oname].get("pid") == "host":
+                    self.err(f"{w}: service {oname} uses pid host: not allowed next to an identity_headers companion "
+                             "(it sees every process of the host, the companion's included)")
+            cs = ident.get("caller_secret") if isinstance(ident.get("caller_secret"), dict) else {}
+            secret = _str(cs, "env")
+            for oname in sorted(self.services):
+                if secret and oname != svc and any(secret in var_names_deep(v) for v in _scalars(self.services[oname])):
+                    self.err(f"{w}: service {oname} reads the caller secret {secret}: only the companion service {svc} may")
         service_use[svc] = name
         port = c.get("port", 0)
         port = port if isinstance(port, int) and not isinstance(port, bool) else -1

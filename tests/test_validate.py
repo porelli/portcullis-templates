@@ -3589,9 +3589,10 @@ ai:
 """
 AI_TRUST = AI_HEADERS.replace("kind: builtin\n      service: demo\n      port: 80\n      path: /api/mcp\n",
                               "kind: companion\n      service: demo-mcp\n      port: 8000\n").replace(
-    "      aggregate: false\n", "")
+    "      aggregate: false\n", "").replace("caller_secret: {env: DEMO_SECRET,", "caller_secret: {env: DEMO_MCP_TOKEN,")
 AI_TRUST_NETS = "    networks:\n      portcullis-proxy: {}\n      mcp-trust:\n        aliases: [demo-internal]\n"
-AI_TRUST_SVC = (f"  demo-mcp:\n    image: demo/mcp:1.0.0@sha256:{S_DIGEST}\n    networks: [mcp-trust]\n")
+AI_TRUST_SVC = (f"  demo-mcp:\n    image: demo/mcp:1.0.0@sha256:{S_DIGEST}\n    environment:\n"
+                "      TOKEN: ${DEMO_MCP_TOKEN:?DEMO_MCP_TOKEN must be set}\n    networks: [mcp-trust]\n")
 AI_OAUTH = """\
 hooks:
   - {name: revoke-all, service: demo, command: [/revoke], when: [ai]}
@@ -3640,7 +3641,8 @@ def ai_fixtures() -> dict:
             "env:\n", "env:\n  - key: PLAIN\n    description: plain\n", 1), s_compose("      PLAIN: ${PLAIN:-}\n")),
         "oauth": (S_OIDC.replace(AI_UNSUP, AI_OAUTH), s_compose(oidc=True)),
         "chat": (chat_m.replace(AI_UNSUP, AI_CHAT), chat_c),
-        "trust": (S_HDR.replace(AI_UNSUP, AI_TRUST),
+        "trust": (S_HDR.replace(AI_UNSUP, AI_TRUST).replace(
+            "env:\n", "env:\n  - key: DEMO_MCP_TOKEN\n    description: caller secret\n    generate: random\n", 1),
                   s_compose(nets=AI_TRUST_NETS, services=S_INIT + AI_TRUST_SVC) + "  mcp-trust:\n    internal: true\n"),
     }
 
@@ -3693,10 +3695,18 @@ class AITests(Case):
             ("app not on it", "trust", [], ["      mcp-trust:\n        aliases: [demo-internal]\n", ""], "must join the trust network"),
             ("sharing the app's namespace", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: service:demo\n"],
              "share an address on the trust network"),
+            ("pid of the app", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: service:demo\n"], "uses pid service:demo"),
+            ("pid of the companion", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: service:demo-mcp\n"], "uses pid service:demo-mcp"),
+            ("pid host", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: host\n"], "uses pid host"),
+            ("caller secret in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    environment:\n      X: ${DEMO_MCP_TOKEN:-}\n"], "reads the caller secret DEMO_MCP_TOKEN"),
+            ("caller secret bare in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    command: [sh, -c, \"echo $DEMO_MCP_TOKEN\"]\n"], "reads the caller secret DEMO_MCP_TOKEN"),
+            ("caller secret nested in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    environment:\n      X: ${OTHER:-${DEMO_MCP_TOKEN}}\n"], "reads the caller secret DEMO_MCP_TOKEN"),
             ("a host-network service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: host\n"],
              "uses network_mode host: not allowed next to an identity_headers companion"),
             ("a host-network service next to a builtin identity_headers companion", "headers", [],
              ["  init:\n", "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: host\n  init:\n"], "uses network_mode host"),
+            ("-internal alias on an internal network with ipam", "trust", [], ["  mcp-trust:\n    internal: true\n",
+             "  mcp-trust:\n    internal: true\n    ipam: {config: [{subnet: 10.9.0.0/24}]}\n"], "ends in -internal"),
             ("-internal alias on a plain network", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust: {}\n"], "ends in -internal"),
         ])
 
