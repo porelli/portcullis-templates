@@ -22,6 +22,8 @@
 # ever on an argv: the hook token reaches curl on stdin (--config -), the
 # person's token only travels through pipes and builtins.
 set -euo pipefail
+# A failure inside $(…) fails the command substitution too (bash ≥ 4.4).
+shopt -s inherit_errexit
 umask 077
 
 readonly API=http://127.0.0.1:3000/api/v1
@@ -30,17 +32,26 @@ readonly HOOK_USER=portcullis-hooks
 readonly HOOK_PREFIX=portcullis-hook-
 readonly BREAKGLASS=portcullis-breakglass
 readonly MAX_INPUT=65536
-# Gitea usernames as the Portcullis OAuth2 source creates them (the
-# lowercase LLDAP username, Gitea's 40-character limit).
-readonly USER_RE='[a-z0-9][a-z0-9._-]{0,39}'
-# Access token scopes a credential may get: never admin, never all.
-readonly SCOPE_RE='(read|write):(activitypub|issue|misc|notification|organization|package|repository|user)'
+# A user value as it may arrive (one JSON string without quotes or
+# escapes); GITEA_NAME_RE: what can be a Gitea account as the Portcullis
+# OAuth2 source creates them (the lowercase LLDAP username, Gitea's
+# 40-character limit and its rule: alphanumeric at both ends). Anything
+# else has no Gitea account: revoke has nothing to do, mint exits 3.
+readonly USER_RE='[^"\\]{0,255}'
+readonly GITEA_NAME_RE='^[a-z0-9]([a-z0-9._-]{0,38}[a-z0-9])?$'
+# Exactly the scopes a credential may get (manifest identity.scopes):
+# never write:user, admin, misc, activitypub or all.
+readonly SCOPE_RE='read:(repository|issue|user|organization|package|notification)|write:(repository|issue|organization|package|notification)'
 readonly S='[[:space:]]*'
 
 die() { echo "mcp-token: $*" >&2; exit 1; }
 
 HOOK_NAME=""
 HOOK_TOKEN=""
+# A person's token minted by this run and not handed out yet: deleted by
+# name if the run ends before printing it.
+PENDING_USER=""
+PENDING_NAME=""
 
 # api METHOD PATH: the answer body on stdout. Returns 0 on 2xx, 4 on 404,
 # 1 otherwise. The hook token is sent as HTTP Basic (Gitea's token
@@ -112,19 +123,33 @@ hook_token_end() {
 
 on_exit() {
   local rc=$?
+  set +e
+  if [ -n "$PENDING_NAME" ]; then
+    [ "$rc" != 0 ] || rc=1
+    if [ -z "$HOOK_TOKEN" ] || ! delete_token "$PENDING_USER" "$PENDING_NAME"; then
+      echo "mcp-token: deleting $PENDING_USER's unissued token $PENDING_NAME failed (revoke_all removes it)" >&2
+    fi
+  fi
   if [ -n "$HOOK_TOKEN" ]; then
     hook_token_end || { echo "mcp-token: deleting the hook token $HOOK_NAME failed (the next run deletes it)" >&2; [ "$rc" != 0 ] || rc=1; }
   fi
   exit "$rc"
 }
 trap on_exit EXIT
+trap 'exit 143' TERM INT HUP
 
-# account USER: "true"/"false" (IsActive) for an existing Gitea user, ""
-# for none.
+# account USER: sets ACCOUNT to "true"/"false" (IsActive) for an existing
+# Gitea user, "" for none (a name that can't be a Gitea account included).
+# Never called in a subshell: a failing listing ends the run (exit 1),
+# never reads as "no account".
+ACCOUNT=""
 account() {
   local users
+  ACCOUNT=""
+  [[ $1 =~ $GITEA_NAME_RE ]] || return 0
   users=$(gitea admin user list) || die "gitea admin user list failed"
-  awk -v u="$1" 'NR > 1 && tolower($2) == u { print $4; exit }' <<<"$users"
+  [[ $users == ID* ]] || die "unexpected gitea admin user list output"
+  ACCOUNT=$(awk -v u="$1" 'NR > 1 && tolower($2) == u { print $4; exit }' <<<"$users")
 }
 
 reserved() { [ "$1" = "$BREAKGLASS" ] || [ "$1" = "$HOOK_USER" ]; }
@@ -145,7 +170,7 @@ re_revoke_all="^${S}[{]${S}$(q action)\"revoke_all\"${S},${S}$(q prefix)\"${PREF
 mint() {
   [[ $input =~ $re_mint ]] || die "refused: not a mint request of contract §15.5"
   local user=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} mode=${BASH_REMATCH[3]} list=${BASH_REMATCH[4]}
-  local scopes="" item state token ids id
+  local scopes="" item token ids id
   ! reserved "$user" || die "refused: $user is a Portcullis service account"
   [[ $list =~ ^${S}$ ]] && die "refused: no scopes"
   IFS=',' read -r -a items <<<"$list"
@@ -155,24 +180,28 @@ mint() {
     scopes=${scopes:+$scopes,}${BASH_REMATCH[1]}
   done
 
-  state=$(account "$user")
-  if [ -z "$state" ]; then
+  # The hook token first: from here on the EXIT trap can delete the
+  # person's token by name if anything fails before it is handed out.
+  hook_token_start
+  account "$user"
+  if [ -z "$ACCOUNT" ]; then
     echo "mcp-token: $user has no Gitea account yet (signs in to Gitea once to create it)" >&2
     exit 3
   fi
-  [ "$state" = true ] || die "$user's Gitea account is disabled"
+  [ "$ACCOUNT" = true ] || die "$user's Gitea account is disabled"
 
+  PENDING_USER=$user PENDING_NAME=$name
   token=$(gitea admin user generate-access-token --username "$user" --token-name "$name" \
     --scopes "$scopes" --raw) || die "generate-access-token failed"
-  [[ $token =~ ^[0-9a-f]{40}$ ]] || die "unexpected generate-access-token output (token $name of $user may exist: revoke_all removes it)"
+  [[ $token =~ ^[0-9a-f]{40}$ ]] || die "unexpected generate-access-token output"
 
-  hook_token_start
-  ids=$(list_tokens "$user" "$PREFIX") || { delete_token "$user" "$name" || true; die "looking up the id of $name failed"; }
+  ids=$(list_tokens "$user" "$PREFIX") || die "looking up the id of $name failed"
   id=$(awk -v n="$name" '$2 == n { print $1 }' <<<"$ids")
-  [[ $id =~ ^[0-9]+$ ]] || { delete_token "$user" "$name" || true; die "no unique id for $name"; }
+  [[ $id =~ ^[0-9]+$ ]] || die "no unique id for $name"
   # The hook token goes before the credential is handed out: a failure
   # here leaves no token the Hub doesn't know about.
-  hook_token_end || { delete_token "$user" "$id" || true; die "deleting the hook token failed"; }
+  hook_token_end || die "deleting the hook token failed"
+  PENDING_USER="" PENDING_NAME=""
   printf '{"credential":"%s","id":"%s"}\n' "$token" "$id"
 }
 
@@ -192,7 +221,8 @@ parse_ids() {
 
 revoke() {
   local user=$1 tokens id n
-  [ -n "$(account "$user")" ] || return 0 # no account, no tokens
+  account "$user"
+  [ -n "$ACCOUNT" ] || return 0 # no account, no tokens
   tokens=$(list_tokens "$user" "$PREFIX") || die "listing $user's tokens failed"
   if [ "${#WANT[@]}" = 0 ]; then
     while read -r id n; do
@@ -213,6 +243,7 @@ revoke() {
 revoke_all() {
   local users u
   users=$(gitea admin user list) || die "gitea admin user list failed"
+  [[ $users == ID* ]] || die "unexpected gitea admin user list output"
   while read -r u; do
     [ -n "$u" ] || continue
     [[ $u =~ ^[A-Za-z0-9._-]{1,40}$ ]] || die "unexpected user name in gitea admin user list"

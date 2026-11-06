@@ -169,8 +169,13 @@ rand12() { openssl rand -hex 6; }
 mint_in() { # user mode scopes-json
   printf '{"action":"mint","user":"%s","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"%s","scopes":%s}' "$1" "$(rand12)" "$2" "$3"
 }
-RO_SCOPES='["read:repository","read:issue","read:user","read:organization","read:notification"]'
-RW_SCOPES='["write:repository","write:issue","read:user","read:organization","write:notification"]'
+RO_SCOPES='["read:repository","read:issue","read:user","read:organization","read:package","read:notification"]'
+RW_SCOPES='["write:repository","write:issue","read:user","write:organization","write:package","write:notification"]'
+# hook_failing_list ACTION: the hook with `gitea admin user list` failing
+# (a shell function shadowing the CLI for that one command).
+hook_failing_list() {
+  docker exec -i -u git "$G" bash -c 'gitea() { if [ "$1 $2 $3" = "admin user list" ]; then echo "simulated failure" >&2; return 1; fi; command gitea "$@"; }; export -f gitea; exec /portcullis/mcp-token.sh "$0"' "$1"
+}
 # api_as TOKEN METHOD PATH [JSON]: the HTTP code; the body in $TMP/body.
 # The token goes to curl on stdin, never on its argv.
 api_as() {
@@ -182,7 +187,7 @@ api_as() {
 db() { docker exec portcullis-gitea-db-1 psql -X -U gitea -d gitea -tAc "$1"; }
 
 # Hook admin: an admin that may use tokens; the break-glass admin stays locked.
-if [ "$(db "SELECT count(*) FROM \"user\" WHERE lower_name = 'portcullis-hooks' AND is_admin AND NOT prohibit_login AND is_active AND NOT must_change_password")" = 1 ] \
+if [ "$(db "SELECT count(*) FROM \"user\" WHERE lower_name = 'portcullis-hooks' AND is_admin AND NOT prohibit_login AND is_active AND NOT must_change_password AND visibility = 2 AND login_source = 0")" = 1 ] \
   && [ "$(db "SELECT count(*) FROM \"user\" WHERE lower_name = 'portcullis-breakglass' AND is_admin AND prohibit_login")" = 1 ]; then
   pass "hook admin portcullis-hooks ready; break-glass admin still sign-in prohibited"
 else
@@ -225,6 +230,31 @@ set +e; mint_in alice read_only '["write:repository"]' | hook mint >/dev/null 2>
 [ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint with a write scope in read_only mode refused (exit $RC)" || fail "write scope in read_only: exit $RC"
 set +e; printf '{"action":"mint","user":"alice"}' | hook mint >/dev/null 2>&1; RC=$?; set -e
 [ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "malformed mint input refused (exit $RC)" || fail "malformed mint input: exit $RC"
+set +e; mint_in alice read_only '["read:misc"]' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint with a scope outside the manifest's refused (exit $RC)" || fail "read:misc scope: exit $RC"
+set +e; mint_in 'Not A Gitea Name' read_only "$RO_SCOPES" | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 3 ] && pass "mint for a name that can't be a Gitea account -> exit 3" || fail "mint for an impossible name: exit $RC, want 3"
+set +e; printf '{"action":"revoke","user":"-x-","ids":[]}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 0 ] && pass "revoke for a name that can't be a Gitea account -> exit 0 (nothing to revoke)" || fail "revoke for an impossible name: exit $RC, want 0"
+
+# Fail closed: a failing user listing is a failure, never "no account";
+# the run's hook token and an unissued credential are deleted anyway.
+AI_BEFORE=$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")
+set +e; printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$RO_ID" | hook_failing_list revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(api_as "$CRED" GET /user)" = 200 ]; then
+  pass "revoke while the user listing fails -> exit $RC (not reported as revoked)"
+else
+  fail "revoke with a failing user listing: exit $RC, want non-zero"
+fi
+set +e; mint_in alice read_only "$RO_SCOPES" | hook_failing_list mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint while the user listing fails -> exit $RC (not 3)" || fail "mint with a failing user listing: exit $RC"
+N_HOOK=$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-hook-%'")
+N_AI=$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")
+if [ "$N_HOOK" = 0 ] && [ "$N_AI" = "$AI_BEFORE" ]; then
+  pass "runs failing after the hook token was minted leave no portcullis-hook-* token and no new credential"
+else
+  fail "after failing runs: $N_HOOK hook token(s), $N_AI portcullis-ai-* tokens (before: $AI_BEFORE)"
+fi
 
 # The companion (started with the template: GITEA_READONLY defaults to true).
 MCP_IP=$(app_container_ip "$APP_ID" gitea-mcp)
@@ -327,6 +357,12 @@ fi
 
 # revoke_all: every portcullis-ai-* token of every person, nothing else.
 OUT_A=$(mint_in alice read_write "$RW_SCOPES" | hook mint) && OUT_B=$(mint_in bob read_write "$RW_SCOPES" | hook mint) || fail "mint (read_write) failed"
+SCOPES=$(db "SELECT scope FROM access_token WHERE id = $(jq -r .id <<<"$OUT_A")")
+if grep -q 'write:package' <<<"$SCOPES" && grep -q 'write:organization' <<<"$SCOPES" && ! grep -qE 'write:(user|admin|misc|activitypub)|all' <<<"$SCOPES"; then
+  pass "read_write credential scopes: $SCOPES"
+else
+  fail "read_write credential scopes: $SCOPES"
+fi
 set +e; printf '{"action":"revoke_all","prefix":"portcullis-"}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
 if [ "$RC" != 0 ] && [ "$(api_as "$(jq -r .credential <<<"$OUT_B")" GET /user)" = 200 ]; then
   pass "revoke_all with another prefix refused (exit $RC), nothing deleted"

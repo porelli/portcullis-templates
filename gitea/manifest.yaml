@@ -180,8 +180,8 @@ ai:
         mint: mcp-mint
         revoke: mcp-revoke
         scopes:
-          read_only: [read:repository, read:issue, read:user, read:organization, read:notification]
-          read_write: [write:repository, write:issue, read:user, read:organization, write:notification]
+          read_only: [read:repository, read:issue, read:user, read:organization, read:package, read:notification]
+          read_write: [write:repository, write:issue, read:user, write:organization, write:package, write:notification]
       # gitea-mcp 1.12.0's tools (README "Available Tools"): every write
       # tool is a *_write consolidated tool, create_organization,
       # create_or_update_file or delete_file; every delete is the
@@ -191,7 +191,9 @@ ai:
       tools:
         writes: ["*_write", "create_*", "delete_*"]
         confirm: ["*delete*", "*:*delete*"]
-        never: []
+        # Setting an Actions secret would hand its value to the model
+        # (Gitea's secret listings carry names only, never values).
+        never: ["actions_config_write:upsert_repo_secret", "actions_config_write:upsert_org_secret"]
 
 # Hooks of the ai: block (contracts §15.5), in the gitea service: Gitea's
 # CLI mints, its API (as the hook admin portcullis-hooks) looks ids up and

@@ -44,8 +44,16 @@ else
   echo "gitea-migrate: created break-glass admin $BREAKGLASS (password discarded, login prohibited)"
 fi
 
-if printf '%s\n' "$users" | awk -v u="$HOOKS" 'NR > 1 && tolower($2) == u { found = 1 } END { exit !found }'; then
+# Columns: ID Username Email IsActive IsAdmin 2FA Type. An existing
+# account of that name must be the admin this script created: one that
+# isn't an admin came from somewhere else (gitea-auth also checks its
+# login source, which this CLI doesn't show, and demotes a foreign one).
+hooks_admin=$(printf '%s\n' "$users" | awk -v u="$HOOKS" 'NR > 1 && tolower($2) == u { print $5; exit }')
+if [ "$hooks_admin" = true ]; then
   echo "gitea-migrate: hook admin $HOOKS present"
+elif [ -n "$hooks_admin" ]; then
+  echo "gitea-migrate: an account named $HOOKS exists but is not the hook admin; refusing to start. Delete it (gitea admin user delete --username $HOOKS), then restart" >&2
+  exit 1
 else
   gitea -c "$APP_INI" admin user create \
     --username "$HOOKS" \
