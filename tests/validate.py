@@ -6094,6 +6094,14 @@ class _AICheck:
         seen: Set[str] = set()
         for sc in scalars:
             for name, text in raw_var_refs(sc):
+                # A default or alternate text naming an AI variable
+                # (${X:-PORTCULLIS_AI_...}, any case) could build one.
+                if text.startswith("${") and VAR_AI_PREFIX in text[2 + len(name):].upper():
+                    msg = f"{text}: a default or alternate value naming {VAR_AI_PREFIX}* is refused (the AI variables are the Hub's)"
+                    if msg not in seen:
+                        seen.add(msg)
+                        self.cerr(msg)
+                    continue
                 if not name.startswith(VAR_AI_PREFIX):
                     continue
                 if name.startswith(VAR_AI_PROVIDER):
@@ -6119,7 +6127,9 @@ class _AICheck:
         services = (self.t.compose or {}).get("services") if isinstance(self.t.compose, dict) else None
         for svc in sorted(services) if isinstance(services, dict) else []:
             for k in _environment_keys(services[svc]):
-                if k.upper().startswith(VAR_AI_PROVIDER):
+                if "$" in k:
+                    self.cerr(f"service {svc}: the environment variable name {json.dumps(k)} is built by interpolation: names are written out")
+                elif k.upper().startswith(VAR_AI_PROVIDER):
                     self.cerr(f"service {svc} sets {k}: PORTCULLIS_AI_PROVIDER_* variables are set only by the Hub (on ai.chat.env's service)")
 
     def check_companions(self, companions: List[Dict[str, Any]]) -> None:
