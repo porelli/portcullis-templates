@@ -193,7 +193,7 @@ fi
 # shell test), each with a private repository.
 for u in alice bob; do
   gitea_cli user create --username "$u" --email "$u@example.invalid" --random-password --must-change-password=false >/dev/null
-  tok=$(gitea_cli user generate-access-token --username "$u" --token-name "$u-setup" --scopes write:repository,read:user --raw)
+  tok=$(gitea_cli user generate-access-token --username "$u" --token-name "$u-setup" --scopes write:repository,write:user --raw)
   printf '%s' "$tok" > "$TMP/$u-setup"
   CODE=$(api_as "$tok" POST /user/repos "{\"name\":\"$u-private\",\"private\":true}")
   [ "$CODE" = 201 ] || fail "creating $u's private repository: HTTP $CODE $(head -c 200 "$TMP/body")"
@@ -213,7 +213,7 @@ else
   fail "the minted credential: /api/v1/user -> $CODE $(head -c 200 "$TMP/body")"
 fi
 SCOPES=$(db "SELECT scope FROM access_token WHERE id = $RO_ID")
-CODE=$(api_as "$CRED" POST /user/repos '{"name":"ai-write-attempt"}')
+CODE=$(api_as "$CRED" PATCH /repos/alice/alice-private '{"description":"written by a read-only credential"}')
 if [ "$CODE" = 403 ] && ! grep -q 'write:' <<<"$SCOPES"; then
   pass "read_only credential has read scopes only ($SCOPES); a write is refused (403)"
 else
