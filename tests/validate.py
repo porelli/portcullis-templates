@@ -6113,6 +6113,14 @@ class _AICheck:
                 if msg not in seen:
                     seen.add(msg)
                     self.cerr(msg)
+        # Nor may a service set one (an environment map key, or a list item
+        # NAME / NAME=...; case-insensitive): it would take the Hub's provider
+        # secret's place (G31; the Hub's checkAIVarRefs).
+        services = (self.t.compose or {}).get("services") if isinstance(self.t.compose, dict) else None
+        for svc in sorted(services) if isinstance(services, dict) else []:
+            for k in _environment_keys(services[svc]):
+                if k.upper().startswith(VAR_AI_PROVIDER):
+                    self.cerr(f"service {svc} sets {k}: PORTCULLIS_AI_PROVIDER_* variables are set only by the Hub (on ai.chat.env's service)")
 
     def check_companions(self, companions: List[Dict[str, Any]]) -> None:
         auth = self.m.get("auth") if isinstance(self.m.get("auth"), dict) else {}
@@ -6347,6 +6355,17 @@ class _AICheck:
             n = _str(ident, field)
             if n:
                 self.ai_hook(f"{w}: identity.{field}", n)
+
+
+def _environment_keys(svc: Any) -> List[str]:
+    """The variable names a compose service's environment sets: its map
+    keys, or each list item's name (before the first =)."""
+    env = svc.get("environment") if isinstance(svc, dict) else None
+    if isinstance(env, dict):
+        return sorted(str(k) for k in env)
+    if isinstance(env, list):
+        return [it.split("=", 1)[0].strip() for it in env if isinstance(it, str)]
+    return []
 
 
 def check_ai(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
