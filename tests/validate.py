@@ -6024,6 +6024,18 @@ class _AICheck:
                 self.ai_hook("ai.on_change", _str(a, "on_change"))
         self.check_var_refs(companions if has_mcp and not has_unsup else [])
         self.check_ai_hooks()
+        if has_mcp and not has_unsup and companions:
+            self.check_ai_hook_services(companions)
+
+    def check_ai_hook_services(self, companions: List[Dict[str, Any]]) -> None:
+        """An ai hook never runs on a kind: companion service (at scale 0
+        while its companion is off: the owed revoke_all / on_change could
+        never run). Hub ValidateAI."""
+        svcs = {_str(c, "service") for c in companions if isinstance(c, dict) and _str(c, "kind") == "companion"}
+        for name, h in self.hooks.items():
+            if name in self.named and isinstance(h, dict) and _str(h, "service") in svcs:
+                self.err(f"hooks[{name}]: an ai hook may not run on service {_str(h, 'service')}: it backs a kind: "
+                         "companion companion, at scale 0 while AI support is off (run it on the app's own service)")
 
     def check_ai_hooks(self) -> None:
         for name, h in self.hooks.items():

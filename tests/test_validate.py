@@ -3935,6 +3935,10 @@ class AITests(Case):
              "hook mcp-mint is an ai hook (when: [ai]): no option delivers to it"),
             ("reload names an ai hook", "companion", ["settings:\n", "reload: {hook: mcp-mint}\nsettings:\n"], [],
              "reload: hook mcp-mint is an ai hook (when: [ai])"),
+            ("mint hook on the companion service", "companion", ["{name: mcp-mint, service: demo,", "{name: mcp-mint, service: demo-mcp,"], [],
+             "hooks[mcp-mint]: an ai hook may not run on service demo-mcp"),
+            ("revoke hook on the companion service", "companion", ["{name: mcp-revoke, service: demo,", "{name: mcp-revoke, service: demo-mcp,"], [],
+             "hooks[mcp-revoke]: an ai hook may not run on service demo-mcp"),
         ])
 
     def test_reserved_mcp_names(self) -> None:
