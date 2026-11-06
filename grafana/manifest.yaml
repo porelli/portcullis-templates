@@ -131,7 +131,8 @@ ai:
       public_path: /mcp
       upstream: official
       source: https://github.com/grafana/mcp-grafana
-      protocol: ["2026-07-28", "2025-11-25"]
+      # mcp-grafana 2.2.0 answers 2026-07-28 with 2025-11-25 (tests/apps/grafana.sh).
+      protocol: ["2025-11-25", "2025-06-18"]
       modes: [read_only, read_write]
       default_mode: read_only
       identity:

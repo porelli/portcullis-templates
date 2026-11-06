@@ -322,7 +322,7 @@ else
 fi
 
 # Protocol versions of the manifest.
-for v in 2026-07-28 2025-11-25; do
+for v in 2025-11-25 2025-06-18; do
   INIT=$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"%s","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' "$v")
   GOT=$(mcp "$MCP_IP" "$TOKEN" alice "$INIT" -H "MCP-Protocol-Version: $v" | jq -r '.result.protocolVersion // empty' 2>/dev/null || true)
   [ "$GOT" = "$v" ] && pass "initialize $v -> $v" || fail "initialize $v -> '${GOT}'"
