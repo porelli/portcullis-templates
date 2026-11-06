@@ -29,6 +29,7 @@ set -eu
 export GITEA_AUTH_SOURCE=Portcullis
 # Keep in sync with setup.sh.
 export GITEA_BREAKGLASS_USER=portcullis-breakglass
+export GITEA_HOOKS_USER=portcullis-hooks
 
 psql -X -q -v ON_ERROR_STOP=1 <<'SQL'
 \getenv oidc_secret GITEA_OIDC_SECRET
@@ -38,6 +39,7 @@ psql -X -q -v ON_ERROR_STOP=1 <<'SQL'
 \getenv admin_group GITEA_ADMIN_GROUP
 \getenv source_name GITEA_AUTH_SOURCE
 \getenv breakglass GITEA_BREAKGLASS_USER
+\getenv hooks GITEA_HOOKS_USER
 BEGIN;
 INSERT INTO login_source (type, name, is_active, is_sync_enabled, two_factor_policy, cfg, created_unix, updated_unix)
 VALUES (6, :'source_name', true, false, '', json_build_object(
@@ -70,6 +72,12 @@ UPDATE login_source SET is_active = false WHERE name <> :'source_name' AND is_ac
 -- The break-glass admin keeps Gitea from making the first SSO user admin
 -- (setup.sh); it can never sign in.
 UPDATE "user" SET is_admin = true, prohibit_login = true WHERE lower_name = lower(:'breakglass');
+-- The AI hooks' admin (setup.sh): active and allowed to sign in, since
+-- Gitea's API refuses a prohibited account's tokens; still a local account
+-- with no password way in, never linked to an external login.
+UPDATE "user" SET is_admin = true, is_active = true, prohibit_login = false, must_change_password = false
+  WHERE lower_name = lower(:'hooks');
+DELETE FROM external_login_user WHERE user_id IN (SELECT id FROM "user" WHERE lower_name = lower(:'hooks'));
 COMMIT;
 SQL
 

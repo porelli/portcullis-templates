@@ -40,7 +40,8 @@ auth:
     least-privileged full account; Gitea's "restricted" users can't see
     public repositories, so that role is left to admins).
     Removing a user from users_gitea blocks new logins only: open sessions,
-    personal access tokens and SSH keys keep working; disable the user in
+    personal access tokens and SSH keys keep working (the AI tokens
+    Portcullis minted are deleted); disable the user in
     Site Administration to cut access at once.
     Identity: accounts are created on the first Portcullis login, named
     after preferred_username (the immutable LLDAP username, not renameable
@@ -58,6 +59,19 @@ auth:
     docker compose -p portcullis-<instance> exec gitea-db psql -U gitea -d
     gitea -c "UPDATE \"user\" SET is_admin = true WHERE lower_name =
     '<username>'".
+    AI support (off until the admin turns it on): the official gitea-mcp
+    server runs as the companion; every request runs as the person, with a
+    Gitea access token named portcullis-ai-<random> that the Hub mints on
+    their first AI request (read-only mode: read scopes only, and
+    gitea-mcp hides its write tools) and deletes when they leave the
+    instance's population, when AI support or its mode changes and after a
+    restore. A person who never signed in to Gitea gets no token. The hooks
+    (portcullis/mcp-token.sh) list and delete tokens through Gitea's API as
+    portcullis-hooks, a second local admin that gitea-migrate creates and
+    gitea-auth keeps active: it has a discarded random password and no way
+    in but an access token minted inside the container, one per hook run,
+    deleted by that run. It never runs AI requests. Deleting it breaks AI
+    support until the next start recreates it.
     Git over HTTPS: clone https://<host>/<owner>/<repo>.git with your
     username and a personal access token (User Settings > Applications) as
     the password; git-credential-manager / git-credential-oauth can use
@@ -141,6 +155,57 @@ tests:
     admin:
       reach: /-/admin
 
-# AI support (contracts §3.2): why the AI can't act in this app.
+# AI support (contracts §3.2, §15): the official gitea-mcp companion, each
+# request as the person with their own Gitea token (minted on first use by
+# mcp-mint, revoked when they leave or AI support changes by mcp-revoke).
 ai:
-  unsupported: "AI support is being added"
+  mcp:
+    - name: gitea
+      label: Gitea
+      kind: companion
+      service: gitea-mcp
+      port: 8080
+      path: /mcp
+      router: gitea                  # https://<gitea host>/mcp
+      public_path: /mcp
+      upstream: official
+      source: https://gitea.com/gitea/gitea-mcp
+      protocol: ["2026-07-28", "2025-11-25"]
+      modes: [read_only, read_write]
+      default_mode: read_write
+      identity:
+        mode: app_token
+        header: Authorization
+        format: "token {credential}"
+        mint: mcp-mint
+        revoke: mcp-revoke
+        scopes:
+          read_only: [read:repository, read:issue, read:user, read:organization, read:notification]
+          read_write: [write:repository, write:issue, read:user, read:organization, write:notification]
+      # gitea-mcp 1.12.0's tools (README "Available Tools"): every write
+      # tool is a *_write consolidated tool, create_organization,
+      # create_or_update_file or delete_file; every delete is the
+      # delete_file tool or a method whose name contains "delete"
+      # (branch_write:delete, issue_write:delete_comment, …).
+      # tests/apps/gitea.sh checks both against the real tools/list.
+      tools:
+        writes: ["*_write", "create_*", "delete_*"]
+        confirm: ["*delete*", "*:*delete*"]
+        never: []
+
+# Hooks of the ai: block (contracts §15.5), in the gitea service: Gitea's
+# CLI mints, its API (as the hook admin portcullis-hooks) looks ids up and
+# deletes. The credential on stdout is never logged.
+hooks:
+  - name: mcp-mint
+    service: gitea
+    user: git
+    command: [/portcullis/mcp-token.sh, mint]
+    when: [ai]
+    timeout: 30s
+  - name: mcp-revoke
+    service: gitea
+    user: git
+    command: [/portcullis/mcp-token.sh, revoke]
+    when: [ai]
+    timeout: 60s

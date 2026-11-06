@@ -7,6 +7,9 @@
 #   - GitLab and Nextcloud majors must follow the upstream upgrade path, so
 #     only minor/patch updates are proposed;
 #   - multi-image apps are grouped so they move in lockstep;
+#   - AI companions are images of their template's compose.yml, tracked
+#     with it (gitea: docker.gitea.com/gitea-mcp-server); a bump changes
+#     the tools, which tests/apps/gitea.sh checks against the manifest;
 #   - no pre-releases (pip, Go and Actions skip them by default; docker
 #     needs the explicit ranges below).
 #
