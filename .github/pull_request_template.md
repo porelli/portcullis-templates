@@ -17,6 +17,7 @@
 - [ ] Header-auth: identity headers accepted only from `${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}`; `assert_traefik_only_trust` / `assert_spoofed_identity_rejected` in the test
 - [ ] No published HTTP ports; host ports declared under manifest `ports:`
 - [ ] Secrets declared under `env:` with `generate: random`; no hard-coded or default passwords
+- [ ] `ai:` block: `ai.unsupported` with a one-line reason, or `ai.mcp` companions that are the app's own server or a vetted published image (CONTRIBUTING.md, "AI support"); no MCP server code written for Portcullis
 - [ ] New template: added to `.github/dependabot.yml` and has `tests/apps/<app-id>.sh`
 
 ## Testing

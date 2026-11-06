@@ -98,3 +98,7 @@ tests:
       # admin_paths: group-gate lets only admin_vaultwarden reach the panel
       # (its ADMIN_TOKEN prompt); members get 403.
       reach: /admin
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "A password vault: Portcullis never puts passwords or secrets in front of an AI model"

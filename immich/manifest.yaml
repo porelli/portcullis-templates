@@ -226,3 +226,11 @@ tests:
       outsider:
         reason: "Immich has no OIDC group restriction of its own: only the Hub's Keycloak access role (keycloak_access_role) keeps outsiders out, and CI runs without the Hub (app_signin.py registers plain clients)"
         match: "e2eoutsider signed in"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; community servers are small, and Immich has no way for an admin to issue an API key for another person"
+  alternative:
+    name: "barryw/ImmichMCP"
+    source: "https://github.com/barryw/ImmichMCP"
+    note: "community, 55★, API key"

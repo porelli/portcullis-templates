@@ -106,3 +106,7 @@ tests:
     path: /
     signed_in:
       json: {url: /api/user, field: login}
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "AI support is being added"

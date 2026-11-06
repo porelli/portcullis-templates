@@ -200,3 +200,7 @@ settings:
       delivery: [{env: MIMIC_MODEL}]
       applies: restart
       section: Network
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "Serves files to people's computers over SMB; there is no app API for an AI to act through"

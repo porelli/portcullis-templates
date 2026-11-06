@@ -97,3 +97,7 @@ tests:
       wait: 30
     admin:
       json: {url: /api/auth/me, field: full.user.role, equals: admin}
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official or vetted community MCP server known (surveyed 2026-11-05)"

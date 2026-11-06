@@ -140,3 +140,7 @@ tests:
       absent: "Sign-in prohibited"
     admin:
       reach: /-/admin
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "AI support is being added"

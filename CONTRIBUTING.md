@@ -39,6 +39,8 @@ Reference docs:
    # yaml-language-server: $schema=../schema/manifest.schema.json
    ```
    Options an admin sets go under `settings:` (see [Settings](#settings)).
+   Every manifest also says whether an AI can act in the app (`ai:`, see
+   [AI support](#ai-support)).
    Fill in `links` (required, both `https://`), shown on the app's docs page
    and in the docs catalog:
    ```yaml
@@ -563,6 +565,71 @@ the converge script are the template's.
 `tests/validate.py` mirrors the Hub's rules with its messages (Hub
 `internal/templates/filesharing.go`, `reservedvars.go`); `TestFileSharing`
 ports the Hub's test tables row for row.
+
+## AI support
+
+Every manifest has an `ai:` block (integration contracts §3.2), in exactly
+one of two forms. `tests/validate.py` refuses a template without one, as
+the Hub does (`AITests` ports the Hub's `ai_test.go` row for row).
+
+- **`ai.unsupported`**: one line (1–200 characters) the admin sees on the
+  instance's AI tab and in the catalog, saying why there is no AI support:
+  ```yaml
+  ai:
+    unsupported: "No official MCP server; community servers are small and not vetted by Portcullis"
+    alternative:          # optional: a community server the admin may evaluate on their own
+      name: "nloui/paperless-mcp"
+      source: "https://github.com/nloui/paperless-mcp"
+      note: "community, 248★, last change Nov 2025, API token"
+  ```
+  The Hub only displays `alternative`, labelled "not vetted by Portcullis",
+  and never installs it. When no server is known, say so with the date you
+  looked: `No official or vetted community MCP server known (surveyed <YYYY-MM-DD>)`.
+- **`ai.mcp`**: the companions, the MCP servers the AI talks to. Each is
+  the app's built-in server (`kind: builtin`) or a service running a
+  published image (`kind: companion`, `upstream: official` or
+  `community`), with an identity mode that runs every request as the
+  person (`app_token`, `identity_headers` or `app_oauth`). See the contract
+  for every field; the Gitea example there is the reference.
+
+**A template never ships MCP server code.** No MCP server, adapter,
+wrapper or proxy written for Portcullis, inside or outside this repository,
+and no image built for Portcullis (`build:` is refused anyway). A
+companion is the app's own server, the upstream's published image or a
+vetted community project's published image. Mint and revoke hooks are
+glue that calls the app's own CLI or API; they never see tool traffic and
+define no tools.
+
+**Vetting checklist** for a community (`upstream: community`) companion.
+The reviewer checks, and the template's docs page records why it passed:
+
+- [ ] **Maintained**: recent releases or commits, issues answered, more than
+  one person able to merge.
+- [ ] **Licence**: an OSI-approved open-source licence that allows
+  redistribution of the image.
+- [ ] **Multi-user identity that fits an identity mode**: the server acts
+  as each person, with that person's own credential (`app_token`), the
+  gateway's identity headers plus a caller secret (`identity_headers`), or
+  the app's own OAuth (`app_oauth`).
+- [ ] **No shared admin identity**: nothing runs requests as one admin or
+  service account; a server that needs one stays `ai.unsupported`.
+- [ ] **Pinned release**: a published image of a tagged release, pinned
+  `tag@sha256:` like every image ([Images](#images)), on the Dependabot list.
+- [ ] **The docs note why**: the app's docs page says which server, which
+  release, and why it passed (or, for `ai.unsupported`, why there is none).
+
+Also refused: `ai.mcp` with `auth.admin_paths`, with method `public` or
+`mtls`, or on a router-less template; a `companion` service with any
+`traefik.*` label, on `portcullis-proxy`, with `network_mode`,
+`container_name`, `hostname` or `ports`; `portcullis-mcp-` anywhere in
+`compose.yml`; `keycloak_clients[].client_id` starting `portcullis-ai-`;
+`mcp` as a subdomain; declaring `PORTCULLIS_AI_*` or
+`PORTCULLIS_MCP_GATE_IP`; reading `PORTCULLIS_AI_ENABLED` other than as
+exactly `${PORTCULLIS_AI_ENABLED:-false}` (only with `ai.mcp`) or a
+companion's `PORTCULLIS_AI_READONLY_<NAME>` other than as exactly
+`${PORTCULLIS_AI_READONLY_<NAME>:-true}`; any `PORTCULLIS_AI_PROVIDER_*`
+reference. Hooks an `ai:` field names (`mint`, `revoke`, `on_change`) are
+exactly `when: [ai]`, and a `when: [ai]` hook nothing names is refused.
 
 ## Compose rules
 

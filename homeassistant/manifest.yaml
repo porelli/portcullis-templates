@@ -133,3 +133,7 @@ tests:
       equals: true
       wait: 20
     boot_timeout: 900
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "AI support is being added"

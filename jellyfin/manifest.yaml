@@ -125,3 +125,11 @@ tests:
         const r = await fetch('/Users/Me', {headers: {Authorization: 'MediaBrowser Token="' + s.AccessToken + '"'}});
         return (await r.json()).Policy.IsAdministrator; })()
       equals: true
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; community servers are small and not vetted by Portcullis"
+  alternative:
+    name: "jaredtrent/jellyfin-mcp"
+    source: "https://github.com/jaredtrent/jellyfin-mcp"
+    note: "community, 46★, API key"

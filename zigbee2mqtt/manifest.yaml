@@ -227,3 +227,7 @@ tests:
           CI has no Zigbee coordinator: the frontend never starts, the gate
           answers 502 past group-gate
         match: 'connect\(\) failed \(111: Connection refused\) while connecting to upstream, .*upstream: "http://[0-9.]+:8080/.*host: "zigbee\.'
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official or vetted community MCP server known (surveyed 2026-11-05)"

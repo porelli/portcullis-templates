@@ -80,3 +80,7 @@ tests:
     signed_in:
       json: {url: /api/v4/user, field: username}
     password: "GitLab's password form stays for the root break-glass account (GITLAB_ROOT_PASSWORD, auth.notes)"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "AI support is being added"

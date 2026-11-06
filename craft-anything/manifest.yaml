@@ -84,3 +84,7 @@ tests:
     signed_in:
       html: "<canvas id=\"craft_anything_canvas\""
       wait: 20
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "Runs entirely in the browser; files stay on the person's device, so there is nothing on the server for an AI to reach"

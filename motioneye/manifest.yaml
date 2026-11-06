@@ -115,3 +115,7 @@ tests:
       html: "motionEye"
       wait: 20
     password: "motionEye keeps its own admin/user login behind the gateway as a second step (auth.notes)"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official or vetted community MCP server known (surveyed 2026-11-05)"

@@ -129,3 +129,7 @@ urls:
 tests:
   signin:
     skip: "custom: Plex signs in through plex.tv (an account and a claim token from plex.tv), not possible headlessly in CI"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "Signs people in with Plex accounts, not Portcullis identities; no MCP server known"

@@ -101,3 +101,7 @@ tests:
       outsider:
         reason: "Headscale/Headplane have no OIDC group restriction of their own: only the Hub's Keycloak access role (keycloak_access_role) keeps outsiders out, and CI runs without the Hub (app_signin.py registers plain clients)"
         match: "e2eoutsider signed in"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; network control planes stay out of AI reach until one exists"

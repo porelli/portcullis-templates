@@ -121,3 +121,7 @@ tests:
       member:
         reason: "NetBird puts every user after the owner in pending approval until the owner approves them in the dashboard; the test doesn't approve e2emember (outsiders get the same pending state in CI; with the Hub, its Keycloak access role (keycloak_access_role) refuses them at Keycloak)"
         match: "pending approval"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; network control planes stay out of AI reach until one exists"

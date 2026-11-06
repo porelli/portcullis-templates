@@ -133,3 +133,7 @@ tests:
       wait: 30
     password: "Mattermost keeps its own account login behind the gateway (Team Edition has no usable SSO, see auth.notes)"
     boot_timeout: 900
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "AI support is being added"
