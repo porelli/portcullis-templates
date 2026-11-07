@@ -269,7 +269,7 @@ fi
 # A provider whose key isn't set yet is left out, the rest render.
 jq 'del(.providers[1].env.key)' "$FIXTURE" > "$WORK/nokey.json"; chmod 0644 "$WORK/nokey.json"
 if render "$WORK/nokey.json" "$WORK/nokey" > "$WORK/nokey.log" 2>&1 \
-  && ! yq -r '.endpoints.custom[].name' "$WORK/nokey/librechat.yaml" | grep -q 'Anthropic' \
+  && ! grep -q 'Anthropic' <<< "$(yq -r '.endpoints.custom[].name' "$WORK/nokey/librechat.yaml")" \
   && grep -q 'claude: left out until the administrator sets its key' "$WORK/nokey.log"; then
   pass "a provider without its key yet is left out (logged)"
 else
@@ -312,7 +312,8 @@ if docker exec portcullis-api-1 sh -c 'test "$PORTCULLIS_AI_PROVIDER_CLAUDE_KEY"
 else
   fail "api lacks the provider variables"
 fi
-if ! docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' portcullis-config-1 | grep -q PORTCULLIS_AI_PROVIDER_; then
+config_env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' portcullis-config-1)
+if [ -n "$config_env" ] && ! grep -q PORTCULLIS_AI_PROVIDER_ <<< "$config_env"; then
   pass "config never receives a provider variable"
 else
   fail "config has provider variables"
@@ -330,7 +331,9 @@ if docker exec portcullis-api-1 sh -c 'touch /portcullis/librechat/x' 2>/dev/nul
 else
   pass "api's configuration is read-only"
 fi
-if docker logs portcullis-api-1 2>&1 | grep -q "$MARKER" || docker logs portcullis-config-1 2>&1 | grep -q "$MARKER"; then
+docker logs portcullis-api-1 > "$WORK/api.log" 2>&1 || true
+docker logs portcullis-config-1 > "$WORK/config.log" 2>&1 || true
+if [ ! -s "$WORK/config.log" ] || grep -q "$MARKER" "$WORK/api.log" "$WORK/config.log"; then
   fail "a secret value is in the logs"
 else
   pass "no secret value in the api / config logs"
