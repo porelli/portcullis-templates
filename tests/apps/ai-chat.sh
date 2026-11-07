@@ -417,7 +417,8 @@ for _ in $(seq 1 12); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' portcullis-api-1 2>/dev/null)" = healthy ] && healthy=yes
   sleep 5
 done
-if [ "$healthy" = no ] && docker logs portcullis-api-1 2>&1 | grep -q 'missing or empty: not starting LibreChat'; then
+docker logs portcullis-api-1 > "$WORK/api-noconf.log" 2>&1 || true
+if [ "$healthy" = no ] && grep -q 'missing or empty: not starting LibreChat' "$WORK/api-noconf.log"; then
   pass "no librechat.yaml: api refuses to start (never healthy in 60 s)"
 else
   fail "no librechat.yaml: api healthy=$healthy, $(docker logs --tail 3 portcullis-api-1 2>&1)"
