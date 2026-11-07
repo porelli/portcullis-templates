@@ -517,7 +517,8 @@ mcp_init() {
   jq -r '.result.protocolVersion // empty' <<<"$r" 2>/dev/null || true
 }
 mcp() { mcp_post "$@"; }
-for v in 2026-07-28 2025-11-25; do
+# The manifest's protocol list must be exactly what the server negotiates.
+for v in $(yq -r '.ai.mcp[0].protocol[]' "$MANIFEST"); do
   GOT=$(mcp_init alice "${CRED[alice]}" "$v")
   [ "$GOT" = "$v" ] && pass "nextcloud-mcp speaks MCP $v" || fail "initialize with $v -> '$GOT'"
 done
@@ -579,9 +580,11 @@ else
   fail "tool classes do not match nextcloud-mcp's tools (above)"
 fi
 
-# revoke: the app password is refused afterwards, by Nextcloud and through the companion.
+# revoke: the app password is refused afterwards, by Nextcloud and through
+# the companion. Nextcloud's web process caches a valid token for up to 10 s
+# (PublicKeyTokenProvider TOKEN_CACHE_TTL, APCu, which occ can't clear).
 if printf '{"action":"revoke","user":"alice","ids":["%s"]}' "${ID[alice]}" | hook revoke \
-  && [ "$(ocs_as alice "${CRED[alice]}")" = 401 ] && [ "$(ai_tokens alice)" = 0 ]; then
+  && [ "$(ai_tokens alice)" = 0 ] && sleep 12 && [ "$(ocs_as alice "${CRED[alice]}")" = 401 ]; then
   pass "revoke -> alice's app password deleted and refused (401)"
 else
   fail "revoke: the credential still works or the hook failed"
@@ -604,6 +607,7 @@ if printf '{"action":"revoke_all","prefix":"portcullis-ai-"}' | hook revoke; the
 else
   fail "revoke_all failed"
 fi
+sleep 12  # Nextcloud's token cache (above)
 CB=$(ocs_as bob "${CRED[bob]}"); CS=$(ocs_as bob "$OWN")
 if [ "$(ai_tokens alice)" = 0 ] && [ "$(ai_tokens bob)" = 0 ] && [ "$CB" = 401 ] && [ "$CS" = 200 ]; then
   pass "revoke_all: no portcullis-ai-* app password left (bob's refused); bob's own app password kept"

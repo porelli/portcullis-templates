@@ -279,7 +279,8 @@ ai:
       public_path: /mcp
       upstream: community
       source: https://github.com/cbcoutinho/nextcloud-mcp-server
-      protocol: ["2026-07-28", "2025-11-25"]
+      # mcp 2.3.0 (the server's SDK) negotiates no 2026-07-28 (CI-checked).
+      protocol: ["2025-11-25", "2025-06-18"]
       modes: [read_only, read_write]
       default_mode: read_write
       identity:
