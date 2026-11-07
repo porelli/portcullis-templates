@@ -76,14 +76,17 @@ auth:
     service's entrypoint (portcullis/prestart.py) removes it again before
     every start while AI support is off. The AI hooks act as "Portcullis
     hooks", a system user prestart.py provisions with a new token at every
-    start (hidden from Settings > People, local only, no sign-in). When a
-    person leaves while AI support is on, their Home Assistant account is
-    briefly deactivated and reactivated, which ends all of their refresh
-    tokens (web sessions, Companion apps, long-lived tokens). Switching AI
+    start (hidden from Settings > People, local only, no credential of any
+    sign-in provider, so it can't sign in). When a person leaves while AI
+    support is on, every Home Assistant refresh token of theirs ends (web
+    sessions, Companion apps, long-lived tokens, AI clients); the account
+    stays. The person is matched by the OIDC sub auth_oidc stored when they
+    first signed in (the Hub sends their Keycloak id), never by name: people
+    can rename themselves. An authorization code Home Assistant issued just
+    before someone left stays usable for its 10 minutes. Switching AI
     support on or off ends every OAuth client token except Home
     Assistant's own web frontend and Companion apps; long-lived tokens are
-    kept. The person is matched by Home Assistant user name (auth_oidc
-    sets it to the username at the first sign-in): don't rename users.
+    kept.
 
 env:
   - key: HOMEASSISTANT_OIDC_SECRET

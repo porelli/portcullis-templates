@@ -245,13 +245,14 @@ ok = (len(u) == 1 and u[0]["system_generated"] and u[0]["local_only"] and u[0]["
 print("ok" if ok else "bad")
 PY
 }
+# tokens_of NAME / user_of NAME: by the fixture person's user id (names
+# change: people rename themselves).
 tokens_of() { store <<PY
-ids = {u["id"] for u in d["users"] if u["name"] == "$1" and not u["system_generated"]}
-print(len([t for t in d["refresh_tokens"] if t["user_id"] in ids]))
+print(len([t for t in d["refresh_tokens"] if t["user_id"] == "${UID_OF[$1]}"]))
 PY
 }
-active_of() { store <<PY
-print([u["is_active"] for u in d["users"] if u["name"] == "$1"])
+user_of() { store <<PY
+print([[u["name"], u["is_active"]] for u in d["users"] if u["id"] == "${UID_OF[$1]}"])
 PY
 }
 LLATS() { store <<'PY'
@@ -277,7 +278,8 @@ LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 OC_ON='{"action":"on_change","enabled":true,"mode":"read_write","companion":"homeassistant"}'
 OC_OFF='{"action":"on_change","enabled":false,"mode":"read_write","companion":"homeassistant"}'
 REVOKE_ALL='{"action":"revoke_all","prefix":"portcullis-ai-"}'
-rv() { printf '{"action":"revoke","user":"%s","ids":[]}' "$1"; }
+rv() { printf '{"action":"revoke","user":"%s","sub":"%s","ids":[]}' "$1" "$2"; }
+uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 
 # AI support off (the template's default): the hook admin exists, no entry.
 ha_ip
@@ -289,11 +291,14 @@ rc=$(hook on_change "$OC_ON"); [ "$rc" = 1 ] && grep -q 'restart' "$TMP/err" \
   && pass "on_change enabled:true in a container started with AI off -> refused" || fail "on_change true with HA_AI_ENABLED=false -> $rc"
 [ "$(mcp_entries)" = "[]" ] && pass "...and nothing was added" || fail "entry added: $(mcp_entries)"
 # Malformed input: refused before Home Assistant is touched.
+S0=00000000-0000-4000-8000-000000000000
 for bad in \
-  'revoke|{"action":"revoke","user":"alice","ids":["1"]}' \
-  'revoke|{"action":"revoke","user":"Alice","ids":[]}' \
-  'revoke|{"action":"revoke","user":"alice","ids":[],"x":1}' \
-  'revoke|{"action":"revoke","user":"alice","user":"bob","ids":[]}' \
+  'revoke|{"action":"revoke","user":"alice","ids":[]}' \
+  "revoke|{\"action\":\"revoke\",\"user\":\"alice\",\"sub\":\"$S0\",\"ids\":[\"1\"]}" \
+  "revoke|{\"action\":\"revoke\",\"user\":\"Alice\",\"sub\":\"$S0\",\"ids\":[]}" \
+  "revoke|{\"action\":\"revoke\",\"user\":\"alice\",\"sub\":\"$S0 x\",\"ids\":[]}" \
+  "revoke|{\"action\":\"revoke\",\"user\":\"alice\",\"sub\":\"$S0\",\"ids\":[],\"x\":1}" \
+  "revoke|{\"action\":\"revoke\",\"user\":\"alice\",\"sub\":\"$S0\",\"sub\":\"$S0\",\"ids\":[]}" \
   'revoke|{"action":"revoke_all","prefix":"portcullis-"}' \
   'revoke|{"action":"on_change","enabled":false,"mode":"read_write","companion":"homeassistant"}' \
   'on_change|{"action":"on_change","enabled":"true","mode":"read_write","companion":"homeassistant"}' \
@@ -303,21 +308,29 @@ for bad in \
   rc=$(hook "${bad%%|*}" "${bad#*|}")
   [ "$rc" = 1 ] && pass "refused: ${bad#*|}" || fail "accepted ($rc): ${bad#*|}"
 done
-rc=$(hook revoke "$(rv nobody)"); [ "$rc" = 0 ] && pass "revoke for a person with no Home Assistant account -> 0" || fail "revoke nobody -> $rc: $(head -c 300 "$TMP/err")"
+rc=$(hook revoke "$(rv nobody "$(uuid)")"); [ "$rc" = 0 ] && pass "revoke for a sub no Home Assistant account has -> 0" || fail "revoke nobody -> $rc: $(head -c 300 "$TMP/err")"
 
-# People: alice, bob, dave (members), carol (administrator). MCP clients:
-# Claude (client id metadata document URL) and Claude Code (loopback).
+# People: alice, bob, dave (members), carol (administrator), each with the
+# auth_oidc credential {"sub": <Keycloak id>} auth_oidc writes; erin and
+# erin2 share one sub (an inconsistent store). MCP clients: Claude (client
+# id metadata document URL) and Claude Code (loopback).
 CLAUDE=https://claude.ai/oauth/mcp-oauth-client-metadata
 CODE_CLIENT=http://localhost:33418/
 WEB="https://${HOST}/"
 MOBILE=https://home-assistant.io/android
+IOS=https://home-assistant.io/iOS
 hex() { openssl rand -hex "$1"; }
-declare -A RT
+declare -A RT SUB UID_OF
+DUP=$(uuid)
+for n in alice bob carol dave; do SUB[$n]=$(uuid); done
+SUB[erin]=$DUP; SUB[erin2]=$DUP
 FIX='{"users":['
 sep=""
-for spec in "alice:0:mcp=$CLAUDE,web=$WEB,llat=" "bob:0:mcp=$CODE_CLIENT,web=$WEB" "carol:1:mcp=$CLAUDE,web=$WEB" "dave:0:mcp=$CODE_CLIENT,web=$WEB,mobile=$MOBILE,llat="; do
+for spec in "alice:0:mcp=$CLAUDE,web=$WEB,llat=" "bob:0:mcp=$CODE_CLIENT,web=$WEB" "carol:1:mcp=$CLAUDE,web=$WEB,ios=$IOS" \
+  "dave:0:mcp=$CODE_CLIENT,web=$WEB,mobile=$MOBILE,llat=" "erin:0:mcp=$CLAUDE" "erin2:0:mcp=$CLAUDE"; do
   IFS=: read -r name admin toks <<<"$spec"
-  FIX+="$sep{\"id\":\"$(hex 16)\",\"name\":\"$name\",\"admin\":$([ "$admin" = 1 ] && echo true || echo false),\"tokens\":["
+  UID_OF[$name]=$(hex 16)
+  FIX+="$sep{\"id\":\"${UID_OF[$name]}\",\"name\":\"$name\",\"sub\":\"${SUB[$name]}\",\"admin\":$([ "$admin" = 1 ] && echo true || echo false),\"tokens\":["
   tsep=""
   IFS=, read -ra parts <<<"$toks"
   for part in "${parts[@]}"; do
@@ -344,6 +357,8 @@ now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 for u in spec["users"]:
     data["users"].append({"id": u["id"], "group_ids": ["system-admin" if u["admin"] else "system-users"], "is_owner": False,
                           "is_active": True, "name": u["name"], "system_generated": False, "local_only": False})
+    data["credentials"].append({"id": os.urandom(16).hex(), "user_id": u["id"], "auth_provider_type": "auth_oidc",
+                                "auth_provider_id": None, "data": {"sub": u["sub"]}})
     for t in u["tokens"]:
         data["refresh_tokens"].append({"id": t["id"], "user_id": u["id"], "client_id": t["client_id"], "client_name": t["client_name"],
                                        "client_icon": None, "token_type": t["type"], "created_at": now, "access_token_expiration": 1800.0,
@@ -365,11 +380,11 @@ wait_ha
 [ "$(hook_admin_ok)" = ok ] && pass "a new start re-provisions the hook admin (still exactly one token)" || fail "hook admin after restart"
 declare -A AT
 for k in alice.mcp:$CLAUDE alice.web:$WEB alice.llat: bob.mcp:$CODE_CLIENT bob.web:$WEB carol.mcp:$CLAUDE carol.web:$WEB \
-  dave.mcp:$CODE_CLIENT dave.web:$WEB dave.mobile:$MOBILE dave.llat:; do
+  carol.ios:$IOS dave.mcp:$CODE_CLIENT dave.web:$WEB dave.mobile:$MOBILE dave.llat:; do
   AT[${k%%:*}]=$(access "${RT[${k%%:*}]}" "${k#*:}")
 done
 n=0; for k in "${!AT[@]}"; do [ -n "${AT[$k]}" ] && [ "$(api "${AT[$k]}" /api/)" = 200 ] && n=$((n + 1)); done
-[ "$n" = 11 ] && pass "all 11 fixture tokens work (/api/ -> 200)" || fail "only $n of 11 fixture tokens work"
+[ "$n" = 12 ] && pass "all 12 fixture tokens work (/api/ -> 200)" || fail "only $n of 12 fixture tokens work"
 code=$(mcp "${AT[alice.mcp]}" /api/mcp "$INIT")
 [ "$code" = 404 ] && pass "before on_change: /api/mcp -> 404" || fail "before on_change: /api/mcp -> $code"
 
@@ -404,57 +419,76 @@ rc=$(hook on_change "$OC_OFF")
 rc=$(hook on_change "$OC_ON"); code=$(mcp "${AT[alice.mcp]}" /api/mcp "$INIT")
 [ "$rc" = 0 ] && [ "$code" = 200 ] && pass "on_change enabled:true re-adds it (alice -> 200)" || fail "re-add -> $rc / $code"
 
-# revoke alice: every token of hers ends; the others keep theirs.
-rc=$(hook revoke "$(rv alice)")
-[ "$rc" = 0 ] && pass "revoke alice -> 0" || fail "revoke alice -> $rc: $(head -c 300 "$TMP/err")"
-c1=$(api "${AT[alice.mcp]}" /api/); c2=$(api "${AT[alice.web]}" /api/); c3=$(api "${AT[alice.llat]}" /api/)  # 401 no. 2-4
-[ "$c1 $c2 $c3" = "401 401 401" ] && [ "$(tokens_of alice)" = 0 ] \
-  && pass "alice's MCP, web and long-lived tokens -> 401; none stored" || fail "alice after revoke: $c1 $c2 $c3, stored $(tokens_of alice)"
-[ "$(active_of alice)" = "[True]" ] && pass "alice is active again (she can sign in if she is still a member)" || fail "alice active: $(active_of alice)"
-[ "$(mcp "${AT[bob.mcp]}" /api/mcp "$INIT")" = 200 ] && [ "$(api "${AT[carol.web]}" /api/)" = 200 ] && [ "$(tokens_of bob)" = 2 ] \
-  && pass "bob's and carol's tokens kept" || fail "others after alice's revoke: bob $(tokens_of bob) stored"
-rc=$(hook revoke "$(rv alice)"); [ "$rc" = 0 ] && pass "revoke alice again -> 0" || fail "revoke alice again -> $rc"
+# alice renames herself "bob" (person/update_own_profile, her own token):
+# names identify nobody; the hook matches the auth_oidc sub.
+printf '%s' "${AT[alice.web]}" | docker exec -i "$HA" python3 -I -c '
+import asyncio, json, sys, aiohttp
+tok = sys.stdin.read()
+async def main():
+    async with aiohttp.ClientSession() as s, s.ws_connect("ws://127.0.0.1:8123/api/websocket") as ws:
+        await ws.receive_json()
+        await ws.send_json({"type": "auth", "access_token": tok})
+        assert (await ws.receive_json())["type"] == "auth_ok"
+        await ws.send_json({"id": 1, "type": "person/update_own_profile", "name": "bob"})
+        m = await ws.receive_json()
+        assert m.get("success"), m
+asyncio.run(main())' && [ "$(user_of alice)" = "[['bob', True]]" ] \
+  && pass "alice renamed herself \"bob\" in Home Assistant" || fail "rename: $(user_of alice)"
+rc=$(hook revoke "$(rv bob "${SUB[bob]}")")
+c1=$(api "${AT[bob.mcp]}" /api/)   # 401 no. 2
+[ "$rc" = 0 ] && [ "$c1" = 401 ] && [ "$(tokens_of bob)" = 0 ] && [ "$(tokens_of alice)" = 3 ] && [ "$(api "${AT[alice.mcp]}" /api/)" = 200 ] \
+  && pass "revoke bob (by his sub) ends his tokens only; alice, now named bob, keeps hers" \
+  || fail "revoke bob -> $rc ($c1), stored bob $(tokens_of bob) alice $(tokens_of alice): $(head -c 300 "$TMP/err")"
+rc=$(hook revoke "$(rv alice "${SUB[alice]}")")
+c1=$(api "${AT[alice.mcp]}" /api/); c2=$(api "${AT[alice.web]}" /api/); c3=$(api "${AT[alice.llat]}" /api/)  # 401 no. 3-5
+[ "$rc" = 0 ] && [ "$c1 $c2 $c3" = "401 401 401" ] && [ "$(tokens_of alice)" = 0 ] \
+  && pass "revoke alice (renamed) by her sub: her MCP, web and long-lived tokens -> 401; none stored" \
+  || fail "alice after revoke: $rc $c1 $c2 $c3, stored $(tokens_of alice): $(head -c 300 "$TMP/err")"
+[ "$(user_of alice)" = "[['bob', True]]" ] && pass "alice's account is not deactivated" || fail "alice's account: $(user_of alice)"
+[ "$(api "${AT[carol.web]}" /api/)" = 200 ] && [ "$(tokens_of dave)" = 4 ] && pass "carol's and dave's tokens kept" || fail "others after the revokes"
+rc=$(hook revoke "$(rv alice "${SUB[alice]}")"); [ "$rc" = 0 ] && pass "revoke alice again -> 0" || fail "revoke alice again -> $rc"
+rc=$(hook revoke "$(rv erin "$DUP")")
+[ "$rc" = 1 ] && grep -q 'refusing to guess' "$TMP/err" && [ "$(tokens_of erin)" = 1 ] && [ "$(tokens_of erin2)" = 1 ] \
+  && pass "a sub on two credentials -> 1, nothing revoked" || fail "ambiguous sub -> $rc, erin $(tokens_of erin) erin2 $(tokens_of erin2)"
 
 # Fail closed.
 LL_BEFORE=$(LLATS)
 rc=$(hook_patched revoke '
-orig = g["HA"].call
-async def call(self, t, **kw):
-    if t == "config/auth/update":
-        raise g["Fail"]("simulated API failure")
-    return await orig(self, t, **kw)
-g["HA"].call = call' "$(rv bob)")
-[ "$rc" = 1 ] && [ "$(mcp "${AT[bob.mcp]}" /api/mcp "$INIT")" = 200 ] \
-  && pass "revoke while config/auth/update fails -> 1 (bob's token still works: not reported revoked)" || fail "failing revoke -> $rc"
+def boom(*a, **k):
+    raise g["Fail"]("simulated /auth/revoke failure")
+orig = g["revoke"]
+async def revoke(ha, user, sub):
+    ha.s.post = boom
+    await orig(ha, user, sub)
+g["revoke"] = revoke' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 1 ] && [ "$(api "${AT[carol.mcp]}" /api/)" = 200 ] && [ "$(tokens_of carol)" = 3 ] \
+  && pass "revoke while /auth/revoke fails -> 1 (carol's tokens untouched, not reported revoked)" || fail "failing revoke -> $rc"
 rc=$(hook_patched revoke '
+def load_store(path, key):
+    raise g["Fail"]("simulated unreadable store")
+g["load_store"] = load_store' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 1 ] && [ "$(tokens_of carol)" = 3 ] && pass "revoke with the auth store unreadable -> 1" || fail "unreadable store -> $rc"
+rc=$(hook_patched revoke '
+async def revoke_tokens(ha, pick, what):
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(30)
+g["revoke_tokens"] = revoke_tokens' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 143 ] && pass "SIGTERM mid-run -> 143" || fail "SIGTERM mid-run -> $rc"
+rc=$(hook_patched on_change '
 async def token(self):
     raise g["Fail"]("simulated /auth/token failure")
-g["HA"].token = token' "$(rv bob)")
-[ "$rc" = 1 ] && pass "revoke while the admin token exchange fails -> 1" || fail "revoke with failing token exchange -> $rc"
-rc=$(hook_patched revoke '
-orig = g["HA"].call
-async def call(self, t, **kw):
-    if t == "config/auth/update" and kw.get("is_active") is True:
-        raise g["Fail"]("simulated reactivation failure")
-    return await orig(self, t, **kw)
-g["HA"].call = call' "$(rv bob)")
-[ "$rc" = 1 ] && [ "$(active_of bob)" = "[False]" ] && [ "$(tokens_of bob)" = 0 ] \
-  && pass "reactivation fails part-way -> 1, bob's tokens gone, left inactive" || fail "part-way revoke -> $rc, bob $(active_of bob) $(tokens_of bob)"
-rc=$(hook_patched revoke '
-orig = g["HA"].call
-async def call(self, t, **kw):
-    if t == "config/auth/list":
-        os.kill(os.getpid(), signal.SIGTERM)
-        await asyncio.sleep(30)
-    return await orig(self, t, **kw)
-g["HA"].call = call' "$(rv bob)")
-[ "$rc" = 143 ] && pass "SIGTERM mid-run -> 143" || fail "SIGTERM mid-run -> $rc"
-rc=$(hook revoke "$(rv bob)")
-[ "$rc" = 0 ] && [ "$(active_of bob)" = "[True]" ] \
-  && pass "the next revoke reactivates bob (the run that died remembered he was active)" || fail "retry -> $rc, bob $(active_of bob)"
+g["HA"].token = token' "$OC_ON")
+[ "$rc" = 1 ] && pass "on_change while the admin token exchange fails -> 1" || fail "on_change with failing token exchange -> $rc"
+rc=$(hook_patched on_change '
+orig = g["set_options"]
+async def set_options(ha, eid):
+    raise g["Fail"]("simulated options flow failure")
+g["set_options"] = set_options' "$OC_ON")
+[ "$rc" = 1 ] && pass "on_change failing part-way -> 1" || fail "on_change failing part-way -> $rc"
 [ "$(hook_admin_ok)" = ok ] && [ "$(LLATS)" = "$LL_BEFORE" ] \
   && pass "no admin credential left after the failed runs (one hook token, no new long-lived token)" \
   || fail "after failed runs: hook admin $(hook_admin_ok), long-lived tokens $(LLATS) (before $LL_BEFORE)"
+rc=$(hook on_change "$OC_ON"); [ "$rc" = 0 ] && pass "on_change true after the failures -> 0" || fail "on_change after failures -> $rc"
 rc=$(hook_patched revoke '
 def boom(*a, **k):
     raise g["Fail"]("simulated /auth/revoke failure")
@@ -470,10 +504,11 @@ g["revoke_all"] = revoke_all' "$REVOKE_ALL")
 # Companion apps ends; long-lived tokens stay.
 rc=$(hook revoke "$REVOKE_ALL")
 [ "$rc" = 0 ] && pass "revoke_all -> 0" || fail "revoke_all -> $rc: $(head -c 300 "$TMP/err")"
-c1=$(api "${AT[carol.mcp]}" /api/); c2=$(api "${AT[dave.mcp]}" /api/)   # 401 no. 5-6
+c1=$(api "${AT[carol.mcp]}" /api/); c2=$(api "${AT[dave.mcp]}" /api/)   # 401 no. 6-7
 [ "$c1 $c2" = "401 401" ] && pass "carol's and dave's MCP client tokens -> 401" || fail "MCP tokens after revoke_all: $c1 $c2"
-kept=""; for k in carol.web dave.web dave.mobile dave.llat; do kept+="$(api "${AT[$k]}" /api/) "; done
-[ "$kept" = "200 200 200 200 " ] && pass "web frontend, Companion app and long-lived tokens kept" || fail "kept tokens: $kept"
+kept=""; for k in carol.web carol.ios dave.web dave.mobile dave.llat; do kept+="$(api "${AT[$k]}" /api/) "; done
+[ "$kept" = "200 200 200 200 200 " ] && [ "$(tokens_of erin)" = 0 ] \
+  && pass "web frontend, iOS and Android Companion app and long-lived tokens kept; other clients' gone" || fail "kept tokens: $kept"
 [ "$(hook_admin_ok)" = ok ] && pass "the hook admin's own token survives revoke_all" || fail "hook admin after revoke_all"
 
 # Switch off as the Hub does: recreated with AI off (prestart removes the
