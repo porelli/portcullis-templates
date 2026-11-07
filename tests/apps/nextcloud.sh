@@ -491,6 +491,32 @@ else
 fi
 docker exec -u www-data "$C" rm -rf /tmp/stub
 
+# A disabled account and a name user_oidc would store hashed: refused (1).
+docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
+  exit($db->prepare("INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)")->execute(["carol", "Carol"]) ? 0 : 1);'
+occ user:disable carol >/dev/null
+set +e; mint_in carol | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint for a disabled account -> exit 1" || fail "mint for disabled carol: exit $RC, want 1"
+LONG=$(printf 'a%.0s' $(seq 1 65))
+set +e; mint_in "$LONG" | hook mint > /dev/null 2> "$TMP/long-err"; RC=$?; set -e
+if [ "$RC" = 1 ] && grep -q 'longer than 64 characters' "$TMP/long-err"; then
+  pass "mint for a username over 64 characters -> exit 1 with a clear message"
+else
+  fail "mint for a 65-character username: exit $RC ($(head -c 200 "$TMP/long-err"))"
+fi
+# revoke fails while a requested id survives under another name (renamed by
+# the person); the app password keeps working, so it is never reported revoked.
+OUT=$(mint_in alice | hook mint); RCRED=$(jq -r .credential <<<"$OUT"); RID=$(jq -r .id <<<"$OUT")
+docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
+  exit($db->prepare("UPDATE oc_authtoken SET name = ? WHERE id = ?")->execute(["renamed-by-alice", (int) $argv[1]]) ? 0 : 1);' "$RID"
+set +e; printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$RID" | hook revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ocs_as alice "$RCRED")" = 200 ]; then
+  pass "revoke of an id renamed away from portcullis-ai-* -> exit $RC, not reported as revoked"
+else
+  fail "revoke of a renamed app password: exit $RC, want non-zero"
+fi
+occ user:auth-tokens:delete -- alice "$RID" >/dev/null
+
 # The companion (started with the template).
 MCP_IP=$(app_container_ip "$APP_ID" nextcloud-mcp)
 wait_for_url "http://${MCP_IP}:8000/health/live" 180 nextcloud-mcp || docker logs portcullis-nextcloud-mcp-1 2>&1 | tail -30
@@ -539,8 +565,25 @@ else
   fail "nextcloud-mcp list as bob: $(head -c 400 <<<"$R")"
 fi
 mcp alice "${CRED[alice]}" '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > "$TMP/tools.json"
-R=$(mcp "" "" "$LS")
-grep -q 'alice-secret\|bob-secret' <<<"$R" && fail "nextcloud-mcp without a credential returned files" || pass "nextcloud-mcp without a credential sees no file"
+# Path traversal with alice's credential never reaches bob's files.
+for p in ../bob/bob-secret.txt /../bob/bob-secret.txt ../../bob/files/bob-secret.txt ..%2Fbob%2Fbob-secret.txt; do
+  R=$(mcp alice "${CRED[alice]}" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"nc_webdav_read_file\",\"arguments\":{\"path\":\"$p\"}}}")
+  if ! grep -q 'private to bob' <<<"$R" && { jq -e '.error' <<<"$R" >/dev/null 2>&1 || jq -e '.result.isError == true' <<<"$R" >/dev/null 2>&1 || [ "$(cat "$TMP/mcpcode")" != 200 ]; }; then
+    pass "nc_webdav_read_file $p as alice -> an error, no content of bob's"
+  else
+    fail "path traversal $p as alice: $(head -c 300 <<<"$R")"
+  fi
+done
+R=$(mcp "" "" "$LS"); CODE=$(cat "$TMP/mcpcode")
+if [ "$CODE" = 401 ]; then
+  pass "nextcloud-mcp without a credential -> 401"
+elif jq -e '.error' <<<"$R" >/dev/null 2>&1; then
+  pass "nextcloud-mcp without a credential -> JSON-RPC error ($(jq -c '.error.code' <<<"$R"))"
+elif jq -e '.result.isError == true' <<<"$R" >/dev/null 2>&1 && ! grep -q 'alice-secret\|bob-secret' <<<"$R"; then
+  pass "nextcloud-mcp without a credential -> a tool error, no file ($(jq -r '.result.content[0].text' <<<"$R" | head -c 120))"
+else
+  fail "nextcloud-mcp without a credential: HTTP $CODE $(head -c 300 <<<"$R")"
+fi
 mcp alice "notTheAppPassword0000" "$LS" >/dev/null
 [ "$(cat "$TMP/mcpcode")" = 401 ] && pass "nextcloud-mcp: a credential Nextcloud rejects -> 401" || fail "nextcloud-mcp with a bad credential: HTTP $(cat "$TMP/mcpcode")"
 
@@ -549,7 +592,9 @@ yq -o=json '.ai.mcp[0].tools' "$MANIFEST" > "$TMP/classes.json"
 if python3 - "$TMP/classes.json" "$TMP/tools.json" <<'PY'
 import fnmatch, json, sys
 c = json.load(open(sys.argv[1]))
-tools = {t["name"].lower(): (t.get("annotations") or {}) for t in json.load(open(sys.argv[2]))["result"]["tools"]}
+raw = json.load(open(sys.argv[2]))["result"]["tools"]
+tools = {t["name"].lower(): (t.get("annotations") or {}) for t in raw}
+schemas = {t["name"].lower(): (t.get("inputSchema") or {}) for t in raw}
 m = lambda pats, t: any(fnmatch.fnmatchcase(t, p.lower()) for p in pats)
 bad = []
 print("  INFO %d tools" % len(tools))
@@ -568,14 +613,23 @@ for t, a in tools.items():
         bad.append("tool %s (no readOnlyHint) is not in writes" % t)
     if (a.get("destructiveHint") or "delete" in t) and not m(c["confirm"], t):
         bad.append("tool %s (delete / destructiveHint) is not in confirm" % t)
-    if "share" in t and not a.get("readOnlyHint") and not (m(c["confirm"], t) or m(c["never"], t)):
-        bad.append("sharing tool %s is neither confirm nor never" % t)
+    props = (schemas.get(t) or {}).get("properties") or {}
+    if not a.get("readOnlyHint") and ({"attendees", "reminder_email", "reminders"} & set(props)) and not m(c["confirm"], t):
+        bad.append("tool %s can send mail (attendees / reminders) and is not in confirm" % t)
+# No sharing by the AI: never = exactly every sharing tool but delete.
+want_never = {"nc_share_create", "nc_share_create_public_link", "nc_share_update", "nc_share_list", "nc_share_get"}
+got_never = {t for t in tools if m(c["never"], t)}
+shares = {t for t in tools if t.startswith("nc_share_")}
+if got_never != want_never or shares - {"nc_share_delete"} != want_never:
+    bad.append("never matches %s, sharing tools %s; want never = %s" % (sorted(got_never), sorted(shares), sorted(want_never)))
+if "nc_share_delete" not in tools or m(c["never"], "nc_share_delete") or not m(c["confirm"], "nc_share_delete"):
+    bad.append("nc_share_delete must exist and be confirm, not never")
 for b in bad:
     print("  FAIL " + b)
 sys.exit(1 if bad else 0)
 PY
 then
-  pass "tool classes match nextcloud-mcp's real tools (writes = no readOnlyHint, deletes and sharing confirmed or never)"
+  pass "tool classes match nextcloud-mcp's real tools (writes = no readOnlyHint, deletes and mail-sending tools confirmed, never = every sharing tool but delete)"
 else
   fail "tool classes do not match nextcloud-mcp's tools (above)"
 fi
@@ -595,6 +649,13 @@ grep -q 'alice-secret.txt' <<<"$R" && fail "nextcloud-mcp still lists alice's fi
 
 # revoke_all: every portcullis-ai-* app password of every person, nothing else.
 OWN=$(docker exec -u www-data "$C" php occ --no-interaction user:auth-tokens:add --name=bob-own -- bob | tail -1)
+OWN_ID=$(occ user:auth-tokens:list --output=json -- bob | jq -r '.[] | select(.name == "bob-own") | .id')
+set +e; printf '{"action":"revoke","user":"bob","ids":["%s"]}' "$OWN_ID" | hook revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ocs_as bob "$OWN")" = 200 ]; then
+  pass "revoke naming bob's own (non-AI) app password leaves it alone (exit $RC: the id survives)"
+else
+  fail "revoke of bob's own app password: exit $RC, OCS $(ocs_as bob "$OWN")"
+fi
 for _ in 1 2; do mint_in alice | hook mint >/dev/null; done
 set +e; printf '{"action":"revoke_all","prefix":"portcullis-"}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
 if [ "$RC" != 0 ] && [ "$(ai_tokens alice)" = 2 ]; then

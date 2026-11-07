@@ -19,7 +19,10 @@
 //   revoke      occ user:auth-tokens:list + :delete <uid> <id>
 //                                                  the person's portcullis-ai-*
 //                                                  app passwords with those ids
-//                                                  (ids [] = all of them)
+//                                                  (ids [] = all of them); a
+//                                                  requested id still there
+//                                                  afterwards, under any name,
+//                                                  fails the revoke
 //   revoke_all  occ user:list + the above for every account
 //
 // The app password is never on an argv (occ prints it; this script reads
@@ -27,7 +30,10 @@
 // container itself, so no admin credential exists to leak. Fails closed:
 // any unexpected occ answer exits 1; mint exits 3 only when occ says the
 // account does not exist. A mint that fails (or is interrupted: TERM, INT,
-// HUP) after occ created the app password deletes it again.
+// HUP) after occ created the app password deletes it again: those signals
+// are blocked from just before occ adds it until the credential is printed
+// (occ always runs to completion and is reaped first), and a signal that
+// arrived meanwhile ends the run with the cleanup instead of the print.
 declare(strict_types=1);
 
 const OCC = '/var/www/html/occ';
@@ -73,9 +79,17 @@ function why(string $err): string
  *
  * @return array{uid: string, enabled: bool, oidc: bool}|null
  */
-function account(string $user): ?array
+function account(string $user, bool $forMint = false): ?array
 {
-    // Never an option or an impossible uid (user_oidc's column is 64 chars).
+    // user_oidc stores a uid longer than 64 characters as its sha256
+    // (Db/UserMapper.php): such a person's account can't be matched by name.
+    if (strlen($user) > 64) {
+        if ($forMint) {
+            fail('usernames longer than 64 characters are not supported: user_oidc stores them hashed, so the account cannot be matched');
+        }
+        return null;
+    }
+    // Never an option or an impossible uid.
     if (preg_match('/^[A-Za-z0-9_.@][A-Za-z0-9_.@-]{0,63}$/D', $user) !== 1) {
         return null;
     }
@@ -148,9 +162,12 @@ function revoke_tokens(string $uid, ?array $ids): void
             delete_token($uid, $id);
         }
     }
+    // Deletion is limited to portcullis-ai-* names, the check isn't: a
+    // requested id that still exists under any name (renamed in Nextcloud's
+    // Devices & sessions, say) is a failed revoke, never reported as done.
     foreach (tokens($uid) as $id => $name) {
-        if ($want($id, $name)) {
-            fail("app password $id of $uid is still there after delete");
+        if ($want($id, $name) || ($ids !== null && in_array($id, $ids, true))) {
+            fail("app password $id of $uid is still there after revoke");
         }
     }
 }
@@ -186,8 +203,9 @@ register_shutdown_function('cleanup_pending');
 if (!function_exists('pcntl_async_signals')) {
     fail('the pcntl extension is missing');
 }
+const SIGNALS = [SIGTERM, SIGINT, SIGHUP];
 pcntl_async_signals(true);
-foreach ([SIGTERM, SIGINT, SIGHUP] as $sig) {
+foreach (SIGNALS as $sig) {
     pcntl_signal($sig, static function (): never {
         exit(143); // runs cleanup_pending (shutdown function)
     });
@@ -224,7 +242,7 @@ if ($verb === 'mint') {
         || $in['scopes'] !== []) {
         fail('unexpected mint input');
     }
-    $acct = account($in['user']);
+    $acct = account($in['user'], true);
     if ($acct === null) {
         fail('no Nextcloud account for this person yet (they never signed in)', 3);
     }
@@ -240,6 +258,10 @@ if ($verb === 'mint') {
         fail('an app password of that name exists already');
     }
 
+    // Critical section: no signal handler runs from here until the
+    // credential is printed, so occ is never abandoned mid-add and the
+    // cleanup never lists tokens before occ has finished.
+    pcntl_sigprocmask(SIG_BLOCK, SIGNALS);
     $PENDING = ['uid' => $uid, 'name' => $name];
     [$rc, $out, $err] = occ(['user:auth-tokens:add', '--name=' . $name, '--', $uid]);
     if ($rc !== 0) {
@@ -255,6 +277,11 @@ if ($verb === 'mint') {
     if (count($ids) !== 1) {
         fail('the new app password was not found exactly once');
     }
+    // A signal that arrived during the section ends the run here, with the
+    // cleanup (PENDING still set) and without the credential.
+    pcntl_sigprocmask(SIG_UNBLOCK, SIGNALS);
+    pcntl_signal_dispatch();
+    pcntl_sigprocmask(SIG_BLOCK, SIGNALS);
     $PENDING = null;
     printf("{\"credential\":\"%s\",\"id\":\"%d\"}\n", $cred, $ids[0]);
     exit(0);
