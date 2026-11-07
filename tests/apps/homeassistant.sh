@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
-TEST_NAME="homeassistant"
+export TEST_NAME="homeassistant"
 section "Home Assistant"
 
 APP_ID=homeassistant

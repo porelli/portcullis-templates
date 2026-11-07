@@ -68,25 +68,38 @@ auth:
     SHA-256 in init.py) together with Home Assistant when upstream requires
     it. AI support: the built-in MCP Server integration, with Home Assistant
     as its own OAuth server (people sign in through Portcullis); Home
-    Assistant applies its own rules (only Assist-exposed entities, the
-    person's own account), Portcullis doesn't log or confirm its AI actions.
-    Turning AI support on adds the integration with administrators-only off
-    and the Assist API only (an administrator may change both in Home
-    Assistant); turning it off removes it, and the homeassistant
-    service's entrypoint (portcullis/prestart.py) removes it again before
-    every start while AI support is off. The AI hooks act as "Portcullis
-    hooks", a system user prestart.py provisions with a new token at every
-    start (hidden from Settings > People, local only, no credential of any
-    sign-in provider, so it can't sign in). When a person leaves while AI
-    support is on, every Home Assistant refresh token of theirs ends (web
-    sessions, Companion apps, long-lived tokens, AI clients); the account
-    stays. The person is matched by the OIDC sub auth_oidc stored when they
-    first signed in (the Hub sends their Keycloak id), never by name: people
-    can rename themselves. An authorization code Home Assistant issued just
-    before someone left stays usable for its 10 minutes. Switching AI
-    support on or off ends every OAuth client token except Home
-    Assistant's own web frontend and Companion apps; long-lived tokens are
-    kept.
+    Assistant applies its own rules and Portcullis doesn't log or confirm
+    its AI actions. Assist exposure is instance-wide, not a per-person
+    boundary: every person's MCP client sees and controls the same exposed
+    entities; the person's own account only decides attribution and
+    whether administrator-only actions are allowed. Turning AI support on
+    adds the integration with administrators-only off and the Assist API
+    only; turning it off removes it, and the homeassistant service's
+    entrypoint (portcullis/prestart.py) removes it again at every
+    container start while AI support is off. A Home Assistant administrator
+    can still add it by hand meanwhile: it then serves until the next
+    container start (a restart from Home Assistant's own UI restarts only
+    the process under s6 and doesn't run prestart.py). The AI hooks act as
+    "Portcullis hooks", a system user prestart.py provisions with a new
+    token at every container start: hidden from Settings > People, no
+    credential of any sign-in provider (it can't sign in), local_only
+    (Home Assistant then refuses its tokens from outside the local network,
+    which still includes the LAN, not only this container). Its token
+    lives in /config/.storage/auth, so instance backups carry it (rotated
+    at the next start after a restore). When a person leaves while their
+    account is matched, every Home Assistant refresh token of theirs ends
+    (web sessions, Companion apps, long-lived tokens, AI clients); the
+    account stays. The person is matched by the OIDC sub auth_oidc stored
+    when they first signed in (the Hub sends each Keycloak id it saw for
+    them), never by name: people can rename themselves. Someone the Hub
+    couldn't match (no LLDAP uuid or Keycloak id recorded) costs everyone's
+    AI client tokens of this instance when they leave, and their other
+    tokens stay until an administrator deactivates or deletes them in
+    Settings > People (the Hub lists them). An authorization code Home
+    Assistant issued just before someone left stays usable for its 10
+    minutes. Switching AI support on or off ends every OAuth client token
+    except Home Assistant's own web frontend and Companion apps; long-lived
+    tokens are kept.
 
 env:
   - key: HOMEASSISTANT_OIDC_SECRET

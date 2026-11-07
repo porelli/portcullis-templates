@@ -8,6 +8,7 @@ service (mounted read-only):
 
   on_change  stdin {"action":"on_change","enabled":true|false,"mode":"read_write","companion":"homeassistant"}
   revoke     stdin {"action":"revoke","user":"<username>","sub":"<Keycloak user id>","ids":[]}
+             (one call per Keycloak id the Hub saw for the person)
              or    {"action":"revoke_all","prefix":"portcullis-ai-"}
 
 Exit 0 = done and confirmed; anything else = failed (1), or 143 when ended
@@ -28,7 +29,8 @@ skips system users when it links), the homeassistant password provider
 isn't configured (auth_providers: []) and config/auth_provider/
 homeassistant/create refuses system users anyway, config/auth/update and
 delete refuse them, and local_only refuses its tokens from anywhere but
-a local address. Only on_change uses it (revoke and revoke_all revoke
+a local address (Home Assistant's "local network": private ranges, the
+LAN included, not only loopback). Only on_change uses it (revoke and revoke_all revoke
 by token value and need no admin). An on_change run reads it from
 /config/.storage/auth and exchanges it:
     POST /auth/token  grant_type=refresh_token&refresh_token=<token>   (no client_id)

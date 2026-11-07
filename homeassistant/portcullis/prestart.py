@@ -16,14 +16,21 @@ image's own /init (s6-overlay, PID 1).
    has no CLI or API that mints an admin token while it runs, and its own
    http component creates its "Home Assistant Content" system user the
    same way. The token never leaves this file (0600, Home Assistant's
-   own); the hooks exchange it at /auth/token per run.
+   own); the hooks exchange it at /auth/token per run. local_only means
+   Home Assistant's "local network" (private ranges, the LAN included),
+   not only loopback. Instance backups of /config carry the token; it is
+   rotated at the next container start after a restore.
 2. With AI support off (HA_AI_ENABLED=false, from PORTCULLIS_AI_ENABLED),
    every config entry of the built-in MCP Server integration (mcp_server)
    is removed from /config/.storage/core.config_entries, so Home Assistant
    starts without it and serves no /api/mcp route at all (removing the
    entry at runtime leaves /api/mcp/<api id> served until the next start).
    An entry an administrator added by hand while AI support is off is
-   removed too.
+   removed too, but only at the next container start: a restart from
+   Home Assistant's UI (exit code 100) restarts only the process under
+   s6 (rootfs/etc/services.d/home-assistant/finish exits 0 for 100, the
+   run script starts python3 -m homeassistant again) and never runs this
+   script.
 
 Any failure exits non-zero before /init runs: Home Assistant doesn't start
 (fail closed). No secret is printed.
