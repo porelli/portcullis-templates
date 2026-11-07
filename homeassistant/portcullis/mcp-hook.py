@@ -14,8 +14,9 @@ service (mounted read-only):
 Exit 0 = done and confirmed; anything else = failed (1), or 143 when ended
 by TERM / INT / HUP. stdout is unused.
 
-Verified against Home Assistant 2026.10.4 (homeassistant/components/
-mcp_server, components/auth, components/config, auth/__init__.py):
+Verified against Home Assistant 2026.11.0 (homeassistant/components/
+mcp_server, components/auth, components/config, auth/__init__.py; first
+written against 2026.10.4):
 
 Admin context. Home Assistant has no CLI that mints a token while it runs
 (`hass --script auth` only edits the homeassistant provider's storage
@@ -49,9 +50,15 @@ on_change (REST, as the hook admin):
     Assist API only = only Assist-exposed entities):
       POST   /api/config/config_entries/options/flow {"handler":"<entry_id>"}
       POST   /api/config/config_entries/options/flow/<flow_id>
-             {"all_llm_apis":false,"llm_hass_api":["assist"],"require_admin":false}
+             {"all_llm_apis":false,"llm_hass_api":["assist"],"require_admin":false,
+              "read_only":false}
              (the form is re-rendered once when all_llm_apis changes; only the
-             fields the form shows are sent)
+             fields the form shows are sent; any other field fails the run)
+             read_only (2026.11, entry minor version 1.4; mcp_server
+             server.py: true serves only the tools annotated read-only) is
+             always false: the companion offers read_write only, so the
+             Assist API's tools are what the person may do in Home
+             Assistant, as in its own UI.
     confirmed by: the entry's data in .storage/core.config_entries, state
     "loaded", and POST /api/mcp initialize answering 200.
     enabled false: DELETE every entry, then confirm the list is empty and
@@ -129,7 +136,9 @@ HOOK_USER_ID = "706f727463756c6c6973686f6f6b7300"  # = prestart.py
 DOMAIN = "mcp_server"
 COMPANION = "homeassistant"
 PREFIX = "portcullis-ai-"
-ENTRY_DATA = {"all_llm_apis": False, "llm_hass_api": ["assist"], "require_admin": False}
+# Every options-flow field the hook knows, with the value it sets (any
+# other field fails closed). read_only: 2026.11+ (always false, see above).
+ENTRY_DATA = {"all_llm_apis": False, "llm_hass_api": ["assist"], "require_admin": False, "read_only": False}
 MOBILE_CLIENTS = frozenset({"https://home-assistant.io/iOS", "https://home-assistant.io/android"})
 USER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 SUB_RE = re.compile(r"[0-9a-fA-F-]{1,64}")

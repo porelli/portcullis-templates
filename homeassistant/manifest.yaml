@@ -173,9 +173,9 @@ tests:
 # PKCE, no client secret); people sign in to it through Keycloak
 # (auth_oidc), so every tool call runs as that person's Home Assistant
 # account and sees only Assist-exposed entities. The gate is not in the
-# path. portcullis/mcp-hook.py (calls verified against 2026.10.4 in its
+# path. portcullis/mcp-hook.py (calls verified against 2026.11.0 in its
 # header) turns the integration on with "Require an administrator account"
-# off and the Assist API only, removes it when AI support is off, and ends
+# off, read_only off and the Assist API only, removes it when AI support is off, and ends
 # a person's Home Assistant refresh tokens when they leave.
 ai:
   on_change: mcp-integration

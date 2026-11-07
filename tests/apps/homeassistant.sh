@@ -235,7 +235,7 @@ sys.exit(g["main"](["mcp-hook.py", sys.argv[1]]))' "$1" "$2" >/dev/null 2>"$TMP/
 }
 # store PYTHON: runs PYTHON (on stdin) with d = the auth store's data.
 store() { docker exec -i "$HA" python3 -I -c 'import json, sys; d = json.load(open("/config/.storage/auth"))["data"]; exec(sys.stdin.read())'; }
-mcp_entries() { docker exec "$HA" python3 -I -c 'import json; d = json.load(open("/config/.storage/core.config_entries"))["data"]; print(json.dumps([e.get("data") for e in d["entries"] if e.get("domain") == "mcp_server"]))'; }
+mcp_entries() { docker exec "$HA" python3 -I -c 'import json; d = json.load(open("/config/.storage/core.config_entries"))["data"]; print(json.dumps([e.get("data") for e in d["entries"] if e.get("domain") == "mcp_server"], sort_keys=True))'; }
 hook_admin_ok() {
   store <<'PY'
 u = [x for x in d["users"] if x["id"] == "706f727463756c6c6973686f6f6b7300"]
@@ -395,8 +395,8 @@ code=$(mcp "${AT[alice.mcp]}" /api/mcp "$INIT")
 [ "$code" = 404 ] && pass "before on_change: /api/mcp -> 404" || fail "before on_change: /api/mcp -> $code"
 
 rc=$(hook on_change "$OC_ON"); [ "$rc" = 0 ] && pass "on_change enabled:true -> 0" || fail "on_change true -> $rc: $(head -c 400 "$TMP/err")"
-[ "$(mcp_entries)" = '[{"all_llm_apis": false, "llm_hass_api": ["assist"], "require_admin": false}]' ] \
-  && pass "one MCP Server entry: administrators-only off, Assist API only" || fail "entries: $(mcp_entries)"
+[ "$(mcp_entries)" = '[{"all_llm_apis": false, "llm_hass_api": ["assist"], "read_only": false, "require_admin": false}]' ] \
+  && pass "one MCP Server entry: administrators-only off, Assist API only, read_only off" || fail "entries: $(mcp_entries)"
 for who in alice bob carol; do
   code=$(mcp "${AT[$who.mcp]}" /api/mcp "$INIT")
   if [ "$code" = 200 ] && jq -e '.result.protocolVersion and .result.serverInfo.name' "$TMP/mcp" >/dev/null 2>&1; then
