@@ -155,4 +155,4 @@ ai:
   alternative:
     name: "nloui/paperless-mcp"
     source: "https://github.com/nloui/paperless-mcp"
-    note: "community, 248★, last change Nov 2025, API token"
+    note: "community, 247★, last change Nov 2025, no licence file, API token (surveyed 2026-11-06)"

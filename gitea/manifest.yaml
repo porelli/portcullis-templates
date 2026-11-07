@@ -72,6 +72,20 @@ auth:
     in but an access token minted inside the container, one per hook run,
     deleted by that run. It never runs AI requests. Deleting it breaks AI
     support until the next start recreates it.
+    AI and re-used usernames: the mint finds the Gitea account by
+    username. When the Hub sends the person's Keycloak id, the hook mints
+    only for the account Gitea signs that id in to and refuses any other;
+    a Hub that doesn't send it (today's) leaves a residual: if a person is
+    deleted and their username is given to someone new, the newcomer's
+    AI requests run as the former person's Gitea account (their web
+    sign-in is refused). Before re-using a username, delete or rename the
+    former person's Gitea account (Site Administration > User Accounts).
+    AI file writes: create_or_update_file can also delete files in the
+    same commit (files[].delete) without a confirmation; the deletion is
+    an ordinary commit, recoverable from the repository's history.
+    While AI support is on, https://<host>/mcp is the AI endpoint, so a
+    Gitea user or organization named mcp loses its profile page (its
+    repositories stay reachable): don't use that name.
     Git over HTTPS: clone https://<host>/<owner>/<repo>.git with your
     username and a personal access token (User Settings > Applications) as
     the password; git-credential-manager / git-credential-oauth can use
@@ -190,6 +204,9 @@ ai:
       # tests/apps/gitea.sh checks both against the real tools/list.
       tools:
         writes: ["*_write", "create_*", "delete_*"]
+        # create_or_update_file can delete files too (files[].delete):
+        # accepted unconfirmed, like any commit it is undone from history
+        # (residual in auth.notes; final review M3).
         confirm: ["*delete*", "*:*delete*"]
         # Setting an Actions secret would hand its value to the model
         # (Gitea's secret listings carry names only, never values).

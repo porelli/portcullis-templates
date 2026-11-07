@@ -80,7 +80,8 @@ else
   fail "mcp-mint / mcp-revoke must run in the gitea service with mcp-token.sh mounted read-only and executable"
 fi
 # The hook token reaches curl on stdin only; no credential on any argv.
-if grep -q -- 'curl --config - ' "$HOOK_SH" && ! grep -vE '^[[:space:]]*#' "$HOOK_SH" | grep -qE -- '(-H|--header|-u|--user)[ =]'; then
+# (No pipe into grep -q: under pipefail an early exit would read as a pass.)
+if grep -q -- 'curl --config - ' "$HOOK_SH" && ! grep -qE -- '(-H|--header|-u|--user)[ =]' <<<"$(grep -vE '^[[:space:]]*#' "$HOOK_SH")"; then
   pass "mcp-token.sh: curl reads credentials from stdin (--config -)"
 else
   fail "mcp-token.sh must pass credentials to curl via --config - only"
@@ -169,6 +170,9 @@ rand12() { openssl rand -hex 6; }
 mint_in() { # user mode scopes-json
   printf '{"action":"mint","user":"%s","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"%s","scopes":%s}' "$1" "$(rand12)" "$2" "$3"
 }
+mint_sub_in() { # user sub mode scopes-json: with the person's Keycloak id
+  printf '{"action":"mint","user":"%s","sub":"%s","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"%s","scopes":%s}' "$1" "$2" "$(rand12)" "$3" "$4"
+}
 RO_SCOPES='["read:repository","read:issue","read:user","read:organization","read:package","read:notification"]'
 RW_SCOPES='["write:repository","write:issue","read:user","write:organization","write:package","write:notification"]'
 # hook_failing_list ACTION: the hook with `gitea admin user list` failing
@@ -256,6 +260,40 @@ else
   fail "after failing runs: $N_HOOK hook token(s), $N_AI portcullis-ai-* tokens (before: $AI_BEFORE)"
 fi
 
+# Keycloak id check (final review I1): with a sub, mint only for the
+# account Gitea signs that sub in to. alice becomes an account of the
+# Portcullis OAuth2 source keyed on SUB_A, as a Portcullis sign-in creates
+# it; another sub (her username deleted and re-created in LLDAP: a new
+# Keycloak user) and bob's local account are refused, and nothing is minted.
+SRC_ID=$(db "SELECT id FROM login_source WHERE name = 'Portcullis' AND type = 6")
+SUB_A=$(python3 -c 'import uuid; print(uuid.uuid4())'); SUB_NEW=$(python3 -c 'import uuid; print(uuid.uuid4())')
+db "UPDATE \"user\" SET login_type = 6, login_source = ${SRC_ID:-0}, login_name = '$SUB_A' WHERE lower_name = 'alice'" >/dev/null
+AI_BEFORE=$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")
+if [[ $SRC_ID =~ ^[0-9]+$ ]] && OUT=$(mint_sub_in alice "$SUB_A" read_only "$RO_SCOPES" | hook mint) \
+  && SUB_ID=$(jq -er '.id' <<<"$OUT") && [ "$(api_as "$(jq -r .credential <<<"$OUT")" GET /user)" = 200 ] \
+  && [ "$(jq -r .login "$TMP/body")" = alice ]; then
+  pass "mint with alice's own Keycloak id (the sub her Gitea account is keyed on) -> a credential as alice"
+  printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$SUB_ID" | hook revoke || fail "revoking the sub-checked credential failed"
+else
+  fail "mint with alice's own sub failed (source id '$SRC_ID')"
+fi
+set +e; mint_sub_in alice "$SUB_NEW" read_write "$RW_SCOPES" | hook mint >/dev/null 2>"$TMP/err"; RC=$?; set -e
+if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" \
+  && [ "$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")" = "$AI_BEFORE" ]; then
+  pass "mint with another Keycloak id for alice's username (a re-created person) -> exit 1, nothing minted"
+else
+  fail "mint with another sub for alice: exit $RC (want 1, no token): $(head -c 300 "$TMP/err")"
+fi
+set +e; mint_sub_in bob "$SUB_NEW" read_only "$RO_SCOPES" | hook mint >/dev/null 2>"$TMP/err"; RC=$?; set -e
+if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" \
+  && [ "$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")" = "$AI_BEFORE" ]; then
+  pass "mint with a sub for an account no Portcullis sign-in made (bob, local) -> exit 1, nothing minted"
+else
+  fail "mint with a sub for bob's local account: exit $RC (want 1, no token): $(head -c 300 "$TMP/err")"
+fi
+set +e; mint_sub_in alice "${SUB_A^^}" read_only "$RO_SCOPES" | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint with a sub that isn't a Keycloak id (upper case) refused (exit 1)" || fail "mint with an upper-case sub: exit $RC, want 1"
+
 # The companion (started with the template: GITEA_READONLY defaults to true).
 MCP_IP=$(app_container_ip "$APP_ID" gitea-mcp)
 wait_for_url "http://${MCP_IP}:8080/healthz" 60 gitea-mcp
@@ -265,9 +303,15 @@ mcp() {
   { [ -z "$2" ] || printf 'header = "Authorization: token %s"\n' "$2"; } \
     | curl --config - -s -o "$TMP/mcpout" -w '%{http_code}' -X POST "http://$1:8080/mcp" \
       -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-      -H 'MCP-Protocol-Version: 2025-11-25' --data-binary "@$TMP/mcpreq" > "$TMP/mcpcode" || echo 000 > "$TMP/mcpcode"
+      -H "MCP-Protocol-Version: ${MCPV:-2025-11-25}" --data-binary "@$TMP/mcpreq" > "$TMP/mcpcode" || echo 000 > "$TMP/mcpcode"
   if grep -q '^data: ' "$TMP/mcpout"; then sed -n 's/^data: //p' "$TMP/mcpout"; else cat "$TMP/mcpout"; fi
 }
+# The manifest's protocol list must be exactly what gitea-mcp negotiates.
+for v in $(yq -r '.ai.mcp[0].protocol[]' "$MANIFEST"); do
+  INIT=$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"%s","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' "$v")
+  GOT=$(MCPV=$v mcp "$MCP_IP" "$CRED" "$INIT" | jq -r '.result.protocolVersion // empty' 2>/dev/null || true)
+  [ "$GOT" = "$v" ] && pass "gitea-mcp: initialize $v -> $v" || fail "gitea-mcp: initialize $v -> '$GOT' (the manifest's protocol list must be what the server negotiates)"
+done
 LIST='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 MYREPOS='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repo_read","arguments":{"method":"list_my_repos"}}}'
 R=$(mcp "$MCP_IP" "$CRED" "$MYREPOS")
@@ -278,7 +322,15 @@ else
   fail "gitea-mcp list_my_repos as alice: $(head -c 400 <<<"$R")"
 fi
 R=$(mcp "$MCP_IP" "" "$MYREPOS")
-grep -q 'alice-private\|bob-private' <<<"$R" && fail "gitea-mcp without a token returned repositories" || pass "gitea-mcp without a token sees no repository"
+# A refusal it really gave (HTTP 401/403, a JSON-RPC error or an isError
+# result), never an empty or failed exchange.
+if grep -q 'alice-private\|bob-private' <<<"$R"; then
+  fail "gitea-mcp without a token returned repositories"
+elif [[ $(cat "$TMP/mcpcode") == 40[13] ]] || jq -e '.error or .result.isError == true' <<<"$R" >/dev/null 2>&1; then
+  pass "gitea-mcp without a token sees no repository (HTTP $(cat "$TMP/mcpcode"), refused)"
+else
+  fail "gitea-mcp without a token: no refusal (HTTP $(cat "$TMP/mcpcode")): $(head -c 300 <<<"$R")"
+fi
 mcp "$MCP_IP" 0000000000000000000000000000000000000000 "$MYREPOS" >/dev/null
 [ "$(cat "$TMP/mcpcode")" = 401 ] && pass "gitea-mcp: a token Gitea rejects -> 401" || fail "gitea-mcp with a bad token: HTTP $(cat "$TMP/mcpcode")"
 

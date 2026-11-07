@@ -466,6 +466,30 @@ def load_store(path, key):
 g["load_store"] = load_store' "$(rv carol "${SUB[carol]}")")
 [ "$rc" = 1 ] && grep -q 'has no sub' "$TMP/err" && [ "$(tokens_of carol)" = 3 ] \
   && pass "an auth_oidc credential without a sub in the store -> 1, nothing revoked" || fail "credential without sub -> $rc"
+# A renamed provider type (an auth_oidc bump) must never read as "no
+# account" (final review M4): every credential typed otherwise, or none
+# left while people exist, fails.
+rc=$(hook_patched revoke '
+orig = g["load_store"]
+def load_store(path, key):
+    d = orig(path, key)
+    if key == "auth":
+        for c in d["credentials"]:
+            c["auth_provider_type"] = "oidc_renamed"
+    return d
+g["load_store"] = load_store' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 1 ] && grep -q 'other than auth_oidc' "$TMP/err" && [ "$(tokens_of carol)" = 3 ] \
+  && pass "credentials of another provider type in the store -> 1, nothing revoked" || fail "renamed provider type -> $rc"
+rc=$(hook_patched revoke '
+orig = g["load_store"]
+def load_store(path, key):
+    d = orig(path, key)
+    if key == "auth":
+        d["credentials"] = []
+    return d
+g["load_store"] = load_store' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 1 ] && grep -q 'no auth_oidc credential' "$TMP/err" && [ "$(tokens_of carol)" = 3 ] \
+  && pass "people but no auth_oidc credential in the store -> 1, nothing revoked" || fail "no credentials -> $rc"
 
 # Fail closed.
 LL_BEFORE=$(LLATS)

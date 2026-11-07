@@ -33,12 +33,14 @@ fi
 # Native OIDC: one host-wide router without forward-auth (sync clients,
 # WebDAV, share links). No path-scoped router: nothing relies on Traefik's
 # path matching (case, repeated slashes, /index.php differ from Nextcloud's).
-if grep -E '^[[:space:]]*traefik\.http\.routers\.nextcloud\.middlewares:' "$COMPOSE" | grep -q 'portcullis-auth@docker'; then
+# Here-strings, not a pipe into grep -q: under pipefail an early grep exit
+# (SIGPIPE upstream) would read as "no match", a silent pass.
+if grep -q 'portcullis-auth@docker' <<<"$(grep -E '^[[:space:]]*traefik\.http\.routers\.nextcloud\.middlewares:' "$COMPOSE" || true)"; then
   fail "host-wide router uses forward-auth (breaks clients behind native OIDC)"
 else
   pass "host-wide router has no forward-auth"
 fi
-if grep -E '^[[:space:]]*traefik\.http\.routers\.[^.]+\.rule:' "$COMPOSE" | grep -q 'Path'; then
+if grep -q 'Path' <<<"$(grep -E '^[[:space:]]*traefik\.http\.routers\.[^.]+\.rule:' "$COMPOSE" || true)"; then
   fail "a router uses path matchers (no password form may depend on them)"
 else
   pass "no path-scoped routers"
@@ -268,7 +270,7 @@ if echo "$ROUTED" | grep -q '^/apps/text'; then
 else
   pass "share-wide /apps/text only in mode all"
 fi
-if public_routed_prefixes "$MANIFEST" all | grep -qxE '/index\.php|/ocs(/.*)?|/remote\.php(/.*)?|/apps|/core|/public\.php|/login'; then
+if grep -qxE '/index\.php|/ocs(/.*)?|/remote\.php(/.*)?|/apps|/core|/public\.php|/login' <<<"$(public_routed_prefixes "$MANIFEST" all)"; then
   fail "mode all opens a broad Nextcloud prefix"
 else
   pass "mode all stays off /index.php, /ocs, /remote.php, /apps, /core, /login"
@@ -644,8 +646,15 @@ else
   fail "revoke: the credential still works or the hook failed"
 fi
 R=$(mcp alice "${CRED[alice]}" "$LS")
-grep -q 'alice-secret.txt' <<<"$R" && fail "nextcloud-mcp still lists alice's files with the revoked app password" \
-  || pass "nextcloud-mcp with the revoked app password lists nothing (HTTP $(cat "$TMP/mcpcode"))"
+# A refusal it really gave (HTTP 401/403, a JSON-RPC error or an isError
+# result), never an empty or failed exchange.
+if grep -q 'alice-secret.txt' <<<"$R"; then
+  fail "nextcloud-mcp still lists alice's files with the revoked app password"
+elif [[ $(cat "$TMP/mcpcode") == 40[13] ]] || jq -e '.error or .result.isError == true' <<<"$R" >/dev/null 2>&1; then
+  pass "nextcloud-mcp with the revoked app password lists nothing (HTTP $(cat "$TMP/mcpcode"), refused)"
+else
+  fail "nextcloud-mcp with the revoked app password: no refusal (HTTP $(cat "$TMP/mcpcode")): $(head -c 300 <<<"$R")"
+fi
 
 # revoke_all: every portcullis-ai-* app password of every person, nothing else.
 OWN=$(docker exec -u www-data "$C" php occ --no-interaction user:auth-tokens:add --name=bob-own -- bob | tail -1)

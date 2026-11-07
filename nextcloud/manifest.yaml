@@ -163,6 +163,11 @@ auth:
     the Hub as www-data in the nextcloud container at start and after every
     save; idempotent, exits non-zero on any occ failure). Quotas set per
     user in Nextcloud's Users page still win over the default.
+    AI availability: while AI support is on, any container on
+    portcullis-proxy can reach the companion and send wrong credentials;
+    Nextcloud's brute-force protection counts them against the companion's
+    address, which every AI request comes from, so such a container can
+    slow everyone's AI requests down (sign-in itself still holds).
 
 hooks:
   - name: apply-settings

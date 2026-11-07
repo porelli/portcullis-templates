@@ -424,7 +424,16 @@ def person_of(sub: str):
     """The id of the user holding the auth_oidc credential of sub; None =
     no account. Anything ambiguous fails."""
     users, _, creds = auth_store(with_credentials=True)
-    oidc = [c for c in creds if c.get("auth_provider_type") == "auth_oidc"]
+    # auth_providers: [] leaves auth_oidc the only provider. A credential of
+    # another type (hass-oidc-auth renamed its provider type, or another
+    # provider was added), or ordinary users with no auth_oidc credential
+    # at all, would make every person read as "no account" and their
+    # tokens stay: never report that as revoked.
+    if any(c.get("auth_provider_type") != "auth_oidc" for c in creds):
+        raise Fail("a credential of a provider type other than auth_oidc is stored: refusing to guess")
+    if not creds and any(u.get("system_generated") is False for u in users):
+        raise Fail("users exist but no auth_oidc credential is stored: refusing to guess")
+    oidc = creds
     if any(not isinstance(c.get("data"), dict) or not isinstance(c["data"].get("sub"), str) or not c["data"]["sub"]
            for c in oidc):
         # A credential we can't read could be the person's: never guess.

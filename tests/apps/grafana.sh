@@ -230,6 +230,10 @@ not_admin() { # label output
   code=$(tail -n1 <<<"$2"); login=$(sed '$d' <<<"$2" | jq -r '.login // empty' 2>/dev/null || true)
   if [ "$login" = admin ] || [[ "$code" == 2* ]]; then
     fail "$1: X-Forwarded-User: admin signed in (HTTP $code, login '$login')"
+  elif [ "$code" != 401 ]; then
+    # 000 = the probe never reached Grafana: that proves nothing about the
+    # allowlist. Grafana answers an untrusted header with 401.
+    fail "$1: no answer from Grafana to check (HTTP $code, want its 401)"
   else
     pass "$1: X-Forwarded-User: admin not signed in (HTTP $code)"
   fi

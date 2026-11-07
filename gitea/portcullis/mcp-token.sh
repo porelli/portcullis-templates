@@ -4,8 +4,17 @@
 # and mcp-revoke run it in the gitea service as git; it never sees tool
 # traffic.
 #
-#   mint    stdin {"action":"mint","user","instance","companion","name","mode","scopes"}
+#   mint    stdin {"action":"mint","user",["sub",]"instance","companion","name","mode","scopes"}
 #           -> stdout {"credential":"…","id":"…"}; exit 3: no Gitea account yet
+#
+# sub (optional, the person's current Keycloak user id, placed as in
+# app_oauth's revoke): when the Hub sends it, the account must be the one
+# Gitea signs that sub in to (an OAuth2 account of the Portcullis source
+# whose login name is the sub); any other account under the name (a
+# deleted person's whose username was re-created, a local one) is refused
+# with exit 1, never minted for. Without sub the account is found by name
+# only: a re-created username would get the former person's account
+# through AI (the residual in the manifest notes) until the Hub sends it.
 #   revoke  stdin {"action":"revoke","user","ids":[…]}   (ids [] = all of the person's)
 #           or    {"action":"revoke_all","prefix":"portcullis-ai-"}
 #
@@ -43,6 +52,10 @@ readonly GITEA_NAME_RE='^[a-z0-9]([a-z0-9._-]{0,38}[a-z0-9])?$'
 # never write:user, admin, misc, activitypub or all.
 readonly SCOPE_RE='read:(repository|issue|user|organization|package|notification)|write:(repository|issue|organization|package|notification)'
 readonly S='[[:space:]]*'
+# A Keycloak user id (the OIDC sub Gitea's OAuth2 source keys accounts on).
+readonly SUB_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+# The OAuth2 source gitea-auth writes (keep in sync with auth.sh).
+readonly SOURCE_NAME=Portcullis
 
 die() { echo "mcp-token: $*" >&2; exit 1; }
 
@@ -152,6 +165,29 @@ account() {
   ACCOUNT=$(awk -v u="$1" 'NR > 1 && tolower($2) == u { print $4; exit }' <<<"$users")
 }
 
+# linked USER SUB: USER's account is the one Gitea signs SUB in to (Gitea
+# resolves a sign-in by login type OAuth2 + source + login name = sub
+# first): its source is the Portcullis OAuth2 source and its login name is
+# SUB. Anything else, or an answer it can't read, ends the run (exit 1).
+linked() {
+  local sources src body names ids n
+  sources=$(gitea admin auth list) || die "gitea admin auth list failed"
+  [[ $sources =~ ^[[:space:]]*ID[[:space:]]+Name[[:space:]] ]] || die "unexpected gitea admin auth list output"
+  src=$(awk -v n="$SOURCE_NAME" 'NR > 1 && $2 == n && $3 == "OAuth2" { print $1 }' <<<"$sources")
+  [[ $src =~ ^[0-9]+$ ]] || die "no unique $SOURCE_NAME OAuth2 login source"
+  body=$(api GET "/users/$1") || die "reading $1's Gitea account failed"
+  # Exactly one of each key (the account object is flat; a key inside a
+  # string value would have escaped quotes), a value it can read.
+  n=$(grep -oE '"(login_name|source_id)":' <<<"$body" | sort | uniq -c | awk '{ printf "%s%s", s, $1; s = " " }') || true
+  names=$(grep -oE '"login_name":"[^"\\]*"' <<<"$body") || true
+  ids=$(grep -oE '"source_id":[0-9]+' <<<"$body") || true
+  [ "$n" = "1 1" ] && [ "$(grep -c . <<<"$names" || true)" = 1 ] && [ "$(grep -c . <<<"$ids" || true)" = 1 ] \
+    || die "unexpected answer for $1's Gitea account"
+  if [ "${ids#\"source_id\":}" != "$src" ] || [ "$names" != "\"login_name\":\"$2\"" ]; then
+    die "refused: $1's Gitea account is not this person's: Gitea signs another identity in to it (a deleted person's account whose username was re-created, or one not made by a Portcullis sign-in). Delete or rename that Gitea account (Site Administration > User Accounts), then the person signs in to Gitea once"
+  fi
+}
+
 reserved() { [ "$1" = "$BREAKGLASS" ] || [ "$1" = "$HOOK_USER" ]; }
 
 # ── input ────────────────────────────────────────────────
@@ -162,14 +198,14 @@ input=$(head -c $((MAX_INPUT + 1)))
 input=${input//[$'\t\r\n']/ }
 
 q() { printf '"%s"%s:%s' "$1" "$S" "$S"; }
-re_mint="^${S}[{]${S}$(q action)\"mint\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}$(q instance)\"[a-z0-9-]{1,63}\"${S},${S}$(q companion)\"[a-z0-9-]{1,31}\"${S},${S}$(q name)\"(${PREFIX}[a-z0-9]{12})\"${S},${S}$(q mode)\"(read_only|read_write)\"${S},${S}$(q scopes)[[]([^]]*)[]]${S}[}]${S}$"
+re_mint="^${S}[{]${S}$(q action)\"mint\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}($(q sub)\"(${SUB_RE})\"${S},${S})?$(q instance)\"[a-z0-9-]{1,63}\"${S},${S}$(q companion)\"[a-z0-9-]{1,31}\"${S},${S}$(q name)\"(${PREFIX}[a-z0-9]{12})\"${S},${S}$(q mode)\"(read_only|read_write)\"${S},${S}$(q scopes)[[]([^]]*)[]]${S}[}]${S}$"
 re_revoke="^${S}[{]${S}$(q action)\"revoke\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}$(q ids)[[]([^]]*)[]]${S}[}]${S}$"
 re_revoke_all="^${S}[{]${S}$(q action)\"revoke_all\"${S},${S}$(q prefix)\"${PREFIX}\"${S}[}]${S}$"
 
 # ── mint ─────────────────────────────────────────────────
 mint() {
   [[ $input =~ $re_mint ]] || die "refused: not a mint request of contract §15.5"
-  local user=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} mode=${BASH_REMATCH[3]} list=${BASH_REMATCH[4]}
+  local user=${BASH_REMATCH[1]} sub=${BASH_REMATCH[3]} name=${BASH_REMATCH[4]} mode=${BASH_REMATCH[5]} list=${BASH_REMATCH[6]}
   local scopes="" item token ids id
   ! reserved "$user" || die "refused: $user is a Portcullis service account"
   [[ $list =~ ^${S}$ ]] && die "refused: no scopes"
@@ -189,6 +225,7 @@ mint() {
     exit 3
   fi
   [ "$ACCOUNT" = true ] || die "$user's Gitea account is disabled"
+  [ -z "$sub" ] || linked "$user" "$sub"
 
   PENDING_USER=$user PENDING_NAME=$name
   token=$(gitea admin user generate-access-token --username "$user" --token-name "$name" \
