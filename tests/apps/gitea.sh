@@ -309,8 +309,10 @@ mcp() {
 # The manifest's protocol list must be exactly what gitea-mcp negotiates.
 for v in $(yq -r '.ai.mcp[0].protocol[]' "$MANIFEST"); do
   INIT=$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"%s","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' "$v")
-  GOT=$(MCPV=$v mcp "$MCP_IP" "$CRED" "$INIT" | jq -r '.result.protocolVersion // empty' 2>/dev/null || true)
-  [ "$GOT" = "$v" ] && pass "gitea-mcp: initialize $v -> $v" || fail "gitea-mcp: initialize $v -> '$GOT' (the manifest's protocol list must be what the server negotiates)"
+  R=$(MCPV=$v mcp "$MCP_IP" "$CRED" "$INIT")
+  GOT=$(jq -r '.result.protocolVersion // empty' <<<"$R" 2>/dev/null || true)
+  [ "$GOT" = "$v" ] && pass "gitea-mcp: initialize $v -> $v" \
+    || fail "gitea-mcp: initialize $v -> '$GOT' (HTTP $(cat "$TMP/mcpcode"): $(head -c 200 <<<"$R")); the manifest's protocol list must be what the server negotiates"
 done
 LIST='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 MYREPOS='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repo_read","arguments":{"method":"list_my_repos"}}}'

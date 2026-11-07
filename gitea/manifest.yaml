@@ -184,7 +184,7 @@ ai:
       public_path: /mcp
       upstream: official
       source: https://gitea.com/gitea/gitea-mcp
-      protocol: ["2026-07-28", "2025-11-25"]
+      protocol: ["2025-11-25"]               # gitea-mcp 1.12.0 answers no initialize for 2026-07-28 (tests/apps/gitea.sh)
       modes: [read_only, read_write]
       default_mode: read_write
       identity:
