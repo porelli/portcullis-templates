@@ -13,8 +13,8 @@ auth:
   sso: partial
   group_access: true
   group_admin: false
-  access_group: users_firefly
-  admin_group: admin_firefly
+  access_group: users_firefly-iii
+  admin_group: admin_firefly-iii
   notes: >
     Uses remote_user_guard: the account is keyed on X-Forwarded-User, the
     immutable LLDAP username (stored in Firefly's email column; Firefly does
