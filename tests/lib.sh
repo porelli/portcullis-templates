@@ -134,7 +134,12 @@ KC_PASS="$(_core_env KEYCLOAK_ADMIN_PASSWORD)"
 
 # QUIRK #4: Wildcard in --resolve doesn't actually work in curl.
 # Kept for reference; tests should use container IPs directly.
-RESOLVE_OPTS="--resolve *.${DOMAIN}:443:127.0.0.1 --cacert certs/ca-chain.crt"
+# --cacert only when core's CA exists: curl >= 8.18 (ubuntu-26.04) refuses to
+# run at all (exit 2, "000" here) when the --cacert file is missing, even for
+# plain-HTTP URLs; the old relative certs/ca-chain.crt never existed in the
+# templates checkout.
+RESOLVE_OPTS="--resolve *.${DOMAIN}:443:127.0.0.1"
+[ ! -f "$PROJECT_DIR/certs/ca-chain.crt" ] || RESOLVE_OPTS="$RESOLVE_OPTS --cacert $PROJECT_DIR/certs/ca-chain.crt"
 
 # QUIRK #1: Use $((X + 1)) not ((X++)) to avoid exit code 1 when X=0.
 PASS_COUNT=0
