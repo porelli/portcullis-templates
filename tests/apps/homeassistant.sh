@@ -259,6 +259,12 @@ LLATS() { store <<'PY'
 print(sorted(t["client_name"] or "" for t in d["refresh_tokens"] if t["token_type"] == "long_lived_access_token"))
 PY
 }
+# wait_user_of NAME WANT: Home Assistant saves its auth store 1 s after a
+# change; up to 10 s.
+wait_user_of() {
+  for _ in $(seq 1 20); do [ "$(user_of "$1")" = "$2" ] && return 0; sleep 0.5; done
+  return 1
+}
 # access REFRESH CLIENT_ID: an access token (secrets on curl's stdin only).
 access() {
   { printf 'data = "grant_type=refresh_token&refresh_token=%s' "$1"; [ -z "$2" ] || printf '&client_id=%s' "$2"; printf '"\n'; } \
@@ -432,7 +438,7 @@ async def main():
         await ws.send_json({"id": 1, "type": "person/update_own_profile", "name": "bob"})
         m = await ws.receive_json()
         assert m.get("success"), m
-asyncio.run(main())' && [ "$(user_of alice)" = "[['bob', True]]" ] \
+asyncio.run(main())' && wait_user_of alice "[['bob', True]]" \
   && pass "alice renamed herself \"bob\" in Home Assistant" || fail "rename: $(user_of alice)"
 rc=$(hook revoke "$(rv bob "${SUB[bob]}")")
 c1=$(api "${AT[bob.mcp]}" /api/)   # 401 no. 2
