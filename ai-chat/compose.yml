@@ -1,0 +1,194 @@
+# AI Chat (the AI page): LibreChat signs people in through Keycloak and
+# talks to one MCP server, "all my apps" (https://mcp.<domain>/mcp), with a
+# per-person OAuth token of the ai-chat-mcp client. Its models come from
+# the providers the administrator selected for this instance (Hub Settings
+# -> AI), delivered as ai-providers.json (no secrets) plus the providers'
+# variables on the api service (the Hub's override; never named here).
+services:
+  # One-shot before every start: render librechat.yaml from ai-providers.json
+  # (portcullis/render-config.mjs) into the librechat-config volume, which
+  # api mounts read-only. Fails closed: a missing or malformed file, or a
+  # result LibreChat's own schema refuses, exits non-zero and api doesn't
+  # start. Same image as api (its node, js-yaml and LibreChat's schema).
+  # Root without capabilities: owner of the fresh volume, nothing more; the
+  # data file is 0640 group 10001 (group_add).
+  config:
+    image: ghcr.io/librechat-ai/librechat:v0.8.8@sha256:5b706bcee1ca154a1e2987303aaeca0eb27f97919cccee4bb604226c2f8abf61
+    user: "0:0"
+    group_add: ["10001"]
+    working_dir: /app
+    entrypoint:
+      - node
+      - /portcullis/render-config.mjs
+      - /portcullis/ai-providers/ai-providers.json
+      - /portcullis/librechat.base.yaml
+      - /portcullis/librechat/librechat.yaml
+    environment:
+      PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      # The file must be this instance's (render-config.mjs refuses another).
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-ai-chat}
+    volumes:
+      - librechat-config:/portcullis/librechat
+      - ./templates/ai-chat/portcullis/render-config.mjs:/portcullis/render-config.mjs:ro
+      - ./templates/ai-chat/portcullis/librechat.base.yaml:/portcullis/librechat.base.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 64
+    # It only reads and writes files.
+    network_mode: none
+    restart: "no"
+
+  api:
+    image: ghcr.io/librechat-ai/librechat:v0.8.8@sha256:5b706bcee1ca154a1e2987303aaeca0eb27f97919cccee4bb604226c2f8abf61
+    # LibreChat runs on its own defaults (no locks, no MCP server) when its
+    # configuration file is missing: refuse to start without a non-empty
+    # one, then run the image's own entrypoint and command (v0.8.8:
+    # docker-entrypoint.sh, npm run backend).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'test -s "$$CONFIG_PATH" || { echo "ai-chat: $$CONFIG_PATH is missing or empty: not starting LibreChat without its configuration" >&2; exit 1; }; exec docker-entrypoint.sh npm run backend'
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3080"
+      NO_INDEX: "true"
+      DOMAIN_CLIENT: https://${PORTCULLIS_HOST_AI:-ai.portcullis.local}
+      DOMAIN_SERVER: https://${PORTCULLIS_HOST_AI:-ai.portcullis.local}
+      CONFIG_PATH: /portcullis/librechat/librechat.yaml
+      MONGO_URI: mongodb://librechat:${AI_CHAT_MONGO_PASSWORD:?AI_CHAT_MONGO_PASSWORD must be set}@mongodb:27017/LibreChat?authSource=admin
+      SEARCH: "true"
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${AI_CHAT_MEILI_MASTER_KEY:?AI_CHAT_MEILI_MASTER_KEY must be set}
+      # AES-256 key (64 hex characters) and IV (32) for stored credentials
+      # (people's own provider keys, MCP OAuth tokens).
+      CREDS_KEY: ${AI_CHAT_CREDS_KEY:?AI_CHAT_CREDS_KEY must be set}${AI_CHAT_CREDS_KEY_2:?AI_CHAT_CREDS_KEY_2 must be set}
+      CREDS_IV: ${AI_CHAT_CREDS_IV:?AI_CHAT_CREDS_IV must be set}
+      JWT_SECRET: ${AI_CHAT_JWT_SECRET:?AI_CHAT_JWT_SECRET must be set}
+      JWT_REFRESH_SECRET: ${AI_CHAT_JWT_REFRESH_SECRET:?AI_CHAT_JWT_REFRESH_SECRET must be set}
+      # OpenID only: no password login, no local sign-up (LibreChat's first
+      # local account would become its administrator), no password reset.
+      ALLOW_EMAIL_LOGIN: "false"
+      ALLOW_REGISTRATION: "false"
+      ALLOW_PASSWORD_RESET: "false"
+      # No public (signed-out) shared links: a conversation holds what the
+      # person's apps returned. Sharing is off in librechat.yaml as well.
+      ALLOW_SHARED_LINKS_PUBLIC: "false"
+      ALLOW_SOCIAL_LOGIN: "true"
+      ALLOW_SOCIAL_REGISTRATION: "true"
+      OPENID_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      OPENID_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-ai-chat}
+      OPENID_CLIENT_SECRET: ${AI_CHAT_OIDC_SECRET:?AI_CHAT_OIDC_SECRET must be set}
+      OPENID_SESSION_SECRET: ${AI_CHAT_SESSION_SECRET:?AI_CHAT_SESSION_SECRET must be set}
+      OPENID_SCOPE: openid profile email
+      OPENID_CALLBACK_URL: /oauth/openid/callback
+      OPENID_USE_PKCE: "true"
+      # Accounts are keyed on the token's sub (LibreChat's openidId); the
+      # username shown is the LLDAP username. LibreChat's email fallback only
+      # adopts an account without an openidId, and none exists here (no
+      # local accounts).
+      OPENID_USERNAME_CLAIM: preferred_username
+      OPENID_NAME_CLAIM: preferred_username
+      # Only the access group signs in (the groups claim of the ID token);
+      # the Hub's Keycloak access role refuses everyone else before that.
+      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_ai-chat}
+      OPENID_REQUIRED_ROLE_PARAMETER_PATH: groups
+      OPENID_REQUIRED_ROLE_TOKEN_KIND: id
+      OPENID_BUTTON_LABEL: Portcullis
+      OPENID_AUTO_REDIRECT: "true"
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      # Read by librechat.yaml's ${...} references (the MCP server).
+      PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP: ${PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP:-ai-chat-mcp}
+      AI_CHAT_MCP_SECRET: ${AI_CHAT_MCP_SECRET:?AI_CHAT_MCP_SECRET must be set}
+    # Keycloak and the MCP gate are reached through Traefik on
+    # portcullis-proxy, whatever the public DNS answers (no NAT hairpin
+    # needed; a LAN-only install works the same).
+    extra_hosts:
+      - "auth.${PORTCULLIS_DOMAIN:-portcullis.local}:${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}"
+      - "mcp.${PORTCULLIS_DOMAIN:-portcullis.local}:${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}"
+    volumes:
+      - librechat-config:/portcullis/librechat:ro
+      - librechat-uploads:/app/uploads
+      - librechat-images:/app/client/public/images
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      config:
+        condition: service_completed_successfully
+        restart: true
+      mongodb:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.ai.rule: Host(`${PORTCULLIS_HOST_AI:-ai.portcullis.local}`)
+      traefik.http.routers.ai.entrypoints: websecure
+      traefik.http.routers.ai.tls.options: authaware@file
+      traefik.http.routers.ai.middlewares: client-headers@file,security-headers@file
+      traefik.http.routers.ai.service: ai
+      traefik.http.services.ai.loadbalancer.server.port: "3080"
+    restart: unless-stopped
+
+  # MongoDB 7.0: every 8.x release refuses to start (or crashes) on Linux
+  # kernels 6.19 to 7.0.13 (tcmalloc and the kernel's rseq change,
+  # SERVER-121912), GitHub's runners included; 7.0 isn't affected and is
+  # supported by LibreChat. Move to 8 by hand once that is behind us.
+  mongodb:
+    image: mongo:7.0.45@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: librechat
+      MONGO_INITDB_ROOT_PASSWORD: ${AI_CHAT_MONGO_PASSWORD:?AI_CHAT_MONGO_PASSWORD must be set}
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - default
+    restart: unless-stopped
+
+  # The search index is derived from MongoDB (LibreChat re-syncs it), so its
+  # data can be dropped; versions follow LibreChat's own compose file.
+  meilisearch:
+    image: getmeili/meilisearch:v1.35.1@sha256:8b57fc3c7f46535ddef3828df1538465ac19d892eb57c9a10da6df0880bd5856
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${AI_CHAT_MEILI_MASTER_KEY:?AI_CHAT_MEILI_MASTER_KEY must be set}
+    volumes:
+      - meilisearch-data:/meili_data
+    networks:
+      - default
+    restart: unless-stopped
+
+volumes:
+  librechat-config: {}
+  librechat-uploads: {}
+  librechat-images: {}
+  mongodb-data: {}
+  meilisearch-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

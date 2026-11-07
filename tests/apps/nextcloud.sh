@@ -33,12 +33,14 @@ fi
 # Native OIDC: one host-wide router without forward-auth (sync clients,
 # WebDAV, share links). No path-scoped router: nothing relies on Traefik's
 # path matching (case, repeated slashes, /index.php differ from Nextcloud's).
-if grep -E '^[[:space:]]*traefik\.http\.routers\.nextcloud\.middlewares:' "$COMPOSE" | grep -q 'portcullis-auth@docker'; then
+# Here-strings, not a pipe into grep -q: under pipefail an early grep exit
+# (SIGPIPE upstream) would read as "no match", a silent pass.
+if grep -q 'portcullis-auth@docker' <<<"$(grep -E '^[[:space:]]*traefik\.http\.routers\.nextcloud\.middlewares:' "$COMPOSE" || true)"; then
   fail "host-wide router uses forward-auth (breaks clients behind native OIDC)"
 else
   pass "host-wide router has no forward-auth"
 fi
-if grep -E '^[[:space:]]*traefik\.http\.routers\.[^.]+\.rule:' "$COMPOSE" | grep -q 'Path'; then
+if grep -q 'Path' <<<"$(grep -E '^[[:space:]]*traefik\.http\.routers\.[^.]+\.rule:' "$COMPOSE" || true)"; then
   fail "a router uses path matchers (no password form may depend on them)"
 else
   pass "no path-scoped routers"
@@ -206,6 +208,38 @@ else
   info "php not installed: apply-settings.php stub test skipped"
 fi
 
+# ── AI support (contracts §3.2, §15.5): static ──────────────
+HOOK_PHP="$DIR/portcullis/mcp-token.php"
+MCP_IMAGE=$(sed -n 's/^    image: \(ghcr\.io\/cbcoutinho\/nextcloud-mcp-server:[^[:space:]]*\)$/\1/p' "$COMPOSE")
+if [[ "$MCP_IMAGE" =~ ^ghcr\.io/cbcoutinho/nextcloud-mcp-server:[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]]; then
+  pass "nextcloud-mcp pinned tag@digest ($MCP_IMAGE)"
+else
+  fail "nextcloud-mcp must be the published image pinned tag@sha256 (got '$MCP_IMAGE')"
+fi
+MCP_SVC=$(awk '/^  nextcloud-mcp:/{f=1; next} f && /^  [a-z]/{f=0} f' "$COMPOSE")
+if grep -q 'MCP_DEPLOYMENT_MODE: multi_user_basic$' <<<"$MCP_SVC" && grep -q 'NEXTCLOUD_HOST: http://nextcloud-internal$' <<<"$MCP_SVC" \
+  && ! grep -qE 'NEXTCLOUD_USERNAME|NEXTCLOUD_PASSWORD|OIDC|TOKEN_ENCRYPTION|traefik\.|ports:|portcullis-proxy' <<<"$MCP_SVC"; then
+  pass "nextcloud-mcp: multi-user Basic pass-through to nextcloud-internal, no credential of its own, no labels / ports / proxy network"
+else
+  fail "nextcloud-mcp: needs MCP_DEPLOYMENT_MODE multi_user_basic, NEXTCLOUD_HOST nextcloud-internal and no credential, labels, ports or portcullis-proxy"
+fi
+if [ "$(yq -r '[.hooks[] | select(.name == "mcp-mint" or .name == "mcp-revoke") | [.service, .user, (.command | join(" ")), (.when | join(","))] | join("|")] | join(";")' "$MANIFEST")" \
+     = 'nextcloud|www-data|php /portcullis/mcp-token.php mint|ai;nextcloud|www-data|php /portcullis/mcp-token.php revoke|ai' ] \
+  && grep -qF -- '- ./templates/nextcloud/portcullis/mcp-token.php:/portcullis/mcp-token.php:ro' "$COMPOSE"; then
+  pass "mint/revoke hooks run in the nextcloud service as www-data (script mounted read-only)"
+else
+  fail "mcp-mint / mcp-revoke must run in the nextcloud service as www-data with mcp-token.php mounted read-only"
+fi
+if command -v php >/dev/null 2>&1; then
+  if php -l "$HOOK_PHP" >/dev/null; then pass "mcp-token.php parses"; else fail "mcp-token.php has a syntax error"; fi
+fi
+# occ gets argv lists only (proc_open, no shell) and never a password option.
+if grep -q 'proc_open(\$cmd' "$HOOK_PHP" && ! grep -qE 'shell_exec|passthru|system\(|exec\(|popen|password-from-env|OC_PASS|NC_PASS' "$HOOK_PHP"; then
+  pass "mcp-token.php runs occ without a shell and passes no password"
+else
+  fail "mcp-token.php must run occ through proc_open argv lists only"
+fi
+
 # Shell syntax of the support scripts
 for f in "$SETUP" "$CRON"; do
   if sh -n "$f"; then pass "$(basename "$f") parses"; else fail "$(basename "$f") has a syntax error"; fi
@@ -236,7 +270,7 @@ if echo "$ROUTED" | grep -q '^/apps/text'; then
 else
   pass "share-wide /apps/text only in mode all"
 fi
-if public_routed_prefixes "$MANIFEST" all | grep -qxE '/index\.php|/ocs(/.*)?|/remote\.php(/.*)?|/apps|/core|/public\.php|/login'; then
+if grep -qxE '/index\.php|/ocs(/.*)?|/remote\.php(/.*)?|/apps|/core|/public\.php|/login' <<<"$(public_routed_prefixes "$MANIFEST" all)"; then
   fail "mode all opens a broad Nextcloud prefix"
 else
   pass "mode all stays off /index.php, /ocs, /remote.php, /apps, /core, /login"
@@ -337,6 +371,324 @@ if apply <<< '{"version":1,"values":{"default_quota":"7 GB; rm"}}' >/dev/null 2>
 else
   pass "apply-settings refuses a malformed quota (non-zero)"
 fi
+
+section "AI support: hooks and the nextcloud-mcp companion"
+TMP=$(mktemp -d)
+NC_IP=$(app_container_ip "$APP_ID" nextcloud)
+hook() { docker exec -i -u www-data "$C" php /portcullis/mcp-token.php "$1"; }
+if docker exec "$C" php -m | grep -qx pcntl; then
+  pass "the nextcloud image has pcntl (the hook cleans up an interrupted mint on TERM / INT / HUP)"
+else
+  fail "the nextcloud image lacks pcntl: mcp-token.php refuses to run"
+fi
+rand12() { openssl rand -hex 6; }
+mint_in() { # user [scopes-json] [sub]
+  printf '{"action":"mint","user":"%s","sub":"%s","instance":"nextcloud","companion":"nextcloud","name":"portcullis-ai-%s","mode":"read_write","scopes":%s}' "$1" "${3:-$(python3 -c 'import uuid; print(uuid.uuid4())')}" "$(rand12)" "${2:-[]}"
+}
+# basic_cfg USER PASSWORD: a curl config (stdin) with the credential, never argv.
+basic_cfg() { printf 'user = "%s:%s"\n' "$1" "$2"; }
+# ocs_as USER CRED: HTTP code of /ocs/v2.php/cloud/user; body in $TMP/body.
+ocs_as() {
+  basic_cfg "$1" "$2" | curl --config - -s -o "$TMP/body" -w '%{http_code}' -H 'OCS-APIRequest: true' \
+    "http://${NC_IP}/ocs/v2.php/cloud/user?format=json" || echo 000
+}
+dav_put() { # USER CRED NAME CONTENT
+  printf '%s' "$4" > "$TMP/put"
+  basic_cfg "$1" "$2" | curl --config - -s -o /dev/null -w '%{http_code}' -T "$TMP/put" \
+    "http://${NC_IP}/remote.php/dav/files/$1/$3" || echo 000
+}
+ai_tokens() { # USER: number of portcullis-ai-* app passwords
+  occ user:auth-tokens:list --output=json -- "$1" | jq '[.[] | select(.name | startswith("portcullis-ai-"))] | length'
+}
+
+# People as the template's OIDC login creates them (user_oidc backend,
+# uid = preferred_username); no SSO in a shell test, so the rows go into
+# user_oidc's table directly.
+for u in alice bob; do
+  docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
+    $st = $db->prepare("INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)"); exit($st->execute([$argv[1], ucfirst($argv[1])]) ? 0 : 1);' "$u"
+done
+if [ "$(occ user:info --output=json alice | jq -r '.backend + "|" + .user_id')" = 'user_oidc|alice' ]; then
+  pass "alice and bob are user_oidc accounts"
+else
+  fail "test people not created as user_oidc accounts"
+fi
+
+declare -A CRED ID
+for u in alice bob; do
+  if OUT=$(mint_in "$u" | hook mint) && CRED[$u]=$(jq -er '.credential' <<<"$OUT") && ID[$u]=$(jq -er '.id' <<<"$OUT") \
+    && [ "$(jq -r 'keys | join(",")' <<<"$OUT")" = "credential,id" ] && [[ "${CRED[$u]}" =~ ^[A-Za-z0-9]{72}$ ]]; then
+    pass "mint for $u -> {credential, id} (id ${ID[$u]})"
+  else
+    fail "mint for $u failed"; CRED[$u]=x; ID[$u]=0
+  fi
+done
+NAME=$(occ user:auth-tokens:list --output=json -- alice | jq -r --arg id "${ID[alice]}" '.[] | select((.id | tostring) == $id) | .name')
+[[ "$NAME" =~ ^portcullis-ai-[a-z0-9]{12}$ ]] && pass "the app password is named $NAME in Nextcloud" || fail "alice's app password ${ID[alice]} is named '$NAME'"
+CODE=$(ocs_as alice "${CRED[alice]}")
+if [ "$CODE" = 200 ] && [ "$(jq -r .ocs.data.id "$TMP/body")" = alice ]; then
+  pass "the credential authorizes as alice (Basic alice:<app password>)"
+else
+  fail "the minted credential: OCS -> $CODE $(head -c 200 "$TMP/body")"
+fi
+CODE=$(ocs_as bob "${CRED[alice]}")
+[ "$CODE" = 401 ] && pass "alice's app password with the username bob -> 401" || fail "alice's app password as bob: $CODE"
+for u in alice bob; do
+  CODE=$(dav_put "$u" "${CRED[$u]}" "$u-secret.txt" "private to $u")
+  [ "$CODE" = 201 ] || [ "$CODE" = 204 ] || fail "uploading $u's file: HTTP $CODE"
+done
+
+set +e; mint_in nobody | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 3 ] && pass "mint for a person without a Nextcloud account -> exit 3" || fail "mint for nobody: exit $RC, want 3"
+set +e; mint_in '-help' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 3 ] && pass "mint for a name that can't be a uid -> exit 3" || fail "mint for '-help': exit $RC, want 3"
+set +e; mint_in ALICE | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 3 ] && pass "mint for another spelling of alice -> exit 3 (uid must match exactly)" || fail "mint for ALICE: exit $RC, want 3"
+set +e; mint_in ci-local | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint for a local (non-OIDC) account refused (exit $RC)" || fail "mint for ci-local: exit $RC"
+set +e; mint_in alice '["files"]' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint with scopes refused (exit $RC)" || fail "mint with scopes: exit $RC"
+set +e; printf '{"action":"mint","user":"alice"}' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "malformed mint input refused (exit $RC)" || fail "malformed mint input: exit $RC"
+set +e; printf '{"action":"mint","user":"alice","instance":"nextcloud","companion":"nextcloud","name":"portcullis-ai-%s","mode":"read_write","scopes":[]}' "$(rand12)" | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint without a sub refused (exit 1)" || fail "mint without a sub: exit $RC, want 1"
+set +e; mint_in alice '[]' 'NOT-A-KEYCLOAK-ID' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint with a sub that isn't a Keycloak id refused (exit 1)" || fail "mint with a malformed sub: exit $RC, want 1"
+set +e; printf '{"action":"revoke","user":"nobody","ids":[]}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 0 ] && pass "revoke for a person without an account -> exit 0" || fail "revoke for nobody: exit $RC"
+set +e; printf '{"action":"revoke","user":"alice","ids":[7]}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && pass "revoke with a numeric (not string) id refused" || fail "revoke with ids [7] accepted"
+
+# Fail closed, with a stand-in occ (a copy of the hook pointing at it):
+#   fail-info:  user:info fails -> mint and revoke exit 1 (not 3, not "revoked")
+#   fail-list:  the id lookup after add fails -> exit 1 and the new app
+#               password is deleted again
+docker exec -u www-data "$C" sh -ec '
+  mkdir -p /tmp/stub
+  sed "s|^const OCC = .*|const OCC = \"/tmp/stub/occ\";|" /portcullis/mcp-token.php > /tmp/stub/hook.php
+  cat > /tmp/stub/occ <<"PHP"
+<?php
+$a = array_slice($argv, 1);
+$mode = trim((string) @file_get_contents("/tmp/stub/mode"));
+if ($mode === "fail-info" && in_array("user:info", $a, true)) { fwrite(STDERR, "simulated failure\n"); exit(2); }
+if (in_array("user:auth-tokens:add", $a, true)) { touch("/tmp/stub/added"); }
+if ($mode === "fail-list" && in_array("user:auth-tokens:list", $a, true) && file_exists("/tmp/stub/added")) {
+  unlink("/tmp/stub/added"); fwrite(STDERR, "simulated failure\n"); exit(2);
+}
+chdir("/var/www/html");
+$p = proc_open(array_merge([PHP_BINARY, "/var/www/html/occ"], $a), [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes);
+exit(proc_close($p));
+PHP'
+stub_hook() { docker exec -i -u www-data "$C" sh -c 'printf %s "$1" > /tmp/stub/mode; rm -f /tmp/stub/added; exec php /tmp/stub/hook.php "$2"' sh "$1" "$2"; }
+set +e; printf '{"action":"revoke","user":"alice","ids":["%s"]}' "${ID[alice]}" | stub_hook fail-info revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ocs_as alice "${CRED[alice]}")" = 200 ]; then
+  pass "revoke while occ user:info fails -> exit $RC (not reported as revoked)"
+else
+  fail "revoke with a failing occ user:info: exit $RC, want non-zero"
+fi
+set +e; mint_in alice | stub_hook fail-info mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint while occ user:info fails -> exit $RC (not 3)" || fail "mint with a failing occ user:info: exit $RC"
+BEFORE=$(ai_tokens alice)
+set +e; mint_in alice | stub_hook fail-list mint > "$TMP/stub-out" 2>/dev/null; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$RC" != 3 ] && [ ! -s "$TMP/stub-out" ] && [ "$(ai_tokens alice)" = "$BEFORE" ]; then
+  pass "mint failing after occ created the app password -> exit $RC, nothing printed, the app password deleted again"
+else
+  fail "mint failing after add: exit $RC, $(ai_tokens alice) portcullis-ai-* tokens (before: $BEFORE)"
+fi
+docker exec -u www-data "$C" rm -rf /tmp/stub
+
+# A disabled account and a name user_oidc would store hashed: refused (1).
+docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
+  exit($db->prepare("INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)")->execute(["carol", "Carol"]) ? 0 : 1);'
+occ user:disable carol >/dev/null
+set +e; mint_in carol | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint for a disabled account -> exit 1" || fail "mint for disabled carol: exit $RC, want 1"
+LONG=$(printf 'a%.0s' $(seq 1 65))
+set +e; mint_in "$LONG" | hook mint > /dev/null 2> "$TMP/long-err"; RC=$?; set -e
+if [ "$RC" = 1 ] && grep -q 'longer than 64 characters' "$TMP/long-err"; then
+  pass "mint for a username over 64 characters -> exit 1 with a clear message"
+else
+  fail "mint for a 65-character username: exit $RC ($(head -c 200 "$TMP/long-err"))"
+fi
+# revoke fails while a requested id survives under another name (renamed by
+# the person); the app password keeps working, so it is never reported revoked.
+OUT=$(mint_in alice | hook mint); RCRED=$(jq -r .credential <<<"$OUT"); RID=$(jq -r .id <<<"$OUT")
+docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
+  exit($db->prepare("UPDATE oc_authtoken SET name = ? WHERE id = ?")->execute(["renamed-by-alice", (int) $argv[1]]) ? 0 : 1);' "$RID"
+set +e; printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$RID" | hook revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ocs_as alice "$RCRED")" = 200 ]; then
+  pass "revoke of an id renamed away from portcullis-ai-* -> exit $RC, not reported as revoked"
+else
+  fail "revoke of a renamed app password: exit $RC, want non-zero"
+fi
+occ user:auth-tokens:delete -- alice "$RID" >/dev/null
+
+# The companion (started with the template).
+MCP_IP=$(app_container_ip "$APP_ID" nextcloud-mcp)
+wait_for_url "http://${MCP_IP}:8000/health/live" 180 nextcloud-mcp || docker logs portcullis-nextcloud-mcp-1 2>&1 | tail -30
+# mcp_init USER CRED VERSION: initializes a session; its id in $TMP/sid, the
+# negotiated version printed. mcp USER CRED BODY: the JSON-RPC answer (SSE
+# or JSON); HTTP code in $TMP/mcpcode. An empty USER sends no credential.
+MCP_VERSION=2025-11-25
+mcp_post() {
+  printf '%s' "$3" > "$TMP/mcpreq"
+  local sid=(); [ -s "$TMP/sid" ] && sid=(-H "Mcp-Session-Id: $(cat "$TMP/sid")")
+  { [ -z "$1" ] || basic_cfg "$1" "$2"; } \
+    | curl --config - -s -D "$TMP/mcphdr" -o "$TMP/mcpout" -w '%{http_code}' -X POST "http://${MCP_IP}:8000/mcp" \
+      -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+      -H "MCP-Protocol-Version: $MCP_VERSION" ${sid[@]+"${sid[@]}"} --data-binary "@$TMP/mcpreq" > "$TMP/mcpcode" || echo 000 > "$TMP/mcpcode"
+  if grep -q '^data: ' "$TMP/mcpout"; then sed -n 's/^data: //p' "$TMP/mcpout" | tail -1; else cat "$TMP/mcpout"; fi
+}
+mcp_init() {
+  : > "$TMP/sid"
+  local r
+  r=$(mcp_post "$1" "$2" "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"$3\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ci\",\"version\":\"1\"}}}")
+  tr -d '\r' < "$TMP/mcphdr" | sed -n 's/^[Mm]cp-[Ss]ession-[Ii]d: //p' > "$TMP/sid"
+  MCP_VERSION=$3
+  mcp_post "$1" "$2" '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
+  jq -r '.result.protocolVersion // empty' <<<"$r" 2>/dev/null || true
+}
+mcp() { mcp_post "$@"; }
+# The manifest's protocol list must be exactly what the server negotiates.
+for v in $(yq -r '.ai.mcp[0].protocol[]' "$MANIFEST"); do
+  GOT=$(mcp_init alice "${CRED[alice]}" "$v")
+  [ "$GOT" = "$v" ] && pass "nextcloud-mcp speaks MCP $v" || fail "initialize with $v -> '$GOT'"
+done
+LS='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"nc_webdav_list_directory","arguments":{"path":"/"}}}'
+mcp_init alice "${CRED[alice]}" 2025-11-25 >/dev/null
+R=$(mcp alice "${CRED[alice]}" "$LS")
+if grep -q 'alice-secret.txt' <<<"$R" && ! grep -q 'bob-secret.txt' <<<"$R"; then
+  pass "nextcloud-mcp with alice's app password lists alice's files only (bob's absent)"
+else
+  fail "nextcloud-mcp list as alice: $(head -c 400 <<<"$R")"
+fi
+# The same session with bob's credential acts as bob (identity is the
+# request's Authorization, never the session).
+R=$(mcp bob "${CRED[bob]}" "$LS")
+if grep -q 'bob-secret.txt' <<<"$R" && ! grep -q 'alice-secret.txt' <<<"$R"; then
+  pass "the same session with bob's app password lists bob's files only"
+else
+  fail "nextcloud-mcp list as bob: $(head -c 400 <<<"$R")"
+fi
+mcp alice "${CRED[alice]}" '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > "$TMP/tools.json"
+# Path traversal with alice's credential never reaches bob's files.
+for p in ../bob/bob-secret.txt /../bob/bob-secret.txt ../../bob/files/bob-secret.txt ..%2Fbob%2Fbob-secret.txt; do
+  R=$(mcp alice "${CRED[alice]}" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"nc_webdav_read_file\",\"arguments\":{\"path\":\"$p\"}}}")
+  if ! grep -q 'private to bob' <<<"$R" && { jq -e '.error' <<<"$R" >/dev/null 2>&1 || jq -e '.result.isError == true' <<<"$R" >/dev/null 2>&1 || [ "$(cat "$TMP/mcpcode")" != 200 ]; }; then
+    pass "nc_webdav_read_file $p as alice -> an error, no content of bob's"
+  else
+    fail "path traversal $p as alice: $(head -c 300 <<<"$R")"
+  fi
+done
+R=$(mcp "" "" "$LS"); CODE=$(cat "$TMP/mcpcode")
+if [ "$CODE" = 401 ]; then
+  pass "nextcloud-mcp without a credential -> 401"
+elif jq -e '.error' <<<"$R" >/dev/null 2>&1; then
+  pass "nextcloud-mcp without a credential -> JSON-RPC error ($(jq -c '.error.code' <<<"$R"))"
+elif jq -e '.result.isError == true' <<<"$R" >/dev/null 2>&1 && ! grep -q 'alice-secret\|bob-secret' <<<"$R"; then
+  pass "nextcloud-mcp without a credential -> a tool error, no file ($(jq -r '.result.content[0].text' <<<"$R" | head -c 120))"
+else
+  fail "nextcloud-mcp without a credential: HTTP $CODE $(head -c 300 <<<"$R")"
+fi
+mcp alice "notTheAppPassword0000" "$LS" >/dev/null
+[ "$(cat "$TMP/mcpcode")" = 401 ] && pass "nextcloud-mcp: a credential Nextcloud rejects -> 401" || fail "nextcloud-mcp with a bad credential: HTTP $(cat "$TMP/mcpcode")"
+
+# Tool classes against the real tools.
+yq -o=json '.ai.mcp[0].tools' "$MANIFEST" > "$TMP/classes.json"
+if python3 - "$TMP/classes.json" "$TMP/tools.json" <<'PY'
+import fnmatch, json, sys
+c = json.load(open(sys.argv[1]))
+raw = json.load(open(sys.argv[2]))["result"]["tools"]
+tools = {t["name"].lower(): (t.get("annotations") or {}) for t in raw}
+schemas = {t["name"].lower(): (t.get("inputSchema") or {}) for t in raw}
+m = lambda pats, t: any(fnmatch.fnmatchcase(t, p.lower()) for p in pats)
+bad = []
+print("  INFO %d tools" % len(tools))
+for t, a in sorted(tools.items()):
+    print("  INFO   %s%s%s" % (t, " [readOnly]" if a.get("readOnlyHint") else "", " [destructive]" if a.get("destructiveHint") else ""))
+if not tools:
+    bad.append("no tools listed")
+for k in ("writes", "confirm", "never"):
+    for p in c[k]:
+        if not any(fnmatch.fnmatchcase(t, p.lower()) for t in tools):
+            bad.append("%s pattern %r matches no real tool" % (k, p))
+for t, a in tools.items():
+    if a.get("readOnlyHint") and m(c["writes"], t):
+        bad.append("read-only tool %s is matched by writes" % t)
+    if not a.get("readOnlyHint") and not m(c["writes"], t):
+        bad.append("tool %s (no readOnlyHint) is not in writes" % t)
+    if (a.get("destructiveHint") or "delete" in t) and not m(c["confirm"], t):
+        bad.append("tool %s (delete / destructiveHint) is not in confirm" % t)
+    props = (schemas.get(t) or {}).get("properties") or {}
+    if not a.get("readOnlyHint") and ({"attendees", "reminder_email", "reminders"} & set(props)) and not m(c["confirm"], t):
+        bad.append("tool %s can send mail (attendees / reminders) and is not in confirm" % t)
+# No sharing by the AI: never = exactly every sharing tool but delete.
+want_never = {"nc_share_create", "nc_share_create_public_link", "nc_share_update", "nc_share_list", "nc_share_get"}
+got_never = {t for t in tools if m(c["never"], t)}
+shares = {t for t in tools if t.startswith("nc_share_")}
+if got_never != want_never or shares - {"nc_share_delete"} != want_never:
+    bad.append("never matches %s, sharing tools %s; want never = %s" % (sorted(got_never), sorted(shares), sorted(want_never)))
+if "nc_share_delete" not in tools or m(c["never"], "nc_share_delete") or not m(c["confirm"], "nc_share_delete"):
+    bad.append("nc_share_delete must exist and be confirm, not never")
+for b in bad:
+    print("  FAIL " + b)
+sys.exit(1 if bad else 0)
+PY
+then
+  pass "tool classes match nextcloud-mcp's real tools (writes = no readOnlyHint, deletes and mail-sending tools confirmed, never = every sharing tool but delete)"
+else
+  fail "tool classes do not match nextcloud-mcp's tools (above)"
+fi
+
+# revoke: the app password is refused afterwards, by Nextcloud and through
+# the companion. Nextcloud's web process caches a valid token for up to 10 s
+# (PublicKeyTokenProvider TOKEN_CACHE_TTL, APCu, which occ can't clear).
+if printf '{"action":"revoke","user":"alice","ids":["%s"]}' "${ID[alice]}" | hook revoke \
+  && [ "$(ai_tokens alice)" = 0 ] && sleep 12 && [ "$(ocs_as alice "${CRED[alice]}")" = 401 ]; then
+  pass "revoke -> alice's app password deleted and refused (401)"
+else
+  fail "revoke: the credential still works or the hook failed"
+fi
+R=$(mcp alice "${CRED[alice]}" "$LS")
+# A refusal it really gave (HTTP 401/403, a JSON-RPC error or an isError
+# result), never an empty or failed exchange.
+if grep -q 'alice-secret.txt' <<<"$R"; then
+  fail "nextcloud-mcp still lists alice's files with the revoked app password"
+elif [[ $(cat "$TMP/mcpcode") == 40[13] ]] || jq -e '.error or .result.isError == true' <<<"$R" >/dev/null 2>&1; then
+  pass "nextcloud-mcp with the revoked app password lists nothing (HTTP $(cat "$TMP/mcpcode"), refused)"
+else
+  fail "nextcloud-mcp with the revoked app password: no refusal (HTTP $(cat "$TMP/mcpcode")): $(head -c 300 <<<"$R")"
+fi
+
+# revoke_all: every portcullis-ai-* app password of every person, nothing else.
+OWN=$(docker exec -u www-data "$C" php occ --no-interaction user:auth-tokens:add --name=bob-own -- bob | tail -1)
+OWN_ID=$(occ user:auth-tokens:list --output=json -- bob | jq -r '.[] | select(.name == "bob-own") | .id')
+set +e; printf '{"action":"revoke","user":"bob","ids":["%s"]}' "$OWN_ID" | hook revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ocs_as bob "$OWN")" = 200 ]; then
+  pass "revoke naming bob's own (non-AI) app password leaves it alone (exit $RC: the id survives)"
+else
+  fail "revoke of bob's own app password: exit $RC, OCS $(ocs_as bob "$OWN")"
+fi
+for _ in 1 2; do mint_in alice | hook mint >/dev/null; done
+set +e; printf '{"action":"revoke_all","prefix":"portcullis-"}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
+if [ "$RC" != 0 ] && [ "$(ai_tokens alice)" = 2 ]; then
+  pass "revoke_all with another prefix refused (exit $RC), nothing deleted"
+else
+  fail "revoke_all with prefix portcullis-: exit $RC"
+fi
+if printf '{"action":"revoke_all","prefix":"portcullis-ai-"}' | hook revoke; then
+  pass "revoke_all exited 0"
+else
+  fail "revoke_all failed"
+fi
+sleep 12  # Nextcloud's token cache (above)
+CB=$(ocs_as bob "${CRED[bob]}"); CS=$(ocs_as bob "$OWN")
+if [ "$(ai_tokens alice)" = 0 ] && [ "$(ai_tokens bob)" = 0 ] && [ "$CB" = 401 ] && [ "$CS" = 200 ]; then
+  pass "revoke_all: no portcullis-ai-* app password left (bob's refused); bob's own app password kept"
+else
+  fail "revoke_all: alice $(ai_tokens alice), bob $(ai_tokens bob) left; bob's AI credential $CB, own $CS"
+fi
+rm -rf "$TMP"
 
 section "Password login through Traefik"
 HOST="$PORTCULLIS_HOST_NEXTCLOUD"

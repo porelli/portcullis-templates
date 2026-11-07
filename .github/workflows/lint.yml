@@ -48,12 +48,16 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh .github/automerge/*.sh tests/sync/*.sh ./*/bin/*
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh ./*/bin/*
 
       # portcullis-sync (the file-sharing templates' converge script) with
       # stubbed Samba / account tools: no root, no Docker.
       - name: portcullis-sync unit tests
         run: bash tests/sync/test_portcullis_sync.sh
+
+      # grafana's trust.sh (the AI trust network allowlist) with a stubbed ip.
+      - name: grafana trust.sh unit tests
+        run: bash tests/trust/test_grafana_trust.sh
 
       # Dependabot auto-merge decisions (fake gh + fixtures, no network).
       - name: auto-merge tests

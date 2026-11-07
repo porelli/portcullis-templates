@@ -88,6 +88,8 @@ services:
       - gitea-data:/var/lib/gitea
       - gitea-config:/etc/gitea
       - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
+      # AI support: the mcp-mint / mcp-revoke hooks (manifest hooks).
+      - ./templates/gitea/portcullis/mcp-token.sh:/portcullis/mcp-token.sh:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -105,8 +107,12 @@ services:
       gitea-auth:
         condition: service_completed_successfully
     networks:
-      - default
-      - portcullis-proxy
+      # gitea-mcp calls Gitea under a default-only name: the service name
+      # is also an alias on portcullis-proxy, shared by every instance
+      # (and gitea-mcp is on portcullis-proxy while AI support is on).
+      default:
+        aliases: [gitea-internal]
+      portcullis-proxy: {}
     labels:
       traefik.enable: "true"
       # Native OIDC: no forward-auth, so git over HTTPS and the API work with
@@ -118,6 +124,32 @@ services:
       traefik.http.routers.gitea.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.gitea.service: gitea
       traefik.http.services.gitea.loadbalancer.server.port: "3000"
+    restart: unless-stopped
+
+  # AI support (manifest ai.mcp, contracts §3.2): the official Gitea MCP
+  # server (gitea.com/gitea/gitea-mcp), stateless Streamable HTTP. The
+  # Hub's override runs it (scale 1) only while the companion is on, puts
+  # it on portcullis-proxy under its alias and routes https://<host>/mcp
+  # to mcp-gate, which adds the person's own Gitea token (minted by
+  # portcullis/mcp-token.sh) as "Authorization: token …" to every request.
+  # No static token: without one it reaches Gitea anonymously, and Gitea
+  # shows nothing to anonymous callers (REQUIRE_SIGNIN_VIEW). Read-only
+  # mode also hides the write tools here (GITEA_READONLY); the token's
+  # scopes are read-only too. The image has no entrypoint (CMD only).
+  gitea-mcp:
+    image: docker.gitea.com/gitea-mcp-server:1.12.0@sha256:7abff2c58718f80fc777b9b1a04885332e182814921cc61967313eea4136c3b2
+    command: ["/app/gitea-mcp", "-t", "http", "--port", "8080", "-H", "http://gitea-internal:3000"]
+    environment:
+      GITEA_READONLY: ${PORTCULLIS_AI_READONLY_GITEA:-true}
+    # The image's healthcheck (gitea-mcp -healthcheck) needs /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 128
+    networks: [default]
     restart: unless-stopped
 
   # One-shot: database schema and the locked break-glass admin (setup.sh).

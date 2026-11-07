@@ -1,6 +1,9 @@
 services:
   dashboards:
     image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
+    # trust.sh adds the AI trust network (mcp-trust) to the allowlist below
+    # while AI support is on, then runs the image's /run.sh.
+    entrypoint: ["/bin/sh", "/portcullis/trust.sh"]
     environment:
       GF_AUTH_PROXY_ENABLED: "true"
       GF_AUTH_PROXY_HEADER_NAME: X-Forwarded-User
@@ -24,12 +27,22 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       # Only Traefik (static IP on portcullis-proxy, set by core) may assert
       # X-Forwarded-User; Grafana rejects the header from any other peer.
+      # While AI support is on, trust.sh adds mcp-trust's subnet (read from
+      # this container's interface; without the gateway and Grafana's own
+      # address): its only other member is the grafana-mcp companion.
       GF_AUTH_PROXY_WHITELIST: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_AI_ENABLED: ${PORTCULLIS_AI_ENABLED:-false}
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./templates/grafana/portcullis/trust.sh:/portcullis/trust.sh:ro
+    # Exactly these two networks (trust.sh tells them apart by Traefik's
+    # address). grafana-mcp reaches Grafana as dashboards-internal, a name
+    # only mcp-trust has (on portcullis-proxy every instance's service
+    # answers to "dashboards").
     networks:
-      - default
-      - portcullis-proxy
+      portcullis-proxy: {}
+      mcp-trust:
+        aliases: [dashboards-internal]
     labels:
       traefik.enable: "true"
       traefik.http.routers.grafana.rule: Host(`${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}`)
@@ -39,9 +52,52 @@ services:
       traefik.http.services.grafana.loadbalancer.server.port: "3000"
     restart: unless-stopped
 
+  # AI support (contracts §3.2, identity_headers): the official mcp-grafana.
+  # The gate calls it with the caller secret (MCP_GRAFANA_SERVER_TOKEN, read
+  # from the environment, never argv) plus the person's identity headers,
+  # which it forwards to Grafana over mcp-trust; Grafana trusts them from
+  # that network only (trust.sh). No service-account token, no URL override.
+  grafana-mcp:
+    image: grafana/mcp-grafana:2.2.0@sha256:697336440e34878f8e0b26a69675db8d7e97b4d0daec25ec5441c85ac6c60e81
+    entrypoint: ["/app/mcp-grafana"]
+    # --allowed-hosts "*": the gate's Host is the Hub's per-instance alias
+    # (a name compose.yml may not spell); every request needs the bearer
+    # secret anyway. --disable-api: grafana_api_request takes arbitrary
+    # request headers, which could set Grafana's role header.
+    command:
+      - -t
+      - streamable-http
+      - --address
+      - 0.0.0.0:8000
+      - --allowed-hosts
+      - "*"
+      - --disable-write=${PORTCULLIS_AI_READONLY_GRAFANA:-true}
+      - --disable-api
+      - --usage-stats=disabled
+    environment:
+      GRAFANA_URL: http://dashboards-internal:3000
+      # The person's username and Role setting, as group-gate sends them.
+      GRAFANA_FORWARD_HEADERS: X-Forwarded-User,X-Forwarded-Attr-Grafana-Role
+      MCP_GRAFANA_SERVER_TOKEN: ${MCP_GRAFANA_SERVER_TOKEN:?MCP_GRAFANA_SERVER_TOKEN must be set}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 128
+    # Its trust network only (contracts §3.2): while AI support is on the
+    # Hub's override also attaches it to the proxy network (the gate's alias).
+    networks: [mcp-trust]
+    restart: unless-stopped
+
 volumes:
   grafana-data: {}
 
 networks:
   portcullis-proxy:
     external: true
+  # The AI trust network: internal, project-scoped, members dashboards and
+  # grafana-mcp only (validate.py / the Hub refuse any other).
+  mcp-trust:
+    internal: true

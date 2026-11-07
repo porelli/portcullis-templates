@@ -66,7 +66,40 @@ auth:
     can run side by side (instances: multi). Upgrades: read the Home
     Assistant and hass-oidc-auth release notes; bump auth_oidc (version and
     SHA-256 in init.py) together with Home Assistant when upstream requires
-    it.
+    it. AI support: the built-in MCP Server integration, with Home Assistant
+    as its own OAuth server (people sign in through Portcullis); Home
+    Assistant applies its own rules and Portcullis doesn't log or confirm
+    its AI actions. Assist exposure is instance-wide, not a per-person
+    boundary: every person's MCP client sees and controls the same exposed
+    entities; the person's own account only decides attribution and
+    whether administrator-only actions are allowed. Turning AI support on
+    adds the integration with administrators-only off and the Assist API
+    only; turning it off removes it, and the homeassistant service's
+    entrypoint (portcullis/prestart.py) removes it again at every
+    container start while AI support is off. A Home Assistant administrator
+    can still add it by hand meanwhile: it then serves until the next
+    container start (a restart from Home Assistant's own UI restarts only
+    the process under s6 and doesn't run prestart.py). The AI hooks act as
+    "Portcullis hooks", a system user prestart.py provisions with a new
+    token at every container start: hidden from Settings > People, no
+    credential of any sign-in provider (it can't sign in), local_only
+    (Home Assistant then refuses its tokens from outside the local network,
+    which still includes the LAN, not only this container). Its token
+    lives in /config/.storage/auth, so instance backups carry it (rotated
+    at the next start after a restore). When a person leaves while their
+    account is matched, every Home Assistant refresh token of theirs ends
+    (web sessions, Companion apps, long-lived tokens, AI clients); the
+    account stays. The person is matched by the OIDC sub auth_oidc stored
+    when they first signed in (the Hub sends each Keycloak id it saw for
+    them), never by name: people can rename themselves. Someone the Hub
+    couldn't match (no LLDAP uuid or Keycloak id recorded) costs everyone's
+    AI client tokens of this instance when they leave, and their other
+    tokens stay until an administrator deactivates or deletes them in
+    Settings > People (the Hub lists them). An authorization code Home
+    Assistant issued just before someone left stays usable for its 10
+    minutes. Switching AI support on or off ends every OAuth client token
+    except Home Assistant's own web frontend and Companion apps; long-lived
+    tokens are kept.
 
 env:
   - key: HOMEASSISTANT_OIDC_SECRET
@@ -133,3 +166,49 @@ tests:
       equals: true
       wait: 20
     boot_timeout: 900
+
+# AI support (contracts §3.2, §15.5): Home Assistant's built-in MCP Server
+# integration at https://<host>/api/mcp, with Home Assistant as its own
+# OAuth authorization server (IndieAuth / client id metadata documents,
+# PKCE, no client secret); people sign in to it through Keycloak
+# (auth_oidc), so every tool call runs as that person's Home Assistant
+# account and sees only Assist-exposed entities. The gate is not in the
+# path. portcullis/mcp-hook.py (calls verified against 2026.10.4 in its
+# header) turns the integration on with "Require an administrator account"
+# off and the Assist API only, removes it when AI support is off, and ends
+# a person's Home Assistant refresh tokens when they leave.
+ai:
+  on_change: mcp-integration
+  mcp:
+    - name: homeassistant
+      label: Home Assistant
+      kind: builtin
+      service: homeassistant
+      port: 8123
+      path: /api/mcp
+      router: homeassistant          # people connect to https://<host>/api/mcp
+      upstream: official
+      source: https://www.home-assistant.io/integrations/mcp_server/
+      protocol: ["2025-11-25", "2025-06-18"]
+      modes: [read_write]
+      identity:
+        mode: app_oauth
+        revoke: mcp-revoke
+      aggregate: false
+
+# Hooks of the ai: block, in the homeassistant service (root, as the image
+# runs): REST and websocket calls to 127.0.0.1:8123 as the hook admin that
+# prestart.py provisions. Nothing they print is used.
+hooks:
+  - name: mcp-integration
+    service: homeassistant
+    user: root
+    command: [python3, -I, /portcullis/mcp-hook.py, on_change]
+    when: [ai]
+    timeout: 60s
+  - name: mcp-revoke
+    service: homeassistant
+    user: root
+    command: [python3, -I, /portcullis/mcp-hook.py, revoke]
+    when: [ai]
+    timeout: 120s

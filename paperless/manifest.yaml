@@ -148,3 +148,11 @@ tests:
     admin:
       json: {url: /api/ui_settings/, field: user.is_superuser, equals: true}
       wait: 30
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; community servers are small and not vetted by Portcullis"
+  alternative:
+    name: "nloui/paperless-mcp"
+    source: "https://github.com/nloui/paperless-mcp"
+    note: "community, 247★, last change Nov 2025, no licence file, API token (surveyed 2026-11-06)"

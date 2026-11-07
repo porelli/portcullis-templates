@@ -133,3 +133,16 @@ tests:
       wait: 30
     password: "Mattermost keeps its own account login behind the gateway (Team Edition has no usable SSO, see auth.notes)"
     boot_timeout: 900
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+# Surveyed 2026-11-06, mattermost-plugin-agents v2.12.0 (Apache-2.0 plus
+# Mattermost's source-available licence for its enterprise/ package): the
+# HTTP endpoint for external MCP clients (/plugins/mattermost-ai/mcp-server/mcp,
+# config MCP.EnablePluginServer) is gated on capability remote_mcp =
+# Enterprise (config/license_gates.go, docs/mcp_server.md), state-changing
+# tools on Enterprise too (enterprise/license.go). Per person it would be
+# sound (Mattermost authenticates the bearer PAT, the plugin acts with a
+# dedicated session of that user), but Team Edition can't lock usernames,
+# so no LLDAP username -> account mapping exists to mint a PAT for.
+ai:
+  unsupported: "The Agents plugin's MCP endpoint for AI clients needs a Mattermost Enterprise licence (this template runs Team Edition), and Team Edition lets people rename their accounts"

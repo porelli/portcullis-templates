@@ -52,6 +52,8 @@ tests:
       text: "{{username}}"
     admin:
       reach: /admin
+ai:
+  unsupported: test fixture
 """
 
 ROUTER = """\
@@ -547,6 +549,36 @@ class TestIdentityRules(Case):
                 with self.subTest(key=key, val=val):
                     errors, _ = self.run_template(env=ok + f'      VIKUNJA_AUTH_OPENID_PROVIDERS_MY_IDP_{key}: "{val}"\n')
                     self.assertError(errors, "Vikunja links OIDC logins")
+
+    def test_librechat_openid_only_and_group(self) -> None:
+        ok = ('      OPENID_SESSION_SECRET: x\n      ALLOW_EMAIL_LOGIN: "false"\n      ALLOW_REGISTRATION: "false"\n'
+              '      ALLOW_SHARED_LINKS_PUBLIC: "false"\n'
+              '      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n')
+        errors, _ = self.run_template(env=ok)
+        self.assertClean(errors)
+        for line, needle in (('      ALLOW_EMAIL_LOGIN: "false"\n', "ALLOW_EMAIL_LOGIN"),
+                             ('      ALLOW_REGISTRATION: "false"\n', "ALLOW_REGISTRATION"),
+                             ('      ALLOW_SHARED_LINKS_PUBLIC: "false"\n', "ALLOW_SHARED_LINKS_PUBLIC"),
+                             ('      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n', "OPENID_REQUIRED_ROLE")):
+            with self.subTest(dropped=needle):
+                errors, _ = self.run_template(env=ok.replace(line, ""))
+                self.assertError(errors, needle)
+        errors, _ = self.run_template(env=ok.replace("${PORTCULLIS_ACCESS_GROUP:-users_demo}", "users_demo"))
+        self.assertError(errors, "OPENID_REQUIRED_ROLE")
+
+    def test_librechat_waits_for_its_config(self) -> None:
+        image = "ghcr.io/librechat-ai/librechat:v0.8.8"
+        self.run_template()
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.assertError(self.recheck(), "rendered by the config one-shot")
+        self.rewrite_compose("services:\n", f"services:\n  config:\n    image: {image}@sha256:{'0' * 64}\n"
+                             "    restart: \"no\"\n")
+        self.assertFalse([e for e in self.recheck() if "config one-shot" in e])
+        self.assertError(self.recheck(), "only after config rendered")
+        self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy\n",
+                             "    depends_on:\n      config:\n        condition: service_completed_successfully\n"
+                             "    networks:\n      - default\n      - portcullis-proxy\n")
+        self.assertFalse([e for e in self.recheck() if "config" in e and "LibreChat" in e])
 
     def test_firefox_sync_routed_service_waits_for_the_allowlist(self) -> None:
         image = "ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0"
@@ -1185,7 +1217,7 @@ S_OIDC = S_HDR.replace("  method: header-auth\n", "  method: native-oidc\n").rep
               "redirect_uri: \"https://{{HOST_DEMO}}/cb\"}\nenv:\n", 1)
 S_FIREFOX = ("name: Firefox Sync\ndescription: Sync\nicon: \"x\"\ncategory: productivity\ntags: [sync]\ninstances: multi\n"
              "auth:\n  method: custom\n  sso: false\n  group_access: false\n  group_admin: false\n"
-             "  access_group: users_demo\n  notes: Mozilla accounts.\n")
+             "  access_group: users_demo\n  notes: Mozilla accounts.\nai:\n  unsupported: test fixture\n")
 S_FIREFOX_SETTINGS = """\
 settings:
   sections: [Accounts]
@@ -2843,6 +2875,8 @@ files:
   - {name: people, service: smb, mount: /portcullis/data, format: tsv}
 hooks:
   - {name: sync, service: smb, command: [/portcullis/portcullis-sync], when: [start, settings_change, membership_change, credential_change], timeout: 60s}
+ai:
+  unsupported: test fixture
 """
 FS_IMG = f"demo/smb:1.0.0@sha256:{S_DIGEST}"
 
@@ -3091,6 +3125,8 @@ hooks:
     command: [/portcullis/portcullis-sync]
     when: [start, settings_change, membership_change, credential_change]
     timeout: 60s
+ai:
+  unsupported: test fixture
 settings:
   sections: [Access, Backups, Network]
   options:
@@ -3240,7 +3276,7 @@ settings:
         self.assertIn("credential_change", v.HOOK_TRIGGERS)
         self.cases([
             ("credential_change only", only + s_opts(FS_CONNECT, FS_UID, FS_PS), FS_COMPOSE, "", ""),
-            ("unknown trigger", bad + s_opts(FS_CONNECT), FS_COMPOSE, "", 'when "credential" must be start, settings_change, membership_change or credential_change'),
+            ("unknown trigger", bad + s_opts(FS_CONNECT), FS_COMPOSE, "", 'when "credential" must be start, settings_change, membership_change, credential_change or ai'),
         ])
 
     def test_data_file_format(self) -> None:
@@ -3521,6 +3557,520 @@ settings:
         with open(os.path.join(root, "samba", "bin", "portcullis-sync"), "rb") as a, \
                 open(os.path.join(root, "timemachine", "bin", "portcullis-sync"), "rb") as b:
             self.assertEqual(a.read(), b.read(), "portcullis-sync differs between samba and timemachine")
+
+
+
+# ── AI support: the ai: block (contract §3.2, Hub ValidateAI) ──
+
+AI_UNSUP = "ai:\n  unsupported: test fixture\n"
+AI_HOOKS = ("hooks:\n"
+            "  - {name: mcp-mint, service: demo, command: [/mint], when: [ai]}\n"
+            "  - {name: mcp-revoke, service: demo, command: [/revoke], when: [ai]}\n"
+            "  - {name: apply, service: demo, command: [/apply], when: [start, settings_change]}\n")
+AI_MOTD = s_opts("{key: motd, label: Message of the day, type: string, max_len: 200, applies: live, delivery: [{hook: apply}]}")
+AI_MCP = """\
+ai:
+  mcp:
+    - name: demo
+      label: Demo
+      kind: companion
+      service: demo-mcp
+      port: 8080
+      router: demo
+      upstream: official
+      source: https://example.org/demo-mcp
+      protocol: ["2026-07-28", "2025-11-25"]
+      modes: [read_only, read_write]
+      default_mode: read_write
+      identity:
+        mode: app_token
+        format: "token {credential}"
+        mint: mcp-mint
+        revoke: mcp-revoke
+        scopes:
+          read_only: [read:repository]
+          read_write: [write:repository]
+      tools:
+        writes: ["create_*", "delete_*"]
+        confirm: ["delete_*", "repo_write:delete"]
+        never: []
+"""
+AI_COMPANION_SVC = (f"  demo-mcp:\n    image: demo/mcp:1.0.0@sha256:{S_DIGEST}\n    environment:\n"
+                    "      READONLY: ${PORTCULLIS_AI_READONLY_DEMO:-true}\n    networks: [default]\n")
+AI_HEADERS = """\
+ai:
+  mcp:
+    - name: wiki
+      label: Wiki
+      kind: builtin
+      service: demo
+      port: 80
+      path: /api/mcp
+      router: demo
+      public_path: /mcp
+      upstream: official
+      source: https://example.org/wiki
+      protocol: ["2025-06-18"]
+      modes: [read_only]
+      aggregate: false
+      identity:
+        mode: identity_headers
+        caller_secret: {env: DEMO_SECRET, header: X-Mcp-Secret, format: "{secret}"}
+"""
+AI_TRUST = AI_HEADERS.replace("kind: builtin\n      service: demo\n      port: 80\n      path: /api/mcp\n",
+                              "kind: companion\n      service: demo-mcp\n      port: 8000\n").replace(
+    "      aggregate: false\n", "").replace("caller_secret: {env: DEMO_SECRET,", "caller_secret: {env: DEMO_MCP_TOKEN,")
+AI_TRUST_NETS = "    networks:\n      portcullis-proxy: {}\n      mcp-trust:\n        aliases: [demo-internal]\n"
+AI_TRUST_SVC = (f"  demo-mcp:\n    image: demo/mcp:1.0.0@sha256:{S_DIGEST}\n    environment:\n"
+                "      TOKEN: ${DEMO_MCP_TOKEN:?DEMO_MCP_TOKEN must be set}\n    networks: [mcp-trust]\n")
+AI_OAUTH = """\
+hooks:
+  - {name: revoke-all, service: demo, command: [/revoke], when: [ai]}
+  - {name: toggle, service: demo, command: [/toggle], when: [ai]}
+ai:
+  on_change: toggle
+  mcp:
+    - name: oauth
+      label: OAuth App
+      kind: builtin
+      service: demo
+      path: /mcp
+      router: demo
+      upstream: official
+      source: https://example.org/oauth
+      protocol: ["2025-11-25"]
+      modes: [read_write]
+      identity: {mode: app_oauth, revoke: revoke-all}
+"""
+AI_CHAT = """\
+ai:
+  unsupported: "An AI page: the AI acts in other apps, not in this one"
+  chat:
+    provider_kinds: {openai_compatible: many, anthropic: one}
+    file: {service: demo, mount: /portcullis/ai}
+    env: {service: demo}
+"""
+AI_ALT = ('ai:\n  unsupported: "No official MCP server; community servers are small and not vetted by Portcullis"\n'
+          '  alternative: {name: plain-mcp, source: "https://example.org/plain-mcp", note: "community, 12 stars, API token per person"}\n')
+
+
+def ai_fixtures() -> dict:
+    """fixture -> (manifest, compose), each clean."""
+    oidc_clients = ('  - {client_id: demo, name: Demo, secret_env: DEMO_SECRET, redirect_uri: "https://{{HOST_DEMO}}/cb"}\n')
+    chat_m = S_OIDC.replace(oidc_clients, oidc_clients +
+                            '  - {client_id: demo-mcp, name: Demo MCP, secret_env: DEMO_MCP_SECRET, '
+                            'redirect_uri: "https://{{HOST_DEMO}}/api/mcp/callback", ai_client: true}\n', 1)
+    chat_m = chat_m.replace("env:\n", "env:\n  - key: DEMO_MCP_SECRET\n    description: secret\n    generate: random\n", 1)
+    chat_c = s_compose("      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", oidc=True)
+    return {
+        "unsupported": (S_HDR, s_compose()),
+        "alternative": (S_HDR.replace(AI_UNSUP, AI_ALT), s_compose()),
+        "companion": (S_HDR.replace(AI_UNSUP, AI_HOOKS + AI_MOTD + AI_MCP),
+                      s_compose("      DEMO_AI: ${PORTCULLIS_AI_ENABLED:-false}\n", services=S_INIT + AI_COMPANION_SVC)),
+        "headers": (S_HDR.replace(AI_UNSUP, AI_HEADERS).replace(
+            "env:\n", "env:\n  - key: PLAIN\n    description: plain\n", 1), s_compose("      PLAIN: ${PLAIN:-}\n")),
+        "oauth": (S_OIDC.replace(AI_UNSUP, AI_OAUTH), s_compose(oidc=True)),
+        "chat": (chat_m.replace(AI_UNSUP, AI_CHAT), chat_c),
+        "trust": (S_HDR.replace(AI_UNSUP, AI_TRUST).replace(
+            "env:\n", "env:\n  - key: DEMO_MCP_TOKEN\n    description: caller secret\n    generate: random\n", 1),
+                  s_compose(nets=AI_TRUST_NETS, services=S_INIT + AI_TRUST_SVC) + "  mcp-trust:\n    internal: true\n"),
+    }
+
+
+class AITests(Case):
+    """Hub internal/templates/ai_test.go (TestAI*, TestCompanionRules,
+    TestChatRules, TestAIClientFlag, TestHookAITrigger,
+    TestReservedMCPNames), row for row: every refusal the Hub makes at
+    discover is an error here naming the field."""
+    run_raw = TestSettingsV3.run_raw
+
+    def edit(self, text: str, pairs: List[str]) -> str:
+        for old, new in zip(pairs[::2], pairs[1::2]):
+            self.assertIn(old, text)
+            text = text.replace(old, new, 1)
+        return text
+
+    def rows(self, rows: List[Tuple[str, str, List[str], List[str], str]], app_id: str = "demo") -> None:
+        fx = ai_fixtures()
+        for name, fixture, medits, cedits, want in rows:
+            with self.subTest(name):
+                m, c = fx[fixture]
+                errors, _ = self.run_raw(self.edit(m, medits), self.edit(c, cedits), app_id)
+                if want == "":
+                    self.assertClean(errors)
+                else:
+                    self.assertError(errors, want)
+
+    def test_fixtures_are_clean(self) -> None:
+        self.rows([(f, f, [], [], "") for f in ai_fixtures()])
+
+    def test_trust_network(self) -> None:
+        """Hub TestTrustNetwork."""
+        comp = "    networks: [mcp-trust]\n"
+        self.rows([
+            ("companion on default", "trust", [], [comp, "    networks: [default]\n"], "exactly one network"),
+            ("companion on two networks", "trust", [], [comp, "    networks: [mcp-trust, default]\n"], "exactly one network"),
+            ("trust network not internal", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust: {}\n"], "exactly {internal: true}"),
+            ("trust network internal false", "trust", [], ["    internal: true\n", "    internal: false\n"], "exactly {internal: true}"),
+            ("trust network with ipam", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    ipam: {config: [{subnet: 10.0.0.0/8}]}\n"], "exactly {internal: true}"),
+            ("trust network with driver", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    driver: macvlan\n"], "exactly {internal: true}"),
+            ("trust network with driver_opts", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    driver_opts: {com.docker.network.bridge.inhibit_ipv4: \"true\"}\n"], "exactly {internal: true}"),
+            ("trust network with enable_ipv6", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    enable_ipv6: true\n"], "exactly {internal: true}"),
+            ("trust network with attachable", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    attachable: true\n"], "exactly {internal: true}"),
+            ("trust network with labels", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    labels: {a: b}\n"], "exactly {internal: true}"),
+            ("trust network with name", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    name: mcp-trust\n"], "exactly {internal: true}"),
+            ("trust network with external", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust:\n    internal: true\n    external: false\n"], "exactly {internal: true}"),
+            ("a third member", "trust", [], [comp, comp + "  other:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    networks: [mcp-trust]\n"],
+             "service other joins the trust network"),
+            ("app not on it", "trust", [], ["      mcp-trust:\n        aliases: [demo-internal]\n", ""], "must join the trust network"),
+            ("sharing the app's namespace", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: service:demo\n"],
+             "share an address on the trust network"),
+            ("pid of the app", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: service:demo\n"], "uses pid service:demo"),
+            ("pid of the companion", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: service:demo-mcp\n"], "uses pid service:demo-mcp"),
+            ("pid host", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    pid: host\n"], "uses pid host"),
+            ("caller secret in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    environment:\n      X: ${DEMO_MCP_TOKEN:-}\n"], "reads the caller secret DEMO_MCP_TOKEN"),
+            ("caller secret bare in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    command: [sh, -c, \"echo $DEMO_MCP_TOKEN\"]\n"], "reads the caller secret DEMO_MCP_TOKEN"),
+            ("caller secret nested in another service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    environment:\n      X: ${OTHER:-${DEMO_MCP_TOKEN}}\n"], "reads the caller secret DEMO_MCP_TOKEN"),
+            ("a host-network service", "trust", [], [comp, comp + "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: host\n"],
+             "uses network_mode host: not allowed next to an identity_headers companion"),
+            ("a host-network service next to a builtin identity_headers companion", "headers", [],
+             ["  init:\n", "  side:\n    image: x/y:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: host\n  init:\n"], "uses network_mode host"),
+            ("-internal alias on an internal network with ipam", "trust", [], ["  mcp-trust:\n    internal: true\n",
+             "  mcp-trust:\n    internal: true\n    ipam: {config: [{subnet: 10.9.0.0/24}]}\n"], "ends in -internal"),
+            ("-internal alias on a plain network", "trust", [], ["  mcp-trust:\n    internal: true\n", "  mcp-trust: {}\n"], "ends in -internal"),
+        ])
+
+    def test_ai_required(self) -> None:
+        long = "x" * 201
+        self.rows([
+            ("no block", "unsupported", [AI_UNSUP, ""], [], "'ai' is a required property"),
+            ("neither", "unsupported", [AI_UNSUP, "ai: {}\n"], [], "ai: required (ai.mcp or ai.unsupported)"),
+            ("both", "companion", ["ai:\n", "ai:\n  unsupported: no\n"], [], "ai: either ai.mcp or ai.unsupported, not both"),
+            ("empty unsupported", "unsupported", ["unsupported: test fixture", 'unsupported: ""'], [], "ai.unsupported must be one line"),
+            ("201 chars", "unsupported", ["unsupported: test fixture", "unsupported: " + long], [], "ai.unsupported must be one line of 1–200"),
+            ("two lines", "unsupported", ["unsupported: test fixture", 'unsupported: "a\\nb"'], [], "ai.unsupported"),
+            ("control char", "unsupported", ["unsupported: test fixture", 'unsupported: "No MCP\\a server"'], [], "ai.unsupported"),
+            ("line separator", "unsupported", ["unsupported: test fixture", 'unsupported: "No MCP\\u2028server"'], [], "ai.unsupported"),
+            ("empty mcp list", "unsupported", [AI_UNSUP, "ai:\n  mcp: []\n"], [], "ai.mcp: list at least one companion"),
+            ("unknown key", "unsupported", ["ai:\n", "ai:\n  bogus: 1\n"], [], "bogus"),
+            ("200 runes ok", "unsupported", ["unsupported: test fixture", "unsupported: " + "é" * 200], [], ""),
+        ])
+
+    def test_alternative_rules(self) -> None:
+        self.rows([
+            ("alternative with mcp", "companion", ["ai:\n", 'ai:\n  alternative: {name: x, source: "https://example.org", note: y}\n'], [],
+             "ai.alternative is only allowed with ai.unsupported"),
+            ("alternative without source", "alternative", ['source: "https://example.org/plain-mcp", ', ""], [], "source"),
+            ("alternative http source", "alternative", ['"https://example.org/plain-mcp"', '"http://example.org/plain-mcp"'], [], "ai.alternative.source"),
+            ("alternative bad escape", "alternative", ['"https://example.org/plain-mcp"', '"https://x/%zz"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative trailing %", "alternative", ['"https://example.org/plain-mcp"', '"https://x/%"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative escape in host", "alternative", ['"https://example.org/plain-mcp"', '"https://ex%41mple.com/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative non-numeric port", "alternative", ['"https://example.org/plain-mcp"', '"https://example.com:abc/x"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative doubled port", "alternative", ['"https://example.org/plain-mcp"', '"https://x:80:80/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative userinfo", "alternative", ['"https://example.org/plain-mcp"', '"https://u:p@example.org/"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative empty host", "alternative", ['"https://example.org/plain-mcp"', '"https:///x"'], [], "ai.alternative.source must be an https:// URL"),
+            ("alternative port, query, escape, IPv6 ok", "alternative", ['"https://example.org/plain-mcp"', '"https://[::1]:8443/a%2Fb?q=1#f"'], [], ""),
+        ] + [
+            (f"alternative host with {ch}", "alternative", ['"https://example.org/plain-mcp"', f'"https://exa{ch}mple.org/"'], [], "ai.alternative.source must be an https:// URL")
+            for ch in ("|", "{", "^", "`")
+        ] + [
+            ("companion source bad escape", "companion", ["https://example.org/demo-mcp", "https://x/%zz"], [], "ai.mcp[demo]: source must be an https:// URL"),
+            ("alternative long name", "alternative", ["name: plain-mcp", "name: " + "n" * 65], [], "ai.alternative.name"),
+            ("alternative long note", "alternative", ['note: "community, 12 stars, API token per person"', "note: " + "n" * 201], [], "ai.alternative.note"),
+            ("on_change with unsupported", "unsupported", ["ai:\n", "ai:\n  on_change: x\n"], [], "ai.on_change is only allowed with ai.mcp"),
+            ("chat with mcp", "companion", ["ai:\n", "ai:\n  chat: {provider_kinds: {openai: one}, file: {service: demo, mount: /x}, env: {service: demo}}\n"], [],
+             "ai.chat is only allowed with ai.unsupported"),
+        ])
+
+    def test_companion_rules(self) -> None:
+        comp = "companion"
+        other_builtin = ('  mcp:\n    - {name: other, label: O, kind: builtin, service: demo, port: 80, router: demo, public_path: /mcp/other, '
+                         'upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], '
+                         'identity: {mode: app_token, format: "Bearer {credential}", mint: mcp-mint, revoke: mcp-revoke}}\n')
+        self.rows([
+            ("source missing", comp, ["      source: https://example.org/demo-mcp\n", ""], [], "'source' is a required property"),
+            ("source http", comp, ["https://example.org/demo-mcp", "http://example.org/demo-mcp"], [], "ai.mcp[demo]: source must be an https:// URL"),
+            ("name Gitea", comp, ["- name: demo\n", "- name: Gitea\n"], [], "ai.mcp[0]: name"),
+            ("name --", comp, ["- name: demo\n", "- name: a--b\n"], [], "ai.mcp[0]: name"),
+            ("name 32 chars", comp, ["- name: demo\n", "- name: " + "a" * 32 + "\n"], [], "ai.mcp[0]: name"),
+            ("duplicate name", "headers", ["  mcp:\n", '  mcp:\n    - {name: wiki, label: W, kind: builtin, service: demo, port: 1, router: demo, public_path: /other, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_only], aggregate: false, identity: {mode: identity_headers, caller_secret: {env: DEMO_SECRET}}}\n'], [],
+             "ai.mcp[wiki]: name declared twice"),
+            ("label empty", comp, ["      label: Demo\n", '      label: ""\n'], [], "ai.mcp[demo]: label"),
+            ("bad kind", comp, ["kind: companion", "kind: sidecar"], [], "ai.mcp.0.kind: 'sidecar' is not one of ['companion', 'builtin']"),
+            ("service not in compose", comp, ["service: demo-mcp", "service: nope"], [], "ai.mcp[demo]: service nope is not in compose.yml"),
+            ("service shape", comp, ["service: demo-mcp", "service: demo_mcp"], ["  demo-mcp:\n", "  demo_mcp:\n"], "ai.mcp[demo]: service demo_mcp must match"),
+            ("companion service twice", comp, ["  mcp:\n", '  mcp:\n    - {name: other, label: O, kind: companion, service: demo-mcp, port: 8080, router: demo, public_path: /other, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], identity: {mode: app_token, format: "Bearer {credential}", mint: mcp-mint, revoke: mcp-revoke}}\n'], [],
+             "companion service demo-mcp already backs companion other"),
+            ("companion with traefik label", comp, [], ["    networks: [default]\n", "    networks: [default]\n    labels:\n      traefik.enable: \"false\"\n"],
+             "ai.mcp[demo]: companion service demo-mcp may have no traefik.* label"),
+            ("companion on portcullis-proxy", comp, [], ["    networks: [default]\n", "    networks: [default, portcullis-proxy]\n"],
+             "ai.mcp[demo]: companion service demo-mcp may not join portcullis-proxy"),
+            ("companion with container_name", comp, [], ["    networks: [default]\n", "    networks: [default]\n    container_name: mcpbox\n"],
+             "ai.mcp[demo]: companion service demo-mcp may not set container_name"),
+            ("companion with hostname", comp, [], ["    networks: [default]\n", "    networks: [default]\n    hostname: mcpbox\n"],
+             "ai.mcp[demo]: companion service demo-mcp may not set hostname"),
+            ("companion with network_mode", comp, [], ["    networks: [default]\n", "    network_mode: none\n"],
+             "ai.mcp[demo]: companion service demo-mcp may not set network_mode"),
+            ("service in the companion's namespace", comp, [], [S_INIT, S_INIT + "    network_mode: service:demo-mcp\n"],
+             "ai.mcp[demo]: service init uses network_mode service:demo-mcp"),
+            ("builtin namespace ok", "headers", [], ["  init:\n    image: demo/init:1.0.0@sha256:" + S_DIGEST + "\n",
+                                                     "  init:\n    image: demo/init:1.0.0@sha256:" + S_DIGEST + "\n    network_mode: service:demo\n"], ""),
+            ("companion publishes ports", comp, [], ["    networks: [default]\n", "    networks: [default]\n    ports: [\"8080:8080\"]\n"],
+             "ai.mcp[demo]: companion service demo-mcp may not publish ports"),
+            ("companion image unpinned", comp, [], [f"demo/mcp:1.0.0@sha256:{S_DIGEST}", "demo/mcp:1.0.0"], "sha256"),
+            ("port 0", comp, ["port: 8080", "port: 0"], [], "ai.mcp[demo]: port 0 must be 1–65535"),
+            ("port missing", comp, ["      port: 8080\n", ""], [], "ai.mcp[demo]: port 0 must be 1–65535"),
+            ("path relative", comp, ["      router: demo\n", "      router: demo\n      path: mcp\n"], [], "ai.mcp[demo]: path"),
+            ("path query", comp, ["      router: demo\n", "      router: demo\n      path: /mcp?x\n"], [], "ai.mcp[demo]: path"),
+            ("router not a host router", comp, ["router: demo", "router: nope"], [], "ai.mcp[demo]: router \"nope\" is not a host router"),
+            ("router a path router", comp, ["router: demo", "router: demo-api"],
+             ["      traefik.http.services.demo", "      traefik.http.routers.demo-api.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/api`)\n"
+              "      traefik.http.routers.demo-api.entrypoints: websecure\n      traefik.http.routers.demo-api.tls.options: authaware@file\n"
+              "      traefik.http.routers.demo-api.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file\n"
+              "      traefik.http.services.demo"],
+             "ai.mcp[demo]: router \"demo-api\" is not a host router"),
+            ("public_path /", comp, ["      router: demo\n", "      router: demo\n      public_path: /\n"], [], "ai.mcp[demo]: public_path \"/\""),
+            ("public_path well-known", comp, ["      router: demo\n", "      router: demo\n      public_path: /.well-known/x\n"], [],
+             "ai.mcp[demo]: public_path /.well-known/x may not be at or under /.well-known/"),
+            ("public_path oauth2", comp, ["      router: demo\n", "      router: demo\n      public_path: /oauth2/x\n"], [],
+             "ai.mcp[demo]: public_path /oauth2/x may not be at or under /oauth2/"),
+            ("public_path unclean", comp, ["      router: demo\n", "      router: demo\n      public_path: /a/../mcp\n"], [], "ai.mcp[demo]: public_path"),
+            ("public_path under public access", comp, [
+                "  admin_group: admin_demo\n", "  admin_group: admin_demo\n  public_access:\n    default_mode: links\n    enabled_by_default: false\n"
+                "    paths:\n      - {prefix: \"/s/{token}\", description: Shares}\n    token_pattern: '^[A-Za-z0-9]{16}$'\n",
+                "      router: demo\n", "      router: demo\n      public_path: /s/mcp\n"], [],
+             "ai.mcp[demo]: public_path /s/mcp overlaps the auth.public_access path /s"),
+            ("nested public_path", comp, ["  mcp:\n", other_builtin], [], "overlaps companion"),
+            ("same public_path twice", comp, ["  mcp:\n", other_builtin.replace("public_path: /mcp/other, ", "")], [],
+             "ai.mcp[demo]: endpoint path (public_path, or path for app_oauth) /mcp on router demo overlaps companion other's /mcp"),
+            ("app_oauth path vs public_path", "oauth", ["  mcp:\n", '  mcp:\n    - {name: tok, label: T, kind: builtin, service: demo, port: 8080, router: demo, public_path: /mcp, upstream: official, source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], identity: {mode: app_token, format: "Bearer {credential}", mint: revoke-all, revoke: toggle}}\n', "  on_change: toggle\n", ""], [],
+             "overlaps companion"),
+            ("on_change hook not ai", "oauth", ["{name: toggle, service: demo, command: [/toggle], when: [ai]}", "{name: toggle, service: demo, command: [/toggle], when: [settings_change]}"], [],
+             "ai.on_change: hook toggle must have exactly when: [ai]"),
+            ("on_change hook missing", "oauth", ["  on_change: toggle\n", "  on_change: nope\n"], [], "ai.on_change: hook nope is not declared in hooks"),
+            ("mint hook missing", comp, ["mint: mcp-mint", "mint: nope"], [], "ai.mcp[demo]: identity.mint: hook nope is not declared in hooks"),
+            ("mint hook not ai", comp, ["mint: mcp-mint", "mint: apply"], [], "ai.mcp[demo]: identity.mint: hook apply must have exactly when: [ai]"),
+            ("hook ai plus another", comp, ["command: [/mint], when: [ai]", "command: [/mint], when: [ai, start]"], [], "hooks[mcp-mint]: when: ai can't be combined"),
+            ("ai hook nobody names", comp, ["  - {name: apply,", "  - {name: stray, service: demo, command: [/s], when: [ai]}\n  - {name: apply,"], [],
+             "hooks[stray]: when: [ai] but no ai: field names it"),
+            ("ai hook in an unsupported template", "unsupported", [AI_UNSUP, AI_UNSUP + "hooks:\n  - {name: stray, service: demo, command: [/s], when: [ai]}\n"], [],
+             "hooks[stray]: when: [ai] but no ai: field names it"),
+            ("app_oauth companion kind", "oauth", ["kind: builtin", "kind: companion"], [], "ai.mcp[oauth]: app_oauth needs kind builtin"),
+            ("app_oauth without revoke", "oauth", ["identity: {mode: app_oauth, revoke: revoke-all}", "identity: {mode: app_oauth}"], [], "identity.revoke"),
+            ("app_oauth read_only", "oauth", ["modes: [read_write]", "modes: [read_only, read_write]\n      default_mode: read_write"], [], "ai.mcp[oauth]: an app_oauth companion's modes are exactly [read_write]"),
+            ("app_oauth aggregate", "oauth", ["modes: [read_write]", "modes: [read_write]\n      aggregate: true"], [], "ai.mcp[oauth]: aggregate: true is refused"),
+            ("app_oauth public_path", "oauth", ["      path: /mcp\n", "      path: /mcp\n      public_path: /x\n"], [], "ai.mcp[oauth]: public_path is refused on an app_oauth companion"),
+            ("app_oauth extra key", "oauth", ["identity: {mode: app_oauth, revoke: revoke-all}", 'identity: {mode: app_oauth, revoke: revoke-all, format: "Bearer {credential}"}'], [],
+             "ai.mcp[oauth]: identity.format is not a parameter of mode app_oauth"),
+            ("identity_headers without caller_secret", "headers", ['        caller_secret: {env: DEMO_SECRET, header: X-Mcp-Secret, format: "{secret}"}\n', ""], [],
+             "ai.mcp[wiki]: identity_headers needs identity.caller_secret"),
+            ("identity_headers with mint", "headers", ["        mode: identity_headers\n", "        mode: identity_headers\n        mint: x\n"], [],
+             "ai.mcp[wiki]: identity.mint is not a parameter of mode identity_headers"),
+            ("caller_secret env not random", "headers", ["env: DEMO_SECRET,", "env: PLAIN,"], [], "ai.mcp[wiki]: identity.caller_secret.env \"PLAIN\" must be an env entry with generate: random"),
+            ("caller_secret env undeclared", "headers", ["env: DEMO_SECRET,", "env: NOPE,"], [], "generate: random"),
+            ("caller_secret format", "headers", ['format: "{secret}"', 'format: "{secret} {secret}"'], [], "ai.mcp[wiki]: identity.caller_secret.format"),
+        ] + [
+            (f"caller_secret header {h}", "headers", ["header: X-Mcp-Secret", f"header: {h}"], [], "ai.mcp[wiki]: identity.caller_secret.header")
+            for h in ("Cookie", "content-length", "Transfer-Encoding", "CONNECTION", "te", "Upgrade", "Keep-Alive", "Trailer",
+                      "proxy-connection", "x-forwarded-user", "X-Auth-Request-User", "Remote-User", "X-Portcullis-Secret", "Mcp-Session-Id",
+                      "Mcp-Method", "MCP-Protocol-Version", "Host", "Accept", "Content-Type", "Proxy-Authorization", "Bad_Header")
+        ] + [
+            ("app_token header Upgrade", comp, ['format: "token {credential}"', 'header: Upgrade\n        format: "token {credential}"'], [], "ai.mcp[demo]: identity.header"),
+            ("app_token header ok", comp, ['format: "token {credential}"', 'header: X-Api-Key\n        format: "token {credential}"'], [], ""),
+            ("app_token without mint", comp, ["        mint: mcp-mint\n", ""], [], "ai.mcp[demo]: identity.mint (a hook) is required for app_token"),
+            ("app_token without revoke", comp, ["        revoke: mcp-revoke\n", ""], [], "ai.mcp[demo]: identity.revoke (a hook) is required for app_token"),
+            ("app_token bad format", comp, ['format: "token {credential}"', 'format: "{credential}"'], [], "ai.mcp[demo]: identity.format"),
+            ("app_token neither format nor basic", comp, ['        format: "token {credential}"\n', ""], [], "ai.mcp[demo]: identity: app_token needs format or basic"),
+            ("app_token format and basic", comp, ['format: "token {credential}"', 'format: "token {credential}"\n        basic: {user: "{username}", password: "{credential}"}'], [],
+             "ai.mcp[demo]: identity: exactly one of format and basic"),
+            ("app_token basic ok", comp, ['format: "token {credential}"', 'basic: {user: "{username}", password: "{credential}"}'], [], ""),
+            ("app_token basic password", comp, ['format: "token {credential}"', 'basic: {user: "{username}", password: "x"}'], [], "ai.mcp[demo]: identity.basic.password"),
+            ("app_token basic user colon", comp, ['format: "token {credential}"', 'basic: {user: "a:b", password: "{credential}"}'], [], "ai.mcp[demo]: identity.basic.user"),
+            ("app_token caller_secret", comp, ["        mint: mcp-mint\n", "        mint: mcp-mint\n        caller_secret: {env: X}\n"], [],
+             "ai.mcp[demo]: identity.caller_secret is not a parameter of mode app_token"),
+            ("scopes key not a mode", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: [read_write]"], [], "ai.mcp[demo]: identity.scopes key \"read_only\""),
+            ("bad identity mode", comp, ["mode: app_token", "mode: shared_admin"], [], "ai.mcp.0.identity.mode: 'shared_admin' is not one of"),
+            ("modes empty", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: []"], [], "ai.mcp[demo]: modes"),
+            ("modes repeat", comp, ["modes: [read_only, read_write]", "modes: [read_write, read_write]"], [], "ai.mcp[demo]: modes"),
+            ("modes unknown", comp, ["modes: [read_only, read_write]", "modes: [read_only, admin]"], [], "ai.mcp.0.modes.1: 'admin' is not one of ['read_only', 'read_write']"),
+            ("default_mode not in modes", comp, ["modes: [read_only, read_write]\n      default_mode: read_write", "modes: [read_only]\n      default_mode: read_write"], [],
+             "ai.mcp[demo]: default_mode \"read_write\" is not one of modes"),
+            ("default_mode missing with two", comp, ["      default_mode: read_write\n", ""], [], "ai.mcp[demo]: default_mode is required when modes has two entries"),
+            ("community builtin", "headers", ["upstream: official", "upstream: community"], [], "ai.mcp[wiki]: upstream community with kind builtin"),
+            ("community companion ok", comp, ["upstream: official", "upstream: community"], [], ""),
+            ("upstream missing", comp, ["      upstream: official\n", ""], [], "'upstream' is a required property"),
+            ("protocol empty", comp, ['protocol: ["2026-07-28", "2025-11-25"]', "protocol: []"], [], "ai.mcp[demo]: protocol must list at least one"),
+            ("protocol unknown", comp, ['protocol: ["2026-07-28", "2025-11-25"]', 'protocol: ["2024-11-05"]'], [], "ai.mcp.0.protocol.0: '2024-11-05' is not one of"),
+            ("protocol twice", comp, ['protocol: ["2026-07-28", "2025-11-25"]', 'protocol: ["2025-11-25", "2025-11-25"]'], [], "ai.mcp[demo]: protocol \"2025-11-25\" must be one of"),
+            ("tool pattern", comp, ['writes: ["create_*", "delete_*"]', 'writes: ["create *"]'], [], "ai.mcp[demo]: tools.writes pattern"),
+            ("too many tool patterns", comp, ['never: []', "never: [" + ", ".join(f"t{i}" for i in range(257)) + "]"], [], "ai.mcp[demo]: tools.never lists more than 256"),
+            ("admin_paths", comp, ["  admin_group: admin_demo\n", "  admin_group: admin_demo\n  admin_paths: [/admin]\n"],
+             ["      traefik.http.services.demo", "      traefik.http.routers.demo-admin.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/admin`)\n"
+              "      traefik.http.routers.demo-admin.entrypoints: websecure\n      traefik.http.routers.demo-admin.tls.options: authaware@file\n"
+              "      traefik.http.routers.demo-admin.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file\n"
+              "      traefik.http.services.demo"],
+             "ai.mcp: not allowed with auth.admin_paths"),
+            ("method mtls", "headers", ["method: header-auth", "method: mtls"], [], "ai.mcp: not allowed with auth.method mtls"),
+            ("method public", "headers", ["method: header-auth", "method: public"], [], "ai.mcp: not allowed with auth.method public"),
+            ("readonly var other form", comp, [], ["${PORTCULLIS_AI_READONLY_DEMO:-true}", "${PORTCULLIS_AI_READONLY_DEMO:-false}"],
+             "PORTCULLIS_AI_READONLY_DEMO may appear only as exactly ${PORTCULLIS_AI_READONLY_DEMO:-true}"),
+            ("readonly var foreign companion", comp, [], ["${PORTCULLIS_AI_READONLY_DEMO:-true}", "${PORTCULLIS_AI_READONLY_OTHER:-true}"],
+             "references PORTCULLIS_AI_READONLY_OTHER"),
+            ("enabled var other form", comp, [], ["${PORTCULLIS_AI_ENABLED:-false}", "$PORTCULLIS_AI_ENABLED"], "PORTCULLIS_AI_ENABLED may appear only as exactly"),
+            ("enabled var default true", comp, [], ["${PORTCULLIS_AI_ENABLED:-false}", "${PORTCULLIS_AI_ENABLED:-true}"], "PORTCULLIS_AI_ENABLED may appear only as exactly"),
+            ("other ai var", comp, [], ["${PORTCULLIS_AI_ENABLED:-false}", "${PORTCULLIS_AI_MODE}"], "references PORTCULLIS_AI_MODE"),
+            ("enabled var without mcp", "unsupported", [], ["      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n",
+                                                          "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      AI: ${PORTCULLIS_AI_ENABLED:-false}\n"],
+             "PORTCULLIS_AI_ENABLED may appear only as exactly ${PORTCULLIS_AI_ENABLED:-false}, in a template with ai.mcp"),
+        ])
+
+    def test_misshapen_block(self) -> None:
+        """A schema error under ai: says what to fix; no follow-on errors
+        about the companions' variables or hooks."""
+        fx = ai_fixtures()
+        m, c = fx["companion"]
+        errors, _ = self.run_raw(self.edit(m, ["kind: companion", "kind: sidecar"]), c)
+        self.assertError(errors, "ai.mcp.0.kind: 'sidecar' is not one of")
+        self.assertFalse([e for e in errors if "only AI variables" in e or "no ai: field names it" in e
+                          or "may appear only as exactly" in e], "\n".join(errors))
+
+    def test_mcp_gate_ip_is_a_core_variable(self) -> None:
+        fx = ai_fixtures()
+        m, c = fx["unsupported"]
+        env = "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n"
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}\n"]))
+        self.assertClean(errors)
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP}\n"]))
+        self.assertError(errors, "${PORTCULLIS_MCP_GATE_IP} must use the default form ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}")
+        self.assertEqual(v.CORE_VARS[v.VAR_MCP_GATE_IP], "172.31.250.3")
+
+    def test_alias_limit(self) -> None:
+        fx = ai_fixtures()
+        m, c = fx["companion"]
+        m31 = self.edit(m, ["- name: demo\n", "- name: " + "a" * 31 + "\n"])
+        c31 = self.edit(c, ["PORTCULLIS_AI_READONLY_DEMO", "PORTCULLIS_AI_READONLY_" + "A" * 31])
+        for app_id, ok in (("b" * 15, True), ("b" * 16, False)):
+            with self.subTest(app_id):
+                errors, _ = self.run_raw(m31, c31, app_id=app_id)
+                alias = [e for e in errors if "ai.mcp[" + "a" * 31 + "]: the alias" in e]
+                if ok:
+                    self.assertFalse(alias, "\n".join(alias))
+                else:
+                    self.assertTrue(alias and "63" in alias[0], "\n".join(errors))
+
+    def test_router_less(self) -> None:
+        m = (FS_HEAD.replace(AI_UNSUP, "") + s_opts(FS_CONNECT, FS_UID, fs_ps()) +
+             'ai:\n  mcp:\n    - {name: s, label: S, kind: builtin, service: smb, port: 1, router: s, upstream: official, '
+             'source: "https://example.org", protocol: ["2025-06-18"], modes: [read_write], '
+             'identity: {mode: app_token, format: "Bearer {credential}", mint: sync, revoke: sync}}\n')
+        errors, _ = self.run_raw(m, FS_COMPOSE)
+        self.assertError(errors, "ai.mcp: not allowed on a router-less template")
+
+    def test_chat_rules(self) -> None:
+        chat = "chat"
+        self.rows([
+            ("no provider kinds", chat, ["provider_kinds: {openai_compatible: many, anthropic: one}", "provider_kinds: {}"], [], "ai.chat.provider_kinds: list at least one"),
+            ("unknown provider kind", chat, ["anthropic: one", "mistral: one"], [], "ai.chat.provider_kinds: \"mistral\" must be one of"),
+            ("bad cardinality", chat, ["anthropic: one", "anthropic: two"], [], "ai.chat.provider_kinds: anthropic: \"two\" must be one or many"),
+            ("file service missing", chat, ["file: {service: demo,", "file: {service: nope,"], [], "ai.chat.file: service \"nope\" is not in compose.yml"),
+            ("file mount relative", chat, ["mount: /portcullis/ai", "mount: portcullis"], [], "ai.chat.file: mount \"portcullis\""),
+            ("file mount on a data file", chat, ["ai:\n", "files:\n  - {name: people, service: demo, mount: /portcullis}\nai:\n"], [], "ai.chat.file: mount /portcullis/ai collides with files[people]"),
+            ("env service missing", chat, ["env: {service: demo}", "env: {service: nope}"], [], "ai.chat.env: service \"nope\" must be a service of compose.yml"),
+            ("env missing", chat, ["    env: {service: demo}\n", ""], [], "'env' is a required property"),
+            ("chat without ai_client", chat, [", ai_client: true}", "}"], [], "ai.chat: exactly one keycloak_clients entry has ai_client: true (found 0)"),
+            ("two ai_clients", chat, ['redirect_uri: "https://{{HOST_DEMO}}/cb"}', 'redirect_uri: "https://{{HOST_DEMO}}/cb", ai_client: true}'], [],
+             "ai.chat: exactly one keycloak_clients entry has ai_client: true (found 2)"),
+            ("provider var reference", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n",
+                                                 "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: ${PORTCULLIS_AI_PROVIDER_X_KEY}\n"],
+             "PORTCULLIS_AI_PROVIDER_* variables are never referenced"),
+            ("provider var bare", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n",
+                                            "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: $PORTCULLIS_AI_PROVIDER_X_KEY\n"],
+             "PORTCULLIS_AI_PROVIDER_* variables are never referenced"),
+            # Fix round 1 (Task 23): a service may not set one either.
+            ("provider var map key", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n",
+                                               "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      PORTCULLIS_AI_PROVIDER_X_KEY: sk-literal\n"],
+             "service demo sets PORTCULLIS_AI_PROVIDER_X_KEY"),
+            ("provider var map key lowercase", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n",
+                                                         "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      portcullis_ai_provider_x_key: sk-literal\n"],
+             "service demo sets portcullis_ai_provider_x_key"),
+            ("provider var list bare", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_PROVIDER_X_KEY\n"],
+             "service demo sets PORTCULLIS_AI_PROVIDER_X_KEY"),
+            ("provider var list assignment", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - Portcullis_AI_Provider_X_KEY=sk-literal\n"],
+             "service demo sets Portcullis_AI_Provider_X_KEY"),
+            # Security review: names built by interpolation, AI names in defaults.
+            ("env name interpolated", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      PORTCULLIS_AI_${X}: sk-literal\n"], "is built by interpolation"),
+            ("env list name interpolated", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_${X}PROVIDER_X_KEY=sk\n"], "is built by interpolation"),
+            ("AI name in a default", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: ${FOO:-PORTCULLIS_AI_PROVIDER_X_KEY}\n"], "a default or alternate value naming PORTCULLIS_AI_"),
+            ("AI name in an alternate", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: ${FOO:+portcullis_ai_x}\n"], "a default or alternate value naming PORTCULLIS_AI_"),
+            ("env list without provider vars", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n"], ""),
+            ("ai-providers file", "companion", ["hooks:\n", "files:\n  - {name: ai-providers, service: demo, mount: /data}\nhooks:\n"], [],
+             "files[ai-providers]: the data file name ai-providers is reserved"),
+        ])
+
+    def test_ai_client_flag(self) -> None:
+        self.rows([
+            ("ai_client without chat", "oauth", ['redirect_uri: "https://{{HOST_DEMO}}/cb"}', 'redirect_uri: "https://{{HOST_DEMO}}/cb", ai_client: true}'], [],
+             "keycloak_clients: client demo has ai_client: true, which is only allowed with ai.chat"),
+            ("portcullis-ai- client id", "oauth", ["client_id: demo,", "client_id: portcullis-ai-claude,"], [],
+             "keycloak_clients: client_id portcullis-ai-claude: the prefix portcullis-ai- is the Hub's AI clients'"),
+            ("portcullis-ai- client id folded", "oauth", ["client_id: demo,", "client_id: Portcullis-AI-x,"], [], "the prefix portcullis-ai-"),
+        ])
+
+    def test_hook_ai_trigger(self) -> None:
+        self.assertIn("ai", v.HOOK_TRIGGERS)
+        self.rows([
+            ("unknown trigger names all five", "companion", ["when: [start, settings_change]", "when: [boot]"], [],
+             'when "boot" must be start, settings_change, membership_change, credential_change or ai'),
+            ("empty when names all five", "companion", ["when: [start, settings_change]", "when: []"], [],
+             "start, settings_change, membership_change, credential_change, ai"),
+            ("option delivers to an ai hook", "companion", ["delivery: [{hook: apply}]", "delivery: [{hook: mcp-mint}]"], [],
+             "hook mcp-mint is an ai hook (when: [ai]): no option delivers to it"),
+            ("reload names an ai hook", "companion", ["settings:\n", "reload: {hook: mcp-mint}\nsettings:\n"], [],
+             "reload: hook mcp-mint is an ai hook (when: [ai])"),
+            ("mint hook on the companion service", "companion", ["{name: mcp-mint, service: demo,", "{name: mcp-mint, service: demo-mcp,"], [],
+             "hooks[mcp-mint]: an ai hook may not run on service demo-mcp"),
+            ("revoke hook on the companion service", "companion", ["{name: mcp-revoke, service: demo,", "{name: mcp-revoke, service: demo-mcp,"], [],
+             "hooks[mcp-revoke]: an ai hook may not run on service demo-mcp"),
+        ])
+
+    def test_reserved_mcp_names(self) -> None:
+        comp, plain = "companion", "unsupported"
+        demo_env = "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n"
+        self.rows([
+            ("router name", comp, [], ["      traefik.http.services.demo", "      traefik.http.routers.portcullis-mcp-x.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/x`)\n      traefik.http.services.demo"], "portcullis-mcp-"),
+            ("middleware name", comp, [], ["      traefik.http.services.demo", "      traefik.http.middlewares.Portcullis-MCP-x.headers.customrequestheaders.X: y\n      traefik.http.services.demo"], "portcullis-mcp-"),
+            ("service name", comp, ["service: demo-mcp", "service: portcullis-mcp-demo-demo"], ["  demo-mcp:\n", "  portcullis-mcp-demo-demo:\n"], "portcullis-mcp-"),
+            ("container_name", plain, [], ["    labels:\n", "    container_name: portcullis-mcp-demo--demo\n    labels:\n"], "portcullis-mcp-"),
+            ("hostname", plain, [], ["    labels:\n", "    hostname: portcullis-mcp-x\n    labels:\n"], "portcullis-mcp-"),
+            ("network alias", plain, [], ["    networks:\n      - default\n      - portcullis-proxy\n",
+                                          "    networks:\n      default:\n        aliases: [portcullis-mcp-demo--x]\n      portcullis-proxy: {}\n"], "portcullis-mcp-"),
+            ("split by a variable", plain, [], [demo_env, demo_env + "      X: portcullis-mcp${DEMO_SECRET}-x\n"], "portcullis-mcp-"),
+            ("any value", plain, [], [demo_env, demo_env + "      X: http://PORTCULLIS-MCP-demo--demo:8080\n"], "portcullis-mcp-"),
+            ("declares PORTCULLIS_AI_ENABLED", plain, ["env:\n", "env:\n  - key: PORTCULLIS_AI_ENABLED\n    description: x\n"], [], "env key PORTCULLIS_AI_ENABLED is reserved"),
+            ("declares a provider variable", plain, ["env:\n", "env:\n  - key: PORTCULLIS_AI_PROVIDER_X\n    description: x\n"], [], "env key PORTCULLIS_AI_PROVIDER_X is reserved"),
+            ("declares the gate IP", plain, ["env:\n", "ports:\n  - {key: PORTCULLIS_MCP_GATE_IP, label: X, container: 1, default: 1, service: demo}\nenv:\n"], [], "ports key PORTCULLIS_MCP_GATE_IP is reserved"),
+            ("mcp default subdomain", plain, ["{{HOST_DEMO}}", "{{HOST_DEMO}}"], ["demo.portcullis.local}`)", "mcp.portcullis.local}`)"], "subdomain 'mcp' belongs to core"),
+            ("core service mcp-gate", plain, [], ["  init:\n", "  mcp-gate:\n"], "the DNS name 'mcp-gate' is core's"),
+            ("core volume mcp_gate_data", plain, [], ["  demo-data: {}\n", "  demo-data: {}\n  mcp_gate_data: {}\n"], "volumes.mcp_gate_data is core's"),
+            ("core router mcp", plain, [], ["routers.demo.", "routers.mcp."] * 4, "Traefik label 'traefik.http.routers.mcp.rule': router 'mcp' is core's (reserved)"),
+            ("core service mcp-gate label", plain, [], ["traefik.http.services.demo.", "traefik.http.services.mcp-gate."], "service 'mcp-gate' is core's (reserved)"),
+        ])
+        for k in ("PORTCULLIS_AI_ENABLED", "PORTCULLIS_AI_READONLY_GITEA", "PORTCULLIS_AI_PROVIDER_X", "PORTCULLIS_AI_ANYTHING", "PORTCULLIS_MCP_GATE_IP"):
+            self.assertTrue(v.reserved_var(k), k)
+            self.assertTrue(v.ai_reserved_var(k), k)
+        self.assertIn("mcp", v.CORE_SUBDOMAINS)
+
+    def test_real_templates_all_classified(self) -> None:
+        """Every template on main has an ai: block (G63: 50 of them)."""
+        import yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ids = [e for e in sorted(os.listdir(root)) if os.path.isfile(os.path.join(root, e, "manifest.yaml"))]
+        self.assertGreaterEqual(len(ids), 50)
+        for i in ids:
+            with open(os.path.join(root, i, "manifest.yaml"), encoding="utf-8") as f:
+                ai = (yaml.safe_load(f) or {}).get("ai")
+            self.assertIsInstance(ai, dict, i)
+            self.assertTrue(("mcp" in ai) != ("unsupported" in ai), i)
 
 
 if __name__ == "__main__":

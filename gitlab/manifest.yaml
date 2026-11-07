@@ -80,3 +80,15 @@ tests:
     signed_in:
       json: {url: /api/v4/user, field: username}
     password: "GitLab's password form stays for the root break-glass account (GITLAB_ROOT_PASSWORD, auth.notes)"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+# Surveyed 2026-11-06 against GitLab 19.5.3 (the image's version): the
+# built-in MCP server (/api/v4/mcp, lib/api/mcp/base.rb, in CE) is Free
+# tier and GA since 19.5 (instance setting "Allow access to the MCP
+# server"), and needs an access token with scope mcp; Gitlab::Auth makes
+# mcp unavailable to personal / project / group access tokens, so only
+# GitLab's own OAuth (dynamic client registration or a pre-registered
+# app) reaches it: app_oauth, with a revoke hook keyed on the Keycloak sub.
+# Not proven in CI (GitLab is too heavy for Test Apps, G64).
+ai:
+  unsupported: "GitLab 19.5's MCP server accepts only GitLab's own OAuth tokens (no personal access tokens); that per-person OAuth path isn't verified with Portcullis yet (surveyed 2026-11-06)"

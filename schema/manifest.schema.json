@@ -5,7 +5,7 @@
   "description": "Schema for <app-id>/manifest.yaml. The Hub enforces the same rules and skips templates that fail (integration contracts §3). Rules that need the compose file or the filesystem live in tests/validate.py.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "description", "icon", "category", "tags", "links", "auth"],
+  "required": ["name", "description", "icon", "category", "tags", "links", "auth", "ai"],
   "properties": {
     "name": {
       "description": "Display name shown in the Hub.",
@@ -96,7 +96,8 @@
       "description": "Contract v2: multi lets the Hub run several separate instances of the template; single (the default) only the default instance (id = template id). Stay single only for host-level uniqueness (e.g. fixed host devices), justified in auth.notes.",
       "enum": ["multi", "single"],
       "default": "single"
-    }
+    },
+    "ai": {"$ref": "#/$defs/ai"}
   },
   "allOf": [
     {
@@ -108,6 +109,94 @@
     }
   ],
   "$defs": {
+    "ai": {
+      "description": "AI support (contracts §3.2), required in every template: ai.mcp (the MCP servers the AI talks to) or ai.unsupported (one line, 1-200 characters, why not). Field shapes here; tests/validate.py checks the rest, as the Hub's ValidateAI does.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mcp": {
+          "description": "The companions: the app's built-in MCP server (kind builtin) or a service running the upstream's or a vetted community project's published image (kind companion), pinned tag@sha256 — never Portcullis code.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/aiCompanion"}
+        },
+        "unsupported": {"description": "One line (1-200 characters) shown to the admin on the instance's AI tab and in the catalog.", "type": "string"},
+        "alternative": {
+          "description": "Only with ai.unsupported: a community MCP server the admin may evaluate on their own (displayed, labelled 'not vetted by Portcullis', never installed).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "source", "note"],
+          "properties": {
+            "name": {"description": "One line, at most 64 characters.", "type": "string"},
+            "source": {"description": "An https:// URL.", "type": "string"},
+            "note": {"description": "One line, at most 200 characters, e.g. 'community, 248★, last change Nov 2025, API token per person'.", "type": "string"}
+          }
+        },
+        "on_change": {"description": "Only with ai.mcp: a hook (when: [ai]) run when a companion's AI support or mode changes.", "type": "string"},
+        "chat": {
+          "description": "Only with ai.unsupported: the template is an AI page (an MCP client people chat in), with exactly one keycloak_clients entry ai_client: true.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider_kinds", "file", "env"],
+          "properties": {
+            "provider_kinds": {"description": "<kind>: one | many; kinds litellm, openai_compatible, anthropic, openai, google, bedrock, azure_openai.", "type": "object", "additionalProperties": {"type": "string"}},
+            "file": {"type": "object", "additionalProperties": false, "required": ["service", "mount"], "properties": {"service": {"type": "string"}, "mount": {"type": "string"}}},
+            "env": {"type": "object", "additionalProperties": false, "required": ["service"], "properties": {"service": {"type": "string"}}}
+          }
+        }
+      }
+    },
+    "aiCompanion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "kind", "service", "router", "identity", "modes", "upstream", "source", "protocol"],
+      "properties": {
+        "name": {"description": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$, at most 31 characters, unique in the template.", "type": "string"},
+        "label": {"description": "One line, 1-64 characters.", "type": "string"},
+        "kind": {"enum": ["companion", "builtin"]},
+        "service": {"description": "A compose service, ^[a-z0-9]+(-[a-z0-9]+)*$.", "type": "string"},
+        "port": {"description": "The container port of service, 1-65535 (unused for app_oauth).", "type": "integer"},
+        "path": {"description": "The upstream's MCP path: absolute, clean, no ? or #; default /mcp.", "type": "string"},
+        "router": {"description": "A host router of the template: the endpoint is https://<its host><public_path>.", "type": "string"},
+        "public_path": {"description": "The path people connect to; default /mcp. Refused on app_oauth companions.", "type": "string"},
+        "identity": {"$ref": "#/$defs/aiIdentity"},
+        "modes": {"type": "array", "items": {"enum": ["read_only", "read_write"]}},
+        "default_mode": {"enum": ["read_only", "read_write"]},
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "writes": {"type": "array", "items": {"type": "string"}},
+            "confirm": {"type": "array", "items": {"type": "string"}},
+            "never": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "aggregate": {"type": "boolean"},
+        "upstream": {"enum": ["official", "community"]},
+        "source": {"description": "The companion project's home, an https:// URL.", "type": "string"},
+        "protocol": {"type": "array", "items": {"enum": ["2025-06-18", "2025-11-25", "2026-07-28"]}}
+      }
+    },
+    "aiIdentity": {
+      "description": "mode plus only that mode's parameters (app_token: header, format | basic, mint, revoke, scopes; identity_headers: caller_secret; app_oauth: revoke).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["app_token", "identity_headers", "app_oauth"]},
+        "header": {"type": "string"},
+        "format": {"type": "string"},
+        "basic": {"type": "object", "additionalProperties": false, "required": ["user", "password"], "properties": {"user": {"type": "string"}, "password": {"type": "string"}}},
+        "mint": {"type": "string"},
+        "revoke": {"type": "string"},
+        "scopes": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+        "caller_secret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["env"],
+          "properties": {"env": {"type": "string"}, "header": {"type": "string"}, "format": {"type": "string"}}
+        }
+      }
+    },
     "envKey": {
       "description": "Becomes a .env key (Hub envKeyRe).",
       "type": "string",
@@ -640,7 +729,7 @@
         "service": {"$ref": "#/$defs/serviceName"},
         "user": {"type": "string"},
         "command": {"description": "argv, run directly (no sh -c).", "type": "array", "items": {"type": "string"}},
-        "when": {"description": "start | settings_change | membership_change | credential_change (a person_secret credential was created, regenerated, revoked or voided).", "type": "array", "items": {"type": "string"}},
+        "when": {"description": "start | settings_change | membership_change | credential_change (a person_secret credential was created, regenerated, revoked or voided) | ai (run only by the AI machinery: the mint, revoke or on_change hook an ai: block names; exactly when: [ai], never with another trigger).", "type": "array", "items": {"type": "string"}},
         "timeout": {"description": "A Go duration such as 60s; default 30s, at most 10m.", "type": "string"}
       }
     },
@@ -706,6 +795,10 @@
           "description": "The app's OIDC back-channel logout endpoint on one of its own hosts, https://{{HOST_<ROUTER>}}/<path> (single templates may use https://<sub>.{{DOMAIN}}/<path>). The Hub sets it as the client's backchannel logout URL with 'session required' (logout tokens carry sid), so a Keycloak sign-out (the Hub signs users out when they leave a group) ends the app's session too; it follows hostname changes. The path must be routed without forward-auth (Keycloak posts to it server-to-server).",
           "type": "string",
           "pattern": "^https://(\\{\\{HOST_[A-Z0-9_]+\\}\\}|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.\\{\\{DOMAIN\\}\\})(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$"
+        },
+        "ai_client": {
+          "description": "The AI page's MCP client (contracts §3.2, §8): only in a template with ai.chat, exactly one entry there, confidential (secret_env). The Hub registers it through its AI client path, not as an app client.",
+          "type": "boolean"
         }
       },
       "oneOf": [

@@ -12,7 +12,8 @@ CONTRIBUTING.md, "Sign-in test"):
      e2emember (access group), e2eoutsider (no group);
   2. the Hub's side: the template's Keycloak clients (secret = the app's
      generated env value, redirect URIs with the instance hostnames) and the
-     group-gate policy file (groups, admin_paths);
+     group-gate policy file (groups, admin_paths); an AI page (ai.chat)
+     gets its ai-providers.json with no provider;
   3. starts the app (tests/lib.sh compose_up, same env as the shell test)
      and waits for its containers;
   4. per user, a one-time setup link (`portcullis invite <user> --to
@@ -46,6 +47,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.error
@@ -484,6 +486,19 @@ def run_setup() -> None:
     if restart:
         sh("compose_down", APP, check=False)
         sh("compose_up", APP)
+
+
+def ai_page_delivery() -> None:
+    """An AI page (manifest ai.chat) reads the Hub's ai-providers.json at
+    every start: deliver it like the Hub does for an instance with no
+    provider selected (tests/lib.sh write_ai_providers_override)."""
+    if not ((MANIFEST.get("ai") or {}).get("chat")):
+        return
+    out = os.path.join(tempfile.mkdtemp(prefix="e2e-ai-"), "override.yml")
+    doc = json.dumps({"version": 1, "instance": APP, "providers": []})
+    sh("write_ai_providers_override", APP, doc, out)
+    os.environ["COMPOSE_OVERRIDE"] = out
+    log(f"ai.chat: ai-providers.json delivered (no provider) via {out}")
 
 
 # ── Browser ────────────────────────────────────────────────────────
@@ -961,6 +976,7 @@ def main() -> int:
         lldap_setup()
         keycloak_setup()
         write_policy()
+        ai_page_delivery()
         fresh_start()
         log(sh("compose_up", APP))
         wait_containers(int(SIGNIN.get("boot_timeout", 600)))

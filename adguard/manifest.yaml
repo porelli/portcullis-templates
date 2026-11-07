@@ -61,3 +61,7 @@ tests:
     signed_in:
       html: "AdGuard Home"
     password: "AdGuard Home keeps its own admin password behind the gateway (auth.notes: no web allowlist upstream)"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No MCP server known, and every member of the access group is a full administrator of the app (no per-person rights to act with)"

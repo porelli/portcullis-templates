@@ -102,3 +102,11 @@ tests:
       outsider:
         reason: "Vikunja has no OIDC group restriction of its own: only the Hub's Keycloak access role (keycloak_access_role) keeps outsiders out, and CI runs without the Hub (app_signin.py registers plain clients)"
         match: "e2eoutsider signed in"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; community servers are not vetted by Portcullis"
+  alternative:
+    name: "democratize-technology/vikunja-mcp"
+    source: "https://github.com/democratize-technology/vikunja-mcp"
+    note: "community, 113★, API token (surveyed 2026-11-06)"

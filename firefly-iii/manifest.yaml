@@ -51,3 +51,11 @@ tests:
     signed_in:
       html: "{username}"
       wait: 20
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official MCP server; community servers are not vetted by Portcullis"
+  alternative:
+    name: "etnperlong/firefly-iii-mcp"
+    source: "https://github.com/etnperlong/firefly-iii-mcp"
+    note: "community, 91★, last change Jun 2025, PAT or OAuth (surveyed 2026-11-06)"

@@ -165,3 +165,7 @@ urls:
 tests:
   signin:
     skip: "custom: Firefox signs in with a Mozilla account, not Portcullis (no gateway); tests/apps/firefox-sync.sh checks the allowlist and the database roles"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "Signs people in with Mozilla accounts, not Portcullis identities; no MCP server known"

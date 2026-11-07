@@ -67,3 +67,7 @@ tests:
         # Searched in the member's own flow only; a rate-limited login (429)
         # is a different failure, not the refused grant.
         not_match: "Too many requests"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "No official or vetted community MCP server known (surveyed 2026-11-05)"

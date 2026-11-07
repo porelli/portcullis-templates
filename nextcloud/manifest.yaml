@@ -163,6 +163,17 @@ auth:
     the Hub as www-data in the nextcloud container at start and after every
     save; idempotent, exits non-zero on any occ failure). Quotas set per
     user in Nextcloud's Users page still win over the default.
+    AI availability: while AI support is on, any container on
+    portcullis-proxy can reach the companion and send wrong credentials;
+    Nextcloud's brute-force protection counts them against the companion's
+    address, which every AI request comes from, so such a container can
+    slow everyone's AI requests down (sign-in itself still holds).
+    Re-used usernames: accounts are keyed on the username, so a deleted
+    person's username given to someone new gets the former person's
+    Nextcloud account, on the web and through AI alike (the AI mint can't
+    tell them apart: user_oidc stores no Keycloak id). Delete or rename
+    the former person's Nextcloud account (occ user:delete) before re-using
+    a username.
 
 hooks:
   - name: apply-settings
@@ -170,6 +181,22 @@ hooks:
     user: www-data
     command: [php, /portcullis/apply-settings.php]
     when: [start, settings_change]
+    timeout: 10m
+  # Hooks of the ai: block (contracts §15.5), in the nextcloud service:
+  # occ mints, lists and deletes the person's app password. The credential
+  # on stdout is never logged. revoke_all walks every account (one occ
+  # call each), hence the longer timeout.
+  - name: mcp-mint
+    service: nextcloud
+    user: www-data
+    command: [php, /portcullis/mcp-token.php, mint]
+    when: [ai]
+    timeout: 60s
+  - name: mcp-revoke
+    service: nextcloud
+    user: www-data
+    command: [php, /portcullis/mcp-token.php, revoke]
+    when: [ai]
     timeout: 10m
 
 settings:
@@ -244,3 +271,54 @@ tests:
       # nextcloud-cron maps admin_<id> to Nextcloud's admin group within a minute.
       json: {url: "/ocs/v2.php/cloud/users/{username}/groups?format=json", field: ocs.data.groups, contains: admin, headers: {OCS-APIRequest: "true"}}
       wait: 120
+
+# AI support (contracts §3.2): the community nextcloud-mcp-server
+# (cbcoutinho, AGPL-3.0), multi-user Basic pass-through: every request runs
+# as the person with their own Nextcloud app password
+# (portcullis-ai-<random>, minted by portcullis/mcp-token.php for the uid
+# the OIDC login gave them). Nextcloud app passwords carry no scopes and the
+# server has no read-only switch: read-only mode is enforced by the gate.
+ai:
+  mcp:
+    - name: nextcloud
+      label: Nextcloud
+      kind: companion
+      service: nextcloud-mcp
+      port: 8000
+      path: /mcp
+      router: nextcloud              # https://<nextcloud host>/mcp
+      public_path: /mcp
+      upstream: community
+      source: https://github.com/cbcoutinho/nextcloud-mcp-server
+      # mcp 2.3.0 (the server's SDK) negotiates no 2026-07-28 (CI-checked).
+      protocol: ["2025-11-25", "2025-06-18"]
+      modes: [read_only, read_write]
+      default_mode: read_write
+      identity:
+        mode: app_token
+        header: Authorization
+        basic: {user: "{username}", password: "{credential}"}
+        mint: mcp-mint
+        revoke: mcp-revoke
+      # nextcloud-mcp-server 0.205.3's tools for the enabled apps (webdav,
+      # sharing, calendar, contacts); tests/apps/nextcloud.sh checks every
+      # pattern against the real tools/list: writes = every tool without
+      # readOnlyHint, confirm covers every delete and every destructiveHint.
+      tools:
+        writes: ["*_write_*", "*_edit_*", "*_create*", "*_delete*", "*_move_*", "*_copy_*", "*_restore_*",
+                 "*_tag_file", "*_untag_file", "*_update*", "*_complete_*", "*_bulk_*", "*_manage_*"]
+        # Deletes; the calendar tools whose operation / action can delete
+        # (their argument isn't named "method", so the whole tool); the
+        # calendar tools that can send mail (event attendees' invitations,
+        # EMAIL reminders to attendees and the calendar's sharees): a way
+        # out for the data the AI has read.
+        confirm: ["*delete*", "nc_calendar_bulk_operations", "nc_calendar_manage_calendar",
+                  "nc_calendar_create_event", "nc_calendar_create_meeting", "nc_calendar_update_event",
+                  "nc_calendar_create_todo", "nc_calendar_update_todo"]
+        # No sharing by the AI: creating or widening a share (user, group,
+        # email, federated or a public link: one tool, the type is an
+        # argument), the public download link, and reading shares (the
+        # answers carry public links' tokens and password hashes). Deleting
+        # a share stays (confirmed): its answer carries nothing but the id.
+        never: ["nc_share_create", "nc_share_create_public_link", "nc_share_update",
+                "nc_share_list", "nc_share_get"]

@@ -7,6 +7,17 @@
 #   - GitLab and Nextcloud majors must follow the upstream upgrade path, so
 #     only minor/patch updates are proposed;
 #   - multi-image apps are grouped so they move in lockstep;
+#   - AI companions are images of their template's compose.yml, tracked
+#     with it (gitea: docker.gitea.com/gitea-mcp-server, grafana:
+#     grafana/mcp-grafana, nextcloud: ghcr.io/cbcoutinho/nextcloud-mcp-server);
+#     a bump changes the tools, which tests/apps/gitea.sh / grafana.sh /
+#     nextcloud.sh check against the manifest; the community
+#     nextcloud-mcp-server (one maintainer, releases most days) moves by
+#     hand except patches, so each minor is re-vetted;
+#   - ai-chat: LibreChat (ghcr.io/librechat-ai/librechat, api and config
+#     share it), mongo and getmeili/meilisearch are tracked; MongoDB majors
+#     (7.0 for now: 8.x refuses Linux kernels 6.19 to 7.0.13) and
+#     Meilisearch minors (its data format changes) move by hand;
 #   - no pre-releases (pip, Go and Actions skip them by default; docker
 #     needs the explicit ranges below).
 #
@@ -18,6 +29,7 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - "/actual-budget"
+      - "/ai-chat"
       - "/adguard"
       - "/cadcraft"
       - "/cloudbeaver"
@@ -89,12 +101,22 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "redis"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "mongo"
+        update-types: ["version-update:semver-major"]
+      # LibreChat minors change its configuration schema and features
+      # (render-config.mjs's locks): reviewed by hand; patches auto-merge.
+      - dependency-name: "*librechat-ai/librechat"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "getmeili/meilisearch"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Immich's database image follows upstream's docker-compose.yml.
       - dependency-name: "*immich-app/postgres"
       - dependency-name: "gitlab/gitlab-ce"
         update-types: ["version-update:semver-major"]
       - dependency-name: "nextcloud"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "*cbcoutinho/nextcloud-mcp-server"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # No pre-releases. Dependabot's own pre-release filter let
       # python 3.16.0a1-alpine through (PR #2). Docker `versions` use Ruby Gem
       # requirement syntax: ">= X.Y.0.a, < X.Y.0" is exactly X.Y.0's alphas,

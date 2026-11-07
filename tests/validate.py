@@ -58,10 +58,13 @@ CORE_VARS = {
     "PORTCULLIS_PROXY_SUBNET": "172.31.250.0/24",
     "PORTCULLIS_PROXY_IP_RANGE": "172.31.250.128/25",
     "PORTCULLIS_TRAEFIK_IP": "172.31.250.2",
+    # AI support (§2): mcp-gate's address on portcullis-proxy. Referencing
+    # it is allowed; declaring it is not (ai_reserved_var).
+    "PORTCULLIS_MCP_GATE_IP": "172.31.250.3",
 }
 
 # Subdomains owned by core (group-gate-map.conf); templates must not route them.
-CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "people"}  # contracts §4, §5.1
+CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "people", "mcp"}  # contracts §4, §5.1
 
 # Contract v2 (contracts §3.1): instance-scoped variables the Hub writes into
 # every instance's .env. Templates use them in the default form with the
@@ -70,6 +73,17 @@ CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "
 # ${PORTCULLIS_LOCAL_NETWORKS} (check_reserved_var_refs), never in the
 # default form the other instance variables take.
 VAR_LOCAL_NETWORKS = "PORTCULLIS_LOCAL_NETWORKS"
+# AI support (§3.1, §2): every PORTCULLIS_AI_* name is the Hub's (ENABLED,
+# READONLY_<COMPANION>, PROVIDER_<NAME>_<FIELD>); PORTCULLIS_MCP_GATE_IP is
+# core's. A manifest never declares them (check_manifest_rules); compose
+# reads only ${PORTCULLIS_AI_ENABLED:-false} and its own companions'
+# ${PORTCULLIS_AI_READONLY_<C>:-true} (check_ai).
+VAR_AI_PREFIX = "PORTCULLIS_AI_"
+VAR_AI_ENABLED = "PORTCULLIS_AI_ENABLED"
+VAR_AI_READONLY = "PORTCULLIS_AI_READONLY_"
+VAR_AI_PROVIDER = "PORTCULLIS_AI_PROVIDER_"
+VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
+AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
@@ -245,6 +259,17 @@ IDENTITY_ENV_REQUIRED = [
      "OxiCloud with OIDC must set OXICLOUD_AUTH_METHODS: oidc (no password or magic-link login next to SSO)"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_AUTH_LOCAL_ENABLED", r"(?i)^false$",
      "Vikunja with OIDC must set VIKUNJA_AUTH_LOCAL_ENABLED: \"false\" (local accounts: password login, sign-up, invite links)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_EMAIL_LOGIN", r"(?i)^false$",
+     "LibreChat with OpenID must set ALLOW_EMAIL_LOGIN: \"false\" (password login next to SSO)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_REGISTRATION", r"(?i)^false$",
+     "LibreChat with OpenID must set ALLOW_REGISTRATION: \"false\" (local sign-up; the first local account becomes "
+     "LibreChat's administrator)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_SHARED_LINKS_PUBLIC", r"(?i)^false$",
+     "LibreChat must set ALLOW_SHARED_LINKS_PUBLIC: \"false\" (public shared links show a conversation, and what "
+     "the person's apps returned in it, to anyone with the link)"),
+    ("OPENID_SESSION_SECRET", r".", "OPENID_REQUIRED_ROLE", r"^\$\{PORTCULLIS_ACCESS_GROUP:-[^}]+\}$",
+     "LibreChat must set OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_<app>} (with "
+     "OPENID_REQUIRED_ROLE_PARAMETER_PATH: groups): otherwise every realm user signs in"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS", r"(?i)^false$",
      "Vikunja must set VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: \"false\" (user-supplied URLs must not reach "
      "portcullis-proxy or the host's private networks)"),
@@ -296,12 +321,18 @@ REQUIRED_INIT_JOBS = [
      "come from the homeassistant-init job"),
     ("mattermost/mattermost-team-edition:", "mattermost-init",
      "Mattermost's bootstrap system admin (pinned by user id, never granted by name) comes from the mattermost-init job"),
+    ("ghcr.io/librechat-ai/librechat:", "config",
+     "LibreChat's librechat.yaml (the MCP server, the model endpoints, no secret values) is rendered by the "
+     "config one-shot from the Hub's ai-providers.json; keep it"),
     ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
      "Firefox Sync's tokenserver takes any Mozilla account; only the firefox-sync-init allowlist trigger keeps other accounts off"),
 ]
 
 # image prefix -> (one-shot the image's Traefik-routed services must wait for, message)
 REQUIRED_BEFORE_ROUTED = [
+    ("ghcr.io/librechat-ai/librechat:", "config",
+     "LibreChat must start only after config rendered librechat.yaml (depends_on: config: condition: "
+     "service_completed_successfully); without it LibreChat starts on its defaults"),
     ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
      "the public Sync server must start only after firefox-sync-init installed the allowlist "
      "(depends_on: firefox-sync-init: condition: service_completed_successfully)"),
@@ -471,6 +502,16 @@ def networks_of(svc: Dict[str, Any]) -> List[str]:
     if isinstance(nets, dict):
         return [str(k) for k in nets]
     return [str(n) for n in nets]
+
+
+def var_names_deep(text: str) -> Set[str]:
+    """Every variable name text interpolates, nested defaults included
+    (${A:-${B}} gives A and B); $$ is a literal dollar."""
+    out: Set[str] = set()
+    for name, _op, rest in iter_var_refs(text):
+        out.add(name)
+        out |= var_names_deep(rest)
+    return out
 
 
 def iter_var_refs(text: str) -> Iterable[Tuple[str, str, str]]:
@@ -648,6 +689,8 @@ def check_manifest_schema(t: Template, validator: Draft202012Validator, r: Repor
 
 def _schema_msg(e: jsonschema.ValidationError) -> str:
     # Make the commonest failures readable for contributors.
+    if e.validator == "required" and not e.absolute_path and "'ai'" in e.message:
+        return e.message + " (AI support: ai.mcp companions or ai.unsupported with a one-line reason; see CONTRIBUTING.md, \"AI support\")"
     if e.validator == "additionalProperties":
         return e.message + " (typo, or a field the Hub does not read?)"
     if e.validator in ("oneOf", "anyOf") and e.context:
@@ -684,6 +727,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
             seen[k] = section
         if k in CORE_VARS:
             r.error(t.m_where, f"{section} key {k} shadows a core variable")
+        if ai_reserved_var(k):
+            r.error(t.m_where, f"{section} key {k} is reserved (AI support: PORTCULLIS_AI_* are the Hub's, "
+                               f"{VAR_MCP_GATE_IP} is core's)", AI_HINT)
         if is_instance_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved for the Hub's instance variables",
                     "the Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_*, PORTCULLIS_OIDC_CLIENT_ID*, "
@@ -831,13 +877,17 @@ def check_compose(t: Template, r: Report) -> None:
     top_nets = data.get("networks") or {}
     if "portcullis" in top_nets:
         r.error(t.c_where, "network 'portcullis' is wrong; frontends join the external network 'portcullis-proxy'")
+    trust_nets = trust_networks(t, services)
     for name, spec in top_nets.items():
+        if name in trust_nets:
+            continue  # check_ai's check_trust_network judges it
         if name == PROXY_NET:
             if not (isinstance(spec, dict) and spec.get("external") is True):
                 r.error(t.c_where, f"networks.{PROXY_NET} must be declared 'external: true'",
                         "core creates portcullis-proxy (fixed subnet, Traefik's static IP); templates only attach to it")
         elif name != "default":
-            r.error(t.c_where, f"networks.{name}: templates may only use 'default' and '{PROXY_NET}'")
+            r.error(t.c_where, f"networks.{name}: templates may only use 'default' and '{PROXY_NET}' (and an "
+                    "identity_headers AI companion's trust network)")
         elif isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
             r.error(t.c_where, "networks.default must stay the project's own network (no name:, no external:)",
                     "a named or external default network is shared with other projects (portcullis-proxy, "
@@ -892,8 +942,8 @@ def check_compose(t: Template, r: Report) -> None:
 
     # Variable interpolation
     for name, op, rest in iter_var_refs(t.compose_values):
-        if is_instance_var(name) or name.startswith(FOLDER_VAR_PREFIX):
-            continue  # check_instance_vars; check_settings (reserved variable forms, F36)
+        if is_instance_var(name) or name.startswith(FOLDER_VAR_PREFIX) or name.startswith(VAR_AI_PREFIX):
+            continue  # check_instance_vars; check_settings (reserved variable forms, F36); check_ai
         if name in CORE_VARS:
             if op != ":-":
                 r.error(t.c_where, f"${{{name}}} must use the default form ${{{name}:-{CORE_VARS[name]}}}",
@@ -944,8 +994,9 @@ def check_compose(t: Template, r: Report) -> None:
                 r.error(where, f"network_mode {nm!r}: only none, host or service:<another service of this template>, exactly, in lower case",
                         "any other value names a network (e.g. portcullis-proxy) the service would join unchecked")
         elif enabled:
-            if PROXY_NET not in nets or "default" not in nets:
-                r.error(where, f"Traefik-routed service must use networks: [default, {PROXY_NET}]")
+            if PROXY_NET not in nets or ("default" not in nets and not trust_nets & set(nets)):
+                r.error(where, f"Traefik-routed service must use networks: [default, {PROXY_NET}] "
+                        "(or [portcullis-proxy, <its AI companion's trust network>])")
         elif PROXY_NET in nets:
             r.error(where, f"internal service is on {PROXY_NET}",
                     "only services with traefik.enable=true join portcullis-proxy; databases, caches and sidecars stay on default")
@@ -987,6 +1038,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_hub_rules(t, r)
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
+    check_ai(t, services, routers, r)
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -1324,17 +1376,43 @@ INTERNAL_SUFFIX = "-internal"
 # the Hub rules); anything else is a network name.
 NETWORK_MODE_RE = re.compile(r"^(none|host|service:[a-z0-9][a-z0-9_.-]*)$")
 NO_DNS_MODE_RE = re.compile(r"^(none|host|service:.*|container:.*)$")
-DNS_HINT = ("names ending in -internal (a gate's upstream) are declared as aliases on the default network only; "
+DNS_HINT = ("names ending in -internal (a gate's upstream) are declared as aliases on the default network "
+            "(or an internal: true project network) only; "
             "a name on portcullis-proxy could catch another app's gated traffic")
+
+
+def trust_networks(t: "Template", services: Dict[str, Any]) -> Set[str]:
+    """The sole network of each identity_headers kind-companion service
+    (contracts §3.2 trust network; _AICheck.check_trust_network validates it)."""
+    out: Set[str] = set()
+    ai = (t.manifest or {}).get("ai")
+    for c in (ai.get("mcp") or []) if isinstance(ai, dict) and isinstance(ai.get("mcp"), list) else []:
+        if not isinstance(c, dict) or c.get("kind") != "companion":
+            continue
+        ident = c.get("identity") if isinstance(c.get("identity"), dict) else {}
+        svc = services.get(str(c.get("service"))) if isinstance(c.get("service"), str) else None
+        if ident.get("mode") == "identity_headers" and isinstance(svc, dict):
+            nets = networks_of(svc)
+            if len(nets) == 1 and nets[0] not in ("default", PROXY_NET):
+                out.add(nets[0])
+    return out
 
 
 def private_networks(compose: Optional[Dict[str, Any]]) -> Set[str]:
     """Service network keys that are the project's own network: 'default',
-    unless the top level renames it or makes it external (then shared)."""
-    spec = ((compose or {}).get("networks") or {}).get("default")
-    if isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
-        return set()
-    return {"default"}
+    unless the top level renames it or makes it external (then shared), and
+    every network declared exactly {internal: true} (Hub
+    checkInternalNames: e.g. an identity_headers companion's trust network)."""
+    nets = (compose or {}).get("networks") or {}
+    nets = nets if isinstance(nets, dict) else {}
+    out: Set[str] = set()
+    spec = nets.get("default")
+    if not (isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False))):
+        out.add("default")
+    for k, spec in nets.items():
+        if isinstance(spec, dict) and spec.get("internal") is True and len(spec) == 1:
+            out.add(str(k))
+    return out
 
 
 def dns_names(sname: str, svc: Dict[str, Any]) -> Dict[str, Set[str]]:
@@ -2189,15 +2267,19 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
-                 "alertmanager", "blackbox", "textfile-exporter", "grafana"}
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
-                "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets"}
+                "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
-                 "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting"}
-RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-")
+                 "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp"}
+# MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
+# routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
+# compose.yml (any key or value, folded, also split by an interpolation).
+MCP_NAME_PREFIX = "portcullis-mcp-"
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX)
 CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
 HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
 HUB_SERVICE_KEYS = {
@@ -2210,11 +2292,12 @@ HUB_SERVICE_KEYS = {
     "device_cgroup_rules", "gpus", "runtime", "isolation", "blkio_config", "cgroup", "cgroup_parent", "cpuset"}
 CORE_TRAEFIK_NAMES = {
     "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
-                "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal"},
+                "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal", "mcp", "hub-mcp",
+                "people-mcp"},
     "middlewares": {"directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
-                 "keycloak", "lldap"},
+                 "keycloak", "lldap", "mcp-gate"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers"}
@@ -2312,7 +2395,12 @@ def check_hub_rules(t: Template, r: Report) -> None:
         low, bare = fold_key(s), fold_key(_without_interp(s))
         for ref in RESERVED_REFS:
             if ref in low or ref in bare:
-                r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
+                if ref == MCP_NAME_PREFIX:
+                    r.error(where, f"references {MCP_NAME_PREFIX!r}: names starting {MCP_NAME_PREFIX} (routers, services, middlewares, "
+                                   "aliases, container names, hostnames, any key or value) are the Hub's AI companion routes and aliases",
+                            AI_HINT)
+                else:
+                    r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
 
     def literal(what: str, val: Any) -> bool:
@@ -2535,7 +2623,7 @@ RESOLVE_TYPES: Dict[str, Optional[Set[str]]] = {
     "union": {"list", "multi_enum", "groups"}, "intersection": {"list", "multi_enum", "groups"},
     "any": {"bool"}, "all": {"bool"},
 }
-HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change")
+HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change", "ai")   # ai: AI support (§13.8)
 RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
 GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
 CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
@@ -3811,7 +3899,13 @@ def settings_env_names(m: Dict[str, Any]) -> List[str]:
 
 def reserved_var(k: str) -> bool:
     """templates.ReservedVar: the instance variables the Hub sets."""
-    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_")
+    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_") or ai_reserved_var(k)
+
+
+def ai_reserved_var(k: str) -> bool:
+    """The AI support variables (§3.1, §2): PORTCULLIS_AI_* (the Hub's) and
+    core's PORTCULLIS_MCP_GATE_IP; never declared by a template."""
+    return k.startswith(VAR_AI_PREFIX) or k == VAR_MCP_GATE_IP
 
 
 def _set(o: Dict[str, Any], k: str) -> bool:
@@ -5196,11 +5290,14 @@ class _SpecCheck:
                 problems.append("user contains control characters")
             when = h.get("when") or []
             if not when:
-                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change)")
+                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change, ai)")
             for tr in when:
                 if tr not in HOOK_TRIGGERS:
-                    problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change, membership_change or "
-                                    "credential_change")
+                    problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change, membership_change, "
+                                    "credential_change or ai")
+            if "ai" in when and len(when) != 1:
+                problems.append("when: ai can't be combined with another trigger (an ai hook is run only by the AI machinery): "
+                                "write exactly when: [ai]")
             if _has(h, "timeout"):
                 try:
                     ns = go_parse_duration(scalar_text(h["timeout"]))
@@ -5222,6 +5319,8 @@ class _SpecCheck:
         elif hook:
             if hook not in self.hooks:
                 self.err(f"reload: hook {hook} is not declared in hooks")
+            elif is_ai_hook(self.hooks[hook]):
+                self.err(f"reload: hook {hook} is an ai hook (when: [ai]): the settings engine never runs it")
         else:
             if svc not in self.services:
                 self.err(f"reload: service {json.dumps(svc)} is not in compose.yml")
@@ -5579,6 +5678,8 @@ class _SpecCheck:
                 per_person = hook = True
                 if _str(d, "hook") not in self.hooks:
                     raise _Refuse(f"hook {_str(d, 'hook')} is not declared in hooks")
+                if is_ai_hook(self.hooks[_str(d, "hook")]):
+                    raise _Refuse(f"hook {_str(d, 'hook')} is an ai hook (when: [ai]): no option delivers to it")
         if scope == "person" and not per_person:
             raise _Refuse("scope person needs a per-person delivery (claim, header, file or hook)")
         if _str(o, "applies") == "live" and not hook:
@@ -5793,6 +5894,605 @@ def check_settings(t: Template, services: Dict[str, Any], routers: Dict[str, Dic
     if t.schema_errors & set(SETTINGS_SHAPE_KEYS):
         return   # the schema errors above say what to fix first
     _SpecCheck(t, services, routers, r).run()
+
+
+# ── AI support: the ai: block (contracts §3.2) ─────────────────────
+# Mirrors portcullis-hub internal/templates/ai.go (ValidateAI) rule for
+# rule: every refusal the Hub makes at discover is an error here naming the
+# field. Keep the two in sync (and with mcp-gate's forbidden headers).
+
+AI_CLIENT_PREFIX = "portcullis-ai-"
+AI_PROVIDERS_FILE = "ai-providers"
+DEFAULT_MCP_PATH = "/mcp"
+MAX_ALIAS_LEN = 63
+MCP_PROTOCOLS = ("2025-06-18", "2025-11-25", "2026-07-28")
+PROVIDER_KINDS = ("litellm", "openai_compatible", "anthropic", "openai", "google", "bedrock", "azure_openai")
+COMPANION_NAME_RE = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*")
+COMPANION_NAME_MAX = 31
+COMPANION_LABEL_MAX = 64
+UNSUPPORTED_MAX = 200
+ALT_NAME_MAX = 64
+ALT_NOTE_MAX = 200
+TOOL_PATTERNS_MAX = 256
+SCOPE_MAX = 128
+TOKEN_FORMAT_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,31} \{credential\}")
+SECRET_FORMAT_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,31} \{secret\}")
+AI_HEADER_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
+TOOL_PATTERN_RE = re.compile(r"[A-Za-z0-9_.*-]{1,128}(:[A-Za-z0-9_.*-]{1,128})?")
+MCP_PATH_RE = re.compile(r"/([A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*)?")
+# A superset of core mcp-gate's forbiddenHeader: a name the gate refuses
+# would make it refuse the whole mcp-gate.json.
+AI_FORBIDDEN_HEADERS = {"host", "cookie", "content-type", "accept", "proxy-authorization", "mcp-protocol-version", "mcp-session-id",
+                        "content-length", "transfer-encoding", "connection", "te", "upgrade", "keep-alive", "trailer", "proxy-connection"}
+AI_FORBIDDEN_HEADER_PREFIXES = ("mcp-", "x-forwarded-", "x-auth-request-", "remote-", "x-portcullis-")
+_AI_HEADER_TEXT = ("Host, Cookie, Content-Type, Accept, Content-Length, Transfer-Encoding, Connection, TE, Upgrade, Keep-Alive, "
+                   "Trailer, Proxy-Connection, Proxy-Authorization, Mcp-*, MCP-Protocol-Version, Mcp-Session-Id, X-Forwarded-*, "
+                   "X-Auth-Request-*, Remote-* or X-Portcullis-*")
+
+
+def is_ai_hook(h: Any) -> bool:
+    """Hook.IsAI: when lists ai (only ever alone: check_hooks)."""
+    return isinstance(h, dict) and "ai" in as_list(h.get("when"))
+
+
+def single_line(s: Any, limit: int) -> bool:
+    """singleLine: a string of 1-limit runes, not blank, no control characters."""
+    return isinstance(s, str) and s.strip() != "" and len(s) <= limit and not has_control(s)
+
+
+# HTTPS_URL_RE: never looser than the Hub's httpsURL (Go url.Parse + https
+# + host + no userinfo): a host of letters, digits, '.' and '-' or a
+# bracketed IPv6 address, an optional all-digit port, then a path / query
+# / fragment whose every '%' starts a two-hex-digit escape, no whitespace,
+# backslashes or control characters.
+HTTPS_URL_RE = re.compile(r"https://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?"
+                          r"(?:[/?#](?:[^\s%\\]|%[0-9A-Fa-f]{2})*)?")
+
+
+def https_url(s: Any) -> bool:
+    """httpsURL: an absolute https URL with a host and no userinfo."""
+    return isinstance(s, str) and not has_control(s) and bool(HTTPS_URL_RE.fullmatch(s))
+
+
+def valid_mcp_path(p: Any) -> bool:
+    """validMCPPath: absolute, clean, URL-safe segments, no ? or #."""
+    return isinstance(p, str) and bool(MCP_PATH_RE.fullmatch(p)) and go_clean(p) == p
+
+
+def ai_header_problem(h: str) -> bool:
+    low = h.lower()
+    return not AI_HEADER_RE.fullmatch(h) or low in AI_FORBIDDEN_HEADERS or low.startswith(AI_FORBIDDEN_HEADER_PREFIXES)
+
+
+def readonly_var(companion: str) -> str:
+    """ReadOnlyVar: PORTCULLIS_AI_READONLY_<COMPANION>."""
+    return VAR_AI_READONLY + companion.upper().replace("-", "_")
+
+
+def raw_var_refs(s: str) -> List[Tuple[str, str]]:
+    """rawVarRefs: (name, full text) of each interpolation ($$ is a literal
+    $): ${...} up to its first closing brace, or $NAME."""
+    out: List[Tuple[str, str]] = []
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] != "$":
+            i += 1
+            continue
+        if i + 1 < n and s[i + 1] == "$":
+            i += 2
+            continue
+        j = i + 1
+        braced = j < n and s[j] == "{"
+        if braced:
+            j += 1
+        k = j
+        while k < n and (s[k] == "_" or s[k].isascii() and s[k].isalnum()):
+            k += 1
+        if k == j:
+            i += 1
+            continue
+        end = k
+        if braced:
+            c = s.find("}", k)
+            end = c + 1 if c >= 0 else n
+        out.append((s[j:k], s[i:end]))
+        i += 1
+    return out
+
+
+class _AICheck:
+    """ValidateAI over one template."""
+
+    def __init__(self, t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+        self.t, self.r = t, r
+        self.m: Dict[str, Any] = t.manifest or {}
+        self.services = {str(k): (v if isinstance(v, dict) else {}) for k, v in services.items()}
+        self.routers = routers
+        self.hooks = {_str(h, "name"): h for h in self.m.get("hooks") or [] if isinstance(h, dict)}
+        self.named: Set[str] = set()   # hooks an ai: field names
+
+    def err(self, msg: str) -> None:
+        self.r.error(self.t.m_where, msg, AI_HINT)
+
+    def cerr(self, msg: str) -> None:
+        self.r.error(self.t.c_where, msg, AI_HINT)
+
+    def run(self) -> None:
+        m = self.m
+        for c in m.get("keycloak_clients") or []:
+            cid = _str(c, "client_id") if isinstance(c, dict) else ""
+            if cid.lower().startswith(AI_CLIENT_PREFIX):
+                self.err(f"keycloak_clients: client_id {cid}: the prefix {AI_CLIENT_PREFIX} is the Hub's AI clients' (contract §8)")
+        for f in m.get("files") or []:
+            if isinstance(f, dict) and _str(f, "name") == AI_PROVIDERS_FILE:
+                self.err(f"files[{AI_PROVIDERS_FILE}]: the data file name {AI_PROVIDERS_FILE} is reserved for the AI page (contract §3.2)")
+        # A core subdomain (mcp included) as a default subdomain:
+        # check_rule_forms ("subdomain ... belongs to core").
+        a = m.get("ai")
+        if "ai" not in m or not isinstance(a, dict):
+            # Missing: the schema error says so; the compose side is
+            # checked as if the template had no companions.
+            self.check_var_refs([])
+            self.check_ai_hooks()
+            return
+        if "ai" in self.t.schema_errors:
+            # Misshapen: the schema errors say what to fix. The companions
+            # and hooks are read from the raw block, so a shape error
+            # doesn't turn into "only AI variables …" / "no ai: field
+            # names it" errors.
+            raw = [c for c in as_list(a.get("mcp")) if isinstance(c, dict) and isinstance(c.get("name"), str)]
+            for c in raw:
+                ident = c.get("identity") if isinstance(c.get("identity"), dict) else {}
+                self.named.update(n for n in (ident.get("mint"), ident.get("revoke")) if isinstance(n, str))
+            if isinstance(a.get("on_change"), str):
+                self.named.add(a["on_change"])
+            self.check_var_refs(raw)
+            self.check_ai_hooks()
+            return
+        has_mcp, has_unsup = "mcp" in a, "unsupported" in a
+        if has_mcp and has_unsup:
+            self.err("ai: either ai.mcp or ai.unsupported, not both")
+        elif not has_mcp and not has_unsup:
+            self.err("ai: required (ai.mcp or ai.unsupported)")
+        companions = [c for c in a.get("mcp") or [] if isinstance(c, dict)] if has_mcp else []
+        if has_unsup:
+            if not single_line(a.get("unsupported"), UNSUPPORTED_MAX):
+                self.err(f"ai.unsupported must be one line of 1–{UNSUPPORTED_MAX} characters")
+            if _str(a, "on_change"):
+                self.err("ai.on_change is only allowed with ai.mcp")
+            alt = a.get("alternative")
+            if isinstance(alt, dict):
+                if not single_line(alt.get("name"), ALT_NAME_MAX):
+                    self.err(f"ai.alternative.name must be one line of 1–{ALT_NAME_MAX} characters")
+                elif not https_url(alt.get("source")):
+                    self.err("ai.alternative.source must be an https:// URL")
+                elif not single_line(alt.get("note"), ALT_NOTE_MAX):
+                    self.err(f"ai.alternative.note must be one line of 1–{ALT_NOTE_MAX} characters")
+        elif has_mcp:
+            if not companions:
+                self.err("ai.mcp: list at least one companion (or use ai.unsupported)")
+            if _has(a, "alternative"):
+                self.err("ai.alternative is only allowed with ai.unsupported")
+            if _has(a, "chat"):
+                self.err("ai.chat is only allowed with ai.unsupported (an AI page is no app the AI drives)")
+        self.check_ai_clients(a.get("chat") if isinstance(a.get("chat"), dict) else None)
+        if has_mcp and not has_unsup and companions:
+            self.check_companions(companions)
+            if _str(a, "on_change"):
+                self.ai_hook("ai.on_change", _str(a, "on_change"))
+        self.check_var_refs(companions if has_mcp and not has_unsup else [])
+        self.check_ai_hooks()
+        if has_mcp and not has_unsup and companions:
+            self.check_ai_hook_services(companions)
+
+    def check_ai_hook_services(self, companions: List[Dict[str, Any]]) -> None:
+        """An ai hook never runs on a kind: companion service (at scale 0
+        while its companion is off: the owed revoke_all / on_change could
+        never run). Hub ValidateAI."""
+        svcs = {_str(c, "service") for c in companions if isinstance(c, dict) and _str(c, "kind") == "companion"}
+        for name, h in self.hooks.items():
+            if name in self.named and isinstance(h, dict) and _str(h, "service") in svcs:
+                self.err(f"hooks[{name}]: an ai hook may not run on service {_str(h, 'service')}: it backs a kind: "
+                         "companion companion, at scale 0 while AI support is off (run it on the app's own service)")
+
+    def check_ai_hooks(self) -> None:
+        for name, h in self.hooks.items():
+            if is_ai_hook(h) and name not in self.named:
+                self.err(f"hooks[{name}]: when: [ai] but no ai: field names it (only ai.mcp[].identity.mint / revoke and "
+                         "ai.on_change run ai hooks)")
+
+    def ai_hook(self, where: str, name: str) -> None:
+        """aiHook: the hook exists and is exactly when: [ai]."""
+        self.named.add(name)
+        h = self.hooks.get(name)
+        if h is None:
+            self.err(f"{where}: hook {name} is not declared in hooks")
+        elif as_list(h.get("when")) != ["ai"]:
+            self.err(f"{where}: hook {name} must have exactly when: [ai] (contract §13.8)")
+
+    def check_ai_clients(self, chat: Optional[Dict[str, Any]]) -> None:
+        clients = [c for c in self.m.get("keycloak_clients") or [] if isinstance(c, dict) and c.get("ai_client") is True]
+        if chat is None:
+            if clients:
+                self.err(f"keycloak_clients: client {_str(clients[0], 'client_id')} has ai_client: true, which is only allowed with ai.chat")
+            return
+        if len(clients) != 1:
+            self.err(f"ai.chat: exactly one keycloak_clients entry has ai_client: true (found {len(clients)})")
+        elif not _str(clients[0], "secret_env"):
+            self.err(f"keycloak_clients: ai_client {_str(clients[0], 'client_id')} needs a secret_env (a confidential client)")
+        kinds = chat.get("provider_kinds")
+        kinds = kinds if isinstance(kinds, dict) else {}
+        if not kinds:
+            self.err(f"ai.chat.provider_kinds: list at least one model provider kind ({', '.join(PROVIDER_KINDS)})")
+        for k, n in kinds.items():
+            if k not in PROVIDER_KINDS:
+                self.err(f"ai.chat.provider_kinds: {json.dumps(str(k))} must be one of {', '.join(PROVIDER_KINDS)}")
+            elif n not in ("one", "many"):
+                self.err(f"ai.chat.provider_kinds: {k}: {json.dumps(scalar_text(n))} must be one or many")
+        f = chat.get("file") if isinstance(chat.get("file"), dict) else {}
+        fsvc, mount = _str(f, "service"), _str(f, "mount")
+        if fsvc not in self.services:
+            self.err(f"ai.chat.file: service {json.dumps(fsvc)} is not in compose.yml")
+        elif not valid_mount(mount):
+            self.err(f"ai.chat.file: mount {json.dumps(mount)} must be an absolute, clean container directory (no ':')")
+        else:
+            for df in self.m.get("files") or []:
+                if isinstance(df, dict) and _str(df, "service") == fsvc and _nested(_str(df, "mount"), mount):
+                    self.err(f"ai.chat.file: mount {mount} collides with files[{_str(df, 'name')}]'s mount {_str(df, 'mount')}")
+                    break
+        esvc = _str(chat.get("env") if isinstance(chat.get("env"), dict) else {}, "service")
+        if not esvc or esvc not in self.services:
+            self.err(f"ai.chat.env: service {json.dumps(esvc)} must be a service of compose.yml (it receives the providers' variables)")
+
+    def check_var_refs(self, companions: List[Dict[str, Any]]) -> None:
+        """checkAIVarRefs over every compose string value."""
+        own = {readonly_var(_str(c, "name")) for c in companions}
+        scalars: List[str] = []
+        _string_values(self.t.compose or {}, scalars)
+        seen: Set[str] = set()
+        for sc in scalars:
+            for name, text in raw_var_refs(sc):
+                # A default or alternate text naming an AI variable
+                # (${X:-PORTCULLIS_AI_...}, any case) could build one.
+                if text.startswith("${") and VAR_AI_PREFIX in text[2 + len(name):].upper():
+                    msg = f"{text}: a default or alternate value naming {VAR_AI_PREFIX}* is refused (the AI variables are the Hub's)"
+                    if msg not in seen:
+                        seen.add(msg)
+                        self.cerr(msg)
+                    continue
+                if not name.startswith(VAR_AI_PREFIX):
+                    continue
+                if name.startswith(VAR_AI_PROVIDER):
+                    msg = (f"references {name}: PORTCULLIS_AI_PROVIDER_* variables are never referenced by a template "
+                           "(the Hub adds them to ai.chat.env's service)")
+                elif name == VAR_AI_ENABLED:
+                    if companions and text == "${" + VAR_AI_ENABLED + ":-false}":
+                        continue
+                    msg = f"{VAR_AI_ENABLED} may appear only as exactly ${{{VAR_AI_ENABLED}:-false}}, in a template with ai.mcp"
+                elif name in own:
+                    if text == "${" + name + ":-true}":
+                        continue
+                    msg = f"{name} may appear only as exactly ${{{name}:-true}}"
+                else:
+                    msg = (f"references {name}: the only AI variables are {VAR_AI_ENABLED} and PORTCULLIS_AI_READONLY_<COMPANION> "
+                           "of the template's own companions")
+                if msg not in seen:
+                    seen.add(msg)
+                    self.cerr(msg)
+        # Nor may a service set one (an environment map key, or a list item
+        # NAME / NAME=...; case-insensitive): it would take the Hub's provider
+        # secret's place (G31; the Hub's checkAIVarRefs).
+        services = (self.t.compose or {}).get("services") if isinstance(self.t.compose, dict) else None
+        for svc in sorted(services) if isinstance(services, dict) else []:
+            for k in _environment_keys(services[svc]):
+                if "$" in k:
+                    self.cerr(f"service {svc}: the environment variable name {json.dumps(k)} is built by interpolation: names are written out")
+                elif k.upper().startswith(VAR_AI_PROVIDER):
+                    self.cerr(f"service {svc} sets {k}: PORTCULLIS_AI_PROVIDER_* variables are set only by the Hub (on ai.chat.env's service)")
+
+    def check_trust_network(self, w: str, svc: str, router: str) -> None:
+        """Hub checkTrustNetwork: an identity_headers companion joins exactly
+        one network, an internal: true project network whose members are
+        exactly the companion and the service(s) of its router."""
+        nets = sorted(networks_of(self.services[svc]))
+        if len(nets) != 1 or nets[0] in ("default", PROXY_NET):
+            self.err(f"{w}: identity_headers companion service {svc} must join exactly one network, its trust network "
+                     f"(an internal: true project network shared only with the app that trusts the headers), not {nets}")
+            return
+        trust = nets[0]
+        top = (self.t.compose or {}).get("networks") or {}
+        spec = top.get(trust) if isinstance(top, dict) else None
+        # Exactly {internal: true}: an address plan or driver option could
+        # make the subnet the app trusts cover other addresses.
+        if not (isinstance(spec, dict) and spec.get("internal") is True and len(spec) == 1):
+            self.err(f"{w}: the trust network {trust} must be declared at the top level as exactly {{internal: true}} "
+                     "(no ipam, driver, driver_opts, enable_ipv6, attachable, labels, name or external)")
+            return
+        want = {svc} | {_str(rt, "_service") for n, rt in self.routers.items() if n == router}
+        if len(want) < 2:
+            self.err(f"{w}: no compose service carries router {router} (the app that trusts the identity headers)")
+            return
+        for name in sorted(self.services):
+            s = self.services[name]
+            inside = trust in networks_of(s)
+            if inside and name not in want:
+                self.err(f"{w}: service {name} joins the trust network {trust}: only the companion {svc} and the service(s) "
+                         f"of router {router} may (any other member could send identity headers the app trusts)")
+            elif not inside and name in want:
+                self.err(f"{w}: service {name} (router {router}) must join the trust network {trust}")
+            mode = s.get("network_mode")
+            if isinstance(mode, str) and mode.startswith("service:") and mode[len("service:"):] in want:
+                self.err(f"{w}: service {name} uses network_mode {mode}: it would share an address on the trust network {trust}")
+            pid = s.get("pid")
+            if isinstance(pid, str) and pid.startswith("service:") and pid[len("service:"):] in want:
+                self.err(f"{w}: service {name} uses pid {pid}: it would share the process namespace of a trust network member ({trust})")
+
+    def check_companions(self, companions: List[Dict[str, Any]]) -> None:
+        auth = self.m.get("auth") if isinstance(self.m.get("auth"), dict) else {}
+        method = _str(auth, "method")
+        stop = False
+        if auth.get("admin_paths"):
+            self.err("ai.mcp: not allowed with auth.admin_paths (the gate can't apply path groups; use ai.unsupported)")
+            stop = True
+        if method in ("public", "mtls"):
+            self.err(f"ai.mcp: not allowed with auth.method {method} (no Portcullis identity, or LoA 3)")
+            stop = True
+        if not self.routers:
+            self.err("ai.mcp: not allowed on a router-less template (a companion's endpoint is on one of its hosts)")
+            stop = True
+        if stop:
+            return
+        host_routers = set()
+        for name, rt in self.routers.items():
+            p = parse_rule(rt.get("rule", ""))
+            if p is not None and p[3] is None:
+                host_routers.add(name)
+        random_env = {_str(e, "key") for e in self.m.get("env") or [] if isinstance(e, dict) and e.get("generate") == "random"}
+        public_prefixes: List[str] = []
+        pa = auth.get("public_access")
+        for pp in (pa.get("paths") or []) if isinstance(pa, dict) else []:
+            pre = _str(pp, "prefix").split(PUBLIC_TOKEN, 1)[0].rstrip("/") if isinstance(pp, dict) else ""
+            public_prefixes.append(pre or "/")
+        kinds = {_str(c, "name"): _str(c, "kind") for c in companions}
+        names: Set[str] = set()
+        service_use: Dict[str, str] = {}
+        endpoints: Dict[str, List[Tuple[str, str]]] = {}
+        for i, c in enumerate(companions):
+            name = _str(c, "name")
+            if not COMPANION_NAME_RE.fullmatch(name) or len(name) > COMPANION_NAME_MAX:
+                self.err(f"ai.mcp[{i}]: name {json.dumps(name)} must match ^{COMPANION_NAME_RE.pattern}$ and be at most "
+                         f"{COMPANION_NAME_MAX} characters")
+                continue
+            w = f"ai.mcp[{name}]"
+            if name in names:
+                self.err(f"{w}: name declared twice")
+                continue
+            names.add(name)
+            self.check_companion(w, c, host_routers, random_env, public_prefixes, kinds, service_use, endpoints)
+
+    def check_companion(self, w: str, c: Dict[str, Any], host_routers: Set[str], random_env: Set[str], public_prefixes: List[str],
+                        kinds: Dict[str, str], service_use: Dict[str, str], endpoints: Dict[str, List[Tuple[str, str]]]) -> None:
+        name, kind, svc = _str(c, "name"), _str(c, "kind"), _str(c, "service")
+        ident = c.get("identity") if isinstance(c.get("identity"), dict) else {}
+        mode = _str(ident, "mode")
+        alias = MCP_NAME_PREFIX + self.t.id + "--" + name
+        if len(alias) > MAX_ALIAS_LEN:
+            self.err(f"{w}: the alias {alias} is longer than {MAX_ALIAS_LEN} characters (one DNS label: 15 + len(id) + 2 + "
+                     f"len(companion) ≤ {MAX_ALIAS_LEN})")
+        if not single_line(c.get("label"), COMPANION_LABEL_MAX):
+            self.err(f"{w}: label must be one line of 1–{COMPANION_LABEL_MAX} characters")
+        if kind not in ("companion", "builtin"):
+            self.err(f"{w}: kind {json.dumps(kind)} must be companion or builtin")
+        if svc not in self.services:
+            self.err(f"{w}: service {svc} is not in compose.yml")
+        elif not ID_NORMAL_RE.fullmatch(svc):
+            self.err(f"{w}: service {svc} must match ^{ID_NORMAL_RE.pattern}$ (no _, no --, no trailing -)")
+        if mode not in ("app_token", "identity_headers", "app_oauth"):
+            self.err(f"{w}: identity.mode {json.dumps(mode)} must be app_token, identity_headers or app_oauth")
+        if mode == "app_oauth" and kind != "builtin":
+            self.err(f"{w}: app_oauth needs kind builtin (the app is its own MCP authorization server)")
+        other = service_use.get(svc)
+        if other is not None and (kind == "companion" or kinds.get(other) == "companion"):
+            self.err(f"{w}: companion service {svc} already backs companion {other}")
+        if kind == "companion" and svc in self.services:
+            s = self.services[svc]
+            if any(fold_key(k).startswith("traefik.") for k in labels_of(s)):
+                self.err(f"{w}: companion service {svc} may have no traefik.* label (the Hub routes it)")
+            if PROXY_NET in networks_of(s):
+                self.err(f"{w}: companion service {svc} may not join {PROXY_NET} itself (the Hub's override attaches it while AI support is on)")
+            if "network_mode" in s:
+                self.err(f"{w}: companion service {svc} may not set network_mode")
+            named = [f for f in ("container_name", "hostname") if f in s]
+            if named:
+                self.err(f"{w}: companion service {svc} may not set {' or '.join(named)}")
+            if "ports" in s:
+                self.err(f"{w}: companion service {svc} may not publish ports (the gate is the only way in)")
+            for oname in sorted(self.services):
+                if self.services[oname].get("network_mode") == f"service:{svc}":
+                    self.err(f"{w}: service {oname} uses network_mode service:{svc}, the companion service's network namespace "
+                             "(it would reach the companion past the gate)")
+        if kind == "companion" and mode == "identity_headers" and svc in self.services:
+            self.check_trust_network(w, svc, _str(c, "router"))
+        if mode == "identity_headers":
+            # A host-network service sends from the host's addresses, the
+            # trust network's gateway side included.
+            for oname in sorted(self.services):
+                if self.services[oname].get("network_mode") == "host":
+                    self.err(f"{w}: service {oname} uses network_mode host: not allowed next to an identity_headers companion "
+                             "(it reaches the app from the host's addresses)")
+                if self.services[oname].get("pid") == "host":
+                    self.err(f"{w}: service {oname} uses pid host: not allowed next to an identity_headers companion "
+                             "(it sees every process of the host, the companion's included)")
+            cs = ident.get("caller_secret") if isinstance(ident.get("caller_secret"), dict) else {}
+            secret = _str(cs, "env")
+            for oname in sorted(self.services):
+                if secret and oname != svc and any(secret in var_names_deep(v) for v in _scalars(self.services[oname])):
+                    self.err(f"{w}: service {oname} reads the caller secret {secret}: only the companion service {svc} may")
+        service_use[svc] = name
+        port = c.get("port", 0)
+        port = port if isinstance(port, int) and not isinstance(port, bool) else -1
+        if (mode != "app_oauth" and port < 1) or port < 0 or port > 65535:
+            self.err(f"{w}: port {scalar_text(c.get('port', 0))} must be 1–65535")
+        path = c.get("path")
+        if _has(c, "path") and path != "" and not valid_mcp_path(path):
+            self.err(f"{w}: path {json.dumps(scalar_text(path))} must be absolute and clean, without ? or #")
+        router = _str(c, "router")
+        if router not in host_routers:
+            self.err(f"{w}: router {json.dumps(router)} is not a host router of the template (a router whose rule is Host() alone)")
+        if mode == "app_oauth" and _str(c, "public_path"):
+            self.err(f"{w}: public_path is refused on an app_oauth companion (its endpoint is the app's own route https://<host><path>)")
+        if mode == "app_oauth":
+            pp = _str(c, "path") or DEFAULT_MCP_PATH
+        else:
+            pp = _str(c, "public_path") or DEFAULT_MCP_PATH
+            self.check_public_path(w, pp, public_prefixes)
+        for opath, oname in endpoints.get(router, []):
+            if _nested(pp, opath):
+                self.err(f"{w}: endpoint path (public_path, or path for app_oauth) {pp} on router {router} overlaps companion "
+                         f"{oname}'s {opath}")
+                break
+        endpoints.setdefault(router, []).append((pp, name))
+        self.check_modes(w, c, mode)
+        self.check_identity(w, c, ident, mode, random_env)
+        tools = c.get("tools") if isinstance(c.get("tools"), dict) else {}
+        for cls in ("writes", "confirm", "never"):
+            pats = as_list(tools.get(cls))
+            if len(pats) > TOOL_PATTERNS_MAX:
+                self.err(f"{w}: tools.{cls} lists more than {TOOL_PATTERNS_MAX} patterns")
+            for pat in pats:
+                if not isinstance(pat, str) or not TOOL_PATTERN_RE.fullmatch(pat):
+                    self.err(f"{w}: tools.{cls} pattern {json.dumps(scalar_text(pat))} must match ^{TOOL_PATTERN_RE.pattern}$")
+        if mode == "app_oauth" and c.get("aggregate") is True:
+            self.err(f"{w}: aggregate: true is refused on an app_oauth companion (never in \"all my apps\")")
+        up = _str(c, "upstream")
+        if up == "community" and kind == "builtin":
+            self.err(f"{w}: upstream community with kind builtin (the app's own server is official)")
+        elif up not in ("official", "community"):
+            self.err(f"{w}: upstream {json.dumps(up)} must be official or community")
+        if not https_url(c.get("source")):
+            self.err(f"{w}: source must be an https:// URL (the companion project's home)")
+        protos = as_list(c.get("protocol"))
+        if not protos:
+            self.err(f"{w}: protocol must list at least one of {', '.join(MCP_PROTOCOLS)}")
+        seen: Set[str] = set()
+        for p in protos:
+            if p not in MCP_PROTOCOLS or p in seen:
+                self.err(f"{w}: protocol {json.dumps(scalar_text(p))} must be one of {', '.join(MCP_PROTOCOLS)}, each once")
+                break
+            seen.add(p)
+
+    def check_public_path(self, w: str, pp: str, public_prefixes: List[str]) -> None:
+        if not valid_mcp_path(pp) or pp == "/":
+            self.err(f"{w}: public_path {json.dumps(pp)} must be absolute and clean, and not /")
+            return
+        for root in ("/.well-known", "/oauth2"):
+            if pp == root or pp.startswith(root + "/"):
+                self.err(f"{w}: public_path {pp} may not be at or under {root}/ (metadata and sign-in routes)")
+                return
+        for p in public_prefixes:
+            if p == "/" or _nested(pp, p):
+                self.err(f"{w}: public_path {pp} overlaps the auth.public_access path {p}")
+                return
+
+    def check_modes(self, w: str, c: Dict[str, Any], mode: str) -> None:
+        modes = as_list(c.get("modes"))
+        dm = _str(c, "default_mode")
+        if not modes:
+            self.err(f"{w}: modes must list read_only and/or read_write")
+            return
+        if any(md not in ("read_only", "read_write") for md in modes) or len(set(map(str, modes))) != len(modes):
+            self.err(f"{w}: modes must be a subset of read_only, read_write without repeats (got {modes})")
+            return
+        if mode == "app_oauth" and modes != ["read_write"]:
+            self.err(f"{w}: an app_oauth companion's modes are exactly [read_write]")
+        elif dm and dm not in modes:
+            self.err(f"{w}: default_mode {json.dumps(dm)} is not one of modes {modes}")
+        elif len(modes) == 2 and not dm:
+            self.err(f"{w}: default_mode is required when modes has two entries")
+
+    def check_identity(self, w: str, c: Dict[str, Any], ident: Dict[str, Any], mode: str, random_env: Set[str]) -> None:
+        def extra(*fields: str) -> bool:
+            for f in fields:
+                v = ident.get(f)
+                if f in ident and v is not None and v != "":
+                    self.err(f"{w}: identity.{f} is not a parameter of mode {mode}")
+                    return True
+            return False
+        if mode == "app_token":
+            if extra("caller_secret"):
+                return
+            header = _str(ident, "header")
+            if header and ai_header_problem(header):
+                self.err(f"{w}: identity.header {json.dumps(header)} must match ^{AI_HEADER_RE.pattern}$ and not be {_AI_HEADER_TEXT}")
+            fmt, basic = _str(ident, "format"), ident.get("basic")
+            if fmt and basic is not None:
+                self.err(f"{w}: identity: exactly one of format and basic, not both")
+            elif fmt:
+                if not TOKEN_FORMAT_RE.fullmatch(fmt):
+                    self.err(f"{w}: identity.format {json.dumps(fmt)} must match ^{TOKEN_FORMAT_RE.pattern}$ (e.g. \"token {{credential}}\")")
+            elif isinstance(basic, dict):
+                u = basic.get("user")
+                if u != "{username}" and (not single_line(u, 128) or any(ch in str(u) for ch in ":{}")):
+                    self.err(f"{w}: identity.basic.user must be exactly {{username}} or a one-line literal without :, {{ or }}")
+                if basic.get("password") != "{credential}":
+                    self.err(f"{w}: identity.basic.password must be exactly {{credential}}")
+            else:
+                self.err(f"{w}: identity: app_token needs format or basic")
+            if not _str(ident, "mint"):
+                self.err(f"{w}: identity.mint (a hook) is required for app_token")
+            if not _str(ident, "revoke"):
+                self.err(f"{w}: identity.revoke (a hook) is required for app_token")
+            scopes = ident.get("scopes") if isinstance(ident.get("scopes"), dict) else {}
+            modes = as_list(c.get("modes"))
+            for k, lst in scopes.items():
+                if k not in modes:
+                    self.err(f"{w}: identity.scopes key {json.dumps(str(k))} is not one of modes {modes}")
+                    continue
+                if any(not single_line(sc, SCOPE_MAX) for sc in as_list(lst)):
+                    self.err(f"{w}: identity.scopes.{k} entries must be one line of 1–{SCOPE_MAX} characters")
+        elif mode == "identity_headers":
+            if extra("header", "format", "basic", "mint", "revoke", "scopes"):
+                return
+            cs = ident.get("caller_secret")
+            if not isinstance(cs, dict):
+                self.err(f"{w}: identity_headers needs identity.caller_secret {{env, header, format}}")
+                return
+            env = _str(cs, "env")
+            if env not in random_env:
+                self.err(f"{w}: identity.caller_secret.env {json.dumps(env)} must be an env entry with generate: random")
+            header = _str(cs, "header")
+            if header and ai_header_problem(header):
+                self.err(f"{w}: identity.caller_secret.header {json.dumps(header)} must match ^{AI_HEADER_RE.pattern}$ and not be "
+                         f"{_AI_HEADER_TEXT}")
+            f = _str(cs, "format")
+            if f and f != "{secret}" and not SECRET_FORMAT_RE.fullmatch(f):
+                self.err(f"{w}: identity.caller_secret.format {json.dumps(f)} must contain {{secret}} once: exactly {{secret}} or "
+                         f"match ^{SECRET_FORMAT_RE.pattern}$")
+        elif mode == "app_oauth":
+            if extra("header", "format", "basic", "mint", "scopes", "caller_secret"):
+                return
+            if not _str(ident, "revoke"):
+                self.err(f"{w}: identity.revoke (a hook) is required for app_oauth")
+        for field in ("mint", "revoke"):
+            n = _str(ident, field)
+            if n:
+                self.ai_hook(f"{w}: identity.{field}", n)
+
+
+def _environment_keys(svc: Any) -> List[str]:
+    """The variable names a compose service's environment sets: its map
+    keys, or each list item's name (before the first =)."""
+    env = svc.get("environment") if isinstance(svc, dict) else None
+    if isinstance(env, dict):
+        return sorted(str(k) for k in env)
+    if isinstance(env, list):
+        return [it.split("=", 1)[0].strip() for it in env if isinstance(it, str)]
+    return []
+
+
+def check_ai(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+    """The ai: block (contracts §3.2), as the Hub's ValidateAI checks it."""
+    _AICheck(t, services, routers, r).run()
 
 
 # ── Main ────────────────────────────────────────────────────────────

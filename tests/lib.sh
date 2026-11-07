@@ -835,3 +835,38 @@ write_appfile() {
   fi
   mv -f "$tmp" "$dir/$2.json" 2>/dev/null || sudo -n mv -f "$tmp" "$dir/$2.json"
 }
+
+# write_ai_providers_override <app> <json> <out>: emulate the Hub's delivery
+# to an AI page (contract §3.2 ai.chat, §15.12): ai-providers.json in a
+# temporary directory (like write_appfile: 0640 group 10001), bind-mounted
+# read-only at ai.chat.file.mount in ai.chat.file.service, and the
+# environment: {VAR: ${VAR}} entries the Hub adds to ai.chat.env.service for
+# every variable the file's providers name (export their values first).
+# Use <out> as COMPOSE_OVERRIDE; rewrite the file with write_appfile <app>
+# ai-providers <json>.
+write_ai_providers_override() {
+  local app="$1" json="$2" out="$3" compose manifest fsvc mount esvc var vars
+  compose=$(_find_compose "$app") || { fail "compose.yml not found for $app"; return 1; }
+  manifest="$(dirname "$compose")/manifest.yaml"
+  fsvc=$(yq -r '.ai.chat.file.service // ""' "$manifest")
+  mount=$(yq -r '.ai.chat.file.mount // ""' "$manifest")
+  esvc=$(yq -r '.ai.chat.env.service // ""' "$manifest")
+  if [ -z "$fsvc" ] || [ -z "$mount" ] || [ -z "$esvc" ]; then
+    fail "$app: the manifest has no ai.chat file / env"; return 1
+  fi
+  APPFILES_DIR="${APPFILES_DIR:-$(mktemp -d)}"
+  export APPFILES_DIR
+  mkdir -p "$APPFILES_DIR/$app/ai-providers"
+  chmod 0755 "$APPFILES_DIR" "$APPFILES_DIR/$app" "$APPFILES_DIR/$app/ai-providers"
+  write_appfile "$app" ai-providers "$json" || return 1
+  {
+    printf 'services:\n  %s:\n    volumes:\n      - type: bind\n        source: %s\n        target: %s\n        read_only: true\n' \
+      "$fsvc" "$APPFILES_DIR/$app/ai-providers" "$mount"
+    vars=$(printf '%s' "$json" | jq -r '[.providers[].env[]] | unique | .[]')
+    [ -z "$vars" ] || printf '  %s:\n    environment:\n' "$esvc"
+    for var in $vars; do
+      [[ "$var" =~ ^PORTCULLIS_AI_PROVIDER_[A-Z0-9_]+$ ]] || { fail "bad provider variable $var"; return 1; }
+      printf '      %s: ${%s}\n' "$var" "$var"
+    done
+  } > "$out"
+}

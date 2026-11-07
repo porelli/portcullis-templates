@@ -27,3 +27,7 @@ urls:
 tests:
   signin:
     skip: "public: no sign-in (auth.method public)"
+
+# AI support (contracts §3.2): why the AI can't act in this app.
+ai:
+  unsupported: "A public site with no signed-in person to act as"
