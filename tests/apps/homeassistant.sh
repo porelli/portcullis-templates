@@ -456,6 +456,16 @@ rc=$(hook revoke "$(rv alice "${SUB[alice]}")"); [ "$rc" = 0 ] && pass "revoke a
 rc=$(hook revoke "$(rv erin "$DUP")")
 [ "$rc" = 1 ] && grep -q 'refusing to guess' "$TMP/err" && [ "$(tokens_of erin)" = 1 ] && [ "$(tokens_of erin2)" = 1 ] \
   && pass "a sub on two credentials -> 1, nothing revoked" || fail "ambiguous sub -> $rc, erin $(tokens_of erin) erin2 $(tokens_of erin2)"
+rc=$(hook_patched revoke '
+orig = g["load_store"]
+def load_store(path, key):
+    d = orig(path, key)
+    if key == "auth":
+        d["credentials"].append({"id": "x", "user_id": "x", "auth_provider_type": "auth_oidc", "auth_provider_id": None, "data": {}})
+    return d
+g["load_store"] = load_store' "$(rv carol "${SUB[carol]}")")
+[ "$rc" = 1 ] && grep -q 'has no sub' "$TMP/err" && [ "$(tokens_of carol)" = 3 ] \
+  && pass "an auth_oidc credential without a sub in the store -> 1, nothing revoked" || fail "credential without sub -> $rc"
 
 # Fail closed.
 LL_BEFORE=$(LLATS)

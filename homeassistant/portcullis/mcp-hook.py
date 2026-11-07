@@ -67,7 +67,8 @@ data.sub equals the stdin "sub" exactly: auth_oidc keys accounts on the
 OIDC sub alone (its credential stores {"sub"} and nothing else) and never
 links by name or email. The user name is used for nothing (people rename
 themselves: person/update_own_profile). No such credential = no Home
-Assistant account (exit 0); more than one, or an unreadable store = exit 1.
+Assistant account (exit 0); more than one, any auth_oidc credential
+without a sub (it could be the person's), or an unreadable store = exit 1.
 The websocket auth/delete_refresh_token only acts on the caller's own
 tokens, so every refresh token of that user (web sessions, Companion apps,
 long-lived access tokens, MCP clients; whenever created) is revoked
@@ -421,8 +422,12 @@ def person_of(sub: str):
     """The id of the user holding the auth_oidc credential of sub; None =
     no account. Anything ambiguous fails."""
     users, _, creds = auth_store(with_credentials=True)
-    found = [c for c in creds if c.get("auth_provider_type") == "auth_oidc"
-             and isinstance(c.get("data"), dict) and c["data"].get("sub") == sub]
+    oidc = [c for c in creds if c.get("auth_provider_type") == "auth_oidc"]
+    if any(not isinstance(c.get("data"), dict) or not isinstance(c["data"].get("sub"), str) or not c["data"]["sub"]
+           for c in oidc):
+        # A credential we can't read could be the person's: never guess.
+        raise Fail("an auth_oidc credential has no sub: refusing to guess")
+    found = [c for c in oidc if c["data"]["sub"] == sub]
     if not found:
         return None
     uids = {c.get("user_id") for c in found}
