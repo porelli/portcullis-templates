@@ -9,8 +9,11 @@
 #   - multi-image apps are grouped so they move in lockstep;
 #   - AI companions are images of their template's compose.yml, tracked
 #     with it (gitea: docker.gitea.com/gitea-mcp-server, grafana:
-#     grafana/mcp-grafana); a bump changes the tools, which
-#     tests/apps/gitea.sh / grafana.sh check against the manifest;
+#     grafana/mcp-grafana, nextcloud: ghcr.io/cbcoutinho/nextcloud-mcp-server);
+#     a bump changes the tools, which tests/apps/gitea.sh / grafana.sh /
+#     nextcloud.sh check against the manifest; the community
+#     nextcloud-mcp-server (one maintainer, releases most days) moves by
+#     hand except patches, so each minor is re-vetted;
 #   - ai-chat: LibreChat (ghcr.io/librechat-ai/librechat, api and config
 #     share it), mongo and getmeili/meilisearch are tracked; MongoDB majors
 #     (7.0 for now: 8.x refuses Linux kernels 6.19 to 7.0.13) and
@@ -112,6 +115,8 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "nextcloud"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "*cbcoutinho/nextcloud-mcp-server"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # No pre-releases. Dependabot's own pre-release filter let
       # python 3.16.0a1-alpine through (PR #2). Docker `versions` use Ruby Gem
       # requirement syntax: ">= X.Y.0.a, < X.Y.0" is exactly X.Y.0's alphas,

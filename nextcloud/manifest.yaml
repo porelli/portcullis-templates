@@ -171,6 +171,22 @@ hooks:
     command: [php, /portcullis/apply-settings.php]
     when: [start, settings_change]
     timeout: 10m
+  # Hooks of the ai: block (contracts §15.5), in the nextcloud service:
+  # occ mints, lists and deletes the person's app password. The credential
+  # on stdout is never logged. revoke_all walks every account (one occ
+  # call each), hence the longer timeout.
+  - name: mcp-mint
+    service: nextcloud
+    user: www-data
+    command: [php, /portcullis/mcp-token.php, mint]
+    when: [ai]
+    timeout: 60s
+  - name: mcp-revoke
+    service: nextcloud
+    user: www-data
+    command: [php, /portcullis/mcp-token.php, revoke]
+    when: [ai]
+    timeout: 10m
 
 settings:
   sections: [Files]
@@ -245,6 +261,48 @@ tests:
       json: {url: "/ocs/v2.php/cloud/users/{username}/groups?format=json", field: ocs.data.groups, contains: admin, headers: {OCS-APIRequest: "true"}}
       wait: 120
 
-# AI support (contracts §3.2): why the AI can't act in this app.
+# AI support (contracts §3.2): the community nextcloud-mcp-server
+# (cbcoutinho, AGPL-3.0), multi-user Basic pass-through: every request runs
+# as the person with their own Nextcloud app password
+# (portcullis-ai-<random>, minted by portcullis/mcp-token.php for the uid
+# the OIDC login gave them). Nextcloud app passwords carry no scopes and the
+# server has no read-only switch: read-only mode is enforced by the gate.
 ai:
-  unsupported: "AI support is being added"
+  mcp:
+    - name: nextcloud
+      label: Nextcloud
+      kind: companion
+      service: nextcloud-mcp
+      port: 8000
+      path: /mcp
+      router: nextcloud              # https://<nextcloud host>/mcp
+      public_path: /mcp
+      upstream: community
+      source: https://github.com/cbcoutinho/nextcloud-mcp-server
+      protocol: ["2026-07-28", "2025-11-25"]
+      modes: [read_only, read_write]
+      default_mode: read_write
+      identity:
+        mode: app_token
+        header: Authorization
+        basic: {user: "{username}", password: "{credential}"}
+        mint: mcp-mint
+        revoke: mcp-revoke
+      # nextcloud-mcp-server 0.205.3's tools for the enabled apps (webdav,
+      # sharing, calendar, contacts); tests/apps/nextcloud.sh checks every
+      # pattern against the real tools/list: writes = every tool without
+      # readOnlyHint, confirm covers every delete and every destructiveHint.
+      tools:
+        writes: ["*_write_*", "*_edit_*", "*_create*", "*_delete*", "*_move_*", "*_copy_*", "*_restore_*",
+                 "*_tag_file", "*_untag_file", "*_update*", "*_complete_*", "*_bulk_*", "*_manage_*"]
+        # Deletes; the calendar tools whose operation / action can delete
+        # (their argument isn't named "method", so the whole tool); sharing:
+        # creating or widening a share (user, group, email, federated or a
+        # public link: one tool, the type is an argument) and reading
+        # shares (the results carry public links' tokens and password
+        # hashes).
+        confirm: ["*delete*", "nc_calendar_bulk_operations", "nc_calendar_manage_calendar",
+                  "nc_share_create", "nc_share_update", "nc_share_list", "nc_share_get"]
+        # Publishes a file to anyone holding the link and hands the link
+        # (its token) to the model.
+        never: ["nc_share_create_public_link"]

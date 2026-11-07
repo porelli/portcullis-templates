@@ -43,9 +43,16 @@ services:
       # The Hub's apply-settings hook (manifest hooks[]): occ from stdin JSON.
       - ./templates/nextcloud/apply-settings.php:/portcullis/apply-settings.php:ro
       - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
+      # AI support: the mcp-mint / mcp-revoke hooks (manifest hooks).
+      - ./templates/nextcloud/portcullis/mcp-token.php:/portcullis/mcp-token.php:ro
     networks:
-      - default
-      - portcullis-proxy
+      # nextcloud-mcp calls Nextcloud under a default-only name: the
+      # service name is also an alias on portcullis-proxy, shared by every
+      # instance (and nextcloud-mcp is on portcullis-proxy while AI
+      # support is on).
+      default:
+        aliases: [nextcloud-internal]
+      portcullis-proxy: {}
     labels:
       traefik.enable: "true"
       # Native OIDC (user_oidc): the host is not behind forward-auth, so sync
@@ -55,6 +62,50 @@ services:
       traefik.http.routers.nextcloud.tls.options: authaware@file
       traefik.http.routers.nextcloud.middlewares: client-headers@file,security-headers@file
       traefik.http.services.nextcloud.loadbalancer.server.port: "80"
+    restart: unless-stopped
+
+  # AI support (manifest ai.mcp, contracts §3.2): the community Nextcloud
+  # MCP server (github.com/cbcoutinho/nextcloud-mcp-server), in its
+  # multi-user Basic pass-through mode: no Nextcloud credential of its own
+  # (NEXTCLOUD_USERNAME / NEXTCLOUD_PASSWORD are refused in that mode), a
+  # Nextcloud client per request from the caller's Authorization: Basic
+  # header, checked against Nextcloud first. The Hub's override runs it
+  # (scale 1) only while the companion is on, puts it on portcullis-proxy
+  # under its alias and routes https://<host>/mcp to mcp-gate, which sends
+  # "Basic <username>:<the person's own app password>" (minted by
+  # portcullis/mcp-token.php). Only the apps a stock install serves:
+  # Files (WebDAV), sharing, calendar (CalDAV) and contacts (CardDAV).
+  # The server has no read-only switch: read-only mode is the gate's
+  # (writes hidden and refused). No metrics listener, no semantic search,
+  # no OAuth / Login Flow, no background sync.
+  nextcloud-mcp:
+    image: ghcr.io/cbcoutinho/nextcloud-mcp-server:0.205.3@sha256:c8b613f9f1c68db2997cbb2844a2d59839dab004b3f1714ef5fd81a43ee0b21a
+    command: ["--port", "8000", "--transport", "streamable-http",
+              "--enable-app", "webdav", "--enable-app", "sharing",
+              "--enable-app", "calendar", "--enable-app", "contacts"]
+    environment:
+      MCP_DEPLOYMENT_MODE: multi_user_basic
+      NEXTCLOUD_HOST: http://nextcloud-internal
+      METRICS_ENABLED: "false"
+      ENABLE_SEMANTIC_SEARCH: "false"
+      ENABLE_OFFLINE_ACCESS: "false"
+    read_only: true
+    # Ephemeral token database (unused in this mode) and document spool.
+    tmpfs:
+      - /tmp
+      - /app/data
+      - /home/appuser
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks: [default]
     restart: unless-stopped
 
   nextcloud-cron:
