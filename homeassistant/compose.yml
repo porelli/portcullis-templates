@@ -4,7 +4,11 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 2g
     pids_limit: 1024
+    # prestart.py provisions the AI hooks' admin and, with AI support off,
+    # removes the MCP Server config entry, then execs the image's /init.
+    entrypoint: ["python3", "-I", "/portcullis/prestart.py"]
     environment:
+      HA_AI_ENABLED: ${PORTCULLIS_AI_ENABLED:-false}
       HA_EXTERNAL_URL: https://${PORTCULLIS_HOST_HOMEASSISTANT:-home.portcullis.local}
       HA_OIDC_DISCOVERY_URL: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis/.well-known/openid-configuration
       HA_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID:-homeassistant}
@@ -15,6 +19,8 @@ services:
       - homeassistant-config:/config
       - ./templates/homeassistant/configuration.yaml:/config/configuration.yaml:ro
       - ./templates/homeassistant/healthcheck.py:/portcullis/healthcheck.py:ro
+      - ./templates/homeassistant/portcullis/prestart.py:/portcullis/prestart.py:ro
+      - ./templates/homeassistant/portcullis/mcp-hook.py:/portcullis/mcp-hook.py:ro
       - ./certs/ca-bundle.crt:/portcullis/ca-bundle.crt:ro
     # Healthy (= routed by Traefik) only while auth_oidc is the only auth
     # provider and onboarding is closed.
