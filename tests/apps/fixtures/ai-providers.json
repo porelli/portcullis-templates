@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "instance": "ai-chat",
+  "providers": [
+    {
+      "name": "azure-eu",
+      "label": "Azure OpenAI (EU)",
+      "kind": "azure_openai",
+      "base_url": "",
+      "region": "",
+      "instance_name": "contoso-eu",
+      "api_version": "2024-10-21",
+      "deployments": {"gpt4o-prod": "gpt-4o"},
+      "models": {"fetch": false, "list": []},
+      "credentials": "admin",
+      "env": {"key": "PORTCULLIS_AI_PROVIDER_AZURE_EU_KEY"}
+    },
+    {
+      "name": "claude",
+      "label": "Anthropic API (US)",
+      "kind": "anthropic",
+      "base_url": "",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": false, "list": ["claude-sonnet-4-5"]},
+      "credentials": "admin",
+      "env": {"key": "PORTCULLIS_AI_PROVIDER_CLAUDE_KEY"}
+    },
+    {
+      "name": "gemini",
+      "label": "Google Gemini",
+      "kind": "google",
+      "base_url": "",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": false, "list": ["gemini-2.5-flash"]},
+      "credentials": "per_person",
+      "env": {}
+    },
+    {
+      "name": "gpt",
+      "label": "OpenAI",
+      "kind": "openai",
+      "base_url": "",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": true, "list": ["gpt-4o-mini"]},
+      "credentials": "admin",
+      "env": {"key": "PORTCULLIS_AI_PROVIDER_GPT_KEY"}
+    },
+    {
+      "name": "litellm",
+      "label": "Office LiteLLM",
+      "kind": "litellm",
+      "base_url": "https://llm.portcullis.local",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": true, "list": []},
+      "credentials": "admin",
+      "env": {"key": "PORTCULLIS_AI_PROVIDER_LITELLM_KEY"}
+    },
+    {
+      "name": "ollama-gpu",
+      "label": "Ollama on the office GPU",
+      "kind": "openai_compatible",
+      "base_url": "http://gpu.lan:11434/v1",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": false, "list": ["llama3.3:70b", "qwen3:32b"]},
+      "credentials": "admin",
+      "env": {}
+    },
+    {
+      "name": "vllm",
+      "label": "vLLM in the lab",
+      "kind": "openai_compatible",
+      "base_url": "https://vllm.lab.example/v1",
+      "region": "",
+      "instance_name": "",
+      "api_version": "",
+      "deployments": {},
+      "models": {"fetch": true, "list": ["qwen3-coder"]},
+      "credentials": "admin",
+      "env": {"key": "PORTCULLIS_AI_PROVIDER_VLLM_KEY"}
+    }
+  ]
+}

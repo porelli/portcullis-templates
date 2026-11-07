@@ -550,6 +550,34 @@ class TestIdentityRules(Case):
                     errors, _ = self.run_template(env=ok + f'      VIKUNJA_AUTH_OPENID_PROVIDERS_MY_IDP_{key}: "{val}"\n')
                     self.assertError(errors, "Vikunja links OIDC logins")
 
+    def test_librechat_openid_only_and_group(self) -> None:
+        ok = ('      OPENID_SESSION_SECRET: x\n      ALLOW_EMAIL_LOGIN: "false"\n      ALLOW_REGISTRATION: "false"\n'
+              '      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n')
+        errors, _ = self.run_template(env=ok)
+        self.assertClean(errors)
+        for line, needle in (('      ALLOW_EMAIL_LOGIN: "false"\n', "ALLOW_EMAIL_LOGIN"),
+                             ('      ALLOW_REGISTRATION: "false"\n', "ALLOW_REGISTRATION"),
+                             ('      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n', "OPENID_REQUIRED_ROLE")):
+            with self.subTest(dropped=needle):
+                errors, _ = self.run_template(env=ok.replace(line, ""))
+                self.assertError(errors, needle)
+        errors, _ = self.run_template(env=ok.replace("${PORTCULLIS_ACCESS_GROUP:-users_demo}", "users_demo"))
+        self.assertError(errors, "OPENID_REQUIRED_ROLE")
+
+    def test_librechat_waits_for_its_config(self) -> None:
+        image = "ghcr.io/librechat-ai/librechat:v0.8.8"
+        self.run_template()
+        self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
+        self.assertError(self.recheck(), "rendered by the config one-shot")
+        self.rewrite_compose("services:\n", f"services:\n  config:\n    image: {image}@sha256:{'0' * 64}\n"
+                             "    restart: \"no\"\n")
+        self.assertFalse([e for e in self.recheck() if "config one-shot" in e])
+        self.assertError(self.recheck(), "only after config rendered")
+        self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy\n",
+                             "    depends_on:\n      config:\n        condition: service_completed_successfully\n"
+                             "    networks:\n      - default\n      - portcullis-proxy\n")
+        self.assertFalse([e for e in self.recheck() if "config" in e and "LibreChat" in e])
+
     def test_firefox_sync_routed_service_waits_for_the_allowlist(self) -> None:
         image = "ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0"
         init = (f"  firefox-sync-init:\n    image: postgres:17.11-alpine@sha256:{'0' * 64}\n    restart: \"no\"\n")

@@ -259,6 +259,14 @@ IDENTITY_ENV_REQUIRED = [
      "OxiCloud with OIDC must set OXICLOUD_AUTH_METHODS: oidc (no password or magic-link login next to SSO)"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_AUTH_LOCAL_ENABLED", r"(?i)^false$",
      "Vikunja with OIDC must set VIKUNJA_AUTH_LOCAL_ENABLED: \"false\" (local accounts: password login, sign-up, invite links)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_EMAIL_LOGIN", r"(?i)^false$",
+     "LibreChat with OpenID must set ALLOW_EMAIL_LOGIN: \"false\" (password login next to SSO)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_REGISTRATION", r"(?i)^false$",
+     "LibreChat with OpenID must set ALLOW_REGISTRATION: \"false\" (local sign-up; the first local account becomes "
+     "LibreChat's administrator)"),
+    ("OPENID_SESSION_SECRET", r".", "OPENID_REQUIRED_ROLE", r"^\$\{PORTCULLIS_ACCESS_GROUP:-[^}]+\}$",
+     "LibreChat must set OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_<app>} (with "
+     "OPENID_REQUIRED_ROLE_PARAMETER_PATH: groups): otherwise every realm user signs in"),
     ("VIKUNJA_AUTH_OPENID_ENABLED", r"(?i)^true$", "VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS", r"(?i)^false$",
      "Vikunja must set VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS: \"false\" (user-supplied URLs must not reach "
      "portcullis-proxy or the host's private networks)"),
@@ -310,12 +318,18 @@ REQUIRED_INIT_JOBS = [
      "come from the homeassistant-init job"),
     ("mattermost/mattermost-team-edition:", "mattermost-init",
      "Mattermost's bootstrap system admin (pinned by user id, never granted by name) comes from the mattermost-init job"),
+    ("ghcr.io/librechat-ai/librechat:", "config",
+     "LibreChat's librechat.yaml (the MCP server, the model endpoints, no secret values) is rendered by the "
+     "config one-shot from the Hub's ai-providers.json; keep it"),
     ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
      "Firefox Sync's tokenserver takes any Mozilla account; only the firefox-sync-init allowlist trigger keeps other accounts off"),
 ]
 
 # image prefix -> (one-shot the image's Traefik-routed services must wait for, message)
 REQUIRED_BEFORE_ROUTED = [
+    ("ghcr.io/librechat-ai/librechat:", "config",
+     "LibreChat must start only after config rendered librechat.yaml (depends_on: config: condition: "
+     "service_completed_successfully); without it LibreChat starts on its defaults"),
     ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
      "the public Sync server must start only after firefox-sync-init installed the allowlist "
      "(depends_on: firefox-sync-init: condition: service_completed_successfully)"),

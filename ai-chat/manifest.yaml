@@ -1,0 +1,128 @@
+name: AI Chat
+description: The AI page — chat with all your Portcullis apps, with the models your administrator chose (LibreChat)
+icon: "\U0001F4AC"
+category: ai
+tags: [ai, chat, llm, mcp, librechat]
+links:
+  website: https://www.librechat.ai/
+  source: https://github.com/danny-avila/LibreChat
+instances: multi
+
+auth:
+  method: native-oidc
+  sso: true
+  group_access: true
+  group_admin: false
+  keycloak_access_role: true
+  access_group: users_ai-chat
+  notes: >
+    LibreChat 0.8.8 signs people in through Keycloak (OpenID only: no
+    password login, no local sign-up, no password reset). Only members of
+    users_ai-chat get in: the Hub's Keycloak access role refuses everyone
+    else, and LibreChat itself requires the access group in the ID token's
+    groups claim. Accounts are keyed on the token's sub; the name shown is
+    the LLDAP username. Nobody is a LibreChat administrator (OpenID
+    accounts are plain users), and the configuration comes only from the
+    Hub. The AI side: one MCP server, "All my apps"
+    (https://mcp.<domain>/mcp), reached with each person's own OAuth token
+    of the instance's ai-chat-mcp client (scope mcp:all): each person
+    connects once and consents in Keycloak; nobody can add other MCP
+    servers. Models: the providers selected on the instance's AI tab (Hub
+    Settings → AI), each shown under its label. Everyone who can open the
+    instance can use every provider selected for it, and what they send,
+    and what their apps return, goes to that provider; give a group other
+    providers with another ai-chat instance and its own access group.
+    Kinds: OpenAI-compatible servers and LiteLLM, OpenAI, Anthropic
+    (LibreChat's native Messages API client), Google (Gemini through
+    Google's OpenAI-compatible API, https://generativelanguage.googleapis.com/v1beta/openai
+    unless the provider sets its own base URL) and Azure OpenAI deployment
+    groups. AWS Bedrock isn't offered: LibreChat takes Bedrock credentials
+    only from its own fixed variables, never as a configuration reference.
+    Keys are never written to a file: librechat.yaml holds ${VAR}
+    references LibreChat expands from its environment. A provider with
+    per-person keys asks each person for their own key (not possible for
+    Azure OpenAI: the instance refuses to start). A provider whose key
+    isn't set yet is left out until it is. Upgrades: LibreChat's api and
+    config services share one image; MongoDB majors and Meilisearch
+    minors move by hand with LibreChat's own compose file (the search
+    index is rebuilt from MongoDB).
+
+env:
+  - key: AI_CHAT_OIDC_SECRET
+    description: LibreChat sign-in client secret (Keycloak client ai-chat)
+    generate: random
+  - key: AI_CHAT_MCP_SECRET
+    description: Secret of the ai-chat-mcp client (all my apps)
+    generate: random
+  - key: AI_CHAT_SESSION_SECRET
+    description: LibreChat OpenID session secret
+    generate: random
+  - key: AI_CHAT_JWT_SECRET
+    description: LibreChat access token signing secret
+    generate: random
+  - key: AI_CHAT_JWT_REFRESH_SECRET
+    description: LibreChat refresh token signing secret
+    generate: random
+  - key: AI_CHAT_CREDS_KEY
+    description: First half of LibreChat's credentials encryption key
+    generate: random
+  - key: AI_CHAT_CREDS_KEY_2
+    description: Second half of LibreChat's credentials encryption key
+    generate: random
+  - key: AI_CHAT_CREDS_IV
+    description: LibreChat's credentials encryption IV
+    generate: random
+  - key: AI_CHAT_MONGO_PASSWORD
+    description: MongoDB password
+    generate: random
+  - key: AI_CHAT_MEILI_MASTER_KEY
+    description: Meilisearch master key
+    generate: random
+
+keycloak_clients:
+  - client_id: ai-chat
+    secret_env: AI_CHAT_OIDC_SECRET
+    redirect_uri: "https://{{HOST_AI}}/oauth/openid/callback"
+    name: AI Chat
+  - client_id: ai-chat-mcp
+    secret_env: AI_CHAT_MCP_SECRET
+    redirect_uri: "https://{{HOST_AI}}/api/mcp/portcullis/oauth/callback"
+    name: AI Chat (all my apps)
+    ai_client: true
+config_files: []
+
+urls:
+  - label: AI Chat
+    url: "https://{{HOST_AI}}"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
+# LibreChat keeps its access token in memory; its refresh endpoint (the
+# session cookie) answers the signed-in user.
+tests:
+  signin:
+    path: /login
+    signed_in:
+      js: >-
+        fetch('/api/auth/refresh', {method: 'POST', credentials: 'include'})
+          .then((r) => r.ok ? r.json() : null)
+          .then((j) => j && j.user ? j.user.username : null)
+          .catch(() => null)
+      wait: 60
+
+# AI support (contracts §3.2): the AI page is an MCP client, and its
+# providers come from Hub Settings → AI (§15.12).
+ai:
+  unsupported: "The AI page itself: it is an MCP client, not an app the AI drives"
+  chat:
+    provider_kinds:
+      openai_compatible: many
+      litellm: many
+      azure_openai: many
+      anthropic: one
+      openai: one
+      google: one
+    file:
+      service: config
+      mount: /portcullis/ai-providers
+    env:
+      service: api

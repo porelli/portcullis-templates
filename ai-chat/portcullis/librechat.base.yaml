@@ -1,0 +1,42 @@
+# The fixed part of librechat.yaml (LibreChat v0.8.8, config version
+# 1.3.17). render-config.mjs (the config service) adds the model endpoints
+# from ai-providers.json, mcpSettings.allowedDomains and, without a
+# provider, the welcome text; LibreChat reads the result at start
+# (CONFIG_PATH). Every secret is a ${VAR} reference LibreChat expands from
+# the api service's environment: no secret is ever written here.
+version: 1.3.17
+cache: true
+
+interface:
+  # The one MCP server below is the only one: people can't add, share or
+  # publish others.
+  mcpServers:
+    use: true
+    create: false
+    share: false
+    public: false
+
+registration:
+  socialLogins: ["openid"]
+
+mcpServers:
+  # "All my apps" (contract §15.9): every app the person may use, as them.
+  # Each person connects once (Keycloak consent for the ai-chat-mcp client,
+  # scope mcp:all); LibreChat keeps their tokens. The callback is LibreChat's
+  # default, ${DOMAIN_SERVER}/api/mcp/portcullis/oauth/callback (the
+  # manifest's redirect URI). LibreChat v0.8.8 has no oauthPrompt key: it
+  # asks each person to connect when the server is first needed.
+  portcullis:
+    type: streamable-http
+    title: All my apps
+    description: Your Portcullis apps, as you
+    url: "https://mcp.${PORTCULLIS_DOMAIN}/mcp"
+    # OAuth only: no unauthenticated probe of the gate at startup.
+    requiresOAuth: true
+    oauth:
+      authorization_url: "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/auth"
+      token_url: "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/token"
+      revocation_endpoint: "https://auth.${PORTCULLIS_DOMAIN}/realms/portcullis/protocol/openid-connect/revoke"
+      client_id: "${PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP}"
+      client_secret: "${AI_CHAT_MCP_SECRET}"
+      scope: "mcp:all"

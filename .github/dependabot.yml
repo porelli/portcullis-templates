@@ -11,6 +11,10 @@
 #     with it (gitea: docker.gitea.com/gitea-mcp-server, grafana:
 #     grafana/mcp-grafana); a bump changes the tools, which
 #     tests/apps/gitea.sh / grafana.sh check against the manifest;
+#   - ai-chat: LibreChat (ghcr.io/librechat-ai/librechat, api and config
+#     share it), mongo and getmeili/meilisearch are tracked; MongoDB majors
+#     and Meilisearch minors (its data format changes) move by hand with
+#     LibreChat's own compose file;
 #   - no pre-releases (pip, Go and Actions skip them by default; docker
 #     needs the explicit ranges below).
 #
@@ -22,6 +26,7 @@ updates:
   - package-ecosystem: docker-compose
     directories:
       - "/actual-budget"
+      - "/ai-chat"
       - "/adguard"
       - "/cadcraft"
       - "/cloudbeaver"
@@ -93,6 +98,10 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "redis"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "mongo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "getmeili/meilisearch"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Immich's database image follows upstream's docker-compose.yml.
       - dependency-name: "*immich-app/postgres"
       - dependency-name: "gitlab/gitlab-ce"
