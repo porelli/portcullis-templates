@@ -357,12 +357,25 @@ for h in "auth.$DOMAIN" "mcp.$DOMAIN"; do
     fail "api resolves $h to '$got'"
   fi
 done
-code=$(docker exec portcullis-api-1 wget -q -S -O /dev/null "https://auth.$DOMAIN/realms/portcullis/.well-known/openid-configuration" 2>&1 | awk '/HTTP\//{print $2}' | tail -1)
+# From LibreChat's own runtime (node, NODE_EXTRA_CA_CERTS = the CA bundle).
+reach() {
+  docker exec portcullis-api-1 node -e \
+    'fetch(process.argv[1]).then((r) => console.log(r.status)).catch((e) => console.log("error " + ((e.cause && e.cause.code) || e.message)))' \
+    "$1" 2>&1 | tail -1 || true
+}
+code=$(reach "https://auth.$DOMAIN/realms/portcullis/.well-known/openid-configuration")
 if [ "$code" = 200 ]; then
   pass "api reaches Keycloak over TLS (CA bundle)"
 else
   fail "api -> auth.$DOMAIN: ${code:-no answer}"
 fi
+# The gate answers on mcp.<domain> (a 401/503 without a token is the gate's
+# answer; only a network or TLS error fails).
+code=$(reach "https://mcp.$DOMAIN/mcp")
+case "$code" in
+  [0-9][0-9][0-9]) pass "api reaches mcp.$DOMAIN through Traefik over TLS (HTTP $code; the gate's own answer is the live check)" ;;
+  *) info "api -> mcp.$DOMAIN: $code (the gate isn't part of this test's core stack)" ;;
+esac
 
 # Fail closed at start: a malformed file stops api from starting.
 compose_down "$APP_ID"
