@@ -168,6 +168,12 @@ auth:
     Nextcloud's brute-force protection counts them against the companion's
     address, which every AI request comes from, so such a container can
     slow everyone's AI requests down (sign-in itself still holds).
+    Re-used usernames: accounts are keyed on the username, so a deleted
+    person's username given to someone new gets the former person's
+    Nextcloud account, on the web and through AI alike (the AI mint can't
+    tell them apart: user_oidc stores no Keycloak id). Delete or rename
+    the former person's Nextcloud account (occ user:delete) before re-using
+    a username.
 
 hooks:
   - name: apply-settings

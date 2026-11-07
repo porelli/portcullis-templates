@@ -382,8 +382,8 @@ else
   fail "the nextcloud image lacks pcntl: mcp-token.php refuses to run"
 fi
 rand12() { openssl rand -hex 6; }
-mint_in() { # user [scopes-json]
-  printf '{"action":"mint","user":"%s","instance":"nextcloud","companion":"nextcloud","name":"portcullis-ai-%s","mode":"read_write","scopes":%s}' "$1" "$(rand12)" "${2:-[]}"
+mint_in() { # user [scopes-json] [sub]
+  printf '{"action":"mint","user":"%s","sub":"%s","instance":"nextcloud","companion":"nextcloud","name":"portcullis-ai-%s","mode":"read_write","scopes":%s}' "$1" "${3:-$(python3 -c 'import uuid; print(uuid.uuid4())')}" "$(rand12)" "${2:-[]}"
 }
 # basic_cfg USER PASSWORD: a curl config (stdin) with the credential, never argv.
 basic_cfg() { printf 'user = "%s:%s"\n' "$1" "$2"; }
@@ -450,6 +450,10 @@ set +e; mint_in alice '["files"]' | hook mint >/dev/null 2>&1; RC=$?; set -e
 [ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "mint with scopes refused (exit $RC)" || fail "mint with scopes: exit $RC"
 set +e; printf '{"action":"mint","user":"alice"}' | hook mint >/dev/null 2>&1; RC=$?; set -e
 [ "$RC" != 0 ] && [ "$RC" != 3 ] && pass "malformed mint input refused (exit $RC)" || fail "malformed mint input: exit $RC"
+set +e; printf '{"action":"mint","user":"alice","instance":"nextcloud","companion":"nextcloud","name":"portcullis-ai-%s","mode":"read_write","scopes":[]}' "$(rand12)" | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint without a sub refused (exit 1)" || fail "mint without a sub: exit $RC, want 1"
+set +e; mint_in alice '[]' 'NOT-A-KEYCLOAK-ID' | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && pass "mint with a sub that isn't a Keycloak id refused (exit 1)" || fail "mint with a malformed sub: exit $RC, want 1"
 set +e; printf '{"action":"revoke","user":"nobody","ids":[]}' | hook revoke >/dev/null 2>&1; RC=$?; set -e
 [ "$RC" = 0 ] && pass "revoke for a person without an account -> exit 0" || fail "revoke for nobody: exit $RC"
 set +e; printf '{"action":"revoke","user":"alice","ids":[7]}' | hook revoke >/dev/null 2>&1; RC=$?; set -e

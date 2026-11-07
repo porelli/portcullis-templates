@@ -167,10 +167,14 @@ TMP=$(mktemp -d)
 gitea_cli() { docker exec -u git "$G" gitea admin "$@"; }
 hook() { docker exec -i -u git "$G" /portcullis/mcp-token.sh "$1"; }
 rand12() { openssl rand -hex 6; }
+# Every mint carries the person's Keycloak id (contract §15.5): SUB[<user>]
+# is the sub the test's accounts are keyed on; anyone else gets a fresh one.
+declare -A SUB=()
+uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 mint_in() { # user mode scopes-json
-  printf '{"action":"mint","user":"%s","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"%s","scopes":%s}' "$1" "$(rand12)" "$2" "$3"
+  mint_sub_in "$1" "${SUB[$1]:-$(uuid)}" "$2" "$3"
 }
-mint_sub_in() { # user sub mode scopes-json: with the person's Keycloak id
+mint_sub_in() { # user sub mode scopes-json
   printf '{"action":"mint","user":"%s","sub":"%s","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"%s","scopes":%s}' "$1" "$2" "$(rand12)" "$3" "$4"
 }
 RO_SCOPES='["read:repository","read:issue","read:user","read:organization","read:package","read:notification"]'
@@ -198,10 +202,16 @@ else
   fail "gitea-migrate / gitea-auth must create portcullis-hooks (admin, active) and keep the break-glass admin locked"
 fi
 
-# Accounts as the Portcullis OAuth2 source would create them (no SSO in a
-# shell test), each with a private repository.
+# Accounts as the Portcullis OAuth2 source creates them (no SSO in a shell
+# test): login type OAuth2, the Portcullis source, login name = the sub;
+# each with a private repository. carol stays a local account.
+SRC_ID=$(db "SELECT id FROM login_source WHERE name = 'Portcullis' AND type = 6")
+[[ $SRC_ID =~ ^[0-9]+$ ]] || fail "no Portcullis OAuth2 login source (got '$SRC_ID')"
+gitea_cli user create --username carol --email carol@example.invalid --random-password --must-change-password=false >/dev/null
 for u in alice bob; do
   gitea_cli user create --username "$u" --email "$u@example.invalid" --random-password --must-change-password=false >/dev/null
+  SUB[$u]=$(uuid)
+  db "UPDATE \"user\" SET login_type = 6, login_source = ${SRC_ID:-0}, login_name = '${SUB[$u]}' WHERE lower_name = '$u'" >/dev/null
   tok=$(gitea_cli user generate-access-token --username "$u" --token-name "$u-setup" --scopes write:repository,write:user --raw)
   printf '%s' "$tok" > "$TMP/$u-setup"
   CODE=$(api_as "$tok" POST /user/repos "{\"name\":\"$u-private\",\"private\":true}")
@@ -260,39 +270,31 @@ else
   fail "after failing runs: $N_HOOK hook token(s), $N_AI portcullis-ai-* tokens (before: $AI_BEFORE)"
 fi
 
-# Keycloak id check (final review I1): with a sub, mint only for the
-# account Gitea signs that sub in to. alice becomes an account of the
-# Portcullis OAuth2 source keyed on SUB_A, as a Portcullis sign-in creates
-# it; another sub (her username deleted and re-created in LLDAP: a new
-# Keycloak user) and bob's local account are refused, and nothing is minted.
-SRC_ID=$(db "SELECT id FROM login_source WHERE name = 'Portcullis' AND type = 6")
-SUB_A=$(python3 -c 'import uuid; print(uuid.uuid4())'); SUB_NEW=$(python3 -c 'import uuid; print(uuid.uuid4())')
-db "UPDATE \"user\" SET login_type = 6, login_source = ${SRC_ID:-0}, login_name = '$SUB_A' WHERE lower_name = 'alice'" >/dev/null
+# Keycloak id check (final review I1): mint only for the account Gitea
+# signs the sub in to. The mints above used alice's own sub; another sub
+# (her username deleted and re-created in LLDAP: a new Keycloak user), a
+# local account (carol), a missing or malformed sub are refused, and
+# nothing is minted.
+SUB_NEW=$(uuid)
 AI_BEFORE=$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")
-if [[ $SRC_ID =~ ^[0-9]+$ ]] && OUT=$(mint_sub_in alice "$SUB_A" read_only "$RO_SCOPES" | hook mint) \
-  && SUB_ID=$(jq -er '.id' <<<"$OUT") && [ "$(api_as "$(jq -r .credential <<<"$OUT")" GET /user)" = 200 ] \
-  && [ "$(jq -r .login "$TMP/body")" = alice ]; then
-  pass "mint with alice's own Keycloak id (the sub her Gitea account is keyed on) -> a credential as alice"
-  printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$SUB_ID" | hook revoke || fail "revoking the sub-checked credential failed"
-else
-  fail "mint with alice's own sub failed (source id '$SRC_ID')"
-fi
+no_new_token() { [ "$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")" = "$AI_BEFORE" ]; }
 set +e; mint_sub_in alice "$SUB_NEW" read_write "$RW_SCOPES" | hook mint >/dev/null 2>"$TMP/err"; RC=$?; set -e
-if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" \
-  && [ "$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")" = "$AI_BEFORE" ]; then
+if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" && no_new_token; then
   pass "mint with another Keycloak id for alice's username (a re-created person) -> exit 1, nothing minted"
 else
   fail "mint with another sub for alice: exit $RC (want 1, no token): $(head -c 300 "$TMP/err")"
 fi
-set +e; mint_sub_in bob "$SUB_NEW" read_only "$RO_SCOPES" | hook mint >/dev/null 2>"$TMP/err"; RC=$?; set -e
-if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" \
-  && [ "$(db "SELECT count(*) FROM access_token WHERE name LIKE 'portcullis-ai-%'")" = "$AI_BEFORE" ]; then
-  pass "mint with a sub for an account no Portcullis sign-in made (bob, local) -> exit 1, nothing minted"
+set +e; mint_in carol read_only "$RO_SCOPES" | hook mint >/dev/null 2>"$TMP/err"; RC=$?; set -e
+if [ "$RC" = 1 ] && grep -q "is not this person's" "$TMP/err" && no_new_token; then
+  pass "mint for an account no Portcullis sign-in made (carol, local) -> exit 1, nothing minted"
 else
-  fail "mint with a sub for bob's local account: exit $RC (want 1, no token): $(head -c 300 "$TMP/err")"
+  fail "mint for carol's local account: exit $RC (want 1, no token): $(head -c 300 "$TMP/err")"
 fi
-set +e; mint_sub_in alice "${SUB_A^^}" read_only "$RO_SCOPES" | hook mint >/dev/null 2>&1; RC=$?; set -e
-[ "$RC" = 1 ] && pass "mint with a sub that isn't a Keycloak id (upper case) refused (exit 1)" || fail "mint with an upper-case sub: exit $RC, want 1"
+set +e; printf '{"action":"mint","user":"alice","instance":"gitea","companion":"gitea","name":"portcullis-ai-%s","mode":"read_only","scopes":%s}' "$(rand12)" "$RO_SCOPES" \
+  | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && no_new_token && pass "mint without a sub refused (exit 1)" || fail "mint without a sub: exit $RC, want 1"
+set +e; mint_sub_in alice "${SUB[alice]^^}" read_only "$RO_SCOPES" | hook mint >/dev/null 2>&1; RC=$?; set -e
+[ "$RC" = 1 ] && no_new_token && pass "mint with a sub that isn't a Keycloak id (upper case) refused (exit 1)" || fail "mint with an upper-case sub: exit $RC, want 1"
 
 # The companion (started with the template: GITEA_READONLY defaults to true).
 MCP_IP=$(app_container_ip "$APP_ID" gitea-mcp)

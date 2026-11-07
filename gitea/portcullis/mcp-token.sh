@@ -4,17 +4,15 @@
 # and mcp-revoke run it in the gitea service as git; it never sees tool
 # traffic.
 #
-#   mint    stdin {"action":"mint","user",["sub",]"instance","companion","name","mode","scopes"}
+#   mint    stdin {"action":"mint","user","sub","instance","companion","name","mode","scopes"}
 #           -> stdout {"credential":"…","id":"…"}; exit 3: no Gitea account yet
 #
-# sub (optional, the person's current Keycloak user id, placed as in
-# app_oauth's revoke): when the Hub sends it, the account must be the one
-# Gitea signs that sub in to (an OAuth2 account of the Portcullis source
-# whose login name is the sub); any other account under the name (a
-# deleted person's whose username was re-created, a local one) is refused
-# with exit 1, never minted for. Without sub the account is found by name
-# only: a re-created username would get the former person's account
-# through AI (the residual in the manifest notes) until the Hub sends it.
+# sub (required, the person's current Keycloak user id, placed as in
+# app_oauth's revoke): the account found by username must be the one Gitea
+# signs that sub in to (an OAuth2 account of the Portcullis source whose
+# login name is the sub); any other account under the name (a deleted
+# person's whose username was re-created, a local one) is refused with
+# exit 1, never minted for.
 #   revoke  stdin {"action":"revoke","user","ids":[…]}   (ids [] = all of the person's)
 #           or    {"action":"revoke_all","prefix":"portcullis-ai-"}
 #
@@ -198,14 +196,14 @@ input=$(head -c $((MAX_INPUT + 1)))
 input=${input//[$'\t\r\n']/ }
 
 q() { printf '"%s"%s:%s' "$1" "$S" "$S"; }
-re_mint="^${S}[{]${S}$(q action)\"mint\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}($(q sub)\"(${SUB_RE})\"${S},${S})?$(q instance)\"[a-z0-9-]{1,63}\"${S},${S}$(q companion)\"[a-z0-9-]{1,31}\"${S},${S}$(q name)\"(${PREFIX}[a-z0-9]{12})\"${S},${S}$(q mode)\"(read_only|read_write)\"${S},${S}$(q scopes)[[]([^]]*)[]]${S}[}]${S}$"
+re_mint="^${S}[{]${S}$(q action)\"mint\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}$(q sub)\"(${SUB_RE})\"${S},${S}$(q instance)\"[a-z0-9-]{1,63}\"${S},${S}$(q companion)\"[a-z0-9-]{1,31}\"${S},${S}$(q name)\"(${PREFIX}[a-z0-9]{12})\"${S},${S}$(q mode)\"(read_only|read_write)\"${S},${S}$(q scopes)[[]([^]]*)[]]${S}[}]${S}$"
 re_revoke="^${S}[{]${S}$(q action)\"revoke\"${S},${S}$(q user)\"(${USER_RE})\"${S},${S}$(q ids)[[]([^]]*)[]]${S}[}]${S}$"
 re_revoke_all="^${S}[{]${S}$(q action)\"revoke_all\"${S},${S}$(q prefix)\"${PREFIX}\"${S}[}]${S}$"
 
 # ── mint ─────────────────────────────────────────────────
 mint() {
   [[ $input =~ $re_mint ]] || die "refused: not a mint request of contract §15.5"
-  local user=${BASH_REMATCH[1]} sub=${BASH_REMATCH[3]} name=${BASH_REMATCH[4]} mode=${BASH_REMATCH[5]} list=${BASH_REMATCH[6]}
+  local user=${BASH_REMATCH[1]} sub=${BASH_REMATCH[2]} name=${BASH_REMATCH[3]} mode=${BASH_REMATCH[4]} list=${BASH_REMATCH[5]}
   local scopes="" item token ids id
   ! reserved "$user" || die "refused: $user is a Portcullis service account"
   [[ $list =~ ^${S}$ ]] && die "refused: no scopes"
@@ -225,7 +223,7 @@ mint() {
     exit 3
   fi
   [ "$ACCOUNT" = true ] || die "$user's Gitea account is disabled"
-  [ -z "$sub" ] || linked "$user" "$sub"
+  linked "$user" "$sub"
 
   PENDING_USER=$user PENDING_NAME=$name
   token=$(gitea admin user generate-access-token --username "$user" --token-name "$name" \

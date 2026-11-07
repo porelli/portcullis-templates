@@ -72,14 +72,13 @@ auth:
     in but an access token minted inside the container, one per hook run,
     deleted by that run. It never runs AI requests. Deleting it breaks AI
     support until the next start recreates it.
-    AI and re-used usernames: the mint finds the Gitea account by
-    username. When the Hub sends the person's Keycloak id, the hook mints
-    only for the account Gitea signs that id in to and refuses any other;
-    a Hub that doesn't send it (today's) leaves a residual: if a person is
-    deleted and their username is given to someone new, the newcomer's
-    AI requests run as the former person's Gitea account (their web
-    sign-in is refused). Before re-using a username, delete or rename the
-    former person's Gitea account (Site Administration > User Accounts).
+    AI and re-used usernames: the Hub sends the person's Keycloak id with
+    every mint and the hook mints only for the Gitea account Gitea signs
+    that id in to. If a person is deleted and their username given to
+    someone new, the newcomer gets no token for the former person's account
+    (the mint fails, shown on the AI tab; their web sign-in is refused as
+    well): delete or rename the former person's Gitea account (Site
+    Administration > User Accounts), then the newcomer signs in once.
     AI file writes: create_or_update_file can also delete files in the
     same commit (files[].delete) without a confirmation; the deletion is
     an ordinary commit, recoverable from the repository's history.

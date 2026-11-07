@@ -7,7 +7,8 @@
 // core/Command/User/AuthTokens/{Add,ListCommand,Delete}.php,
 // core/Command/User/Info.php):
 //
-//   mint        occ user:info <user>               the person's account:
+//   mint        (stdin also carries sub: shape-checked, unused)
+//               occ user:info <user>               the person's account:
 //                                                  user_id == user exactly,
 //                                                  backend user_oidc (the
 //                                                  template's OIDC login maps
@@ -234,7 +235,13 @@ $is_str = static fn(mixed $v): bool => is_string($v) && $v !== '' && strlen($v) 
 $id_shape = static fn(mixed $v): bool => is_string($v) && preg_match('/^[a-z0-9]+(-[a-z0-9]+)*$/D', $v) === 1 && strlen($v) <= 63;
 
 if ($verb === 'mint') {
-    if ($keys !== ['action', 'companion', 'instance', 'mode', 'name', 'scopes', 'user'] || $in['action'] !== 'mint'
+    // sub (the person's Keycloak user id, contract §15.5) is required and
+    // its shape checked, then ignored: user_oidc keys accounts on the
+    // username (preferred_username) and stores no sub, so nothing here can
+    // compare it. A deleted person's re-created username gets their
+    // Nextcloud account, as on the web (auth.notes).
+    if ($keys !== ['action', 'companion', 'instance', 'mode', 'name', 'scopes', 'sub', 'user'] || $in['action'] !== 'mint'
+        || !is_string($in['sub']) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $in['sub']) !== 1
         || !$is_str($in['user']) || !$id_shape($in['instance']) || !$id_shape($in['companion'])
         || !is_string($in['name']) || preg_match('/^portcullis-ai-[a-z0-9]{12}$/D', $in['name']) !== 1
         || !in_array($in['mode'], ['read_only', 'read_write'], true)
