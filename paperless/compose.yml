@@ -1,6 +1,6 @@
 services:
   paperless:
-    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.1@sha256:1a08d8dfc2b51a08de09652dd86ad4d0c611c362382f944533ad38b73125fbc4
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.2@sha256:d704e84f88300eb6ab001ab15720a2330ff99169cf9f94d6b8fcc44b63a84c84
     # Rootless mode (upstream supports `user:`; the image makes /run
     # world-writable and owns its volume directories as uid 1000): s6 and
     # every service run as paperless, USERMAP_* and root-only steps
@@ -135,7 +135,7 @@ services:
   # fresh-install signup, the access group's role. Fails closed: Paperless
   # does not start unless it exits 0. Default network only.
   paperless-init:
-    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.1@sha256:1a08d8dfc2b51a08de09652dd86ad4d0c611c362382f944533ad38b73125fbc4
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.2@sha256:d704e84f88300eb6ab001ab15720a2330ff99169cf9f94d6b8fcc44b63a84c84
     user: "1000:1000"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
