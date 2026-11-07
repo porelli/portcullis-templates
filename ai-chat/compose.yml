@@ -25,6 +25,8 @@ services:
       - /portcullis/librechat/librechat.yaml
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
+      # The file must be this instance's (render-config.mjs refuses another).
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-ai-chat}
     volumes:
       - librechat-config:/portcullis/librechat
       - ./templates/ai-chat/portcullis/render-config.mjs:/portcullis/render-config.mjs:ro
@@ -36,12 +38,20 @@ services:
     cap_drop: [ALL]
     mem_limit: 512m
     pids_limit: 64
-    networks:
-      - default
+    # It only reads and writes files.
+    network_mode: none
     restart: "no"
 
   api:
     image: ghcr.io/librechat-ai/librechat:v0.8.8@sha256:5b706bcee1ca154a1e2987303aaeca0eb27f97919cccee4bb604226c2f8abf61
+    # LibreChat runs on its own defaults (no locks, no MCP server) when its
+    # configuration file is missing: refuse to start without a non-empty
+    # one, then run the image's own entrypoint and command (v0.8.8:
+    # docker-entrypoint.sh, npm run backend).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'test -s "$$CONFIG_PATH" || { echo "ai-chat: $$CONFIG_PATH is missing or empty: not starting LibreChat without its configuration" >&2; exit 1; }; exec docker-entrypoint.sh npm run backend'
     environment:
       HOST: 0.0.0.0
       PORT: "3080"
@@ -65,6 +75,9 @@ services:
       ALLOW_EMAIL_LOGIN: "false"
       ALLOW_REGISTRATION: "false"
       ALLOW_PASSWORD_RESET: "false"
+      # No public (signed-out) shared links: a conversation holds what the
+      # person's apps returned. Sharing is off in librechat.yaml as well.
+      ALLOW_SHARED_LINKS_PUBLIC: "false"
       ALLOW_SOCIAL_LOGIN: "true"
       ALLOW_SOCIAL_REGISTRATION: "true"
       OPENID_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis

@@ -264,6 +264,9 @@ IDENTITY_ENV_REQUIRED = [
     ("OPENID_SESSION_SECRET", r".", "ALLOW_REGISTRATION", r"(?i)^false$",
      "LibreChat with OpenID must set ALLOW_REGISTRATION: \"false\" (local sign-up; the first local account becomes "
      "LibreChat's administrator)"),
+    ("OPENID_SESSION_SECRET", r".", "ALLOW_SHARED_LINKS_PUBLIC", r"(?i)^false$",
+     "LibreChat must set ALLOW_SHARED_LINKS_PUBLIC: \"false\" (public shared links show a conversation, and what "
+     "the person's apps returned in it, to anyone with the link)"),
     ("OPENID_SESSION_SECRET", r".", "OPENID_REQUIRED_ROLE", r"^\$\{PORTCULLIS_ACCESS_GROUP:-[^}]+\}$",
      "LibreChat must set OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_<app>} (with "
      "OPENID_REQUIRED_ROLE_PARAMETER_PATH: groups): otherwise every realm user signs in"),

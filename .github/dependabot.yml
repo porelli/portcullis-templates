@@ -100,6 +100,10 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "mongo"
         update-types: ["version-update:semver-major"]
+      # LibreChat minors change its configuration schema and features
+      # (render-config.mjs's locks): reviewed by hand; patches auto-merge.
+      - dependency-name: "*librechat-ai/librechat"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "getmeili/meilisearch"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Immich's database image follows upstream's docker-compose.yml.

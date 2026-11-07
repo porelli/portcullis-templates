@@ -552,11 +552,13 @@ class TestIdentityRules(Case):
 
     def test_librechat_openid_only_and_group(self) -> None:
         ok = ('      OPENID_SESSION_SECRET: x\n      ALLOW_EMAIL_LOGIN: "false"\n      ALLOW_REGISTRATION: "false"\n'
+              '      ALLOW_SHARED_LINKS_PUBLIC: "false"\n'
               '      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n')
         errors, _ = self.run_template(env=ok)
         self.assertClean(errors)
         for line, needle in (('      ALLOW_EMAIL_LOGIN: "false"\n', "ALLOW_EMAIL_LOGIN"),
                              ('      ALLOW_REGISTRATION: "false"\n', "ALLOW_REGISTRATION"),
+                             ('      ALLOW_SHARED_LINKS_PUBLIC: "false"\n', "ALLOW_SHARED_LINKS_PUBLIC"),
                              ('      OPENID_REQUIRED_ROLE: ${PORTCULLIS_ACCESS_GROUP:-users_demo}\n', "OPENID_REQUIRED_ROLE")):
             with self.subTest(dropped=needle):
                 errors, _ = self.run_template(env=ok.replace(line, ""))

@@ -9,8 +9,12 @@
 // the previous librechat.yaml is removed first, and a file that doesn't
 // match the contract exactly (unknown or missing fields, a kind this
 // template doesn't render, a variable name that isn't the provider's own)
-// or a result LibreChat's own schema refuses exits non-zero, so api never
-// starts on a stale or half-understood configuration.
+// a file for another instance (PORTCULLIS_INSTANCE), or a result
+// LibreChat's own schema refuses exits non-zero, so compose never starts
+// api on a stale or half-understood configuration; before exiting it
+// writes a configuration with no provider and every lock (fallback), in
+// case api is started by hand. api's entrypoint refuses to start without a
+// non-empty configuration file (LibreChat would run on its defaults).
 //
 // Secrets: the file only names variables (env); every key is written as a
 // "${VAR}" reference LibreChat expands from the api service's environment
@@ -39,6 +43,7 @@ const yaml = require('js-yaml');
 const { configSchema, EModelEndpoint } = require('librechat-data-provider');
 
 export const WELCOME = 'No model provider configured; ask your administrator';
+export const REFUSED_WELCOME = 'The AI page\'s model configuration was refused; ask your administrator';
 
 // kind -> how many per instance (manifest ai.chat.provider_kinds), its
 // secret fields, whether the key may be absent, models.fetch, default URL.
@@ -100,10 +105,12 @@ export const providerVar = (name, field) =>
 
 // validate checks the whole document against contract §3.2; it returns the
 // providers, unchanged.
-export function validate(doc) {
+export function validate(doc, instance) {
   exactKeys(doc, ['version', 'instance', 'providers'], 'ai-providers.json');
   if (doc.version !== 1) refuse(`ai-providers.json: version ${JSON.stringify(doc.version)}: only 1 is known`);
   if (typeof doc.instance !== 'string' || !INSTANCE_RE.test(doc.instance)) refuse('ai-providers.json: instance must be an instance id');
+  if (typeof instance !== 'string' || !INSTANCE_RE.test(instance)) refuse('PORTCULLIS_INSTANCE must be this instance\'s id');
+  if (doc.instance !== instance) refuse(`ai-providers.json is for instance ${doc.instance}, not ${instance}`);
   if (!Array.isArray(doc.providers)) refuse('ai-providers.json: providers must be a list');
   if (doc.providers.length > MAX_PROVIDERS) refuse(`ai-providers.json: at most ${MAX_PROVIDERS} providers`);
   const names = new Set();
@@ -173,7 +180,7 @@ const RESERVED_NAMES = new Set(Object.values(EModelEndpoint).map((n) => n.toLowe
 // render builds the configuration from the base document and the providers,
 // then writes the locks (lock, below).
 // warn receives the providers left out (and why).
-export function render(base, providers, domain, warn = () => {}) {
+export function render(base, providers, domain, warn = () => {}, welcome = WELCOME) {
   if (!DOMAIN_RE.test(domain)) refuse(`PORTCULLIS_DOMAIN ${JSON.stringify(domain)} is not a domain name`);
   const conf = structuredClone(base);
   const usable = [];
@@ -194,15 +201,15 @@ export function render(base, providers, domain, warn = () => {}) {
   // Endpoint names: the admin's label (what people see in the selector).
   // A label equal to another one or to a built-in endpoint gets " (<name>)".
   const custom = usable.filter((p) => p.kind !== 'azure_openai');
-  const count = {};
-  for (const p of custom) count[p.label.toLowerCase()] = (count[p.label.toLowerCase()] || 0) + 1;
+  const count = new Map();
+  for (const p of custom) count.set(p.label.toLowerCase(), (count.get(p.label.toLowerCase()) || 0) + 1);
   const taken = new Set();
   const endpoints = {};
   const customs = [];
   for (const p of custom) {
     const kind = KINDS[p.kind];
     const l = p.label.toLowerCase();
-    const name = count[l] > 1 || RESERVED_NAMES.has(l) ? `${p.label} (${p.name})` : p.label;
+    const name = count.get(l) > 1 || RESERVED_NAMES.has(l) ? `${p.label} (${p.name})` : p.label;
     if (taken.has(name.toLowerCase())) refuse(`provider ${p.name}: its endpoint name ${JSON.stringify(name)} is taken; change one of the labels`);
     taken.add(name.toLowerCase());
     let apiKey;
@@ -224,15 +231,15 @@ export function render(base, providers, domain, warn = () => {}) {
 
   const azure = usable.filter((p) => p.kind === 'azure_openai');
   if (azure.length) {
-    const modelOwner = {};
+    const modelOwner = new Map();
     const groups = azure.map((p) => {
-      const models = {};
+      const models = Object.create(null);
       for (const [deployment, model] of Object.entries(p.deployments)) {
-        if (modelOwner[model]) {
-          refuse(`provider ${p.name}: model ${JSON.stringify(model)} is also deployed by ${modelOwner[model]}; ` +
+        if (modelOwner.has(model)) {
+          refuse(`provider ${p.name}: model ${JSON.stringify(model)} is also deployed by ${modelOwner.get(model)}; ` +
             'LibreChat needs every Azure model name once across the instance');
         }
-        modelOwner[model] = `${p.name} (${deployment})`;
+        modelOwner.set(model, `${p.name} (${deployment})`);
         models[model] = { deploymentName: deployment, version: p.api_version };
       }
       const g = {
@@ -249,7 +256,7 @@ export function render(base, providers, domain, warn = () => {}) {
     });
     endpoints.azureOpenAI = { groups };
   }
-  return lock(conf, endpoints, domain, !customs.length && !azure.length);
+  return lock(conf, endpoints, domain, !customs.length && !azure.length ? welcome : '');
 }
 
 // The locks, written whatever the providers are: nothing a person does in
@@ -264,6 +271,11 @@ export function render(base, providers, domain, warn = () => {}) {
 //   - includedTools: only the calculator among LibreChat's built-in tools
 //     (the others call third-party APIs, Stable Diffusion and Azure AI
 //     Search at a URL the person enters).
+//   - autoSubmitFromUrl off: a link can't send a prompt (and so start tool
+//     calls as the person) just by being opened;
+//   - shared links off (create / share / public), and ALLOW_SHARED_LINKS_PUBLIC
+//     is false in compose: a conversation holds what the person's apps
+//     returned;
 //   - web search off in the interface; people can't add MCP servers, and
 //     MCP may only reach the gate and Keycloak (a non-empty allowlist also
 //     lets LibreChat reach them on private addresses, e.g. through Traefik).
@@ -272,7 +284,7 @@ export const AGENT_CAPABILITIES = ['deferred_tools', 'artifacts', 'subagents', '
 export const CLOSED_ACTION_DOMAINS = ['actions.invalid'];
 export const INCLUDED_TOOLS = ['calculator'];
 
-function lock(conf, endpoints, domain, noProvider) {
+function lock(conf, endpoints, domain, welcome) {
   conf.endpoints = { ...endpoints, agents: { capabilities: [...AGENT_CAPABILITIES] } };
   conf.actions = { allowedDomains: [...CLOSED_ACTION_DOMAINS] };
   conf.includedTools = [...INCLUDED_TOOLS];
@@ -281,9 +293,11 @@ function lock(conf, endpoints, domain, noProvider) {
   conf.interface = {
     ...(conf.interface || {}),
     webSearch: false,
+    autoSubmitFromUrl: false,
+    sharedLinks: { create: false, share: false, public: false },
     mcpServers: { use: true, create: false, share: false, public: false },
   };
-  if (noProvider) conf.interface.customWelcome = WELCOME;
+  if (welcome) conf.interface.customWelcome = welcome;
   else delete conf.interface.customWelcome;
   return conf;
 }
@@ -296,29 +310,62 @@ function check(conf) {
   }
 }
 
+function writeConf(conf, outPath, header) {
+  check(conf);
+  const out = yaml.dump(conf, { noRefs: true, lineWidth: -1, quotingType: '"' });
+  const tmp = path.join(path.dirname(outPath), `.${path.basename(outPath)}.tmp`);
+  fs.writeFileSync(tmp, header + out, { mode: 0o644 });
+  fs.chmodSync(tmp, 0o644);
+  fs.renameSync(tmp, outPath);
+}
+
+function loadBase(basePath) {
+  const base = yaml.load(fs.readFileSync(basePath, 'utf8'), { schema: yaml.CORE_SCHEMA });
+  if (!isObject(base)) refuse(`${basePath}: not a YAML mapping`);
+  return base;
+}
+
+// fallback: after a refusal, a configuration with no provider and every
+// lock, so a LibreChat started by hand (docker start) still runs locked and
+// sends nothing anywhere. The run still exits 1, so compose never starts
+// api after it. If even this can't be written, there is no file, and api's
+// entrypoint refuses to start.
+function fallback(basePath, outPath) {
+  try {
+    const conf = render(loadBase(basePath), [], process.env.PORTCULLIS_DOMAIN || '', () => {}, REFUSED_WELCOME);
+    writeConf(conf, outPath, '# Written by render-config.mjs after it refused ai-providers.json: no provider. Do not edit.\n');
+    console.error(`render-config: wrote a configuration with no provider and every lock to ${outPath}`);
+  } catch (e) {
+    fs.rmSync(outPath, { force: true });
+    console.error(`render-config: no fallback configuration either: ${e instanceof Refused ? e.message : e}`);
+  }
+}
+
 function main(argv) {
   const [providersPath, basePath, outPath] = argv;
   if (!providersPath || !basePath || !outPath) {
     refuse('usage: render-config.mjs <ai-providers.json> <librechat.base.yaml> <librechat.yaml>');
   }
   fs.rmSync(outPath, { force: true });
+  try {
+    run(providersPath, basePath, outPath);
+  } catch (e) {
+    fallback(basePath, outPath);
+    throw e;
+  }
+}
+
+function run(providersPath, basePath, outPath) {
   let doc;
   try {
     doc = JSON.parse(fs.readFileSync(providersPath, 'utf8'));
   } catch (e) {
     refuse(`${providersPath}: ${e.code === 'ENOENT' ? 'missing (the Hub delivers it)' : 'not JSON'}`);
   }
-  const providers = validate(doc);
-  const base = yaml.load(fs.readFileSync(basePath, 'utf8'), { schema: yaml.CORE_SCHEMA });
-  if (!isObject(base)) refuse(`${basePath}: not a YAML mapping`);
-  const conf = render(base, providers, process.env.PORTCULLIS_DOMAIN || '',
+  const providers = validate(doc, process.env.PORTCULLIS_INSTANCE);
+  const conf = render(loadBase(basePath), providers, process.env.PORTCULLIS_DOMAIN || '',
     (m) => console.error(`render-config: ${m}`));
-  check(conf);
-  const out = yaml.dump(conf, { noRefs: true, lineWidth: -1, quotingType: '"' });
-  const tmp = path.join(path.dirname(outPath), `.${path.basename(outPath)}.tmp`);
-  fs.writeFileSync(tmp, '# Rendered by render-config.mjs from ai-providers.json at start. Do not edit.\n' + out, { mode: 0o644 });
-  fs.chmodSync(tmp, 0o644);
-  fs.renameSync(tmp, outPath);
+  writeConf(conf, outPath, '# Rendered by render-config.mjs from ai-providers.json at start. Do not edit.\n');
   const n = (conf.endpoints?.custom?.length || 0) + (conf.endpoints?.azureOpenAI?.groups.length || 0);
   console.log(`render-config: ${outPath}: ${n} model endpoint(s) for instance ${doc.instance}`);
 }

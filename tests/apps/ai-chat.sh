@@ -15,6 +15,7 @@ MANIFEST="$DIR/manifest.yaml"
 FIXTURE="$(pwd)/tests/apps/fixtures/ai-providers.json"
 IMAGE=$(yq -r '.services.api.image' "$COMPOSE")
 WELCOME="No model provider configured; ask your administrator"
+REFUSED_WELCOME="The AI page's model configuration was refused; ask your administrator"
 WORK=$(mktemp -d)
 chmod 0755 "$WORK"
 # A marker stands in for every secret: it must never reach a rendered file
@@ -66,11 +67,11 @@ fi
 render() {
   local in="$1" out="$2"
   mkdir -p "$out"; chmod 0777 "$out"; rm -f "$out/librechat.yaml"
-  local envs=(-e PORTCULLIS_DOMAIN="$DOMAIN" -e AI_CHAT_MCP_SECRET="$MARKER")
+  local envs=(-e PORTCULLIS_DOMAIN="$DOMAIN" -e PORTCULLIS_INSTANCE="${RENDER_INSTANCE:-ai-chat}" -e AI_CHAT_MCP_SECRET="$MARKER")
   for v in $(jq -r '[.providers[]?.env[]?] | unique | .[]' "$in" 2>/dev/null || true); do
     envs+=(-e "$v=$MARKER")
   done
-  docker run --rm --user 0:0 --group-add 10001 --cap-drop ALL --read-only --tmpfs /tmp -w /app \
+  docker run --rm --user 0:0 --group-add 10001 --cap-drop ALL --read-only --tmpfs /tmp --network none -w /app \
     "${envs[@]}" \
     -v "$in:/portcullis/ai-providers/ai-providers.json:ro" \
     -v "$DIR/portcullis/render-config.mjs:/portcullis/render-config.mjs:ro" \
@@ -108,6 +109,14 @@ if [ -z "$bad" ]; then
   pass "secrets only as \${VAR} references"
 else
   fail "secret values that are not references: $bad"
+fi
+# Whole file: the only ${...} references are the MCP server's and the
+# providers' own variables, and no {{...}} placeholder at all.
+refs=$(grep -o '\${[^}]*}' "$Y" | sort -u | grep -vxE '\$\{(PORTCULLIS_DOMAIN|PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP|AI_CHAT_MCP_SECRET|PORTCULLIS_AI_PROVIDER_[A-Z0-9_]+)\}' || true)
+if [ -z "$refs" ] && ! grep -q '{{' "$Y"; then
+  pass "whole file: only the allowed \${VAR} references, no {{...}}"
+else
+  fail "whole file: unexpected references: $refs $(grep -o '{{[^}]*}}' "$Y" | sort -u | tr '\n' ' ')"
 fi
 want_refs=$(jq -r '[.providers[] | select(.credentials == "admin") | .env.key // empty] | sort | .[]' "$FIXTURE")
 got_refs=$(yq -r '(.endpoints.custom[]?.apiKey), (.endpoints.azureOpenAI.groups[]?.apiKey)' "$Y" \
@@ -190,6 +199,12 @@ assert_locks() {
   else
     fail "$what: tools: $(yq -o=json -I=0 '{"i": .includedTools, "f": .filteredTools}' "$y")"
   fi
+  if [ "$(yq -r '.interface.autoSubmitFromUrl' "$y")" = false ] \
+    && [ "$(yq -o=json -I=0 '.interface.sharedLinks' "$y")" = '{"create":false,"share":false,"public":false}' ]; then
+    pass "$what: no prompt submitted from a URL; shared links off (create, share, public)"
+  else
+    fail "$what: autoSubmitFromUrl / sharedLinks: $(yq -o=json -I=0 '{"a": .interface.autoSubmitFromUrl, "s": .interface.sharedLinks}' "$y")"
+  fi
   if [ "$(yq -r '.interface.webSearch' "$y")" = false ] \
     && [ "$(yq -o=json -I=0 '.interface.mcpServers' "$y")" = '{"use":true,"create":false,"share":false,"public":false}' ] \
     && [ "$(yq -r '.mcpSettings.allowedDomains | join(",")' "$y")" = "mcp.$DOMAIN,auth.$DOMAIN" ] \
@@ -209,13 +224,22 @@ refused() {
   mkdir -p "$WORK/bad"; chmod 0777 "$WORK/bad"; rm -f "$WORK/bad/librechat.yaml"; echo stale > "$WORK/bad/librechat.yaml"
   if render "$WORK/bad.json" "$WORK/bad" > "$WORK/bad.log" 2>&1; then
     fail "$label: rendered (must be refused)"
-  elif [ -e "$WORK/bad/librechat.yaml" ]; then
-    fail "$label: refused but a librechat.yaml is left"
   elif ! grep -q -- "$want" "$WORK/bad.log"; then
     fail "$label: refused without '$want': $(tail -2 "$WORK/bad.log")"
+  elif ! is_fallback "$WORK/bad/librechat.yaml"; then
+    fail "$label: refused, but librechat.yaml is not the locked fallback: $(head -c 300 "$WORK/bad/librechat.yaml" 2>/dev/null)"
   else
-    pass "$label: refused, no librechat.yaml"
+    pass "$label: refused (exit 1), only the locked provider-less fallback written"
   fi
+}
+# is_fallback <yaml>: what the renderer writes after a refusal: no model
+# endpoint, the refusal's welcome text, every lock, no provider reference.
+is_fallback() {
+  [ -s "$1" ] \
+    && [ "$(yq -r '.endpoints | keys | join(",")' "$1")" = agents ] \
+    && [ "$(yq -r '.interface.customWelcome' "$1")" = "$REFUSED_WELCOME" ] \
+    && ! grep -q 'PORTCULLIS_AI_PROVIDER_' "$1" \
+    && [ "$(assert_locks "$1" fallback | grep -c FAIL)" = 0 ]
 }
 refused "unknown top-level field" '. + {extra: 1}' "unknown field"
 refused "version 2" '.version = 2' "version 2"
@@ -229,10 +253,16 @@ refused "per_person with a variable" '.providers[2].env = {key: "PORTCULLIS_AI_P
 refused "per_person Azure" '.providers[0].credentials = "per_person" | .providers[0].env = {}' "Azure"
 refused "unsorted providers" '.providers |= reverse' "sorted by name"
 refused "not an object" '"x"' "must be an object"
+refused "\${ in a label" '.providers[5].label = "Ollama ${AI_CHAT_MCP_SECRET}"' 'may not contain'
+refused "{{ in a label" '.providers[5].label = "Ollama {{LIBRECHAT_USER_EMAIL}}"' 'may not contain'
+refused "\${ in a model name" '.providers[5].models.list[0] = "llama-${AI_CHAT_MCP_SECRET}"' 'may not contain'
+refused "{{ in a model name" '.providers[5].models.list[0] = "llama-{{LIBRECHAT_USER_ID}}"' 'may not contain'
+refused "{{ in an Azure model name" '.providers[0].deployments["gpt4o-prod"] = "gpt-{{LIBRECHAT_USER_ID}}"' 'may not contain'
+RENDER_INSTANCE=ai-research refused "another instance's file" '.' "is for instance ai-chat, not ai-research"
 rm -f "$WORK/missing.json"
 mkdir -p "$WORK/miss"; chmod 0777 "$WORK/miss"; rm -f "$WORK/miss/librechat.yaml"; echo stale > "$WORK/miss/librechat.yaml"
-if ! render "$WORK/missing.json" "$WORK/miss" > "$WORK/miss.log" 2>&1 && [ ! -e "$WORK/miss/librechat.yaml" ]; then
-  pass "missing ai-providers.json: refused, no librechat.yaml"
+if ! render "$WORK/missing.json" "$WORK/miss" > "$WORK/miss.log" 2>&1 && is_fallback "$WORK/miss/librechat.yaml"; then
+  pass "missing ai-providers.json: refused, only the locked fallback written"
 else
   fail "missing ai-providers.json not refused: $(tail -2 "$WORK/miss.log")"
 fi
@@ -315,10 +345,10 @@ else
 fi
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
   -d '{"email":"e2e@example.com","password":"Password123!"}' "http://$IP:3080/api/auth/login" || echo 000)
-if [ "$CODE" != 200 ]; then
-  pass "POST /api/auth/login (password) -> $CODE"
+if [ "$CODE" = 403 ]; then
+  pass "POST /api/auth/login (password) -> 403"
 else
-  fail "password login answered 200"
+  fail "POST /api/auth/login (password) -> $CODE (expected 403)"
 fi
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
   -d '{"name":"x","username":"x","email":"x@example.com","password":"Password123!","confirm_password":"Password123!"}' \
@@ -372,10 +402,26 @@ fi
 # The gate answers on mcp.<domain> (a 401/503 without a token is the gate's
 # answer; only a network or TLS error fails).
 code=$(reach "https://mcp.$DOMAIN/mcp")
+# core's gate answers 401 (no token) or 503 (AI support off, this test's core).
 case "$code" in
-  [0-9][0-9][0-9]) pass "api reaches mcp.$DOMAIN through Traefik over TLS (HTTP $code; the gate's own answer is the live check)" ;;
-  *) info "api -> mcp.$DOMAIN: $code (the gate isn't part of this test's core stack)" ;;
+  401|503) pass "api reaches the MCP gate at https://mcp.$DOMAIN/mcp through Traefik over TLS (HTTP $code)" ;;
+  *) fail "api -> https://mcp.$DOMAIN/mcp: ${code:-no answer} (expected the gate's 401 or 503)" ;;
 esac
+
+# Without its configuration file, api refuses to start (LibreChat would run
+# on its defaults: no locks, no MCP server).
+docker run --rm --user 0:0 --network none -v portcullis_librechat-config:/c --entrypoint rm "$IMAGE" -f /c/librechat.yaml
+docker restart portcullis-api-1 >/dev/null 2>&1 || true
+healthy=no
+for _ in $(seq 1 12); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' portcullis-api-1 2>/dev/null)" = healthy ] && healthy=yes
+  sleep 5
+done
+if [ "$healthy" = no ] && docker logs portcullis-api-1 2>&1 | grep -q 'missing or empty: not starting LibreChat'; then
+  pass "no librechat.yaml: api refuses to start (never healthy in 60 s)"
+else
+  fail "no librechat.yaml: api healthy=$healthy, $(docker logs --tail 3 portcullis-api-1 2>&1)"
+fi
 
 # Fail closed at start: a malformed file stops api from starting.
 compose_down "$APP_ID"
@@ -385,6 +431,12 @@ RC=$(timeout 300 docker wait portcullis-config-1 2>/dev/null || echo none)
 sleep 5
 if [ "$RC" != 0 ] && [ "$(docker inspect -f '{{.State.Running}}' portcullis-api-1 2>/dev/null || echo false)" != true ]; then
   pass "malformed ai-providers.json: config exits $RC, api not started"
+  docker run --rm --user 0:0 --network none -v portcullis_librechat-config:/c:ro --entrypoint cat "$IMAGE" /c/librechat.yaml > "$WORK/fb.yaml" 2>/dev/null || true
+  if is_fallback "$WORK/fb.yaml"; then
+    pass "malformed ai-providers.json: the volume holds the locked, provider-less fallback"
+  else
+    fail "malformed ai-providers.json: the volume's librechat.yaml is not the fallback"
+  fi
 else
   fail "malformed ai-providers.json: config rc=$RC, api running=$(docker inspect -f '{{.State.Running}}' portcullis-api-1 2>/dev/null)"
 fi

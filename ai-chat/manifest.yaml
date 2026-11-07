@@ -30,7 +30,8 @@ auth:
     servers. Nothing a person does makes the server fetch a URL they
     chose: agents have no actions (OpenAPI calls), web search, code
     interpreter, file search or OCR, and of LibreChat's built-in tools only
-    the calculator is offered. Models: the providers selected on the instance's AI tab (Hub
+    the calculator is offered. Conversations can't be shared (no shared links, public or
+    not), and a link can't submit a prompt by itself. Models: the providers selected on the instance's AI tab (Hub
     Settings → AI), each shown under its label. Everyone who can open the
     instance can use every provider selected for it, and what they send,
     and what their apps return, goes to that provider; give a group other
