@@ -13,8 +13,8 @@
 #     tests/apps/gitea.sh / grafana.sh check against the manifest;
 #   - ai-chat: LibreChat (ghcr.io/librechat-ai/librechat, api and config
 #     share it), mongo and getmeili/meilisearch are tracked; MongoDB majors
-#     and Meilisearch minors (its data format changes) move by hand with
-#     LibreChat's own compose file;
+#     (7.0 for now: 8.x refuses Linux kernels 6.19 to 7.0.13) and
+#     Meilisearch minors (its data format changes) move by hand;
 #   - no pre-releases (pip, Go and Actions skip them by default; docker
 #     needs the explicit ranges below).
 #

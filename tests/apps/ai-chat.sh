@@ -155,11 +155,6 @@ if [ "$(yq -r '.mcpServers | keys | join(",")' "$Y")" = portcullis ] \
 else
   fail "MCP server: $mcp"
 fi
-if [ "$(yq -r '.mcpSettings.allowedDomains | join(",")' "$Y")" = "mcp.$DOMAIN,auth.$DOMAIN" ]; then
-  pass "MCP allowlist: mcp.$DOMAIN, auth.$DOMAIN"
-else
-  fail "mcpSettings.allowedDomains: $(yq -o=json -I=0 '.mcpSettings' "$Y")"
-fi
 if [ "$(yq -r '.interface.customWelcome // ""' "$Y")" = "" ]; then
   pass "no welcome text while a provider is configured"
 else
@@ -169,11 +164,43 @@ fi
 echo '{"version":1,"instance":"ai-chat","providers":[]}' > "$WORK/empty.json"; chmod 0644 "$WORK/empty.json"
 if render "$WORK/empty.json" "$WORK/empty" > "$WORK/empty.log" 2>&1 \
   && [ "$(yq -r '.interface.customWelcome' "$WORK/empty/librechat.yaml")" = "$WELCOME" ] \
-  && [ "$(yq -r '.endpoints // "none"' "$WORK/empty/librechat.yaml")" = none ]; then
-  pass "no provider -> the welcome text, no endpoint"
+  && [ "$(yq -r '.endpoints | keys | join(",")' "$WORK/empty/librechat.yaml")" = agents ]; then
+  pass "no provider -> the welcome text, no model endpoint"
 else
   fail "empty provider list: $(tail -3 "$WORK/empty.log")"
 fi
+
+# The locks, whatever the providers: no person-chosen URL is ever fetched
+# by the server (api is on portcullis-proxy and its project network).
+assert_locks() {
+  local y="$1" what="$2" caps
+  caps=$(yq -r '.endpoints.agents.capabilities | sort | join(",")' "$y")
+  if [ "$caps" = "artifacts,ask_user_question,chain,context,deferred_tools,memory,skills,subagents,tools" ]; then
+    pass "$what: agent capabilities without actions, web_search, execute_code, file_search, ocr"
+  else
+    fail "$what: agent capabilities: $caps"
+  fi
+  if [ "$(yq -r '.actions.allowedDomains | join(",")' "$y")" = actions.invalid ]; then
+    pass "$what: actions closed (allowedDomains: actions.invalid)"
+  else
+    fail "$what: actions: $(yq -o=json -I=0 '.actions' "$y")"
+  fi
+  if [ "$(yq -r '.includedTools | join(",")' "$y")" = calculator ] && [ "$(yq -r '.filteredTools // "none"' "$y")" = none ]; then
+    pass "$what: built-in tools: calculator only"
+  else
+    fail "$what: tools: $(yq -o=json -I=0 '{"i": .includedTools, "f": .filteredTools}' "$y")"
+  fi
+  if [ "$(yq -r '.interface.webSearch' "$y")" = false ] \
+    && [ "$(yq -o=json -I=0 '.interface.mcpServers' "$y")" = '{"use":true,"create":false,"share":false,"public":false}' ] \
+    && [ "$(yq -r '.mcpSettings.allowedDomains | join(",")' "$y")" = "mcp.$DOMAIN,auth.$DOMAIN" ] \
+    && [ "$(yq -r '.mcpServers | keys | join(",")' "$y")" = portcullis ]; then
+    pass "$what: web search off; no MCP server but portcullis, none added; MCP reaches mcp/auth only"
+  else
+    fail "$what: interface / MCP locks: $(yq -o=json -I=0 '{"i": .interface, "m": .mcpSettings}' "$y")"
+  fi
+}
+assert_locks "$WORK/full/librechat.yaml" "with providers"
+assert_locks "$WORK/empty/librechat.yaml" "no provider"
 
 # Fail closed: each malformed file exits non-zero and leaves no file.
 refused() {
@@ -226,7 +253,11 @@ export AI_CHAT_MCP_SECRET="${AI_CHAT_MCP_SECRET:-$(openssl rand -hex 16)}"
 COMPOSE_OVERRIDE="$WORK/override.yml"
 export COMPOSE_OVERRIDE
 write_ai_providers_override "$APP_ID" "$(cat "$FIXTURE")" "$COMPOSE_OVERRIDE"
-compose_up "$APP_ID"
+if ! compose_up "$APP_ID"; then
+  fail "the stack did not start"
+  for s in config mongodb meilisearch api; do docker logs --tail 15 "portcullis-$s-1" 2>&1 | sed "s/^/  $s: /"; done
+  exit 1
+fi
 HOST="$PORTCULLIS_HOST_AI"
 
 info "Waiting for config..."
@@ -262,6 +293,8 @@ if docker exec portcullis-api-1 grep -q 'Anthropic API (US)' /portcullis/librech
 else
   fail "api's librechat.yaml: missing or holds a secret"
 fi
+docker exec portcullis-api-1 cat /portcullis/librechat/librechat.yaml > "$WORK/live.yaml" 2>/dev/null || true
+assert_locks "$WORK/live.yaml" "api's librechat.yaml"
 if docker exec portcullis-api-1 sh -c 'touch /portcullis/librechat/x' 2>/dev/null; then
   fail "api can write its configuration"
 else

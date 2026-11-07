@@ -170,7 +170,8 @@ export function validate(doc) {
 
 const RESERVED_NAMES = new Set(Object.values(EModelEndpoint).map((n) => n.toLowerCase()));
 
-// render builds the configuration from the base document and the providers.
+// render builds the configuration from the base document and the providers,
+// then writes the locks (lock, below).
 // warn receives the providers left out (and why).
 export function render(base, providers, domain, warn = () => {}) {
   if (!DOMAIN_RE.test(domain)) refuse(`PORTCULLIS_DOMAIN ${JSON.stringify(domain)} is not a domain name`);
@@ -248,13 +249,42 @@ export function render(base, providers, domain, warn = () => {}) {
     });
     endpoints.azureOpenAI = { groups };
   }
-  if (Object.keys(endpoints).length) conf.endpoints = endpoints;
+  return lock(conf, endpoints, domain, !customs.length && !azure.length);
+}
 
-  // MCP: only the gate and Keycloak. A non-empty allowlist also lets
-  // LibreChat reach them on private addresses (LAN installs, Traefik).
+// The locks, written whatever the providers are: nothing a person does in
+// LibreChat makes the server fetch a URL they chose. api sits on
+// portcullis-proxy (every app, Traefik, the gate) and its project network.
+//   - Agents keep only capabilities that fetch nothing: no actions (OpenAPI
+//     calls to any URL), web_search (people's own search / scraper URLs),
+//     execute_code (LibreChat's remote code API), file_search (RAG API),
+//     ocr (an OCR API). "tools" stays: it carries the MCP tools.
+//   - actions.allowedDomains: an empty list means "any public host" in
+//     v0.8.8, so it names one host that never resolves (RFC 2606 .invalid).
+//   - includedTools: only the calculator among LibreChat's built-in tools
+//     (the others call third-party APIs, Stable Diffusion and Azure AI
+//     Search at a URL the person enters).
+//   - web search off in the interface; people can't add MCP servers, and
+//     MCP may only reach the gate and Keycloak (a non-empty allowlist also
+//     lets LibreChat reach them on private addresses, e.g. through Traefik).
+export const AGENT_CAPABILITIES = ['deferred_tools', 'artifacts', 'subagents', 'context', 'skills', 'memory',
+  'ask_user_question', 'tools', 'chain'];
+export const CLOSED_ACTION_DOMAINS = ['actions.invalid'];
+export const INCLUDED_TOOLS = ['calculator'];
+
+function lock(conf, endpoints, domain, noProvider) {
+  conf.endpoints = { ...endpoints, agents: { capabilities: [...AGENT_CAPABILITIES] } };
+  conf.actions = { allowedDomains: [...CLOSED_ACTION_DOMAINS] };
+  conf.includedTools = [...INCLUDED_TOOLS];
+  delete conf.filteredTools;
   conf.mcpSettings = { allowedDomains: [`mcp.${domain}`, `auth.${domain}`] };
-  conf.interface = { ...(conf.interface || {}) };
-  if (!customs.length && !azure.length) conf.interface.customWelcome = WELCOME;
+  conf.interface = {
+    ...(conf.interface || {}),
+    webSearch: false,
+    mcpServers: { use: true, create: false, share: false, public: false },
+  };
+  if (noProvider) conf.interface.customWelcome = WELCOME;
+  else delete conf.interface.customWelcome;
   return conf;
 }
 

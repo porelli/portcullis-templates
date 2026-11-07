@@ -27,7 +27,10 @@ auth:
     (https://mcp.<domain>/mcp), reached with each person's own OAuth token
     of the instance's ai-chat-mcp client (scope mcp:all): each person
     connects once and consents in Keycloak; nobody can add other MCP
-    servers. Models: the providers selected on the instance's AI tab (Hub
+    servers. Nothing a person does makes the server fetch a URL they
+    chose: agents have no actions (OpenAPI calls), web search, code
+    interpreter, file search or OCR, and of LibreChat's built-in tools only
+    the calculator is offered. Models: the providers selected on the instance's AI tab (Hub
     Settings → AI), each shown under its label. Everyone who can open the
     instance can use every provider selected for it, and what they send,
     and what their apps return, goes to that provider; give a group other
@@ -43,7 +46,8 @@ auth:
     per-person keys asks each person for their own key (not possible for
     Azure OpenAI: the instance refuses to start). A provider whose key
     isn't set yet is left out until it is. Upgrades: LibreChat's api and
-    config services share one image; MongoDB majors and Meilisearch
+    config services share one image; MongoDB stays on 7.0 (MongoDB 8
+    refuses Linux kernels 6.19 to 7.0.13) and its majors and Meilisearch
     minors move by hand with LibreChat's own compose file (the search
     index is rebuilt from MongoDB).
 

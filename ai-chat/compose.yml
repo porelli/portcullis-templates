@@ -134,8 +134,12 @@ services:
       traefik.http.services.ai.loadbalancer.server.port: "3080"
     restart: unless-stopped
 
+  # MongoDB 7.0: every 8.x release refuses to start (or crashes) on Linux
+  # kernels 6.19 to 7.0.13 (tcmalloc and the kernel's rseq change,
+  # SERVER-121912), GitHub's runners included; 7.0 isn't affected and is
+  # supported by LibreChat. Move to 8 by hand once that is behind us.
   mongodb:
-    image: mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+    image: mongo:7.0.45@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4
     environment:
       MONGO_INITDB_ROOT_USERNAME: librechat
       MONGO_INITDB_ROOT_PASSWORD: ${AI_CHAT_MONGO_PASSWORD:?AI_CHAT_MONGO_PASSWORD must be set}

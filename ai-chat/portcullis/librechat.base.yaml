@@ -1,20 +1,17 @@
 # The fixed part of librechat.yaml (LibreChat v0.8.8, config version
 # 1.3.17). render-config.mjs (the config service) adds the model endpoints
-# from ai-providers.json, mcpSettings.allowedDomains and, without a
-# provider, the welcome text; LibreChat reads the result at start
+# from ai-providers.json, the locks below and, without a provider, the
+# welcome text; LibreChat reads the result at start
 # (CONFIG_PATH). Every secret is a ${VAR} reference LibreChat expands from
 # the api service's environment: no secret is ever written here.
 version: 1.3.17
 cache: true
 
-interface:
-  # The one MCP server below is the only one: people can't add, share or
-  # publish others.
-  mcpServers:
-    use: true
-    create: false
-    share: false
-    public: false
+# render-config.mjs also always writes the locks: interface.mcpServers
+# (nobody adds, shares or publishes MCP servers), interface.webSearch off,
+# endpoints.agents.capabilities without actions / web_search / execute_code
+# / file_search / ocr, actions.allowedDomains closed, includedTools, and
+# mcpSettings.allowedDomains (the gate and Keycloak only).
 
 registration:
   socialLogins: ["openid"]
