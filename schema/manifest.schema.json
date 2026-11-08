@@ -523,7 +523,7 @@
         "profiles": {
           "description": "Contracts §13.18 (NEW, apps): option value -> the compose profiles it starts ([] for none). Only on setup enum options of scope instance with a default; the keys are exactly the option's values; each profile ^[A-Za-z0-9][A-Za-z0-9_.-]*$ and listed by a compose service; every service with profiles: must be started by some mapping (tests/validate.py check_setup).",
           "type": "object",
-          "additionalProperties": {"type": "array", "items": {"type": "string"}}
+          "additionalProperties": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"}}
         },
         "delivery": {
           "description": "How the value reaches the app (contracts §13.6): each delivery is exactly one of env, claim, header, file or hook. The bare form is person_secret's delivery: file (its hash files are mounted at mount); every other option takes a list.",

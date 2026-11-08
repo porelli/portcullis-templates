@@ -4145,5 +4145,61 @@ class TestSetup(Case):
         ])
 
 
+    def test_jobs_found_refused_with_router(self) -> None:
+        late = svc("late", "    depends_on:\n      demo: {condition: service_completed_successfully}\n")
+        ok = svc("late", "    depends_on:\n      init: {condition: service_completed_successfully}\n")
+        self.cases([
+            ("routed dependency", S_HDR, s_compose(services=S_INIT + late), "", "jobs: demo has a Traefik router: a one-off job serves nothing"),
+            ("unrouted dependency", S_HDR, s_compose(services=S_INIT + ok), "", ""),
+        ])
+
+    def test_yaml_anchors(self) -> None:
+        """Anchors in depends_on and profiles: are followed. validate.py's
+        loader refuses << merge keys outright (stricter than the Hub, whose
+        TestSetupYAMLAnchors covers them), so a merged depends_on is refused."""
+        head = "x-wait: &wait\n  init: {condition: service_completed_successfully}\nx-p: &p [db-mysql]\n"
+        services = (S_INIT + svc("late", "    depends_on: *wait\n")
+                    + svc("other", "    depends_on: *wait\n") + svc("db-mysql", "    profiles: *p\n")
+                    + svc("db-postgres", "    profiles: [db-postgres]\n"))
+        c = head + s_compose(s_env("DATABASE"), services=services)
+        self.assertEqual(v.job_services({}, v.yaml.safe_load(c)["services"]), {"init"})
+        routed = "x-wait: &wait\n  demo: {condition: service_completed_successfully}\n" + s_compose(
+            services=S_INIT + svc("late", "    depends_on: *wait\n"))
+        merged = head + s_compose(services=S_INIT + svc("late", "    depends_on:\n      <<: *wait\n"))
+        self.cases([
+            ("anchored profiles", S_HDR + s_opts(db_opt(PROFILES)), c, "", ""),
+            ("anchored profiles uncovered", S_HDR + s_opts(db_opt("profiles: {mysql: [], postgres: [db-postgres]}")), c,
+             "", "service db-mysql: no setup option's profiles start it"),
+            ("anchored dependency on a routed service", S_HDR, routed, "", "jobs: demo has a Traefik router"),
+            ("merged depends_on", S_HDR, merged, "", "YAML does not parse"),
+        ])
+
+    def test_null_profiles_refused(self) -> None:
+        self.cases([
+            ("null profiles", S_HDR + s_opts(db_opt("profiles: ~")), s_compose(s_env("DATABASE")), "database", "profiles: value mysql has no entry"),
+            ("null profiles on a string", S_HDR + s_opts("{key: theme, label: T, type: string, default: dark, profiles: null}"),
+             s_compose(s_env("THEME")), "theme", "profiles is for setup enum options of scope instance"),
+        ])
+
+    def test_unprofiled_depends_on_profiled(self) -> None:
+        m = S_HDR + s_opts(db_opt(PROFILES))
+
+        def c(extra: str) -> str:
+            return s_compose(s_env("DATABASE"), services=DB_SERVICES + extra)
+        self.cases([
+            ("depends_on list", m, c(svc("app", "    depends_on: [db-mysql]\n")), "", "service app: depends_on names profiled service db-mysql"),
+            ("depends_on map", m, c(svc("app", "    depends_on:\n      db-postgres: {condition: service_healthy}\n")),
+             "", "service app: depends_on names profiled service db-postgres"),
+            ("network_mode", m, c(svc("app", "    network_mode: service:db-mysql\n")), "", "service app: network_mode names profiled service db-mysql"),
+            ("volumes_from", m, c(svc("app", "    volumes_from: [\"db-mysql:ro\"]\n")), "", "service app: volumes_from names profiled service db-mysql"),
+            ("profiled may depend on profiled", m, c(svc("admin", "    profiles: [db-mysql]\n    depends_on: [db-mysql]\n")), "", ""),
+            ("unprofiled dependency ok", m, c(svc("app", "    depends_on: [init]\n")), "", ""),
+        ])
+
+    def test_schema_profile_pattern(self) -> None:
+        errors, _ = self.run_raw(S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql], postgres: ['-bad']}")), s_compose(s_env("DATABASE"), services=DB_SERVICES))
+        self.assertError(errors, "-bad")
+
+
 if __name__ == "__main__":
     unittest.main()

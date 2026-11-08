@@ -6524,6 +6524,50 @@ def service_profiles(t: Template, services: Dict[str, Any], r: Report) -> Dict[s
     return out
 
 
+def job_services(m: Dict[str, Any], services: Dict[str, Any]) -> Set[str]:
+    """templates.JobServices: the manifest's jobs plus every service another
+    one depends on with condition: service_completed_successfully."""
+    out = {scalar_text(j) for j in as_list(m.get("jobs"))}
+    for svc in services.values():
+        deps = svc.get("depends_on") if isinstance(svc, dict) else None
+        if isinstance(deps, dict):
+            for dep, c in deps.items():
+                if isinstance(c, dict) and c.get("condition") == "service_completed_successfully":
+                    out.add(str(dep))
+    return out
+
+
+def unprofiled_dependents(t: Template, services: Dict[str, Any], profiled: Dict[str, List[str]], r: Report) -> None:
+    """unprofiledDependents: a service without profiles may not name a profiled
+    one in depends_on, network_mode: service:<x> or volumes_from (compose
+    can't start it for a setup choice that leaves that service off)."""
+    for name in sorted(str(n) for n in services):
+        svc = services.get(name)
+        if name in profiled or not isinstance(svc, dict) or "profiles" in svc:
+            continue
+        refs: Dict[str, str] = {}
+        deps = svc.get("depends_on")
+        if isinstance(deps, list):
+            for d in deps:
+                if isinstance(d, str):
+                    refs[d] = "depends_on"
+        elif isinstance(deps, dict):
+            for d in deps:
+                refs[str(d)] = "depends_on"
+        nm = svc.get("network_mode")
+        if isinstance(nm, str) and nm.startswith("service:"):
+            refs[nm[len("service:"):]] = "network_mode"
+        for vf in as_list(svc.get("volumes_from")):
+            src = vf.split(":", 1)[0] if isinstance(vf, str) else ""
+            if src and src != "container":
+                refs[src] = "volumes_from"
+        for ref in sorted(refs):
+            if ref in profiled:
+                r.error(t.c_where, f"service {name}: {refs[ref]} names profiled service {ref}: give {name} the same profiles, or "
+                                   f"compose can't start it when a setup choice leaves {ref} off", SETUP_HINT)
+                break
+
+
 def setup_option_problem(o: Dict[str, Any], known: Set[str], started: Set[str]) -> str:
     """setupOption: setup, fixed_after_start and profiles of one option."""
     instance = scope_of(o) == "instance"
@@ -6570,10 +6614,13 @@ def check_setup(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[s
             r.error(t.m_where, f"jobs: {j} is not a compose service", JOBS_HINT)
         elif j in listed:
             r.error(t.m_where, f"jobs: {j} is listed twice", JOBS_HINT)
-        elif j in routed:
-            r.error(t.m_where, f"jobs: {j} has a Traefik router: a one-off job serves nothing", JOBS_HINT)
         listed.add(j)
+    # Every job, listed or found through depends_on, serves nothing.
+    for j in sorted(job_services(m, services)):
+        if j in routed:
+            r.error(t.m_where, f"jobs: {j} has a Traefik router: a one-off job serves nothing", JOBS_HINT)
     profiled = service_profiles(t, services, r)
+    unprofiled_dependents(t, services, profiled, r)
     known = {p for ps in profiled.values() for p in ps}
     started: Set[str] = set()
     for o in setting_options(m):
