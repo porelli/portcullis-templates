@@ -4073,5 +4073,77 @@ class AITests(Case):
             self.assertTrue(("mcp" in ai) != ("unsupported" in ai), i)
 
 
+# ── One-off jobs and setup options (contracts §3, §13.18) ───────────
+#
+# TestSetup mirrors the Hub's internal/templates/setup_test.go
+# (TestJobsListed, TestSetupOptionValidation) case for case, with the
+# Hub's messages.
+
+def svc(name: str, extra: str = "") -> str:
+    return f"  {name}:\n    image: demo/{name}:1.0.0@sha256:{S_DIGEST}\n{extra}"
+
+
+DB_SERVICES = S_INIT + svc("db-mysql", "    profiles: [db-mysql]\n") + svc("db-postgres", "    profiles: [db-postgres]\n")
+DB_CHOICE = ("{key: database, label: Database, type: enum, options: [{value: mysql, label: MySQL}, {value: postgres, label: PostgreSQL}], "
+             "default: mysql, setup: true, fixed_after_start: true, %s}")
+PROFILES = "profiles: {mysql: [db-mysql], postgres: [db-postgres]}"
+
+
+def db_opt(extra: str) -> str:
+    return DB_CHOICE.replace("%s", extra, 1)
+
+
+class TestSetup(Case):
+    run_raw = TestSettingsV3.run_raw
+    cases = TestSettingsV3.cases
+
+    def test_jobs(self) -> None:
+        c = s_compose(services=S_INIT + svc("migrate"))
+        self.cases([
+            ("listed job", S_HDR + "jobs: [migrate]\n", c, "", ""),
+            ("init too", S_HDR + "jobs: [migrate, init]\n", c, "", ""),
+            ("unknown service", S_HDR + "jobs: [nope]\n", c, "", "jobs: nope is not a compose service"),
+            ("twice", S_HDR + "jobs: [migrate, migrate]\n", c, "", "jobs: migrate is listed twice"),
+            ("routed", S_HDR + "jobs: [demo]\n", c, "", "jobs: demo has a Traefik router: a one-off job serves nothing"),
+            ("not a list", S_HDR + "jobs: migrate\n", c, "", "jobs"),
+        ])
+
+    def test_setup_options(self) -> None:
+        c = s_compose(s_env("DATABASE"), services=DB_SERVICES)
+        plain = s_compose(s_env("THEME"))
+        self.cases([
+            ("ok", S_HDR + s_opts(db_opt(PROFILES)), c, "", ""),
+            ("empty list for a value", S_HDR + s_opts(db_opt("profiles: {mysql: [], postgres: [db-postgres, db-mysql]}")), c, "", ""),
+            ("setup string", S_HDR + s_opts("{key: theme, label: T, type: string, default: dark, setup: true}"), plain, "", ""),
+            ("setup not fixed", S_HDR + s_opts("{key: theme, label: T, type: string, default: dark, setup: true, fixed_after_start: false}"), plain, "", ""),
+            ("profiles on a string", S_HDR + s_opts("{key: theme, label: T, type: string, default: mysql, setup: true, profiles: {mysql: [db-mysql]}}"), c,
+             "theme", "profiles is for setup enum options of scope instance"),
+            ("profiles without setup", S_HDR + s_opts(db_opt(PROFILES).replace("setup: true, fixed_after_start: true, ", "")), c,
+             "database", "profiles is for setup enum options of scope instance"),
+            ("profiles without default", S_HDR + s_opts(db_opt(PROFILES).replace("default: mysql, ", "")), c, "database", "profiles needs a default"),
+            ("unknown value key", S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql], postgres: [db-postgres], sqlite: []}")), c,
+             "database", "profiles: sqlite is not one of the option's values"),
+            ("value without entry", S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql]}")), c, "database", "profiles: value postgres has no entry"),
+            ("unknown profile", S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql], postgres: [db-pg]}")), c,
+             "database", "profiles.postgres: profile db-pg is on no compose service"),
+            ("uncovered profiled service", S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql], postgres: []}")), c,
+             "", "service db-postgres: no setup option's profiles start it (its profiles db-postgres)"),
+            ("profiled service, no settings", S_HDR, c, "", "service db-mysql: no setup option's profiles start it"),
+            ("profiles not a list", S_HDR + s_opts(db_opt(PROFILES)), s_compose(s_env("DATABASE"), services=DB_SERVICES + svc("extra", "    profiles: extra\n")),
+             "", "service extra: profiles must be a list of literal profile names"),
+            ("profile interpolated", S_HDR + s_opts(db_opt(PROFILES)), s_compose(s_env("DATABASE"), services=DB_SERVICES + svc("extra", "    profiles: [\"${P}\"]\n")),
+             "", "service extra: profiles must be a list of literal profile names"),
+            ("fixed without setup", S_HDR + s_opts("{key: theme, label: T, type: string, default: dark, fixed_after_start: true}"), plain,
+             "theme", "fixed_after_start needs setup: true"),
+            ("setup secret", S_HDR + s_opts("{key: theme, label: T, type: secret, setup: true, delivery: [{env: THEME}]}"), plain,
+             "theme", "setup needs scope instance and a type other than secret"),
+            ("setup person", S_OIDC + s_opts("{key: quota, label: Q, type: int, scope: person, resolve: max, default: 1, setup: true, "
+                                              + S_PERSON_CLAIM + "}"), s_compose(oidc=True),
+             "quota", "setup needs scope instance and a type other than secret"),
+            ("compose profiles reserved", S_HDR.replace("env:\n", "env:\n  - key: COMPOSE_PROFILES\n    description: x\n", 1), plain,
+             "", "COMPOSE_PROFILES is an instance variable the Hub sets"),
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

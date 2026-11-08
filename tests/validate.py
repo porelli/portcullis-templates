@@ -730,6 +730,8 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if ai_reserved_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved (AI support: PORTCULLIS_AI_* are the Hub's, "
                                f"{VAR_MCP_GATE_IP} is core's)", AI_HINT)
+        if k == VAR_COMPOSE_PROFILES:
+            r.error(t.m_where, f"{k} is an instance variable the Hub sets — a manifest may not declare it", SETUP_HINT)
         if is_instance_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved for the Hub's instance variables",
                     "the Hub writes PORTCULLIS_INSTANCE, PORTCULLIS_HOST_*, PORTCULLIS_OIDC_CLIENT_ID*, "
@@ -1039,6 +1041,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
+    check_setup(t, services, routers, r)
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -2289,7 +2292,8 @@ HUB_SERVICE_KEYS = {
     "hostname", "devices", "container_name", "ports", "expose", "ulimits", "stop_grace_period", "stop_signal", "init",
     "privileged", "sysctls", "logging", "tty", "stdin_open", "dns", "dns_search", "extra_hosts", "platform", "pull_policy",
     "pid", "ipc", "volumes_from", "domainname", "mac_address", "oom_score_adj", "storage_opt", "userns_mode",
-    "device_cgroup_rules", "gpus", "runtime", "isolation", "blkio_config", "cgroup", "cgroup_parent", "cpuset"}
+    "device_cgroup_rules", "gpus", "runtime", "isolation", "blkio_config", "cgroup", "cgroup_parent", "cpuset",
+    "profiles"}  # profiles only as check_setup allows (contracts §13.18)
 CORE_TRAEFIK_NAMES = {
     "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
                 "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal", "mcp", "hub-mcp",
@@ -3899,7 +3903,8 @@ def settings_env_names(m: Dict[str, Any]) -> List[str]:
 
 def reserved_var(k: str) -> bool:
     """templates.ReservedVar: the instance variables the Hub sets."""
-    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_") or ai_reserved_var(k)
+    return k in INSTANCE_VARS or k.startswith(INSTANCE_VAR_PREFIXES) or k.startswith("PORTCULLIS_FOLDER_") or ai_reserved_var(k) \
+        or k == VAR_COMPOSE_PROFILES
 
 
 def ai_reserved_var(k: str) -> bool:
@@ -6493,6 +6498,92 @@ def _environment_keys(svc: Any) -> List[str]:
 def check_ai(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
     """The ai: block (contracts §3.2), as the Hub's ValidateAI checks it."""
     _AICheck(t, services, routers, r).run()
+
+
+# ── One-off jobs and setup options (contracts §3, §13.18) ──────────
+# Mirrors portcullis-hub internal/templates/setup.go (validateSetup) with
+# the same messages.
+
+VAR_COMPOSE_PROFILES = "COMPOSE_PROFILES"
+PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+SETUP_HINT = f"see {DOCS_URL}/integration-contracts/#1318-setup-options-and-compose-profiles-new-apps"
+JOBS_HINT = f"see {DOCS_URL}/manifest-reference/#jobs"
+
+
+def service_profiles(t: Template, services: Dict[str, Any], r: Report) -> Dict[str, List[str]]:
+    """templates.ServiceProfiles: each service's profiles: (literal names)."""
+    out: Dict[str, List[str]] = {}
+    for name, svc in services.items():
+        if not isinstance(svc, dict) or "profiles" not in svc:
+            continue
+        raw = svc.get("profiles")
+        if not isinstance(raw, list) or not raw or any(not isinstance(p, str) or not PROFILE_RE.fullmatch(p) for p in raw):
+            r.error(t.c_where, f"service {name}: profiles must be a list of literal profile names", SETUP_HINT)
+            continue
+        out[str(name)] = list(raw)
+    return out
+
+
+def setup_option_problem(o: Dict[str, Any], known: Set[str], started: Set[str]) -> str:
+    """setupOption: setup, fixed_after_start and profiles of one option."""
+    instance = scope_of(o) == "instance"
+    setup = o.get("setup") is True
+    if setup and (not instance or o.get("type") == "secret"):
+        return "setup needs scope instance and a type other than secret"
+    if o.get("fixed_after_start") is True and not setup:
+        return "fixed_after_start needs setup: true"
+    if "profiles" not in o:
+        return ""
+    profiles = o.get("profiles")
+    if not setup or o.get("type") != "enum" or not instance:
+        return "profiles is for setup enum options of scope instance"
+    if o.get("default") is None:
+        return "profiles needs a default"
+    profiles = profiles if isinstance(profiles, dict) else {}
+    values = [scalar_text(c.get("value")) for c in as_list(o.get("options")) if isinstance(c, dict)]
+    keys = sorted(scalar_text(k) for k in profiles)
+    for k in keys:
+        if k not in values:
+            return f"profiles: {k} is not one of the option's values"
+    for v in values:
+        if v not in keys:
+            return f"profiles: value {v} has no entry (write {v}: [] when it starts no profile)"
+    for k in keys:
+        lst = next(val for kk, val in profiles.items() if scalar_text(kk) == k)
+        for p in as_list(lst):
+            p = scalar_text(p)
+            if not PROFILE_RE.fullmatch(p) or p not in known:
+                return f"profiles.{k}: profile {p} is on no compose service"
+            started.add(p)
+    return ""
+
+
+def check_setup(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
+    """jobs (§3 "One-off jobs") and setup options with compose profiles
+    (§13.18), as the Hub's validateSetup checks them."""
+    m = t.manifest or {}
+    routed = {rt.get("_service") for rt in routers.values()}
+    listed: Set[str] = set()
+    for j in as_list(m.get("jobs")):
+        j = scalar_text(j)
+        if j not in services:
+            r.error(t.m_where, f"jobs: {j} is not a compose service", JOBS_HINT)
+        elif j in listed:
+            r.error(t.m_where, f"jobs: {j} is listed twice", JOBS_HINT)
+        elif j in routed:
+            r.error(t.m_where, f"jobs: {j} has a Traefik router: a one-off job serves nothing", JOBS_HINT)
+        listed.add(j)
+    profiled = service_profiles(t, services, r)
+    known = {p for ps in profiled.values() for p in ps}
+    started: Set[str] = set()
+    for o in setting_options(m):
+        why = setup_option_problem(o, known, started)
+        if why:
+            r.error(t.m_where, f"setting {_str(o, 'key')}: {why}", SETUP_HINT)
+    for name in sorted(profiled):
+        if not any(p in started for p in profiled[name]):
+            r.error(t.c_where, f"service {name}: no setup option's profiles start it (its profiles {', '.join(profiled[name])})",
+                    "give a setup enum option a profiles mapping that starts it, or drop profiles: (the Hub never starts it)")
 
 
 # ── Main ────────────────────────────────────────────────────────────

@@ -97,7 +97,12 @@
       "enum": ["multi", "single"],
       "default": "single"
     },
-    "ai": {"$ref": "#/$defs/ai"}
+    "ai": {"$ref": "#/$defs/ai"},
+    "jobs": {
+      "description": "Contracts §3 (NEW, apps): compose services that run once and exit (a setup or migration container). The Hub counts a job's container done when it exited 0 and failed when it exited non-zero. A service another one depends on with condition: service_completed_successfully is a job without being listed. Each entry is a compose service, listed once, with no Traefik router (tests/validate.py check_setup).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/serviceName"}
+    }
   },
   "allOf": [
     {
@@ -513,6 +518,13 @@
         "self_visible": {"type": "boolean"},
         "requires": {"description": "Instance options that must be non-empty when this one is.", "type": "array", "items": {"type": "string"}},
         "requires_any": {"description": "Instance options of which at least one must be non-empty when this one is (contracts §13.9; e.g. a share slot's folder needs readers or writers).", "type": "array", "items": {"type": "string"}},
+        "setup": {"description": "Contracts §13.18 (NEW, apps): a setup choice, asked in the setup form before the first start. Scope instance only, not secret.", "type": "boolean"},
+        "fixed_after_start": {"description": "Contracts §13.18 (NEW, apps): the value can't change after the instance's first successful start. Only with setup.", "type": "boolean"},
+        "profiles": {
+          "description": "Contracts §13.18 (NEW, apps): option value -> the compose profiles it starts ([] for none). Only on setup enum options of scope instance with a default; the keys are exactly the option's values; each profile ^[A-Za-z0-9][A-Za-z0-9_.-]*$ and listed by a compose service; every service with profiles: must be started by some mapping (tests/validate.py check_setup).",
+          "type": "object",
+          "additionalProperties": {"type": "array", "items": {"type": "string"}}
+        },
         "delivery": {
           "description": "How the value reaches the app (contracts §13.6): each delivery is exactly one of env, claim, header, file or hook. The bare form is person_secret's delivery: file (its hash files are mounted at mount); every other option takes a list.",
           "oneOf": [{"type": "array", "items": {"$ref": "#/$defs/settingDelivery"}}, {"enum": ["file", "hook"]}]
