@@ -13,8 +13,8 @@ services:
     environment:
       CRAFT_APP: cadcraft
       CRAFT_REPO: storytold/cadcraft
-      CRAFT_VERSION: ${CRAFT_VERSION:-0.16.0}
-      CRAFT_SHA256: ${CRAFT_SHA256:-db60c0b9f3b186b6ded1d293d350663a72f301295ff682f71eb2866788ae078a}
+      CRAFT_VERSION: ${CRAFT_VERSION:-0.19.0}
+      CRAFT_SHA256: ${CRAFT_SHA256:-ea89ca64c717c3a2d79599ee0c52dd6fc0cbbdaf0224118f534706ccf73baf86}
     volumes:
       - cadcraft-site:/srv/craft
       - ./templates/cadcraft/fetch.sh:/craft-fetch.sh:ro
