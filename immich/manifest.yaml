@@ -7,6 +7,9 @@ links:
   website: https://immich.app/
   source: https://github.com/immich-app/immich
 instances: multi
+# One-off setup container nobody waits for (contracts §3 "One-off jobs"):
+# done when it exited 0, failed otherwise; never a stopped service.
+jobs: [immich-lock-local-users]
 
 auth:
   method: native-oidc

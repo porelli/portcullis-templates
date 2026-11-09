@@ -8,6 +8,9 @@ links:
   website: https://mattermost.com/
   source: https://github.com/mattermost/mattermost
 instances: multi
+# One-off setup container nobody waits for (contracts §3 "One-off jobs"):
+# done when it exited 0, failed otherwise; never a stopped service.
+jobs: [mattermost-init]
 
 auth:
   method: forward-auth

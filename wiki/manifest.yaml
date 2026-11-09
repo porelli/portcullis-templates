@@ -7,6 +7,9 @@ links:
   website: https://js.wiki/
   source: https://github.com/requarks/wiki
 instances: multi
+# One-off setup container nobody waits for (contracts §3 "One-off jobs"):
+# done when it exited 0, failed otherwise; never a stopped service.
+jobs: [wiki-setup]
 
 auth:
   method: native-oidc
