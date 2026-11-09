@@ -85,7 +85,7 @@ services:
   # app ever listens. Creates only what OxiCloud's first migration creates
   # with IF NOT EXISTS (schema auth, table auth.admin_settings). Fails closed.
   oxicloud-init:
-    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "70:70"
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -106,7 +106,7 @@ services:
     restart: "no"
 
   oxicloud-db:
-    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "70:70"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
