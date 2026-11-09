@@ -402,8 +402,13 @@ def docker(*args: str) -> str:
 
 def wait_containers(timeout: int) -> None:
     """Every service of the app runs (healthy, if it has a healthcheck);
-    one-shot init containers may have exited 0."""
-    services = list((COMPOSE.get("services") or {}).keys())
+    one-shot init containers may have exited 0. A service with compose
+    profiles: runs only when one of them is selected (COMPOSE_PROFILES, as
+    the Hub writes it for the setup choices; unset = none, as no template's
+    default choice starts a profile)."""
+    selected = {p for p in os.environ.get("COMPOSE_PROFILES", "").split(",") if p}
+    services = [n for n, svc in (COMPOSE.get("services") or {}).items()
+                if not (svc or {}).get("profiles") or selected & set((svc or {}).get("profiles") or [])]
     # One-shot helpers (restart: "no") must have finished successfully.
     oneshot = {n for n, svc in (COMPOSE.get("services") or {}).items() if str((svc or {}).get("restart", "")) == "no"}
     deadline = time.time() + timeout
