@@ -86,7 +86,7 @@ services:
   # One-shot: a fresh named volume's mountpoint is root-owned (the scratch
   # image has no /app/vikunja/files); hand it to uid 1000. Only chown.
   vikunja-perms:
-    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "0:0"
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -100,7 +100,7 @@ services:
     restart: "no"
 
   vikunja-db:
-    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "70:70"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
