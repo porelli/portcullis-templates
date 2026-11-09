@@ -5,7 +5,7 @@ services:
   # public (see auth.notes); who may sync is decided by the tokenserver's
   # allowlist trigger (guard.sql), installed before this starts.
   firefox-sync:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.1@sha256:65ade7eab5aba66193f8131e08a19b165063a777765050fb5caa2725a1428a0d
     read_only: true
     tmpfs:
       - /tmp
@@ -81,7 +81,7 @@ services:
   # reachable: default network only, stopped as soon as its heartbeat answers.
   # The allowlist trigger needs the users table, so it comes after this.
   firefox-sync-migrate:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.1@sha256:65ade7eab5aba66193f8131e08a19b165063a777765050fb5caa2725a1428a0d
     read_only: true
     tmpfs:
       - /tmp
