@@ -476,6 +476,13 @@ _export_instance_env() {
   export PORTCULLIS_ACCESS_GROUP="$group"
   group=$(sed -n 's/^  admin_group:[[:space:]]*["\047]\{0,1\}\([A-Za-z0-9_.-]*\).*/\1/p' "$manifest")
   export PORTCULLIS_ADMIN_GROUP="$group"
+  # The compose profiles the setup choices' defaults start (the Hub's
+  # templates.ProfilesFor without stored values; contracts §13.18), unless
+  # the test picks a choice itself by exporting COMPOSE_PROFILES.
+  if [ -z "${COMPOSE_PROFILES+x}" ]; then
+    COMPOSE_PROFILES=$(yq -r '[.settings.options[]? | select(has("profiles")) | .default as $d | .profiles[$d][]?] | unique | join(",")' "$manifest")
+    export COMPOSE_PROFILES
+  fi
 }
 
 compose_up() {
@@ -514,6 +521,7 @@ compose_down() {
     -f "$compose_path" ${extra[@]+"${extra[@]}"} \
     --project-directory "$PROJECT_DIR" \
     --env-file "$PROJECT_DIR/.env" \
+    --profile '*' \
     down 2>&1 | tail -3
 }
 

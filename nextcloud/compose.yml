@@ -10,8 +10,8 @@ services:
     # image installs on first start only with a database selected (without
     # one Apache would serve the web installer), and it picks the first of
     # SQLITE_DATABASE / MYSQL_* / POSTGRES_* that is set at all, so only the
-    # chosen one's variables are exported here. SQLite (in the data volume)
-    # is what installs of earlier template versions use. A database server
+    # chosen one's variables are exported here (PostgreSQL by default;
+    # SQLite lives in the data volume and needs no server). A database server
     # runs only under its compose profile, so nextcloud can't depends_on it:
     # wait here until it accepts connections (its image listens on TCP only
     # once its own init is done), at every start, failing closed after 5 min.
@@ -19,13 +19,15 @@ services:
       - /bin/sh
       - -ec
       - |
-        case "$${NEXTCLOUD_DATABASE:-sqlite}" in
+        case "$${NEXTCLOUD_DATABASE:-postgres}" in
           sqlite) export SQLITE_DATABASE=nextcloud; db_host= ;;
           mysql) export MYSQL_HOST=nextcloud-mariadb MYSQL_DATABASE=nextcloud MYSQL_USER=nextcloud MYSQL_PASSWORD="$$NEXTCLOUD_DB_PASSWORD"; db_host=nextcloud-mariadb db_port=3306 ;;
           postgres) export POSTGRES_HOST=nextcloud-postgres POSTGRES_DB=nextcloud POSTGRES_USER=nextcloud POSTGRES_PASSWORD="$$NEXTCLOUD_DB_PASSWORD"; db_host=nextcloud-postgres db_port=5432 ;;
           *) echo "portcullis: unknown database '$$NEXTCLOUD_DATABASE'" >&2; exit 1 ;;
         esac
         if [ -n "$$db_host" ]; then
+          # sh as PID 1 ignores TERM without a trap: docker stop works while waiting.
+          trap 'exit 143' TERM INT
           i=0
           until php -r 'exit(@fsockopen($$argv[1], (int) $$argv[2], $$n, $$e, 2) ? 0 : 1);' "$$db_host" "$$db_port"; do
             i=$$((i + 1))
@@ -33,6 +35,7 @@ services:
             echo "portcullis: waiting for the database ($$db_host:$$db_port)"
             sleep 5
           done
+          trap - TERM INT
         fi
         install -D -m 0755 /portcullis/setup.sh /docker-entrypoint-hooks.d/before-starting/50-portcullis.sh
         exec /entrypoint.sh "$$@"
@@ -45,7 +48,7 @@ services:
       NEXTCLOUD_ADMIN_USER: nc-breakglass
       # sqlite | mysql | postgres (manifest setting database); the
       # entrypoint above exports the chosen database's variables.
-      NEXTCLOUD_DATABASE: ${NEXTCLOUD_DATABASE:-sqlite}
+      NEXTCLOUD_DATABASE: ${NEXTCLOUD_DATABASE:-postgres}
       NEXTCLOUD_DB_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?NEXTCLOUD_DB_PASSWORD must be set}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?NEXTCLOUD_ADMIN_PASSWORD must be set}
       NEXTCLOUD_TRUSTED_DOMAINS: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}

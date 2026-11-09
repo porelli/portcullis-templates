@@ -294,6 +294,20 @@ done
 compose_up "$APP_ID"
 C=portcullis-nextcloud-1
 occ() { docker exec -u www-data "$C" php occ "$@"; }
+# nc_sql SQL [ARG...]: one prepared statement on Nextcloud's own database,
+# whichever the setup choice picked (connection from config.php), as www-data.
+nc_sql() {
+  docker exec -u www-data "$C" php -r '
+    require "/var/www/html/config/config.php";
+    $c = $CONFIG;
+    switch ($c["dbtype"]) {
+      case "pgsql": $db = new PDO("pgsql:host={$c["dbhost"]};dbname={$c["dbname"]}", $c["dbuser"], $c["dbpassword"]); break;
+      case "mysql": $db = new PDO("mysql:host={$c["dbhost"]};dbname={$c["dbname"]}", $c["dbuser"], $c["dbpassword"]); break;
+      case "sqlite3": $db = new PDO("sqlite:{$c["datadirectory"]}/{$c["dbname"]}.db"); break;
+      default: fwrite(STDERR, "unknown dbtype {$c["dbtype"]}\n"); exit(2);
+    }
+    exit($db->prepare($argv[1])->execute(array_slice($argv, 2)) ? 0 : 1);' "$@"
+}
 info "Waiting for the Nextcloud install and setup.sh (first start)..."
 for _ in $(seq 1 120); do
   docker logs "$C" 2>&1 | grep -q 'portcullis: Nextcloud configured' && break
@@ -405,8 +419,7 @@ ai_tokens() { # USER: number of portcullis-ai-* app passwords
 # uid = preferred_username); no SSO in a shell test, so the rows go into
 # user_oidc's table directly.
 for u in alice bob; do
-  docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
-    $st = $db->prepare("INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)"); exit($st->execute([$argv[1], ucfirst($argv[1])]) ? 0 : 1);' "$u"
+  nc_sql 'INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)' "$u" "${u^}"
 done
 if [ "$(occ user:info --output=json alice | jq -r '.backend + "|" + .user_id')" = 'user_oidc|alice' ]; then
   pass "alice and bob are user_oidc accounts"
@@ -498,8 +511,7 @@ fi
 docker exec -u www-data "$C" rm -rf /tmp/stub
 
 # A disabled account and a name user_oidc would store hashed: refused (1).
-docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
-  exit($db->prepare("INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)")->execute(["carol", "Carol"]) ? 0 : 1);'
+nc_sql 'INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)' carol Carol
 occ user:disable carol >/dev/null
 set +e; mint_in carol | hook mint >/dev/null 2>&1; RC=$?; set -e
 [ "$RC" = 1 ] && pass "mint for a disabled account -> exit 1" || fail "mint for disabled carol: exit $RC, want 1"
@@ -513,8 +525,7 @@ fi
 # revoke fails while a requested id survives under another name (renamed by
 # the person); the app password keeps working, so it is never reported revoked.
 OUT=$(mint_in alice | hook mint); RCRED=$(jq -r .credential <<<"$OUT"); RID=$(jq -r .id <<<"$OUT")
-docker exec -u www-data "$C" php -r '$db = new PDO("sqlite:/var/www/html/data/nextcloud.db");
-  exit($db->prepare("UPDATE oc_authtoken SET name = ? WHERE id = ?")->execute(["renamed-by-alice", (int) $argv[1]]) ? 0 : 1);' "$RID"
+nc_sql 'UPDATE oc_authtoken SET name = ? WHERE id = ?' renamed-by-alice "$RID"
 set +e; printf '{"action":"revoke","user":"alice","ids":["%s"]}' "$RID" | hook revoke >/dev/null 2>&1; RC=$?; set -e
 if [ "$RC" != 0 ] && [ "$(ocs_as alice "$RCRED")" = 200 ]; then
   pass "revoke of an id renamed away from portcullis-ai-* -> exit $RC, not reported as revoked"
@@ -722,18 +733,38 @@ for path in /login /LOGIN /login/ //login /index.php/login /index.php//login /in
 done
 rm -f "$JAR"
 
-compose_down "$APP_ID"
-
 # ── Database choice (setting database, contracts §13.18) ──
-# The run above is the default, SQLite: no database server was created.
-section "Database choice: MySQL / MariaDB and PostgreSQL"
-for svc in nextcloud-mariadb nextcloud-postgres; do
-  if [ -z "$(docker ps -aq --filter label=com.docker.compose.project=portcullis --filter "label=com.docker.compose.service=$svc")" ]; then
-    pass "sqlite (default): no $svc container"
+section "Database choice: PostgreSQL (default), MySQL / MariaDB and SQLite"
+# db_check ENGINE SERVICE DBTYPE: the running install uses the chosen
+# database (SERVICE "" = SQLite, no server) and no other server runs.
+db_check() {
+  local engine=$1 svc=$2 dbtype=$3 got other
+  got=$(occ config:system:get dbtype 2>/dev/null || true)
+  if [ "$got" = "$dbtype" ]; then pass "$engine: dbtype = $dbtype"; else fail "$engine: dbtype = '$got', expected '$dbtype'"; fi
+  if [ -n "$svc" ]; then
+    got=$(occ config:system:get dbhost 2>/dev/null || true)
+    if [ "$got" = "$svc" ]; then pass "$engine: dbhost = $svc"; else fail "$engine: dbhost = '$got', expected '$svc'"; fi
+    got=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "portcullis-$svc-1" 2>/dev/null || true)
+    if [ "$got" = "running healthy" ]; then pass "$engine: $svc running and healthy"; else fail "$engine: $svc is '$got'"; fi
+    if docker exec "$C" test -e /var/www/html/data/nextcloud.db; then
+      fail "$engine: a SQLite database was created"
+    else
+      pass "$engine: no SQLite database"
+    fi
+  elif docker exec "$C" test -s /var/www/html/data/nextcloud.db; then
+    pass "$engine: the database is the data volume's nextcloud.db"
   else
-    fail "sqlite (default): a $svc container exists although its profile is off"
+    fail "$engine: no SQLite database in the data volume"
   fi
-done
+  for other in nextcloud-mariadb nextcloud-postgres; do
+    [ "$other" = "$svc" ] && continue
+    if [ -z "$(docker ps -aq --filter label=com.docker.compose.project=portcullis --filter "label=com.docker.compose.service=$other")" ]; then
+      pass "$engine: no $other container"
+    else
+      fail "$engine: a $other container exists although its profile is off"
+    fi
+  done
+}
 db_volumes() { docker volume rm -f portcullis_nextcloud-data portcullis_nextcloud-mariadb-data portcullis_nextcloud-postgres-data >/dev/null; }
 # nc_configured: wait until setup.sh finished in the current container.
 nc_configured() {
@@ -744,7 +775,28 @@ nc_configured() {
   done
   return 1
 }
-for choice in mysql:db-mysql:nextcloud-mariadb:mysql postgres:db-postgres:nextcloud-postgres:pgsql; do
+# restart_check ENGINE DBTYPE: a marker written now is read back after the
+# whole project went down and came up again (no depends_on: nextcloud waits
+# for its database itself), so the data persisted in the chosen database.
+restart_check() {
+  local engine=$1 dbtype=$2
+  occ config:app:set portcullis ci_marker --value="$engine" >/dev/null
+  compose_down "$APP_ID"
+  compose_up "$APP_ID"
+  if nc_configured && [ "$(occ status --output=json 2>/dev/null | jq -r '.installed')" = true ] \
+      && [ "$(occ config:system:get dbtype 2>/dev/null || true)" = "$dbtype" ] \
+      && [ "$(occ config:app:get portcullis ci_marker 2>/dev/null || true)" = "$engine" ]; then
+    pass "$engine: starts again with its data (installed, dbtype $dbtype, marker read back)"
+  else
+    fail "$engine: second start failed or lost the data (marker '$(occ config:app:get portcullis ci_marker 2>/dev/null || true)')"
+    docker logs "$C" 2>&1 | tail -40 || true
+  fi
+  compose_down "$APP_ID"
+}
+# The full run above is the default choice, PostgreSQL.
+db_check postgres nextcloud-postgres pgsql
+restart_check postgres pgsql
+for choice in mysql:db-mysql:nextcloud-mariadb:mysql sqlite:::sqlite3; do
   IFS=: read -r engine profile svc dbtype <<<"$choice"
   db_volumes
   # What the Hub writes into the instance's .env for this choice.
@@ -755,44 +807,26 @@ for choice in mysql:db-mysql:nextcloud-mariadb:mysql postgres:db-postgres:nextcl
   else
     fail "$engine: setup.sh did not finish"
     docker logs "$C" 2>&1 | tail -40 || true
-    docker logs "portcullis-$svc-1" 2>&1 | tail -20 || true
+    [ -z "$svc" ] || docker logs "portcullis-$svc-1" 2>&1 | tail -20 || true
   fi
-  got=$(occ config:system:get dbtype 2>/dev/null || true)
-  if [ "$got" = "$dbtype" ]; then pass "$engine: dbtype = $dbtype"; else fail "$engine: dbtype = '$got', expected '$dbtype'"; fi
-  got=$(occ config:system:get dbhost 2>/dev/null || true)
-  if [ "$got" = "$svc" ]; then pass "$engine: dbhost = $svc"; else fail "$engine: dbhost = '$got', expected '$svc'"; fi
-  if docker exec "$C" test -e /var/www/html/data/nextcloud.db; then
-    fail "$engine: a SQLite database was created"
-  else
-    pass "$engine: no SQLite database"
-  fi
+  db_check "$engine" "$svc" "$dbtype"
   if occ user:info nc-breakglass --output=json 2>/dev/null | grep -q '"enabled":false'; then
     pass "$engine: local admin nc-breakglass is disabled"
   else
     fail "$engine: local admin nc-breakglass is not disabled"
+  fi
+  if nc_sql 'INSERT INTO oc_user_oidc (user_id, display_name) VALUES (?, ?)' dave Dave \
+      && [ "$(occ user:info --output=json dave | jq -r '.backend')" = user_oidc ]; then
+    pass "$engine: Nextcloud reads its own database (a user_oidc account)"
+  else
+    fail "$engine: the user_oidc row isn't seen by Nextcloud"
   fi
   if docker logs "$C" 2>&1 | grep -q "${NEXTCLOUD_DB_PASSWORD:-x-never-x}"; then
     fail "$engine: the database password appears in the container log"
   else
     pass "$engine: the database password is not logged"
   fi
-  other=nextcloud-postgres; [ "$svc" = nextcloud-postgres ] && other=nextcloud-mariadb
-  if [ -z "$(docker ps -aq --filter label=com.docker.compose.project=portcullis --filter "label=com.docker.compose.service=$other")" ]; then
-    pass "$engine: no $other container"
-  else
-    fail "$engine: a $other container exists although its profile is off"
-  fi
-  # Both come up together again (no depends_on: nextcloud waits itself).
-  compose_down "$APP_ID"
-  compose_up "$APP_ID"
-  if nc_configured && [ "$(occ status --output=json 2>/dev/null | jq -r '.installed')" = true ] \
-      && [ "$(occ config:system:get dbtype 2>/dev/null || true)" = "$dbtype" ]; then
-    pass "$engine: starts again with the database server (installed, dbtype $dbtype)"
-  else
-    fail "$engine: second start failed"
-    docker logs "$C" 2>&1 | tail -40 || true
-  fi
-  compose_down "$APP_ID"
+  restart_check "$engine" "$dbtype"
   unset NEXTCLOUD_DATABASE COMPOSE_PROFILES
 done
 db_volumes
