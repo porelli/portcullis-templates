@@ -158,6 +158,13 @@ auth:
     Upgrades: the image is pinned; Nextcloud only upgrades one major version at
     a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
     Keep nextcloud and nextcloud-cron on the same image.
+    Database: chosen at setup (SQLite, MySQL / MariaDB on
+    nextcloud-mariadb or PostgreSQL on nextcloud-postgres, each under its
+    own compose profile) and fixed after the first start; installs of
+    earlier template versions are SQLite. Switching means a new instance
+    with the other choice and moving the data across (e.g. with Nextcloud's
+    occ db:convert-type). Never bump the database servers' major versions
+    in place.
     Settings: the default storage quota and the trash retention are applied
     live through occ by the apply-settings hook (apply-settings.php, run by
     the Hub as www-data in the nextcloud container at start and after every
@@ -200,8 +207,33 @@ hooks:
     timeout: 10m
 
 settings:
-  sections: [Files]
+  sections: [Database, Files]
   options:
+    # Setup choice (contracts §13.18): asked before the first start, fixed
+    # after it (the data lives in that database). SQLite is what installs
+    # of earlier template versions run, so it stays the default.
+    - key: database
+      label: Database
+      description: >
+        Where Nextcloud keeps its data other than files. SQLite needs no
+        server and suits a few people; MySQL / MariaDB or PostgreSQL scale
+        to more people and sync clients. Fixed after the first start.
+      section: Database
+      type: enum
+      options:
+        - {value: sqlite, label: SQLite}
+        - {value: mysql, label: MySQL / MariaDB}
+        - {value: postgres, label: PostgreSQL}
+      default: sqlite
+      scope: instance
+      setup: true
+      fixed_after_start: true
+      profiles:
+        sqlite: []
+        mysql: [db-mysql]
+        postgres: [db-postgres]
+      applies: restart
+      delivery: [{env: NEXTCLOUD_DATABASE}]
     - key: default_quota
       label: Default storage quota
       description: >
@@ -233,6 +265,9 @@ env:
     generate: random
   - key: NEXTCLOUD_OIDC_SECRET
     description: Nextcloud OIDC client secret
+    generate: random
+  - key: NEXTCLOUD_DB_PASSWORD
+    description: Password of the nextcloud account on the MySQL / MariaDB or PostgreSQL server (setting database)
     generate: random
 
 keycloak_clients:

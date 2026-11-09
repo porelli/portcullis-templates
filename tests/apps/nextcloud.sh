@@ -723,3 +723,76 @@ done
 rm -f "$JAR"
 
 compose_down "$APP_ID"
+
+# ── Database choice (setting database, contracts §13.18) ──
+# The run above is the default, SQLite: no database server was created.
+section "Database choice: MySQL / MariaDB and PostgreSQL"
+for svc in nextcloud-mariadb nextcloud-postgres; do
+  if [ -z "$(docker ps -aq --filter label=com.docker.compose.project=portcullis --filter "label=com.docker.compose.service=$svc")" ]; then
+    pass "sqlite (default): no $svc container"
+  else
+    fail "sqlite (default): a $svc container exists although its profile is off"
+  fi
+done
+db_volumes() { docker volume rm -f portcullis_nextcloud-data portcullis_nextcloud-mariadb-data portcullis_nextcloud-postgres-data >/dev/null; }
+# nc_configured: wait until setup.sh finished in the current container.
+nc_configured() {
+  for _ in $(seq 1 120); do
+    docker logs "$C" 2>&1 | grep -q 'portcullis: Nextcloud configured' && return 0
+    docker logs "$C" 2>&1 | grep -q 'Failed at executing script' && return 1
+    sleep 5
+  done
+  return 1
+}
+for choice in mysql:db-mysql:nextcloud-mariadb:mysql postgres:db-postgres:nextcloud-postgres:pgsql; do
+  IFS=: read -r engine profile svc dbtype <<<"$choice"
+  db_volumes
+  # What the Hub writes into the instance's .env for this choice.
+  export NEXTCLOUD_DATABASE="$engine" COMPOSE_PROFILES="$profile"
+  compose_up "$APP_ID"
+  if nc_configured; then
+    pass "$engine: installed and setup.sh ran"
+  else
+    fail "$engine: setup.sh did not finish"
+    docker logs "$C" 2>&1 | tail -40 || true
+    docker logs "portcullis-$svc-1" 2>&1 | tail -20 || true
+  fi
+  got=$(occ config:system:get dbtype 2>/dev/null || true)
+  if [ "$got" = "$dbtype" ]; then pass "$engine: dbtype = $dbtype"; else fail "$engine: dbtype = '$got', expected '$dbtype'"; fi
+  got=$(occ config:system:get dbhost 2>/dev/null || true)
+  if [ "$got" = "$svc" ]; then pass "$engine: dbhost = $svc"; else fail "$engine: dbhost = '$got', expected '$svc'"; fi
+  if docker exec "$C" test -e /var/www/html/data/nextcloud.db; then
+    fail "$engine: a SQLite database was created"
+  else
+    pass "$engine: no SQLite database"
+  fi
+  if occ user:info nc-breakglass --output=json 2>/dev/null | grep -q '"enabled":false'; then
+    pass "$engine: local admin nc-breakglass is disabled"
+  else
+    fail "$engine: local admin nc-breakglass is not disabled"
+  fi
+  if docker logs "$C" 2>&1 | grep -q "${NEXTCLOUD_DB_PASSWORD:-x-never-x}"; then
+    fail "$engine: the database password appears in the container log"
+  else
+    pass "$engine: the database password is not logged"
+  fi
+  other=nextcloud-postgres; [ "$svc" = nextcloud-postgres ] && other=nextcloud-mariadb
+  if [ -z "$(docker ps -aq --filter label=com.docker.compose.project=portcullis --filter "label=com.docker.compose.service=$other")" ]; then
+    pass "$engine: no $other container"
+  else
+    fail "$engine: a $other container exists although its profile is off"
+  fi
+  # Both come up together again (no depends_on: nextcloud waits itself).
+  compose_down "$APP_ID"
+  compose_up "$APP_ID"
+  if nc_configured && [ "$(occ status --output=json 2>/dev/null | jq -r '.installed')" = true ] \
+      && [ "$(occ config:system:get dbtype 2>/dev/null || true)" = "$dbtype" ]; then
+    pass "$engine: starts again with the database server (installed, dbtype $dbtype)"
+  else
+    fail "$engine: second start failed"
+    docker logs "$C" 2>&1 | tail -40 || true
+  fi
+  compose_down "$APP_ID"
+  unset NEXTCLOUD_DATABASE COMPOSE_PROFILES
+done
+db_volumes

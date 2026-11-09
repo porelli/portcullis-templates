@@ -6,10 +6,34 @@ services:
     # install/upgrade step, at every start. Install a 0755 copy of the
     # read-only template file there (template file modes are not guaranteed)
     # and hand over to the image's own entrypoint and command.
+    # Database (setup choice "database", fixed after the first start): the
+    # image installs on first start only with a database selected (without
+    # one Apache would serve the web installer), and it picks the first of
+    # SQLITE_DATABASE / MYSQL_* / POSTGRES_* that is set at all, so only the
+    # chosen one's variables are exported here. SQLite (in the data volume)
+    # is what installs of earlier template versions use. A database server
+    # runs only under its compose profile, so nextcloud can't depends_on it:
+    # wait here until it accepts connections (its image listens on TCP only
+    # once its own init is done), at every start, failing closed after 5 min.
     entrypoint:
       - /bin/sh
       - -ec
       - |
+        case "$${NEXTCLOUD_DATABASE:-sqlite}" in
+          sqlite) export SQLITE_DATABASE=nextcloud; db_host= ;;
+          mysql) export MYSQL_HOST=nextcloud-mariadb MYSQL_DATABASE=nextcloud MYSQL_USER=nextcloud MYSQL_PASSWORD="$$NEXTCLOUD_DB_PASSWORD"; db_host=nextcloud-mariadb db_port=3306 ;;
+          postgres) export POSTGRES_HOST=nextcloud-postgres POSTGRES_DB=nextcloud POSTGRES_USER=nextcloud POSTGRES_PASSWORD="$$NEXTCLOUD_DB_PASSWORD"; db_host=nextcloud-postgres db_port=5432 ;;
+          *) echo "portcullis: unknown database '$$NEXTCLOUD_DATABASE'" >&2; exit 1 ;;
+        esac
+        if [ -n "$$db_host" ]; then
+          i=0
+          until php -r 'exit(@fsockopen($$argv[1], (int) $$argv[2], $$n, $$e, 2) ? 0 : 1);' "$$db_host" "$$db_port"; do
+            i=$$((i + 1))
+            [ "$$i" -lt 60 ] || { echo "portcullis: database $$db_host:$$db_port not reachable" >&2; exit 1; }
+            echo "portcullis: waiting for the database ($$db_host:$$db_port)"
+            sleep 5
+          done
+        fi
         install -D -m 0755 /portcullis/setup.sh /docker-entrypoint-hooks.d/before-starting/50-portcullis.sh
         exec /entrypoint.sh "$$@"
       - sh
@@ -19,10 +43,10 @@ services:
       # every other local account) at every start: there is no password
       # login; break-glass is occ on the server (manifest notes).
       NEXTCLOUD_ADMIN_USER: nc-breakglass
-      # The image installs on first start only with a database selected;
-      # without it Apache would serve the web installer. SQLite (in the
-      # data volume), as installs of earlier template versions use.
-      SQLITE_DATABASE: nextcloud
+      # sqlite | mysql | postgres (manifest setting database); the
+      # entrypoint above exports the chosen database's variables.
+      NEXTCLOUD_DATABASE: ${NEXTCLOUD_DATABASE:-sqlite}
+      NEXTCLOUD_DB_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?NEXTCLOUD_DB_PASSWORD must be set}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?NEXTCLOUD_ADMIN_PASSWORD must be set}
       NEXTCLOUD_TRUSTED_DOMAINS: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
       OVERWRITEPROTOCOL: https
@@ -122,8 +146,62 @@ services:
       - nextcloud
     restart: unless-stopped
 
+  # The database servers of the setup choice "database" (manifest): each
+  # runs only under its compose profile; SQLite needs none. Default network
+  # only. Never bump their major versions (dump and restore instead).
+  nextcloud-mariadb:
+    image: mariadb:11.8.9@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+    profiles: [db-mysql]
+    user: "999:999"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    # Nextcloud's recommended isolation level for MySQL / MariaDB.
+    command: ["--transaction-isolation=READ-COMMITTED"]
+    environment:
+      MARIADB_DATABASE: nextcloud
+      MARIADB_USER: nextcloud
+      MARIADB_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?NEXTCLOUD_DB_PASSWORD must be set}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - nextcloud-mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  nextcloud-postgres:
+    image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    profiles: [db-postgres]
+    user: "70:70"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?NEXTCLOUD_DB_PASSWORD must be set}
+      POSTGRES_DB: nextcloud
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - nextcloud-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
 volumes:
   nextcloud-data: {}
+  nextcloud-mariadb-data: {}
+  nextcloud-postgres-data: {}
 
 networks:
   portcullis-proxy:
