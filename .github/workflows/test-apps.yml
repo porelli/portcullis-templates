@@ -260,15 +260,14 @@ jobs:
             --email ci@portcullis.local --dns-provider none >/dev/null
           # Compose services minus the ones core builds locally (enroll,
           # group-gate, domains, … — every service with a build:) and the
-          # unpinned edge Hub and Keycloak (never started here), plus the base
-          # images those are built from and the CLI's pinned helper (alpine), as
+          # unpinned edge Hub (never started here), plus the base images
+          # those are built from and the CLI's pinned helper (alpine), as
           # core's e2e job lists them.
           CFG="$(docker compose config --format json)"
           {
             docker compose config --images \
               | { grep -vxF -f <(jq -r '.services | to_entries[] | select(.value.build) | .value.image // ("portcullis-" + .key)' <<<"$CFG") || true; } \
-              | { grep -vxE 'ghcr\.io/porelli/portcullis-hub:.*' || true; } \
-              | { grep -vxE 'ghcr\.io/porelli/portcullis-keycloak:.*' || true; }
+              | { grep -vxE 'ghcr\.io/porelli/portcullis-hub:.*' || true; }
             for ctx in $(jq -r '.services[] | select(.build) | .build.context' <<<"$CFG" | sort -u); do
               [ -f "$ctx/Dockerfile" ] && sed -nE 's/^FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+).*/\2/p' "$ctx/Dockerfile"
             done
