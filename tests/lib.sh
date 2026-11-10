@@ -740,15 +740,18 @@ clear_public_policy() {
   printf '{"version": %s}' "$ver" | _hub_data_write
 }
 
-# Write stdin as group-gate-policy.json into core's hub_data volume
-# (atomically), using the image group-gate already runs (no extra pull).
+# Write stdin as a file into core's hub_data volume (atomically), using the
+# image group-gate already runs (no extra pull).
+# Usage: _hub_data_write [filename]
+#   filename defaults to group-gate-policy.json
 _hub_data_write() {
-  local cid image
+  local cid image filename
+  filename="${1:-group-gate-policy.json}"
   cid=$(docker ps -q --filter label=com.docker.compose.project=portcullis --filter label=com.docker.compose.service=group-gate | head -1)
   [ -n "$cid" ] || { fail "group-gate is not running"; return 1; }
   image=$(docker inspect -f '{{.Config.Image}}' "$cid")
   docker run --rm -i --user 0 --entrypoint sh -v portcullis_hub_data:/d "$image" \
-    -c 'cat > /d/.policy.tmp && chmod 644 /d/.policy.tmp && mv /d/.policy.tmp /d/group-gate-policy.json'
+    -c "cat > /d/.tmp.\$\$ && chmod 644 /d/.tmp.\$\$ && mv /d/.tmp.\$\$ /d/$filename"
 }
 
 # via_traefik <host> <path> [curl args...]: "<code> <redirect_url>" of an

@@ -430,18 +430,52 @@ def policy_doc(ver: int) -> dict:
         }
 
 
+def keycloak_doc(ver: int) -> dict:
+    """Build the signin-keycloak.json document for the given version.
+
+    For v6+: contract §8.1, the Keycloak extension reads this file to
+    decide which sign-in methods are available and enforce templates.
+    """
+    if ver >= 6:
+        methods = ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"]
+        standard_template = {
+            "op": "any",
+            "items": [
+                {"op": "any", "items": ["passkey_synced", "passkey_device", "security_key"]},
+                {"op": "any", "items": ["yubikey_cert"]}
+            ]
+        }
+        return {
+            "version": 1,
+            "methods": methods,
+            "add_stronger": False,
+            "templates": {"standard": standard_template},
+            "clients": {},
+            "authenticators": {},
+            "mds": {"serial": 0, "next_update": "0001-01-01T00:00:00Z"}
+        }
+    return {}
+
+
 def write_policy() -> None:
     """The group-gate policy file the Hub writes for this app (contract §4):
     every host of the app requires access_group, admin_paths require
-    admin_group too; the Hub's fresh-install default policy."""
+    admin_group too; the Hub's fresh-install default policy.
+
+    For v6+, also writes signin-keycloak.json (contract §8.1) so the
+    Keycloak extension accepts sign-ins."""
     ver = policy_version()
     doc = policy_doc(ver)
     sh("_hub_data_write", stdin=json.dumps(doc))
     log(f"group-gate policy (version {ver}): {json.dumps(doc)}")
+    if ver >= 6:
+        kc_doc = keycloak_doc(ver)
+        sh("_hub_data_write", "signin-keycloak.json", stdin=json.dumps(kc_doc))
+        log(f"signin-keycloak.json (version {ver}): {json.dumps(kc_doc)}")
 
 
 def selftest() -> None:
-    """Verify policy_doc builds v6 correctly and keeps v5 unchanged."""
+    """Verify policy_doc and keycloak_doc build v6 correctly and keep v5 unchanged."""
     v6 = policy_doc(6)
     assert v6["version"] == 6, f"v6 version: got {v6['version']}, want 6"
     assert "standard" in v6["templates"], "v6 templates: 'standard' missing"
@@ -456,6 +490,19 @@ def selftest() -> None:
     assert "core" not in v5, "v5 has v6 key 'core'"
     assert "people" not in v5, "v5 has v6 key 'people'"
     assert "add_stronger" not in v5, "v5 has v6 key 'add_stronger'"
+    # keycloak_doc v6 structure check.
+    kc6 = keycloak_doc(6)
+    assert kc6["version"] == 1, f"keycloak_doc v6 version: got {kc6['version']}, want 1"
+    assert kc6["methods"] == ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"], \
+        f"keycloak_doc v6 methods: got {kc6['methods']}"
+    assert "standard" in kc6["templates"], "keycloak_doc v6 templates: 'standard' missing"
+    assert kc6["clients"] == {}, f"keycloak_doc v6 clients: got {kc6['clients']}, want {{}}"
+    assert kc6["authenticators"] == {}, f"keycloak_doc v6 authenticators: got {kc6['authenticators']}, want {{}}"
+    assert kc6["mds"] == {"serial": 0, "next_update": "0001-01-01T00:00:00Z"}, \
+        f"keycloak_doc v6 mds: got {kc6['mds']}"
+    # keycloak_doc v5: no file for v5, returns empty.
+    kc5 = keycloak_doc(5)
+    assert kc5 == {}, f"keycloak_doc v5: got {kc5}, want {{}}"
 
 
 # ── tests/lib.sh (compose with the Hub's env) ───────────────────────
@@ -1065,6 +1112,7 @@ def summary() -> int:
 
 
 def main() -> int:
+    selftest()  # Verify policy_doc and keycloak_doc build correctly.
     if SIGNIN.get("skip"):
         results.append({"app": APP, "check": "signin", "status": "skip", "detail": SIGNIN["skip"]})
         return summary()
