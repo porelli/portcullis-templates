@@ -56,8 +56,6 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from playwright.sync_api import BrowserContext, Page, sync_playwright
-from playwright.sync_api import Error as PWError
 
 APP = sys.argv[1] if len(sys.argv) > 1 else ""
 if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", APP):
@@ -150,7 +148,7 @@ def gate_denied(user: str, host: str, marks: Dict[str, Any]) -> bool:
 
 
 def record(check: str, ok: bool, detail: str, xfail: Optional[Dict[str, str]] = None,
-           page: Optional["Page"] = None, seen: Optional[List[str]] = None,
+           page=None, seen: Optional[List[str]] = None,
            marks: Optional[Dict[str, Any]] = None) -> None:
     """A check result. An expected failure must match xfail['match'] (and
     not xfail['not_match']) in this check's own evidence: its detail, the
@@ -366,23 +364,98 @@ def policy_version() -> int:
         return 4
 
 
+def policy_doc(ver: int) -> dict:
+    """Build the policy document for the given version."""
+    if ver >= 6:
+        # v6: sign-in methods and templates (contract §4).
+        # Default methods switched on at install (password and browser_cert off).
+        methods = ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"]
+        # Built-in "standard" template: any of family:passkey and family:certificate,
+        # compiled against the switched-on methods (contract §4 example, lines 308-310).
+        standard_template = {
+            "op": "any",
+            "items": [
+                {"op": "any", "items": ["passkey_synced", "passkey_device", "security_key"]},
+                {"op": "any", "items": ["yubikey_cert"]}
+            ]
+        }
+        # Core hostnames: portal + the gated core subdomains, all on the default template.
+        core_hosts = {
+            DOMAIN: "standard",
+            f"directory.{DOMAIN}": "standard",
+            f"enroll.{DOMAIN}": "standard",
+            f"hub.{DOMAIN}": "standard",
+            f"metrics.{DOMAIN}": "standard",
+            f"people.{DOMAIN}": "standard",
+            f"traefik.{DOMAIN}": "standard"
+        }
+        # App groups and path_groups (unchanged from v5).
+        groups: Dict[str, str] = {}
+        paths: Dict[str, list] = {}
+        for host in HOSTS.values():
+            if ACCESS_GROUP and AUTH.get("group_access"):
+                groups[host] = ACCESS_GROUP
+            if AUTH.get("admin_paths") and ADMIN_GROUP:
+                paths[host] = [{"prefix": p.rstrip("/") or "/", "group": ADMIN_GROUP} for p in AUTH["admin_paths"]]
+        return {
+            "version": 6,
+            "methods": methods,
+            "templates": {"standard": standard_template},
+            "default": "standard",
+            "hosts": {},
+            "core": core_hosts,
+            "people": {},
+            "add_stronger": False,
+            "extra_domains": [],
+            "groups": groups,
+            "path_groups": paths,
+            "public_paths": {},
+            "expiring": []
+        }
+    else:
+        # v5 and earlier: factor-based default policy.
+        groups: Dict[str, str] = {}
+        paths: Dict[str, list] = {}
+        for host in HOSTS.values():
+            key = host if ver >= 5 else host[: -len(DOMAIN) - 1]
+            if ACCESS_GROUP and AUTH.get("group_access"):
+                groups[key] = ACCESS_GROUP
+            if AUTH.get("admin_paths") and ADMIN_GROUP:
+                paths[key] = [{"prefix": p.rstrip("/") or "/", "group": ADMIN_GROUP} for p in AUTH["admin_paths"]]
+        return {
+            "version": ver,
+            "default": {"factors": ["mtls", "webauthn"], "op": "any"},
+            "groups": groups,
+            "path_groups": paths
+        }
+
+
 def write_policy() -> None:
     """The group-gate policy file the Hub writes for this app (contract §4):
     every host of the app requires access_group, admin_paths require
     admin_group too; the Hub's fresh-install default policy."""
     ver = policy_version()
-    groups: Dict[str, str] = {}
-    paths: Dict[str, list] = {}
-    for host in HOSTS.values():
-        key = host if ver >= 5 else host[: -len(DOMAIN) - 1]
-        if ACCESS_GROUP and AUTH.get("group_access"):
-            groups[key] = ACCESS_GROUP
-        if AUTH.get("admin_paths") and ADMIN_GROUP:
-            paths[key] = [{"prefix": p.rstrip("/") or "/", "group": ADMIN_GROUP} for p in AUTH["admin_paths"]]
-    doc = {"version": ver, "default": {"factors": ["mtls", "webauthn"], "op": "any"},
-           "groups": groups, "path_groups": paths}
+    doc = policy_doc(ver)
     sh("_hub_data_write", stdin=json.dumps(doc))
     log(f"group-gate policy (version {ver}): {json.dumps(doc)}")
+
+
+def selftest() -> None:
+    """Verify policy_doc builds v6 correctly and keeps v5 unchanged."""
+    v6 = policy_doc(6)
+    assert v6["version"] == 6, f"v6 version: got {v6['version']}, want 6"
+    assert "standard" in v6["templates"], "v6 templates: 'standard' missing"
+    v5 = policy_doc(5)
+    # v5 structure check: has the factor-based default, no v6 keys.
+    assert v5["version"] == 5, f"v5 version: got {v5['version']}, want 5"
+    assert v5["default"] == {"factors": ["mtls", "webauthn"], "op": "any"}, f"v5 default changed: {v5['default']}"
+    assert "groups" in v5 and "path_groups" in v5, "v5 missing groups or path_groups"
+    assert "methods" not in v5, "v5 has v6 key 'methods'"
+    assert "templates" not in v5, "v5 has v6 key 'templates'"
+    assert "hosts" not in v5, "v5 has v6 key 'hosts'"
+    assert "core" not in v5, "v5 has v6 key 'core'"
+    assert "people" not in v5, "v5 has v6 key 'people'"
+    assert "add_stronger" not in v5, "v5 has v6 key 'add_stronger'"
 
 
 # ── tests/lib.sh (compose with the Hub's env) ───────────────────────
@@ -519,7 +592,8 @@ class Authenticator:
     """Virtual FIDO2 security key (CTAP2, USB, resident keys, UV), answering
     every prompt; counts registrations and assertions."""
 
-    def __init__(self, page: Page):
+    def __init__(self, page):
+        from playwright.sync_api import Page  # noqa: F401
         self.cdp = page.context.new_cdp_session(page)
         self.cdp.send("WebAuthn.enable", {"enableUI": False})
         self.id = self.cdp.send("WebAuthn.addVirtualAuthenticator", {"options": {
@@ -530,7 +604,8 @@ class Authenticator:
         self.cdp.on("WebAuthn.credentialAsserted", lambda _e: setattr(self, "asserted", self.asserted + 1))
 
 
-def shot(page: Page, name: str) -> None:
+def shot(page, name: str) -> None:
+    from playwright.sync_api import Error as PWError
     global _shot
     _shot += 1
     base = os.path.join(ART, f"{_shot:02d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', name)}")
@@ -542,9 +617,10 @@ def shot(page: Page, name: str) -> None:
         pass
 
 
-def goto(page: Page, url: str, attempts: int = 6):
+def goto(page, url: str, attempts: int = 6):
     """page.goto, retried on transient network errors (Chromium reports
     ERR_NETWORK_CHANGED while Docker creates the app's networks)."""
+    from playwright.sync_api import Error as PWError
     for i in range(attempts):
         try:
             return page.goto(url, wait_until="domcontentloaded")
@@ -560,12 +636,13 @@ def host_of(url: str) -> str:
     return (urllib.parse.urlsplit(url).hostname or "").lower()
 
 
-def on_login_pages(page: Page) -> bool:
+def on_login_pages(page) -> bool:
     h = host_of(page.url)
     return h in (AUTH_HOST, ENROLL_HOST)
 
 
-def visible(page: Page, selector: str) -> bool:
+def visible(page, selector: str) -> bool:
+    from playwright.sync_api import Error as PWError
     try:
         loc = page.locator(selector)
         return loc.count() > 0 and loc.first.is_visible()
@@ -573,7 +650,8 @@ def visible(page: Page, selector: str) -> bool:
         return False
 
 
-def body_text(page: Page) -> str:
+def body_text(page) -> str:
+    from playwright.sync_api import Error as PWError
     try:
         return page.inner_text("body", timeout=5000)
     except PWError:
@@ -583,7 +661,8 @@ def body_text(page: Page) -> str:
 class Flow:
     """One user's browser: setup link, passkey, the app's own sign-in."""
 
-    def __init__(self, ctx: BrowserContext, role: str, user: str = ""):
+    def __init__(self, ctx, role: str, user: str = ""):
+        from playwright.sync_api import Error as PWError  # noqa: F401
         self.ctx, self.role, self.user = ctx, role, user or USERS[role]
         self.expect_refused = role in ("outsider", "refused")
         self.page = ctx.new_page()
@@ -599,6 +678,7 @@ class Flow:
         self.page.on("response", self._on_response)
 
     def _on_response(self, resp) -> None:
+        from playwright.sync_api import Error as PWError
         try:
             if resp.request.is_navigation_request() and resp.frame == self.page.main_frame:
                 if host_of(resp.url) in HOSTS.values():
@@ -630,6 +710,7 @@ class Flow:
         return ok, ev
 
     def _check_core(self, spec: Dict[str, Any], host: str) -> Tuple[bool, str]:
+        from playwright.sync_api import Error as PWError
         page = self.page
         if spec.get("url_contains") and spec["url_contains"] not in page.url:
             return False, f"URL {page.url.split('?')[0]} lacks {spec['url_contains']!r}"
@@ -713,6 +794,7 @@ class Flow:
     def sign_in(self, link: str, host: str, deadline_s: int) -> Tuple[bool, str]:
         """Drive the setup link, Keycloak and the app's own sign-in until
         `signed_in` holds. Returns (signed_in, evidence)."""
+        from playwright.sync_api import Error as PWError
         page = self.page
         goto(page, link)
         shot(page, f"{self.role}-setup-link")
@@ -780,6 +862,12 @@ class Flow:
                 self.aborted = True
                 self.broken = "password field"
                 return False, f"password field at {url.split('?')[0]} (no tests.signin.password documents one)"
+            # v6: setup-link step-up walk - click #stepup-continue and touch the authenticator.
+            if policy_version() >= 6 and visible(page, "#stepup-continue"):
+                shot(page, f"{self.role}-stepup-continue")
+                page.click("#stepup-continue")
+                page.wait_for_timeout(1500)
+                continue
             status = self.nav[-1][0] if self.nav else 0
             if status == 403:
                 self.denied = f"HTTP 403 at {self.nav[-1][1].split('?')[0]}"
@@ -845,6 +933,7 @@ def invite(user: str, landing: str) -> str:
 
 
 def run_role(browser, role: str, host: str, user: str = "") -> None:
+    from playwright.sync_api import Error as PWError  # noqa: F401
     path = SIGNIN.get("path", "/")
     user = user or USERS[role]
     check = role if role != "refused" else f"refused:{user}"
@@ -934,6 +1023,7 @@ def run_role(browser, role: str, host: str, user: str = "") -> None:
 def warm_up(browser) -> None:
     """Chromium reports ERR_NETWORK_CHANGED for a while after Docker created
     the app's networks: load Keycloak until three loads in a row succeed."""
+    from playwright.sync_api import Error as PWError
     ctx = browser.new_context()
     page = ctx.new_page()
     ok = 0
@@ -1000,6 +1090,7 @@ def main() -> int:
         results.append({"app": APP, "check": "setup", "status": "fail", "detail": f"{type(e).__name__}: {e}"})
         dump_logs()
         return summary()
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         browser = pw.chromium.launch(args=["--disable-features=WebAuthenticationConditionalUI"])
         warm_up(browser)
