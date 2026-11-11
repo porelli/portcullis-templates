@@ -712,6 +712,25 @@ policy_version() {
 # (core's version) the Hub would write for this public exception, into
 # core's hub_data volume, so core's real public guard (group-gate
 # /public-guard) runs in the test. clear_public_policy empties it again.
+# _policy_base <version>: the rest of the policy file (version 6 needs every
+# key, contract §4; tests/e2e/app_signin.py policy_doc(6) writes the same):
+# the methods on at install, the built-in Standard compiled, every gated core
+# host on it. Older versions: just the version.
+_policy_base() {
+  if [ "$1" -lt 6 ]; then printf '{"version": %s}' "$1"; return; fi
+  jq -n --arg d "$DOMAIN" '{
+    version: 6,
+    methods: ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"],
+    templates: {standard: {op: "any", items: [
+      {op: "any", items: ["passkey_synced", "passkey_device", "security_key"]},
+      {op: "any", items: ["yubikey_cert"]}]}},
+    default: "standard", hosts: {},
+    core: ([$d] + (["directory", "enroll", "hub", "metrics", "people", "traefik"] | map(. + "." + $d))
+           | map({(.): "standard"}) | add),
+    people: {}, add_stronger: false, extra_domains: [],
+    groups: {}, path_groups: {}, public_paths: {}, expiring: []}'
+}
+
 write_public_policy() {
   local sub="$1" manifest="$2" mode="$3" pattern ver key
   ver=$(policy_version) || return 1
@@ -723,8 +742,9 @@ write_public_policy() {
     --argjson extra_exts "$(_manifest_public_list "$manifest" static_extensions | jq -R . | jq -s .)" \
     --argjson headers "$(_manifest_public_list "$manifest" credential_headers | jq -R . | jq -s .)" \
     --argjson cookies "$(_manifest_public_list "$manifest" credential_cookies | jq -R . | jq -s .)" \
-    --argjson query "$(_manifest_public_list "$manifest" credential_query | jq -R . | jq -s .)" '
-      {version: $ver, public_paths: {($sub): ({
+    --argjson query "$(_manifest_public_list "$manifest" credential_query | jq -R . | jq -s .)" \
+    --argjson base "$(_policy_base "$ver")" '
+      $base + {version: $ver, public_paths: {($sub): ({
         paths: map(if startswith("=") then {path: .[1:], match: "exact"}
                    elif startswith("~") then {path: .[1:], match: "static"}
                    else {path: ., match: "prefix"} end),
@@ -737,7 +757,7 @@ write_public_policy() {
 clear_public_policy() {
   local ver
   ver=$(policy_version) || return 1
-  printf '{"version": %s}' "$ver" | _hub_data_write
+  _policy_base "$ver" | _hub_data_write
 }
 
 # Write stdin as a file into core's hub_data volume (atomically), using the
