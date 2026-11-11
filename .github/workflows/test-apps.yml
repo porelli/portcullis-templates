@@ -217,6 +217,7 @@ jobs:
     outputs:
       core_ref: ${{ steps.core.outputs.ref }}
       cache_key: ${{ steps.images.outputs.key }}
+      keycloak_image: ${{ steps.images.outputs.keycloak_image }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
@@ -258,6 +259,28 @@ jobs:
           # from the CLI lets `config --images` resolve. It's not shipped.
           ./portcullis init --env-only --non-interactive --domain portcullis.local \
             --email ci@portcullis.local --dns-provider none >/dev/null
+          # Core's KEYCLOAK_IMAGE default is the unpinned portcullis-keycloak
+          # `edge` tag on core main and branches (a release pins tag@digest).
+          # Resolve it to its digest once, here (trusted job), and run core
+          # with that pinned ref everywhere (the test job gets it as
+          # KEYCLOAK_IMAGE), so the pin check below sees a pinned image — no
+          # exclusion. A compose file without KEYCLOAK_IMAGE, or with a pinned
+          # default, changes nothing.
+          # shellcheck disable=SC2016  # a literal ${KEYCLOAK_IMAGE:-…} in the sed pattern
+          kc_default="$(sed -n 's/.*\${KEYCLOAK_IMAGE:-\([^}]*\)}.*/\1/p' docker-compose.yml | head -n1)"
+          kc=""
+          case "$kc_default" in
+            ""|*@sha256:*) ;;
+            ghcr.io/porelli/portcullis-keycloak:*)
+              digest="$(docker buildx imagetools inspect "$kc_default" --format '{{json .Manifest}}' | jq -r .digest)"
+              [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::cannot resolve $kc_default to a digest (got '$digest')"; exit 1; }
+              kc="ghcr.io/porelli/portcullis-keycloak@$digest"
+              echo "Keycloak image: $kc_default resolved to $kc" | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            *) echo "::error::unexpected KEYCLOAK_IMAGE default in core's compose: $kc_default"; exit 1 ;;
+          esac
+          if [ -n "$kc" ]; then export KEYCLOAK_IMAGE="$kc"; fi
+          echo "keycloak_image=$kc" >> "$GITHUB_OUTPUT"
           # Compose services minus the ones core builds locally (enroll,
           # group-gate, domains, … — every service with a build:) and the
           # unpinned edge Hub (never started here), plus the base images
@@ -460,6 +483,9 @@ jobs:
       # tests/lib.sh passes -f explicitly, so app compose files are unaffected.
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
       VAULT_ADDR: http://127.0.0.1:8200
+      # The portcullis-keycloak image fetch-core resolved to a digest (empty:
+      # core's compose has no KEYCLOAK_IMAGE, or pins its default itself).
+      KEYCLOAK_IMAGE: ${{ needs.fetch-core.outputs.keycloak_image }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -170,7 +170,8 @@ without passwords — `e2eadmin` (in `access_group` and `admin_group`),
 `e2emember` (in `access_group`) and `e2eoutsider` (in no group) — does what
 the Hub would (registers the manifest's `keycloak_clients` with the app's
 generated secret, writes group-gate's policy file with `access_group` and
-`auth.admin_paths`), starts the app, and for each user opens a one-time setup
+`auth.admin_paths` and, on core policy version 6, the Keycloak extension's
+`signin-keycloak.json`), starts the app, and for each user opens a one-time setup
 link (`portcullis invite <user> --to https://<host><path>`) in Chromium with a
 virtual security key: passkey registration, then the app's own sign-in
 (native OIDC / SAML round trip, or forward-auth headers). Every run starts the
@@ -187,7 +188,7 @@ must fail the way its `match` regex says, and not as `not_match` says,
 searched only in that check's evidence (its detail, the pages its flow saw,
 the app's logs since its flow started); a flow the test broke (password
 field, Keycloak/enroll or browser error, never on the app) and any exception
-fail the run. Any visible password field fails the run (Keycloak is passkey-only), unless
+fail the run. Any visible password field fails the run (the password sign-in method is off by default), unless
 `password` documents why the app shows one. If nobody could sign in, the
 outsider's refusal proves nothing and is reported `inconclusive`. One-shot
 helper services (`restart: "no"`) must have exited 0 before the browser

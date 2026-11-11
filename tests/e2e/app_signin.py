@@ -356,12 +356,19 @@ def keycloak_setup() -> None:
         http("POST", f"{base}/user-storage/{comp['id']}/sync?action=triggerFullSync", token=tok, ok=(200, 204))
 
 
+_POLICY_VERSION = None
+
+
 def policy_version() -> int:
-    try:
-        src = open(os.path.join(PROJECT_DIR, "group-gate", "group-gate.py"), encoding="utf-8").read()
-        return int(re.search(r"^POLICY_VERSION\s*=\s*(\d+)", src, re.M).group(1))
-    except (OSError, AttributeError):
-        return 4
+    """Core's group-gate POLICY_VERSION, read once per run (4 when unreadable)."""
+    global _POLICY_VERSION
+    if _POLICY_VERSION is None:
+        try:
+            src = open(os.path.join(PROJECT_DIR, "group-gate", "group-gate.py"), encoding="utf-8").read()
+            _POLICY_VERSION = int(re.search(r"^POLICY_VERSION\s*=\s*(\d+)", src, re.M).group(1))
+        except (OSError, AttributeError):
+            _POLICY_VERSION = 4
+    return _POLICY_VERSION
 
 
 def policy_doc(ver: int) -> dict:
@@ -640,7 +647,6 @@ class Authenticator:
     every prompt; counts registrations and assertions."""
 
     def __init__(self, page):
-        from playwright.sync_api import Page  # noqa: F401
         self.cdp = page.context.new_cdp_session(page)
         self.cdp.send("WebAuthn.enable", {"enableUI": False})
         self.id = self.cdp.send("WebAuthn.addVirtualAuthenticator", {"options": {
@@ -709,7 +715,6 @@ class Flow:
     """One user's browser: setup link, passkey, the app's own sign-in."""
 
     def __init__(self, ctx, role: str, user: str = ""):
-        from playwright.sync_api import Error as PWError  # noqa: F401
         self.ctx, self.role, self.user = ctx, role, user or USERS[role]
         self.expect_refused = role in ("outsider", "refused")
         self.page = ctx.new_page()
@@ -980,7 +985,6 @@ def invite(user: str, landing: str) -> str:
 
 
 def run_role(browser, role: str, host: str, user: str = "") -> None:
-    from playwright.sync_api import Error as PWError  # noqa: F401
     path = SIGNIN.get("path", "/")
     user = user or USERS[role]
     check = role if role != "refused" else f"refused:{user}"
