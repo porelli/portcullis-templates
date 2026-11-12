@@ -2270,14 +2270,16 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
-                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate"}
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
-                "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data"}
+                "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
+                "group_gate_data"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
-                 "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp"}
+                 "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
+                 "portcullis-sessions"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).

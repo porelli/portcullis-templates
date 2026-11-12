@@ -386,11 +386,12 @@ def policy_doc(ver: int) -> dict:
                 {"op": "any", "items": ["yubikey_cert"]}
             ]
         }
-        # Core hostnames: portal + the gated core subdomains, all on the default template.
+        # Core hostnames: portal + the gated core subdomains (GATED_CORE_SUBDOMAINS
+        # in core's group-gate; enroll, auth and mcp are core hosts but never gated,
+        # and any other `core` key denies), all on the default template.
         core_hosts = {
             DOMAIN: "standard",
             f"directory.{DOMAIN}": "standard",
-            f"enroll.{DOMAIN}": "standard",
             f"hub.{DOMAIN}": "standard",
             f"metrics.{DOMAIN}": "standard",
             f"people.{DOMAIN}": "standard",

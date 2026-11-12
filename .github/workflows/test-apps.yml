@@ -633,7 +633,8 @@ jobs:
           mkdir -p templates
           tar -C "$WORKSPACE" --exclude=./core --exclude=./.git -cf - . | tar -C templates -xf -
 
-          # Every app hostname (the default instance's) plus core's.
+          # Every app hostname (the default instance's) plus core's: auth and
+          # enroll (its only public router is the setup links, /invite/*).
           {
             echo "$PORTCULLIS_DOMAIN"
             for h in auth enroll; do echo "$h.$PORTCULLIS_DOMAIN"; done
@@ -695,7 +696,8 @@ jobs:
           # IPAM subnet + Traefik's static IP) — never `docker network create`.
           docker compose up -d postgres lldap
           # Vault in server mode (initialised, unsealed, secrets/ written:
-          # enroll AppRole, invite and service-account secrets; also creates
+          # enroll AppRole, invite and service-account secrets, the session
+          # store's config and passwords (secrets/sessions/); also creates
           # every bind-mount source), PKI + wildcard server cert, CA bundle.
           ./portcullis vault init
           ./portcullis pki setup --with-server-cert
@@ -726,7 +728,7 @@ jobs:
           # oauth2-proxy exits while Keycloak is down; (re)start it now.
           docker compose up -d forward-auth
           docker compose restart forward-auth
-          for svc in traefik keycloak group-gate enroll forward-auth; do
+          for svc in traefik keycloak group-gate enroll sessions forward-auth; do
             for i in $(seq 1 40); do
               cid="$(docker compose ps -q "$svc")"
               state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")"
@@ -826,13 +828,13 @@ jobs:
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: |
           mkdir -p "$E2E_ARTIFACTS/core"
-          for svc in traefik keycloak enroll forward-auth group-gate lldap; do
+          for svc in traefik keycloak enroll sessions forward-auth group-gate lldap; do
             docker compose logs --no-color "$svc" > "$E2E_ARTIFACTS/core/$svc.log" 2>&1 || true
           done
           echo "=== Docker Status ==="
           docker compose ps
           echo "=== Logs ==="
-          for svc in traefik vault keycloak enroll forward-auth group-gate lldap; do
+          for svc in traefik vault keycloak enroll sessions forward-auth group-gate lldap; do
             echo "--- $svc ---"
             docker compose logs --tail=40 "$svc" 2>/dev/null || true
           done
