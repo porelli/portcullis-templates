@@ -2270,7 +2270,7 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
-                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions"}
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
                 "group_gate_data"}

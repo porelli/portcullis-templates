@@ -4051,6 +4051,7 @@ class AITests(Case):
             ("declares the gate IP", plain, ["env:\n", "ports:\n  - {key: PORTCULLIS_MCP_GATE_IP, label: X, container: 1, default: 1, service: demo}\nenv:\n"], [], "ports key PORTCULLIS_MCP_GATE_IP is reserved"),
             ("mcp default subdomain", plain, ["{{HOST_DEMO}}", "{{HOST_DEMO}}"], ["demo.portcullis.local}`)", "mcp.portcullis.local}`)"], "subdomain 'mcp' belongs to core"),
             ("core service mcp-gate", plain, [], ["  init:\n", "  mcp-gate:\n"], "the DNS name 'mcp-gate' is core's"),
+            ("core service dns-tool", plain, [], ["  init:\n", "  dns-tool:\n"], "the DNS name 'dns-tool' is core's"),
             ("core volume mcp_gate_data", plain, [], ["  demo-data: {}\n", "  demo-data: {}\n  mcp_gate_data: {}\n"], "volumes.mcp_gate_data is core's"),
             ("core router mcp", plain, [], ["routers.demo.", "routers.mcp."] * 4, "Traefik label 'traefik.http.routers.mcp.rule': router 'mcp' is core's (reserved)"),
             ("core service mcp-gate label", plain, [], ["traefik.http.services.demo.", "traefik.http.services.mcp-gate."], "service 'mcp-gate' is core's (reserved)"),
