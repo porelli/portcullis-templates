@@ -857,6 +857,7 @@ class Flow:
         landed_at = 0.0
         clicked: Dict[str, int] = {}
         reloads_404 = 0
+        stepped_up = False
         last = ""
         settle = int(SIGNIN.get("refused_after", 45))
         while time.time() < deadline:
@@ -904,6 +905,18 @@ class Flow:
             if host_of(url) not in HOSTS.values():
                 page.wait_for_timeout(700)   # oauth2-proxy and app redirects
                 continue
+            # The step-up returns to the host's root (group-gate's step-up
+            # URL has rd=https://<host>/), not to the page that asked for it:
+            # open the sign-in path again, as the user would.
+            if stepped_up:
+                stepped_up = False
+                want = f"https://{host}{SIGNIN.get('path', '/')}"
+                if url != want:
+                    try:
+                        goto(page, want)
+                    except PWError as e:
+                        last = f"after the step-up: {str(e).splitlines()[0]}"
+                    continue
             seen = body_text(page)[:4000]
             if seen and (not self.seen or self.seen[-1] != seen) and len(self.seen) < 200:
                 self.seen.append(seen)
@@ -920,6 +933,7 @@ class Flow:
                 shot(page, f"{self.role}-stepup-continue")
                 page.click("#stepup-continue")
                 page.wait_for_timeout(1500)
+                stepped_up = True
                 continue
             status = self.nav[-1][0] if self.nav else 0
             if status == 403:
