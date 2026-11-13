@@ -4951,7 +4951,16 @@ class _SpecCheck:
     def check_reserved_var_refs(self) -> None:
         """reservedVarRefs (F36): ${PORTCULLIS_LOCAL_NETWORKS} only exactly so;
         ${PORTCULLIS_FOLDER_GID_<KEY>} only as a whole environment: value of
-        the service <KEY>'s folder block targets; no other PORTCULLIS_FOLDER_*."""
+        the service <KEY>'s folder block targets; no other PORTCULLIS_FOLDER_*.
+        PORTCULLIS_UNPRIVILEGED_PORT_START not available to templates (P15)."""
+        # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
+        for sc in self.scalars:
+            if "PORTCULLIS_UNPRIVILEGED_PORT_START" in sc:
+                self.cerr("PORTCULLIS_UNPRIVILEGED_PORT_START is not available to templates (core.env-only)",
+                          "templates use fixed port numbers, host-networking-only ports in manifest ports[], or "
+                          "the Hub's compatibility check against the host's setting")
+                return
+
         allowed: Dict[str, List[str]] = {}
         for o in setting_options(self.m):
             tg = o.get("target")
@@ -6635,6 +6644,229 @@ def check_setup(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[s
                     "give a setup enum option a profiles mapping that starts it, or drop profiles: (the Hub never starts it)")
 
 
+# ── Rootless Podman compatibility ──────────────────────────────────
+
+ROOTLESS_MAX_ID = 65535
+_ROOTLESS_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}")
+_ROOTLESS_DEVICE_RE = re.compile(r"/dev/[A-Za-z0-9._/-]+")
+_GO_INT_RE = re.compile(r"[+-]?[0-9]+")
+
+
+def _rootless_resolve(s: str, env: Dict[str, str]) -> str:
+    """Interpolate s compose-style, as the Hub's resolve: ${V}, ${V:-d}
+    (empty or unset -> d), ${V-d} (unset -> d), ${V:?...} / ${V?...} (the
+    value); $$ is a literal dollar."""
+    esc = "\x00"
+    s = s.replace("$$", esc)
+
+    def sub(m: "re.Match[str]") -> str:
+        name, op, default = m.group(1), m.group(2) or "", m.group(3) or ""
+        val = env.get(name)
+        if op == ":-" and not val:
+            return default
+        if op == "-" and val is None:
+            return default
+        return val or ""
+
+    return _ROOTLESS_VAR_RE.sub(sub, s).replace(esc, "$")
+
+
+def _rootless_split(s: str) -> List[str]:
+    """Split s at ':' outside ${...} (the Hub's splitOutsideVars)."""
+    parts: List[str] = []
+    depth = start = 0
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "$" and i + 1 < len(s) and s[i + 1] == "{":
+            depth += 1
+            i += 1
+        elif c == "}" and depth > 0:
+            depth -= 1
+        elif c == ":" and depth == 0:
+            parts.append(s[start:i])
+            start = i + 1
+        i += 1
+    parts.append(s[start:])
+    return parts
+
+
+def _go_scalar(v: Any) -> str:
+    """A YAML scalar as the Hub sees its text."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e21:
+        return str(int(v))
+    return str(v)
+
+
+def _rootless_scalars(v: Any) -> Tuple[List[str], bool]:
+    """v's scalar items (v a list), else v itself as one; ok False for any
+    non-scalar item or a non-list collection (the Hub's scalars)."""
+    if v is None:
+        return [], True
+    if isinstance(v, (dict, list)):
+        if isinstance(v, dict):
+            return [], False
+        out = [_go_scalar(x) for x in v if not isinstance(x, (dict, list))]
+        return out, len(out) == len(v)
+    return [_go_scalar(v)], True
+
+
+def _go_atoi(s: str) -> Optional[int]:
+    if not _GO_INT_RE.fullmatch(s):
+        return None
+    n = int(s)
+    return n if -(1 << 63) <= n < (1 << 63) else None
+
+
+def _rootless_host_port(p: Dict[str, Any], env: Dict[str, str]) -> int:
+    """A manifest port's effective host port (a range's start): env's value
+    for its key when set, else the default (the Hub's hostPort)."""
+    key = p.get("key")
+    v = (env.get(key) or "").strip() if isinstance(key, str) else ""
+    rng = p.get("range")
+    if isinstance(rng, str) and rng:
+        r = v or rng
+        n = _go_atoi(r.split("-", 1)[0].strip())
+        return n if n is not None else 0
+    if v:
+        n = _go_atoi(v)
+        if n is not None:
+            return n
+    d = p.get("default")
+    return d if isinstance(d, int) and not isinstance(d, bool) else 0
+
+
+def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_start: int = 80) -> Tuple[str, List[str]]:
+    """Classify a template under rootless Podman, as the Hub's RootlessCompat
+    (portcullis-hub internal/templates/rootless.go; shared vectors in
+    tests/rootless_vectors.json).
+
+    Rules, per service in compose order: devices (a source other than
+    /dev/null and /dev/net/tun refused, /dev/null and /dev/net/tun
+    degraded), cap_add (SYS_RAWIO / SYS_ADMIN / ALL refused, NET_ADMIN
+    degraded), user / group_add ids above 65535 refused, network_mode host (resolved)
+    degraded; then each manifest port (below port_start refused, UDP
+    degraded); then folder runs_as ids outside 0-65535 refused. Each reason
+    once. Any refused reason gives ("refused", refused reasons); else any
+    degraded one ("degraded", degraded reasons); else ("ok", []). An
+    unreadable compose file is refused.
+
+    env is the instance's effective values (None = the defaults; port keys
+    carry the instance's host ports).
+    """
+    env = env or {}
+    refused: List[str] = []
+    degraded: List[str] = []
+
+    def refuse(s: str) -> None:
+        if s not in refused:
+            refused.append(s)
+
+    def degrade(s: str) -> None:
+        if s not in degraded:
+            degraded.append(s)
+
+    compose = t.compose
+    if compose is None:
+        try:
+            with open(t.compose_path, encoding="utf-8") as f:
+                compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+        except Exception as e:  # noqa: BLE001 - any read / parse failure refuses
+            return ("refused", [f"compose.yml can't be read: {e}"])
+    services: Dict[str, Any] = {}
+    if compose is not None:
+        if not isinstance(compose, dict):
+            return ("refused", ["compose.yml can't be read: not a mapping"])
+        if "services" in compose:
+            services = compose["services"]
+            if not isinstance(services, dict):
+                return ("refused", ["compose.yml can't be read: services is not a mapping"])
+    for name, svc in services.items():
+        if svc is not None and not isinstance(svc, dict):
+            return ("refused", [f"compose.yml can't be read: service {name}: not a mapping"])
+
+    def check_id(service: str, v: str) -> None:
+        v = v.strip()
+        if v and re.fullmatch(r"[0-9]+", v) and int(v) > ROOTLESS_MAX_ID:
+            refuse(f"service {service} runs as id {v.lstrip('0')}, outside the rootless id range (0–65535)")
+
+    for name, svc in services.items():
+        svc = svc or {}
+        tun = f"service {name} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)"
+        devs, ok = _rootless_scalars(svc.get("devices"))
+        if not ok:
+            refuse(f"service {name} passes the host device a non-device source: device access needs host root")
+        for d in devs:
+            src = _rootless_resolve(_rootless_split(d)[0], env)
+            if src == "":
+                continue  # an unset source: compose itself refuses the file
+            if src == "/dev/null":
+                degrade(f"service {name} has device slots: host devices can't be passed under rootless Podman")
+            elif src == "/dev/net/tun":
+                degrade(tun)
+            else:
+                shown = src if _ROOTLESS_DEVICE_RE.fullmatch(src) else "a non-device source"
+                refuse(f"service {name} passes the host device {shown}: device access needs host root")
+        caps, _ = _rootless_scalars(svc.get("cap_add"))
+        for cp in caps:
+            c = _rootless_resolve(cp, env).strip().upper()
+            if c.startswith("CAP_"):
+                c = c[len("CAP_"):]
+            if c in ("SYS_RAWIO", "SYS_ADMIN", "ALL"):
+                refuse(f"service {name} needs {'SYS_ADMIN' if c == 'ALL' else c} (raw device access needs host root)")
+            elif c == "NET_ADMIN":
+                degrade(tun)
+        user = svc.get("user")
+        if "user" in svc and not isinstance(user, (dict, list)):
+            for part in _rootless_resolve(_go_scalar(user), env).split(":"):
+                check_id(name, part)
+        groups, _ = _rootless_scalars(svc.get("group_add"))
+        for g in groups:
+            check_id(name, _rootless_resolve(g, env))
+        nm = svc.get("network_mode")
+        if "network_mode" in svc and not isinstance(nm, (dict, list)) and _rootless_resolve(_go_scalar(nm), env) == "host":
+            degrade(f"host networking: published ports must stay at or above {port_start}")
+
+    manifest = t.manifest if isinstance(t.manifest, dict) else {}
+    ports = manifest.get("ports")
+    for p in ports if isinstance(ports, list) else []:
+        if not isinstance(p, dict):
+            continue
+        n = _rootless_host_port(p, env)
+        if n <= 0:
+            continue
+        proto = p.get("protocol") or "tcp"
+        if n < port_start:
+            refuse(f"host port {n}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): "
+                   f"lower it to {n} on the host to allow it (any local user can then bind ports from {n})")
+        if proto == "udp":
+            degrade(f"UDP clients on port {n} appear with a rewritten source address")
+
+    for o in setting_options(manifest):
+        folder = o.get("folder")
+        runs_as = folder.get("runs_as") if isinstance(folder, dict) else None
+        if not isinstance(runs_as, dict):
+            continue
+        target = o.get("target")
+        svc_name = target.get("service") if isinstance(target, dict) else None
+        if not (isinstance(svc_name, str) and svc_name):
+            svc_name = _str(o, "key")
+        for k in ("uid", "gid"):
+            i = runs_as.get(k)
+            if isinstance(i, int) and not isinstance(i, bool) and (i < 0 or i > ROOTLESS_MAX_ID):
+                refuse(f"service {svc_name} runs as id {i}, outside the rootless id range (0–65535)")
+
+    if refused:
+        return ("refused", refused)
+    if degraded:
+        return ("degraded", degraded)
+    return ("ok", [])
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def discover() -> List[str]:
@@ -6654,7 +6886,37 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("apps", nargs="*", help="template ids to check (default: all)")
     ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
+    ap.add_argument("--rootless", action="store_true", help="output rootless Podman classification")
     args = ap.parse_args(argv)
+
+    # If --rootless, output classification and exit
+    if args.rootless:
+        all_ids = discover()
+        ids = args.apps or all_ids
+        results = []
+        for app_id in sorted(ids):
+            t = Template(app_id)
+            if not check_layout(t, Report()):
+                continue
+            # Load manifest and compose
+            try:
+                with open(t.manifest_path, encoding="utf-8") as f:
+                    t.manifest = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+            except:
+                pass
+            try:
+                with open(t.compose_path, encoding="utf-8") as f:
+                    t.compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+            except:
+                pass
+
+            status, reasons = rootless_compat(t, env=None, port_start=80)
+            reasons_str = "; ".join(reasons) if reasons else ""
+            results.append(f"{app_id}\t{status}\t{reasons_str}")
+
+        for line in results:
+            print(line)
+        return 0
 
     with open(SCHEMA_PATH, encoding="utf-8") as f:
         schema = json.load(f)

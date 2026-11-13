@@ -41,6 +41,22 @@ jobs:
       - name: Validator unit tests
         run: python -m unittest discover -s tests -p 'test_*.py'
 
+      # Rootless Podman classification vectors must match the Hub's copy (shared
+      # contract). Fetch from the same-named branch if it exists, else main.
+      - name: Rootless vectors match the Hub
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads https://github.com/porelli/portcullis-hub.git "refs/heads/$REF" >/dev/null 2>&1; then
+            hub_ref="$REF"
+          else
+            hub_ref="main"
+          fi
+          echo "Checking rootless_vectors.json against portcullis-hub branch: $hub_ref"
+          curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/rootless_vectors.json" -o /tmp/hub_rootless_vectors.json
+          cmp tests/rootless_vectors.json /tmp/hub_rootless_vectors.json
+
       - name: docker compose config
         run: bash tests/compose-config.sh
 

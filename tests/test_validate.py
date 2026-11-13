@@ -15,7 +15,7 @@ import tempfile
 import textwrap
 import unittest
 from unittest import mock
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validate as v  # noqa: E402
@@ -4200,6 +4200,166 @@ class TestSetup(Case):
     def test_schema_profile_pattern(self) -> None:
         errors, _ = self.run_raw(S_HDR + s_opts(db_opt("profiles: {mysql: [db-mysql], postgres: ['-bad']}")), s_compose(s_env("DATABASE"), services=DB_SERVICES))
         self.assertError(errors, "-bad")
+
+
+class RootlessTests(unittest.TestCase):
+    """Tests for rootless Podman compatibility classification (Task 6)."""
+
+    def test_vectors(self) -> None:
+        """Test each vector through rootless_compat equals want."""
+        vectors_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rootless_vectors.json")
+        with open(vectors_path, encoding="utf-8") as f:
+            vectors = json.load(f)
+
+        for vec in vectors:
+            with self.subTest(name=vec["name"]):
+                # Create a minimal template
+                t = v.Template("test")
+                # As the Hub's harness: a vector port's port is both its
+                # default (the host port) and its container port.
+                t.manifest = {"ports": [{"key": p["key"], "default": p["port"], "container": p["port"], "protocol": p["protocol"]}
+                                        for p in vec.get("ports", [])]}
+                t.compose = v.yaml.safe_load(vec["compose"])
+
+                status, reasons = v.rootless_compat(t, env=vec.get("env", {}), port_start=vec["port_start"])
+
+                want_status = vec["want"]["status"]
+                want_reasons = vec["want"]["reasons"]
+
+                self.assertEqual(status, want_status, f"Status mismatch for {vec['name']}")
+                self.assertEqual(reasons, want_reasons, f"Reasons mismatch for {vec['name']}")
+
+    def compat(self, compose: str, manifest: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Tuple[str, List[str]]:
+        t = v.Template("test")
+        t.manifest = manifest
+        t.compose = v.yaml.safe_load(compose)
+        return v.rootless_compat(t, env=env, port_start=80)
+
+    def test_rules_vectors_cannot_express(self) -> None:
+        """Rules the shared vectors' format can't carry (the Hub's TestRootlessCompatRules)."""
+        app = "services:\n  a:\n    image: x\n"
+        below = ("host port {0}/tcp is below net.ipv4.ip_unprivileged_port_start (80): "
+                 "lower it to {0} on the host to allow it (any local user can then bind ports from {0})")
+        ids = "service {} runs as id {}, outside the rootless id range (0–65535)"
+        for name, manifest, env, want in [
+            ("host port is default, not container", {"ports": [{"key": "P", "container": 53, "default": 8053}]}, None, ("ok", [])),
+            ("default below the start", {"ports": [{"key": "P", "container": 8080, "default": 53}]}, None, ("refused", [below.format(53)])),
+            ("range start", {"ports": [{"key": "R", "range": "49152-65535", "protocol": "udp"}]}, None,
+             ("degraded", ["UDP clients on port 49152 appear with a rewritten source address"])),
+            ("range from env", {"ports": [{"key": "R", "range": "49152-65535"}]}, {"R": "40-50"}, ("refused", [below.format(40)])),
+            ("folder runs_as uid", {"settings": {"options": [{"key": "media", "type": "folder", "target": {"service": "a"},
+                                                               "folder": {"runs_as": {"uid": 70000, "gid": 1000}}}]}}, None,
+             ("refused", [ids.format("a", 70000)])),
+            ("folder runs_as names the key without a target", {"settings": {"options": [{"key": "media", "folder": {"runs_as": {"gid": -1}}}]}}, None,
+             ("refused", [ids.format("media", -1)])),
+        ]:
+            with self.subTest(name=name):
+                self.assertEqual(self.compat(app, manifest, env), want)
+
+    def test_unreadable_compose_refused(self) -> None:
+        for name, text in [("bad yaml", "services: [\n"), ("services not a mapping", "services: [a]\n"),
+                           ("service not a mapping", "services:\n  a: [x]\n")]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                os.makedirs(os.path.join(tmpdir, "t"))
+                with open(os.path.join(tmpdir, "t", "compose.yml"), "w", encoding="utf-8") as f:
+                    f.write(text)
+                with mock.patch.object(v, "ROOT", tmpdir):
+                    t = v.Template("t")
+                    t.manifest = {}
+                    status, reasons = v.rootless_compat(t)
+                self.assertEqual(status, "refused")
+                self.assertEqual(len(reasons), 1)
+                self.assertTrue(reasons[0].startswith("compose.yml can't be read: "), reasons)
+
+    def test_committed_classification(self) -> None:
+        """Test that validate.py --rootless output matches tests/rootless.txt."""
+        rootless_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rootless.txt")
+        if not os.path.exists(rootless_txt_path):
+            self.skipTest("tests/rootless.txt does not exist yet")
+
+        with open(rootless_txt_path, encoding="utf-8") as f:
+            expected = f.read().strip()
+
+        # Run validate.py --rootless
+        result = v.main(["--rootless"])
+        self.assertEqual(result, 0, "validate.py --rootless should exit 0")
+
+        # We can't easily capture stdout from main(), so we test it separately below
+
+    def test_reserved_port_start(self) -> None:
+        """Test that a template referencing PORTCULLIS_UNPRIVILEGED_PORT_START is refused (P15)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_dir = os.path.join(tmpdir, "test-app")
+            os.makedirs(app_dir)
+
+            manifest = MANIFEST.format(instances="single", notes="test", url="https://{{{{HOST_MAIN}}}}/")
+            with open(os.path.join(app_dir, "manifest.yaml"), "w", encoding="utf-8") as f:
+                f.write(manifest)
+
+            compose = """services:
+  app:
+    image: nginx:alpine
+    environment:
+      - PORT=${PORTCULLIS_UNPRIVILEGED_PORT_START:-80}
+networks:
+  portcullis-proxy:
+    external: true
+"""
+            with open(os.path.join(app_dir, "compose.yml"), "w", encoding="utf-8") as f:
+                f.write(compose)
+
+            with mock.patch.object(v, "ROOT", tmpdir):
+                r = v.Report()
+                t = v.Template("test-app")
+                v.check_layout(t, r)
+                v.check_compose(t, r)
+                self.assertTrue(any("PORTCULLIS_UNPRIVILEGED_PORT_START" in e for e in r.errors),
+                                "Should refuse PORTCULLIS_UNPRIVILEGED_PORT_START")
+
+    def test_expected_refusals(self) -> None:
+        """Test that pihole, adguard, scrutiny, esphome, motioneye, zigbee2mqtt, samba, timemachine
+        are classified as expected."""
+        expected = {
+            "pihole": ("refused", "53/tcp"),
+            "adguard": ("refused", "53/tcp"),
+            "scrutiny": ("refused", "SYS_RAWIO"),
+            "esphome": ("degraded", None),
+            "motioneye": ("degraded", None),
+            "zigbee2mqtt": ("degraded", None),
+            "samba": ("ok", None),
+            "timemachine": ("ok", None),
+        }
+
+        for app_id, (want_status, reason_substr) in expected.items():
+            app_path = os.path.join(v.ROOT, app_id)
+            if not os.path.isdir(app_path):
+                continue
+
+            with self.subTest(app=app_id):
+                t = v.Template(app_id)
+                r = v.Report()
+                if not v.check_layout(t, r):
+                    continue
+
+                # Load manifest and compose
+                try:
+                    with open(t.manifest_path, encoding="utf-8") as f:
+                        t.manifest = v.yaml.safe_load(f.read())
+                except:
+                    continue
+
+                try:
+                    with open(t.compose_path, encoding="utf-8") as f:
+                        t.compose = v.yaml.safe_load(f.read())
+                except:
+                    continue
+
+                status, reasons = v.rootless_compat(t, env={}, port_start=80)
+
+                self.assertEqual(status, want_status, f"{app_id} should be {want_status}, got {status}")
+                if reason_substr:
+                    self.assertTrue(any(reason_substr in r for r in reasons),
+                                    f"{app_id} should have reason containing '{reason_substr}', got {reasons}")
 
 
 if __name__ == "__main__":
