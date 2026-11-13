@@ -4415,12 +4415,12 @@ class VPNTests(Case):
     VPN_FAMILY = ("vpn.", "vpn:", "when: [vpn]", "vpn can't be combined", "is a vpn hook", "portcullis-vpn", "PORTCULLIS_VPN_")
 
     # Vectors of the Hub's current copy written for the superseded
-    # host-namespace ruling (any service); the revised ruling (controller,
-    # 2026-11-13: only the ingress, its namespace's members and routed
-    # services) accepts them. Remove once the Hub's vectors follow it.
+    # host-networking ruling (any service); the revised ruling (controller,
+    # 2026-11-13: network_mode: host refused only for the ingress, its
+    # namespace's members and routed services; pid: host everywhere)
+    # accepts them. Remove once the Hub's vectors follow it.
     PENDING_HUB = {
         "host networking with a vpn block refused": "vpn: service glue uses network_mode: host",
-        "host pid with a vpn block refused": "vpn: service glue uses pid: host",
     }
 
     @staticmethod
@@ -4549,15 +4549,15 @@ class VPNTests(Case):
                          "vpn.ingress.service: tail shares gateway's network namespace")
         self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:a"}}, "a"), None)
         self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:c"}, "c": {}}, "a"), "c")
-        # Host namespaces with a vpn: block: never for the ingress, its
-        # namespace's members or a routed service; others keep the
-        # template rules.
+        # Host namespaces with a vpn: block: pid: host on no service;
+        # network_mode: host never for the ingress, its namespace's members
+        # or a routed service, others keep the template rules.
         host = f"  hostly:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    {{}}: host\n{{}}"
         label = "    labels:\n      traefik.enable: \"false\"\n"
         self.assertError(with_services(host.format("network_mode", label)), "vpn: service hostly uses network_mode: host")
         self.assertError(with_services(host.format("pid", label)), "vpn: service hostly uses pid: host")
         self.assertFalse([e for e in with_services(host.format("network_mode", "")) if "vpn: service" in e])
-        self.assertFalse([e for e in with_services(host.format("pid", "")) if "vpn: service" in e])
+        self.assertError(with_services(host.format("pid", "")), "vpn: service hostly uses pid: host")
         self.assertError(self.vpn_template(cedit=("  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:" + S_DIGEST + "\n",
                                                    "  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:" + S_DIGEST + "\n    pid: host\n")),
                          "vpn: service gateway uses pid: host")

@@ -6696,9 +6696,10 @@ def vpn_net_ns(services: Dict[str, Dict[str, Any]], svc: str) -> Optional[str]:
 
 
 def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str) -> List[str]:
-    """checkVPNIngress: the ingress exists and can join a network; the
-    ingress, the services sharing its network namespace and every routed
-    service use neither host networking nor the host's pid namespace; every
+    """checkVPNIngress: the ingress exists and can join a network; no
+    service uses the host's pid namespace, and neither the ingress, the
+    services sharing its network namespace nor a routed service use host
+    networking; every
     service in the ingress's network namespace (chains followed) is no
     job, no AI companion, has no Traefik label and publishes no ports, and
     besides the ingress only the pinned forwarder may join it;
@@ -6709,14 +6710,14 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         return [f"vpn.ingress.service: {s} has network_mode"]
     names = sorted(services)
     members = [s] + [n for n in names if n != s and vpn_net_ns(services, n) == s]
-    # Host namespaces: never for the ingress, a service sharing its
-    # namespace or a routed (traefik-labelled) service; other services
-    # keep the template rules (controller's revised ruling: NetBird's
-    # relay keeps host networking).
+    # Host namespaces: pid: host on no service (it exposes the host's
+    # processes, the ingress's included); network_mode: host never for the
+    # ingress, a service sharing its namespace or a routed
+    # (traefik-labelled) service, other services keep the template rules
+    # (NetBird's relay keeps host networking).
     for n in names:
-        if n not in members and not any(fold_key(k).startswith("traefik.") for k in labels_of(services[n])):
-            continue
-        if services[n].get("network_mode") == "host":
+        routed = any(fold_key(k).startswith("traefik.") for k in labels_of(services[n]))
+        if services[n].get("network_mode") == "host" and (n in members or routed):
             return [f"vpn: service {n} uses network_mode: host"]
         if services[n].get("pid") == "host":
             return [f"vpn: service {n} uses pid: host"]
