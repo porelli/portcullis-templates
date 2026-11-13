@@ -317,5 +317,27 @@
         "UDP clients on port 3478 appear with a rewritten source address"
       ]
     }
+  },
+  {
+    "name": "network_mode host from a variable",
+    "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
+    "ports": [],
+    "env": {},
+    "port_start": 80,
+    "want": {
+      "status": "degraded",
+      "reasons": ["host networking: published ports must stay at or above 80"]
+    }
+  },
+  {
+    "name": "network_mode variable resolving to a non-host value",
+    "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
+    "ports": [],
+    "env": {"APP_NETWORK_MODE": "bridge"},
+    "port_start": 80,
+    "want": {
+      "status": "ok",
+      "reasons": []
+    }
   }
 ]

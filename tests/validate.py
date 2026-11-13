@@ -6748,7 +6748,7 @@ def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_star
     Rules, per service in compose order: devices (a source other than
     /dev/null and /dev/net/tun refused, /dev/null and /dev/net/tun
     degraded), cap_add (SYS_RAWIO / SYS_ADMIN / ALL refused, NET_ADMIN
-    degraded), user / group_add ids above 65535 refused, network_mode host
+    degraded), user / group_add ids above 65535 refused, network_mode host (resolved)
     degraded; then each manifest port (below port_start refused, UDP
     degraded); then folder runs_as ids outside 0-65535 refused. Each reason
     once. Any refused reason gives ("refused", refused reasons); else any
@@ -6827,7 +6827,8 @@ def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_star
         groups, _ = _rootless_scalars(svc.get("group_add"))
         for g in groups:
             check_id(name, _rootless_resolve(g, env))
-        if svc.get("network_mode") == "host":
+        nm = svc.get("network_mode")
+        if "network_mode" in svc and not isinstance(nm, (dict, list)) and _rootless_resolve(_go_scalar(nm), env) == "host":
             degrade(f"host networking: published ports must stay at or above {port_start}")
 
     manifest = t.manifest if isinstance(t.manifest, dict) else {}
