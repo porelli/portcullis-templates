@@ -716,11 +716,13 @@ policy_version() {
 # key, contract §4; tests/e2e/app_signin.py policy_doc(6) writes the same):
 # the methods on at install, the built-in Standard compiled, every gated core
 # host on it (GATED_CORE_SUBDOMAINS in core's group-gate: not auth, enroll or
-# mcp, which group-gate never gates; any other `core` key denies). Older versions: just the version.
+# mcp, which group-gate never gates; any other `core` key denies); version 7
+# adds the required `vpn` section (no VPN-only host, server mode off, public
+# enrolment on, like policy_doc(7)). Older versions: just the version.
 _policy_base() {
   if [ "$1" -lt 6 ]; then printf '{"version": %s}' "$1"; return; fi
-  jq -n --arg d "$DOMAIN" '{
-    version: 6,
+  jq -n --arg d "$DOMAIN" --argjson ver "$1" '{
+    version: $ver,
     methods: ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"],
     templates: {standard: {op: "any", items: [
       {op: "any", items: ["passkey_synced", "passkey_device", "security_key"]},
@@ -729,7 +731,9 @@ _policy_base() {
     core: ([$d] + (["directory", "hub", "metrics", "people", "traefik"] | map(. + "." + $d))
            | map({(.): "standard"}) | add),
     people: {}, add_stronger: false, extra_domains: [],
-    groups: {}, path_groups: {}, public_paths: {}, expiring: []}'
+    groups: {}, path_groups: {}, public_paths: {}, expiring: []}
+    + (if $ver >= 7 then {vpn: {hosts: {}, server_mode: false, admin_only: false, public_enrol: true,
+                                devices_file: "vpn.json"}} else {} end)'
 }
 
 write_public_policy() {

@@ -98,6 +98,7 @@
       "default": "single"
     },
     "ai": {"$ref": "#/$defs/ai"},
+    "vpn": {"$ref": "#/$defs/vpn"},
     "jobs": {
       "description": "Contracts §3 (NEW, apps): compose services that run once and exit (a setup or migration container). The Hub counts a job's container done when it exited 0 and failed when it exited non-zero. A service another one depends on with condition: service_completed_successfully is a job without being listed. Each entry is a compose service, listed once, with no Traefik router (tests/validate.py check_setup).",
       "type": "array",
@@ -114,6 +115,48 @@
     }
   ],
   "$defs": {
+    "vpn": {
+      "description": "VPN provider (contracts §3.3): the template is a VPN the Hub can wire as a provider for VPN-only access. Field shapes here; tests/validate.py check_vpn checks the rest, as the Hub's ValidateVPN does (shared vectors tests/vpn_vectors.json).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "ranges", "ingress", "identity", "dns"],
+      "properties": {
+        "label": {"description": "One line, 1-64 characters, shown on Settings → VPN, the instance and the device lists.", "type": "string"},
+        "ranges": {"description": "1-8 IPv4 prefixes (/8-/30, no overlaps) the app hands to clients: literals or exactly {{setting:KEY}} naming a cidr setting (type string, format cidr, scope instance).", "type": "array", "items": {"type": "string"}},
+        "ingress": {
+          "description": "The compose service the Hub joins to portcullis-vpn (no network_mode, not a job, not an AI companion, no Traefik router); it gets PORTCULLIS_VPN_EDGE in its environment.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["service", "proxy_protocol"],
+          "properties": {
+            "service": {"$ref": "#/$defs/serviceName"},
+            "proxy_protocol": {"description": "Only v2.", "type": "string"}
+          }
+        },
+        "identity": {
+          "description": "Where the device map comes from: a vpn hook (source hook, with owner) or the admin's assignments (source static, no hook or owner).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source"],
+          "properties": {
+            "source": {"description": "hook | static (tests/validate.py check_vpn refuses anything else with the Hub's text).", "type": "string"},
+            "hook": {"description": "A hook with exactly when: [vpn].", "type": "string"},
+            "owner": {"description": "oidc_sub | username: what the hook's device owner field holds.", "type": "string"},
+            "refresh": {"description": "A Go duration, 15s-10m; default 60s.", "type": "string"}
+          }
+        },
+        "dns": {
+          "description": "Exactly one of hook (a vpn hook that receives the A records) and manual: true (the admin configures them).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hook": {"type": "string"},
+            "manual": {"type": "boolean"}
+          }
+        },
+        "control_routers": {"description": "Routers of the template that stay on the internet in server mode: only what clients need to connect (coordination, signal, relay), never an admin UI.", "type": "array", "items": {"type": "string"}}
+      }
+    },
     "ai": {
       "description": "AI support (contracts §3.2), required in every template: ai.mcp (the MCP servers the AI talks to) or ai.unsupported (one line, 1-200 characters, why not). Field shapes here; tests/validate.py checks the rest, as the Hub's ValidateAI does.",
       "type": "object",
@@ -741,7 +784,7 @@
         "service": {"$ref": "#/$defs/serviceName"},
         "user": {"type": "string"},
         "command": {"description": "argv, run directly (no sh -c).", "type": "array", "items": {"type": "string"}},
-        "when": {"description": "start | settings_change | membership_change | credential_change (a person_secret credential was created, regenerated, revoked or voided) | ai (run only by the AI machinery: the mint, revoke or on_change hook an ai: block names; exactly when: [ai], never with another trigger).", "type": "array", "items": {"type": "string"}},
+        "when": {"description": "start | settings_change | membership_change | credential_change (a person_secret credential was created, regenerated, revoked or voided) | ai (run only by the AI machinery: the mint, revoke or on_change hook an ai: block names; exactly when: [ai], never with another trigger) | vpn (run only by the VPN machinery: the identity or dns hook a vpn: block names; exactly when: [vpn], never with another trigger).", "type": "array", "items": {"type": "string"}},
         "timeout": {"description": "A Go duration such as 60s; default 30s, at most 10m.", "type": "string"}
       }
     },

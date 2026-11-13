@@ -84,6 +84,8 @@ VAR_AI_READONLY = "PORTCULLIS_AI_READONLY_"
 VAR_AI_PROVIDER = "PORTCULLIS_AI_PROVIDER_"
 VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
 AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
+VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and CONTRIBUTING.md, \"VPN providers\""
+VAR_VPN_PREFIX = "PORTCULLIS_VPN_"
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
@@ -730,6 +732,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if ai_reserved_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved (AI support: PORTCULLIS_AI_* are the Hub's, "
                                f"{VAR_MCP_GATE_IP} is core's)", AI_HINT)
+        if k.startswith(VAR_VPN_PREFIX):
+            r.error(t.m_where, f"{section} key {k} is reserved (VPN-only access: PORTCULLIS_VPN_* are core's and the Hub's)",
+                    VPN_HINT)
         if k == VAR_COMPOSE_PROFILES:
             r.error(t.m_where, f"{k} is an instance variable the Hub sets — a manifest may not declare it", SETUP_HINT)
         if is_instance_var(k):
@@ -1041,6 +1046,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
+    check_vpn(t, services, r)
     check_setup(t, services, routers, r)
 
 
@@ -2270,21 +2276,31 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
-                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool"}
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
+                 "wg"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data"}
+                "group_gate_data", "wg_data", "vpn_doc"}
+# Core's network aliases that aren't service names (wg's metrics address
+# on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
+CORE_ALIASES = {"wg-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
-                 "portcullis-sessions"}
+                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
 MCP_NAME_PREFIX = "portcullis-mcp-"
-RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX)
+# VPN_NAME_PREFIX (VPN-only access, §3/§3.3): the Hub's portcullis-vpn
+# network, portcullis-vpnallow-<id> allowlist middleware and
+# portcullis-vpnonly-<id> router, refused anywhere in compose.yml like
+# MCP_NAME_PREFIX, no exception (the forwarder image is
+# ghcr.io/porelli/portcullis-forwarder).
+VPN_NAME_PREFIX = "portcullis-vpn"
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX)
 CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
 HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
 HUB_SERVICE_KEYS = {
@@ -2299,14 +2315,24 @@ HUB_SERVICE_KEYS = {
 CORE_TRAEFIK_NAMES = {
     "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
                 "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal", "mcp", "hub-mcp",
-                "people-mcp"},
-    "middlewares": {"directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
+                "people-mcp", "people-vpn-enrol",
+                # VPN-only access (core vpn1): the -vpn twins of the routers
+                # through group-gate and the /vpn-required routers.
+                "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
+                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn"},
+    "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
+                    "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
                  "keycloak", "lldap", "mcp-gate"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
-FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers"}
+# Exactly core's traefik/dynamic/middlewares.yml (Hub fileMiddlewares;
+# TestCoreNamesComplete compares with a core checkout). strip-client-forwarded
+# (core vpn1) already runs first on every websecure / vpnsecure router at the
+# entrypoint, so naming it again is harmless.
+FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers",
+                    "strip-client-forwarded"}
 LABEL_SEG_RE = re.compile(r"^[A-Za-z0-9_-]+(\[[0-9]+\])?$")
 LABEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ROUTER_ATTR_RE = re.compile(r"^(rule|entrypoints|middlewares|service|priority|tls|tls\.options|observability\.(accesslogs|metrics|tracing))$")
@@ -2367,7 +2393,7 @@ def _interpolated(s: str) -> bool:
 def reserved_dns_name(name: str) -> bool:
     n = fold_key(name.strip()).rstrip(".")
     for c in (n, n.split(".", 1)[0]):
-        if c in CORE_SERVICES:
+        if c in CORE_SERVICES or c in CORE_ALIASES:
             return True
         m = CORE_CONTAINER_RE.match(c)
         if m and m.group(1) in CORE_SERVICES:
@@ -2405,6 +2431,9 @@ def check_hub_rules(t: Template, r: Report) -> None:
                     r.error(where, f"references {MCP_NAME_PREFIX!r}: names starting {MCP_NAME_PREFIX} (routers, services, middlewares, "
                                    "aliases, container names, hostnames, any key or value) are the Hub's AI companion routes and aliases",
                             AI_HINT)
+                elif ref == VPN_NAME_PREFIX:
+                    r.error(where, f"references \"{VPN_NAME_PREFIX}\": names starting {VPN_NAME_PREFIX} (the VPN network, "
+                                   "middlewares and routers) are rendered by the Hub only (contract §3.3)", VPN_HINT)
                 else:
                     r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
@@ -2629,7 +2658,7 @@ RESOLVE_TYPES: Dict[str, Optional[Set[str]]] = {
     "union": {"list", "multi_enum", "groups"}, "intersection": {"list", "multi_enum", "groups"},
     "any": {"bool"}, "all": {"bool"},
 }
-HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change", "ai")   # ai: AI support (§13.8)
+HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change", "ai", "vpn")   # ai: AI support, vpn: VPN providers (§13.8)
 RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
 GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
 CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
@@ -4953,6 +4982,16 @@ class _SpecCheck:
         ${PORTCULLIS_FOLDER_GID_<KEY>} only as a whole environment: value of
         the service <KEY>'s folder block targets; no other PORTCULLIS_FOLDER_*.
         PORTCULLIS_UNPRIVILEGED_PORT_START not available to templates (P15)."""
+        # VPN-only access (§2, §3): PORTCULLIS_VPN_* are core.env's and the
+        # Hub's, never compose interpolation; a gateway's shell reads the
+        # PORTCULLIS_VPN_EDGE the Hub sets as $$PORTCULLIS_VPN_EDGE.
+        for sc in self.scalars:
+            for name, _ in go_var_refs(sc):
+                if name.startswith(VAR_VPN_PREFIX):
+                    self.cerr(f"${{{name}}} is reserved: PORTCULLIS_VPN_* are core's and the Hub's (the Hub sets "
+                              "PORTCULLIS_VPN_EDGE in the ingress container's environment: read it in a container shell as "
+                              "$$PORTCULLIS_VPN_EDGE)", VPN_HINT)
+                    return
         # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
         for sc in self.scalars:
             if "PORTCULLIS_UNPRIVILEGED_PORT_START" in sc:
@@ -5306,14 +5345,16 @@ class _SpecCheck:
                 problems.append("user contains control characters")
             when = h.get("when") or []
             if not when:
-                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change, ai)")
+                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change, ai, vpn)")
             for tr in when:
                 if tr not in HOOK_TRIGGERS:
                     problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change, membership_change, "
-                                    "credential_change or ai")
+                                    "credential_change, ai or vpn")
             if "ai" in when and len(when) != 1:
                 problems.append("when: ai can't be combined with another trigger (an ai hook is run only by the AI machinery): "
                                 "write exactly when: [ai]")
+            elif "vpn" in when and len(when) != 1:
+                problems.append("vpn can't be combined with other triggers")
             if _has(h, "timeout"):
                 try:
                     ns = go_parse_duration(scalar_text(h["timeout"]))
@@ -5337,6 +5378,8 @@ class _SpecCheck:
                 self.err(f"reload: hook {hook} is not declared in hooks")
             elif is_ai_hook(self.hooks[hook]):
                 self.err(f"reload: hook {hook} is an ai hook (when: [ai]): the settings engine never runs it")
+            elif is_vpn_hook(self.hooks[hook]):
+                self.err(f"reload: hook {hook} is a vpn hook (when: [vpn]): the settings engine never runs it")
         else:
             if svc not in self.services:
                 self.err(f"reload: service {json.dumps(svc)} is not in compose.yml")
@@ -5696,6 +5739,8 @@ class _SpecCheck:
                     raise _Refuse(f"hook {_str(d, 'hook')} is not declared in hooks")
                 if is_ai_hook(self.hooks[_str(d, "hook")]):
                     raise _Refuse(f"hook {_str(d, 'hook')} is an ai hook (when: [ai]): no option delivers to it")
+                if is_vpn_hook(self.hooks[_str(d, "hook")]):
+                    raise _Refuse(f"hook {_str(d, 'hook')} is a vpn hook (when: [vpn]): no option delivers to it")
         if scope == "person" and not per_person:
             raise _Refuse("scope person needs a per-person delivery (claim, header, file or hook)")
         if _str(o, "applies") == "live" and not hook:
@@ -5949,6 +5994,11 @@ _AI_HEADER_TEXT = ("Host, Cookie, Content-Type, Accept, Content-Length, Transfer
 def is_ai_hook(h: Any) -> bool:
     """Hook.IsAI: when lists ai (only ever alone: check_hooks)."""
     return isinstance(h, dict) and "ai" in as_list(h.get("when"))
+
+
+def is_vpn_hook(h: Any) -> bool:
+    """Hook.IsVPN: when lists vpn (only ever alone: vpn_errors)."""
+    return isinstance(h, dict) and "vpn" in as_list(h.get("when"))
 
 
 def single_line(s: Any, limit: int) -> bool:
@@ -6509,6 +6559,238 @@ def _environment_keys(svc: Any) -> List[str]:
 def check_ai(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
     """The ai: block (contracts §3.2), as the Hub's ValidateAI checks it."""
     _AICheck(t, services, routers, r).run()
+
+
+# ── VPN providers: the vpn: block (contracts §3.3) ─────────────────
+# Mirrors portcullis-hub internal/templates/vpn.go (ValidateVPN) with the
+# same texts; tests/vpn_vectors.json is a byte copy of the Hub's
+# internal/templates/testdata/vpn_vectors.json (lint: "VPN vectors match
+# the Hub").
+
+VPN_LABEL_MAX = 64
+VPN_MAX_RANGES = 8
+VPN_MIN_BITS, VPN_MAX_BITS = 8, 30
+VPN_REFRESH_MIN, VPN_REFRESH_MAX = 15 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
+VPN_OWNERS = ("oidc_sub", "username")
+_VPN_SETTING_RE = re.compile(r"\{\{setting:(.*)\}\}", re.S)   # the Hub's prefix/suffix test
+_OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
+_VPN_PREFIX_RE = re.compile(rf"({_OCTET}(?:\.{_OCTET}){{3}})/(0|[1-9][0-9]?)")
+_HTTP_ROUTER_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$")
+# A host router (contract §3.1): the rule is a Host() alone.
+_HOST_ONLY_RULE_RE = re.compile(r"Host\(`[^`]*`\)")
+# Core's forwarder image, pinned by digest (V1): the only service besides
+# the ingress allowed in its network namespace.
+FORWARDER_IMAGE_RE = re.compile(r"ghcr\.io/porelli/portcullis-forwarder(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}")
+
+
+def vpn_prefix(s: Any) -> Optional[ipaddress.IPv4Network]:
+    """A canonical IPv4 prefix /8-/30 (netip.ParsePrefix, Is4, Masked() ==
+    itself), else None."""
+    m = _VPN_PREFIX_RE.fullmatch(s) if isinstance(s, str) else None
+    if not m or not VPN_MIN_BITS <= int(m.group(2)) <= VPN_MAX_BITS:
+        return None
+    net = ipaddress.IPv4Network(s, strict=False)
+    return net if str(net) == s else None
+
+
+def vpn_errors(m: Any, compose: Any) -> List[str]:
+    """ValidateVPN: the vpn: block and the vpn hooks of manifest m against
+    compose file compose, every refusal in the Hub's order (the first is
+    the one the Hub reports)."""
+    m = m if isinstance(m, dict) else {}
+    services = (compose or {}).get("services") if isinstance(compose, dict) else None
+    services = {str(k): (sv if isinstance(sv, dict) else {}) for k, sv in (services or {}).items()} \
+        if isinstance(services, dict) else {}
+    hooks = {_str(h, "name"): h for h in m.get("hooks") or [] if isinstance(h, dict)}
+    out: List[str] = []
+    named: Set[str] = set()
+
+    def vpn_hook(where: str, name: str) -> None:
+        named.add(name)
+        h = hooks.get(name)
+        if h is None or as_list(h.get("when")) != ["vpn"]:
+            out.append(f"{where}: {name} is not a hook with exactly when: [vpn]")
+
+    b = m.get("vpn")
+    if isinstance(b, dict):
+        if not single_line(b.get("label"), VPN_LABEL_MAX):
+            out.append(f"vpn.label: a single line of 1–{VPN_LABEL_MAX} characters")
+        ranges = b.get("ranges") if isinstance(b.get("ranges"), list) else []
+        if not 1 <= len(ranges) <= VPN_MAX_RANGES:
+            out.append(f"vpn.ranges: 1–{VPN_MAX_RANGES} IPv4 prefixes")
+        nets: List[Tuple[str, ipaddress.IPv4Network]] = []
+        for i, rg in enumerate(ranges):
+            text = scalar_text(rg)
+            sm = _VPN_SETTING_RE.fullmatch(text)
+            if sm:
+                o = next((o for o in setting_options(m) if _str(o, "key") == sm.group(1)), None)
+                if o is None or o.get("type") != "string" or _str(o, "format") != "cidr" or scope_of(o) != "instance":
+                    out.append(f"vpn.ranges[{i}]: {text} must name a cidr setting")
+                continue
+            net = vpn_prefix(rg)
+            if net is None:
+                out.append(f"vpn.ranges[{i}]: {text} is not an IPv4 prefix between /{VPN_MIN_BITS} and /{VPN_MAX_BITS}")
+                continue
+            nets.append((text, net))
+        for i, (a, na) in enumerate(nets):
+            for bt, nb in nets[i + 1:]:
+                if na.overlaps(nb):
+                    out.append(f"vpn.ranges: {a} overlaps {bt}")
+
+        ing = b.get("ingress") if isinstance(b.get("ingress"), dict) else {}
+        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol")))
+
+        ident = b.get("identity") if isinstance(b.get("identity"), dict) else {}
+        source = _str(ident, "source")
+        if source == "hook":
+            vpn_hook("vpn.identity.hook", _str(ident, "hook"))
+            if _str(ident, "owner") not in VPN_OWNERS:
+                out.append("vpn.identity.owner: oidc_sub or username")
+        elif source == "static":
+            if "hook" in ident or "owner" in ident:   # present at all (contract: no hook and no owner)
+                out.append("vpn.identity: source static takes no hook or owner")
+        else:
+            out.append("vpn.identity.source: hook or static")
+        if _has(ident, "refresh"):
+            try:
+                ns = go_parse_duration(scalar_text(ident["refresh"]))
+            except ValueError:
+                ns = -1
+            if not VPN_REFRESH_MIN <= ns <= VPN_REFRESH_MAX:
+                out.append("vpn.identity.refresh: between 15s and 10m")
+
+        dns = b.get("dns") if isinstance(b.get("dns"), dict) else {}
+        dhook, manual = _str(dns, "hook"), dns.get("manual") is True
+        if bool(dhook) == manual:
+            out.append("vpn.dns: exactly one of hook and manual: true")
+        elif dhook:
+            vpn_hook("vpn.dns.hook", dhook)
+
+        routers: Dict[str, Dict[str, str]] = {}
+        for sv in services.values():
+            for k, val in labels_of(sv).items():
+                mm = _HTTP_ROUTER_RE.match(k)
+                if mm:
+                    routers.setdefault(mm.group(1), {})[mm.group(2)] = val
+        for rt in as_list(b.get("control_routers")):
+            rt = scalar_text(rt)
+            if rt not in routers or not _HOST_ONLY_RULE_RE.fullmatch(routers[rt].get("rule", "").strip()):
+                out.append(f"vpn.control_routers: {rt} is not a host router of the template")
+            elif vpn_serves_admin_ui(m, routers[rt].get("rule", "")):
+                out.append(f"vpn.control_routers: {rt} serves an admin UI")
+
+    # (when: [vpn, <other>] is check_hooks' refusal, the Hub's settings
+    # check, which runs first.)
+    for name, h in hooks.items():
+        if is_vpn_hook(h) and name not in named:
+            out.append(f"hooks[{name}]: when: [vpn] needs a vpn: block that names it")
+    return out
+
+
+def vpn_net_ns(services: Dict[str, Dict[str, Any]], svc: str) -> Optional[str]:
+    """Routes.NetNS: the service whose network namespace svc runs in
+    (network_mode service:X followed), "host", or None for a cycle or an
+    unknown target (fail closed)."""
+    seen: Set[str] = set()
+    while True:
+        if svc in seen:
+            return None
+        seen.add(svc)
+        nm = services.get(svc, {}).get("network_mode")
+        nm = nm if isinstance(nm, str) else ""
+        if nm == "host":
+            return "host"
+        if not nm.startswith("service:"):
+            return svc
+        nxt = nm[len("service:"):]
+        if nxt not in services:
+            return None
+        svc = nxt
+
+
+def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str) -> List[str]:
+    """checkVPNIngress: the ingress exists and can join a network; no
+    service uses the host's pid namespace, and neither the ingress, the
+    services sharing its network namespace nor a routed service use host
+    networking; every
+    service in the ingress's network namespace (chains followed) is no
+    job, no AI companion, has no Traefik label and publishes no ports, and
+    besides the ingress only the pinned forwarder may join it;
+    proxy_protocol v2. The Hub stops at the first."""
+    if s not in services:
+        return [f"vpn.ingress.service: {s} is not a service of compose.yml"]
+    if "network_mode" in services[s]:
+        return [f"vpn.ingress.service: {s} has network_mode"]
+    names = sorted(services)
+    members = [s] + [n for n in names if n != s and vpn_net_ns(services, n) == s]
+    # Host namespaces: pid: host on no service (it exposes the host's
+    # processes, the ingress's included); network_mode: host never for the
+    # ingress, a service sharing its namespace or a routed
+    # (traefik-labelled) service, other services keep the template rules
+    # (NetBird's relay keeps host networking).
+    for n in names:
+        routed = any(fold_key(k).startswith("traefik.") for k in labels_of(services[n]))
+        # (n in members never holds for host networking: the ingress has no
+        # network_mode and members carry service:; kept as the rule reads.)
+        if services[n].get("network_mode") == "host" and (n in members or routed):
+            return [f"vpn: service {n} uses network_mode: host"]
+        if services[n].get("pid") == "host":
+            return [f"vpn: service {n} uses pid: host"]
+    jobs = job_services(m, services)
+    ai = m.get("ai") if isinstance(m.get("ai"), dict) else {}
+    companions = {_str(c, "service") for c in as_list(ai.get("mcp")) if isinstance(c, dict) and _str(c, "kind") == "companion"}
+    for n in members:
+        sv = services[n]
+        image = sv.get("image") if isinstance(sv.get("image"), str) else ""
+        if n != s and not FORWARDER_IMAGE_RE.fullmatch(image):
+            return [f"vpn.ingress.service: {n} shares {s}'s network namespace: only the pinned "
+                    "ghcr.io/porelli/portcullis-forwarder image may"]
+        if n in jobs:
+            return [f"vpn.ingress.service: {n} is a job"]
+        if n in companions:
+            return [f"vpn.ingress.service: {n} is an AI companion"]
+        if any(fold_key(k).startswith("traefik.") for k in labels_of(sv)):
+            return [f"vpn.ingress.service: {n} has a Traefik router"]
+        if "ports" in sv:
+            return [f"vpn.ingress.service: {n} publishes ports"]
+    if proxy != "v2":
+        return ["vpn.ingress.proxy_protocol: only v2"]
+    return []
+
+
+def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:
+    """servesAdminUI: group_admin, or an admin_paths path the router can
+    serve (no path matcher, or one no path reasoning applies to, serves
+    every path: fail closed)."""
+    auth = m.get("auth") if isinstance(m.get("auth"), dict) else {}
+    if auth.get("group_admin") is True:
+        return True
+    admin_paths = [scalar_text(p) for p in as_list(auth.get("admin_paths"))]
+    if not admin_paths:
+        return False
+    paths = re.findall(r"(Path|PathPrefix)\(`([^`]*)`\)", rule)
+    if not paths or re.search(r"\b(?!Path\(|PathPrefix\()Path[A-Za-z]*\(", rule):
+        return True
+    for kind, v in paths:
+        for ap in admin_paths:
+            if kind == "Path" and (v == ap or v.startswith(ap + "/")):
+                return True
+            if kind == "PathPrefix" and ((ap + "/").startswith(v) or v.startswith(ap + "/")):
+                return True
+    return False
+
+
+def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """The vpn: block (contracts §3.3), as the Hub's ValidateVPN checks it.
+    A misshapen block is left to the schema errors (its hooks are still
+    checked against the raw block)."""
+    m = t.manifest or {}
+    if "vpn" in t.schema_errors and isinstance(m.get("vpn"), dict):
+        errs = [e for e in vpn_errors(m, {"services": services}) if e.startswith("hooks[")]
+    else:
+        errs = vpn_errors(m, {"services": services})
+    for e in errs:
+        r.error(t.m_where, e, VPN_HINT)
 
 
 # ── One-off jobs and setup options (contracts §3, §13.18) ──────────

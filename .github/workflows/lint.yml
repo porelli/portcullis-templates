@@ -57,6 +57,26 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/rootless_vectors.json" -o /tmp/hub_rootless_vectors.json
           cmp tests/rootless_vectors.json /tmp/hub_rootless_vectors.json
 
+      # VPN vectors (the vpn: block refusals) must match the Hub's copy
+      # (shared contract §3.3). Same-named branch if it exists, else main.
+      - name: VPN vectors match the Hub
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads https://github.com/porelli/portcullis-hub.git "refs/heads/$REF" >/dev/null 2>&1; then
+            hub_ref="$REF"
+          else
+            hub_ref="main"
+          fi
+          echo "Checking vpn_vectors.json against portcullis-hub branch: $hub_ref"
+          curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/vpn_vectors.json" -o /tmp/hub_vpn_vectors.json
+          cmp tests/vpn_vectors.json /tmp/hub_vpn_vectors.json
+
+      # headscale/vpn/glue.py against a fake Headscale REST API (stdlib).
+      - name: headscale VPN glue unit tests
+        run: python -m unittest discover -s tests/vpn -p 'test_*.py'
+
       - name: docker compose config
         run: bash tests/compose-config.sh
 
@@ -64,7 +84,7 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh ./*/bin/*
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh ./*/bin/* ./*/vpn/*.sh
 
       # portcullis-sync (the file-sharing templates' converge script) with
       # stubbed Samba / account tools: no root, no Docker.

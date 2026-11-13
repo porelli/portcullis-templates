@@ -632,6 +632,71 @@ companion's `PORTCULLIS_AI_READONLY_<NAME>` other than as exactly
 reference. Hooks an `ai:` field names (`mint`, `revoke`, `on_change`) are
 exactly `when: [ai]`, and a `when: [ai]` hook nothing names is refused.
 
+## VPN providers
+
+A template that is a VPN (a mesh or WireGuard server) can declare a `vpn:`
+block (integration contracts §3.3). The Hub can then wire an instance of it
+as a provider for VPN-only access: it joins the block's ingress service to
+the Hub-only `portcullis-vpn` network, sets `PORTCULLIS_VPN_EDGE` in that
+service's environment, runs the identity hook to learn which person owns
+each device address, and publishes the device map that core's `wg` edge
+and group-gate check. The VPN is always an extra condition after the
+normal sign-in, never a credential. `tests/validate.py` refuses what the
+Hub refuses (`check_vpn`; the shared vectors `tests/vpn_vectors.json` are
+a byte copy of the Hub's and lint checks they match).
+
+```yaml
+vpn:
+  label: Headscale tailnet            # one line, 1–64 characters
+  ranges: ["100.64.0.0/10"]           # 1–8 IPv4 prefixes, /8–/30, no overlaps; or exactly "{{setting:KEY}}" (a cidr setting)
+  ingress:
+    service: gateway                  # no network_mode, not a job, not an AI companion, no Traefik label, no ports
+    proxy_protocol: v2                # the only value
+  identity:
+    source: hook                      # hook | static (an admin assigns addresses; no hook, no owner)
+    hook: vpn-devices                 # a hook with exactly when: [vpn]
+    owner: oidc_sub                   # oidc_sub | username
+    refresh: 60s                      # 15s–10m, default 60s
+  dns:
+    hook: vpn-dns                     # a vpn hook that gets the A records, or manual: true
+  control_routers: [headscale]        # routers that stay on the internet in server mode
+```
+
+- **The gateway** sends every client connection to `$PORTCULLIS_VPN_EDGE`
+  with a PROXY v2 header carrying the client's tunnel address. A gateway
+  that can't emit PROXY itself runs core's published forwarder image
+  `ghcr.io/porelli/portcullis-forwarder` in its network namespace. Its
+  shell reads the variable as `$$PORTCULLIS_VPN_EDGE`: `${PORTCULLIS_VPN_*}`
+  compose interpolation is refused, and so is declaring a `PORTCULLIS_VPN_*`
+  key.
+- **The gateway's network namespace** holds only the ingress service and,
+  optionally, the forwarder (`network_mode: service:<ingress>`, pinned by
+  digest); every service in it follows the ingress rules above. With a
+  `vpn:` block no service uses `pid: host`, and neither these services
+  nor any routed service use `network_mode: host`.
+- **VPN hooks** are `when: [vpn]` only, never combined with another
+  trigger, and each must be named by `vpn.identity.hook` or `vpn.dns.hook`.
+  The settings engine never runs them (no `reload.hook`, no option
+  `delivery.hook`). Stdin is `{"version":1,"trigger":"vpn","instance":"<id>","op":"devices","ranges":[…]}`
+  or `"op":"dns","records":[{"name","type":"A","value"}]`; a `devices` run
+  prints the device document (version 1), at most 4 MiB and 10 000 devices.
+  Hooks call the app's own CLI or API. Where the image has no shell, a small
+  stdlib-only script run in a pinned official interpreter image may do the
+  translation (headscale's `vpn/glue.py`).
+- **The app's own access rules still apply.** The gateway must be reachable
+  from people's devices on the tunnel port the Hub forwards (443): a template
+  that ships an ACL, or whose notes tell admins to add one, says so (e.g.
+  Headscale: allow members to `tag:portcullis-gateway:443`). Never widen the
+  app's ACL to make this work.
+- **Control routers** are host routers (a `Host()` rule alone), only what clients need to connect (coordination,
+  signal, relay). Never an admin UI: a router that serves an
+  `auth.admin_paths` path, or any router of a `group_admin: true` app, is
+  refused.
+- **Reserved**: `portcullis-vpn` anywhere in `compose.yml` (any key or
+  value, the Hub's network, `portcullis-vpnallow-<id>` middleware and
+  `portcullis-vpnonly-<id>` router), and core's `wg` service and `wg_data` / `vpn_doc`
+  volume names.
+
 ## Compose rules
 
 `tests/validate.py` checks all of these.

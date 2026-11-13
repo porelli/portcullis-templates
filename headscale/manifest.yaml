@@ -34,6 +34,27 @@ auth:
     config.yaml is regenerated from the template on every start (so hostname
     and client changes apply), which means manual edits to it in the
     headscale-config volume are lost; change the template instead.
+    Portcullis VPN provider (vpn: below): once wired on this instance's VPN
+    tab (Settings → VPN lists the providers and links there), the tailnet
+    can carry VPN-only access to this server's apps. A gateway node
+    (tailscale/tailscale in userspace mode, no TUN or capabilities, tagged
+    tag:portcullis-gateway, registered by the gateway-key start hook with a
+    single-use pre-auth key) forwards tailnet connections to Portcullis with
+    PROXY v2, and the vpn-devices hook tells Portcullis who owns each node:
+    only nodes of Headscale users who signed in through Portcullis count
+    (keyed on the OIDC subject), local Headscale users' nodes never do. The
+    hooks use the "Headscale API key" setting: without it the gateway doesn't
+    register and the device list goes stale (VPN-only apps are then denied),
+    and when the key expires (365 days with the command above) the same
+    happens until a new one is set. A removed node is reflected within the
+    refresh interval (60 s). The vpn-dns hook writes the Portcullis
+    hostnames into Headscale's extra DNS records (MagicDNS), so tailnet
+    clients reach this server through the gateway. In whole-server VPN mode
+    only the headscale router (coordination and DERP, which clients need to
+    connect) stays on the internet; Headplane, an admin UI, becomes VPN-only.
+    The template adds no Headscale ACL policy (every node reaches every node,
+    Headscale's default); an admin who adds one must let the VPN's people
+    reach tag:portcullis-gateway:443, or the gateway is unreachable.
     Upgrades: Headscale is pinned; upgrade one minor release at a time (its
     database migrations do not support skipping) and pick the Headplane release
     that supports that Headscale version.
@@ -79,6 +100,30 @@ urls:
     url: "https://{{HOST_HEADSCALE}}"
   - label: Admin UI
     url: "https://{{HOST_HEADPLANE}}"
+
+# VPN hooks (contracts §3.3, §13.8): vpn/glue.py in vpn-glue.
+hooks:
+  - name: vpn-devices
+    service: vpn-glue
+    command: ["python3", "/vpn/glue.py"]
+    when: [vpn]
+  - name: vpn-dns
+    service: vpn-glue
+    command: ["python3", "/vpn/glue.py"]
+    when: [vpn]
+  - name: gateway-key
+    service: vpn-glue
+    command: ["python3", "/vpn/glue.py", "gateway-key"]
+    when: [start]
+
+# Portcullis VPN provider (contracts §3.3).
+vpn:
+  label: Headscale tailnet
+  ranges: ["100.64.0.0/10"]
+  ingress: {service: gateway, proxy_protocol: v2}
+  identity: {source: hook, hook: vpn-devices, owner: oidc_sub, refresh: 60s}
+  dns: {hook: vpn-dns}
+  control_routers: [headscale]
 
 # Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
 tests:
