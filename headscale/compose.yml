@@ -21,6 +21,10 @@ services:
           /tmp/config.yaml.tmpl > /etc/headscale/config.yaml.new
         mv /etc/headscale/config.yaml.new /etc/headscale/config.yaml
         echo "Config generated."
+        # dns.extra_records_path must exist before headscale starts; the
+        # vpn-dns hook (vpn/glue.py) replaces it when the Hub wires this
+        # instance as a VPN provider.
+        [ -e /dns/extra-records.json ] || echo '[]' > /dns/extra-records.json
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       HEADSCALE_HOST: ${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
@@ -28,6 +32,7 @@ services:
       HEADSCALE_OIDC_CLIENT_SECRET: ${HEADSCALE_OIDC_CLIENT_SECRET:?HEADSCALE_OIDC_CLIENT_SECRET must be set}
     volumes:
       - headscale-config:/etc/headscale
+      - headscale-dns:/dns
       - ./templates/headscale/config/config.yaml:/tmp/config.yaml.tmpl:ro
 
   headscale:
@@ -38,6 +43,7 @@ services:
     volumes:
       - headscale-data:/var/lib/headscale
       - headscale-config:/etc/headscale:ro
+      - headscale-dns:/var/lib/headscale-dns:ro
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
       headscale-init:
@@ -92,10 +98,70 @@ services:
       traefik.http.services.headplane.loadbalancer.server.port: "3000"
     restart: unless-stopped
 
+  # Portcullis VPN provider (manifest vpn:, contract §3.3). The gateway is
+  # a tailnet node (official tailscale image, userspace networking: no TUN,
+  # no capabilities) tagged tag:portcullis-gateway. Wired by the Hub, it
+  # gets PORTCULLIS_VPN_EDGE and forwards tailnet connections to its port
+  # 443 there with a PROXY v2 header carrying the client node's address
+  # (vpn/gateway.sh). It reaches the login / DERP server
+  # (${PORTCULLIS_HOST_HEADSCALE}) through Traefik's published port on the
+  # host (host-gateway), whatever the public DNS answers.
+  gateway:
+    image: docker.io/tailscale/tailscale:v1.104.7@sha256:72c1e19e0aedca96b8533bbb0b4368564410ff20b17e53b804eb6c1f04a31be4
+    entrypoint: ["/bin/sh", "/portcullis/gateway.sh"]
+    environment:
+      TS_USERSPACE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_AUTH_ONCE: "true"
+      TS_ACCEPT_DNS: "false"
+      TS_HOSTNAME: portcullis-gateway
+      # No log upload to log.tailscale.com.
+      TS_TAILSCALED_EXTRA_ARGS: --no-logs-no-support
+      TS_EXTRA_ARGS: --login-server=https://${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
+    extra_hosts:
+      - "${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}:host-gateway"
+    volumes:
+      - gateway-state:/var/lib/tailscale
+      - gateway-auth:/run/gateway:ro
+      - ./templates/headscale/vpn/gateway.sh:/portcullis/gateway.sh:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    read_only: true
+    tmpfs: [/tmp, /run/tailscale]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      - headscale
+    restart: unless-stopped
+
+  # The VPN hooks (vpn-devices, vpn-dns, gateway-key): vpn/glue.py, stdlib
+  # only, against Headscale's REST API with the "Headscale API key" setting
+  # (the headscale image is distroless: no shell for its CLI + jq).
+  vpn-glue:
+    image: docker.io/library/python:3.15.2-alpine@sha256:a0f2e268f2ce8f3709611a90054ec6a8ae31f6251f5896b8648b9bb99835e30a
+    command: ["sleep", "infinity"]
+    init: true
+    environment:
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+      HEADSCALE_URL: http://headscale-internal:8080
+      OIDC_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+    volumes:
+      - ./templates/headscale/vpn:/vpn:ro
+      - headscale-dns:/dns
+      - gateway-auth:/run/gateway
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      - headscale
+    restart: unless-stopped
+
 volumes:
   headscale-data: {}
   headscale-config: {}
   headplane-data: {}
+  headscale-dns: {}
+  gateway-state: {}
+  gateway-auth: {}
 
 networks:
   portcullis-proxy:
