@@ -671,8 +671,9 @@ vpn:
   key.
 - **The gateway's network namespace** holds only the ingress service and,
   optionally, the forwarder (`network_mode: service:<ingress>`, pinned by
-  digest); every service in it follows the ingress rules above. A template
-  with a `vpn:` block has no `network_mode: host` or `pid: host` service.
+  digest); every service in it follows the ingress rules above. With a
+  `vpn:` block, neither these services nor any routed service use
+  `network_mode: host` or `pid: host`.
 - **VPN hooks** are `when: [vpn]` only, never combined with another
   trigger, and each must be named by `vpn.identity.hook` or `vpn.dns.hook`.
   The settings engine never runs them (no `reload.hook`, no option

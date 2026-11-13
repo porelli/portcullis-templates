@@ -4414,6 +4414,15 @@ class VPNTests(Case):
     # rules of the Hub's settings, coreref and reservedvars checks).
     VPN_FAMILY = ("vpn.", "vpn:", "when: [vpn]", "vpn can't be combined", "is a vpn hook", "portcullis-vpn", "PORTCULLIS_VPN_")
 
+    # Vectors of the Hub's current copy written for the superseded
+    # host-namespace ruling (any service); the revised ruling (controller,
+    # 2026-11-13: only the ingress, its namespace's members and routed
+    # services) accepts them. Remove once the Hub's vectors follow it.
+    PENDING_HUB = {
+        "host networking with a vpn block refused": "vpn: service glue uses network_mode: host",
+        "host pid with a vpn block refused": "vpn: service glue uses pid: host",
+    }
+
     @staticmethod
     def hub_texts(error: str) -> List[str]:
         """A validate.py error as the Hub would word it: '<app>/<file>:
@@ -4441,6 +4450,14 @@ class VPNTests(Case):
                 texts = [t for e in errors for t in self.hub_texts(e)]
                 family = [e for e in errors if any(k in self.hub_texts(e)[0] for k in self.VPN_FAMILY)]
                 want = vec["want_error"]
+                if vec["name"] in self.PENDING_HUB:
+                    # The Hub's copy still has the superseded ruling: the
+                    # revised one accepts this template (an unrouted
+                    # service outside the ingress's namespace).
+                    self.assertEqual(want, self.PENDING_HUB[vec["name"]],
+                                     "the Hub changed this vector: re-copy it and drop it from PENDING_HUB")
+                    self.assertFalse([e for e in family if "vpn: service" in e], "\n".join(errors))
+                    continue
                 if want == "":
                     self.assertEqual(family, [], "\n".join(errors))
                     continue
@@ -4532,10 +4549,19 @@ class VPNTests(Case):
                          "vpn.ingress.service: tail shares gateway's network namespace")
         self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:a"}}, "a"), None)
         self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:c"}, "c": {}}, "a"), "c")
-        # Host namespaces, any service, with a vpn: block.
-        host = f"  hostly:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    {{}}: host\n"
-        self.assertError(with_services(host.format("network_mode")), "vpn: service hostly uses network_mode: host")
-        self.assertError(with_services(host.format("pid")), "vpn: service hostly uses pid: host")
+        # Host namespaces with a vpn: block: never for the ingress, its
+        # namespace's members or a routed service; others keep the
+        # template rules.
+        host = f"  hostly:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    {{}}: host\n{{}}"
+        label = "    labels:\n      traefik.enable: \"false\"\n"
+        self.assertError(with_services(host.format("network_mode", label)), "vpn: service hostly uses network_mode: host")
+        self.assertError(with_services(host.format("pid", label)), "vpn: service hostly uses pid: host")
+        self.assertFalse([e for e in with_services(host.format("network_mode", "")) if "vpn: service" in e])
+        self.assertFalse([e for e in with_services(host.format("pid", "")) if "vpn: service" in e])
+        self.assertError(self.vpn_template(cedit=("  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:" + S_DIGEST + "\n",
+                                                   "  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:" + S_DIGEST + "\n    pid: host\n")),
+                         "vpn: service gateway uses pid: host")
+        self.assertError(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="    pid: host\n")), "vpn: service fwd uses pid: host")
 
     def test_policy_doc_v7(self) -> None:
         mod = load_app_signin("headscale")
