@@ -405,8 +405,8 @@ def policy_doc(ver: int) -> dict:
                 groups[host] = ACCESS_GROUP
             if AUTH.get("admin_paths") and ADMIN_GROUP:
                 paths[host] = [{"prefix": p.rstrip("/") or "/", "group": ADMIN_GROUP} for p in AUTH["admin_paths"]]
-        return {
-            "version": 6,
+        doc = {
+            "version": ver,
             "methods": methods,
             "templates": {"standard": standard_template},
             "default": "standard",
@@ -420,6 +420,12 @@ def policy_doc(ver: int) -> dict:
             "public_paths": {},
             "expiring": []
         }
+        if ver >= 7:
+            # v7: VPN-only access (contract §4). No host is VPN-only in
+            # CI, server mode off, public enrolment on.
+            doc["vpn"] = {"hosts": {}, "server_mode": False, "admin_only": False, "public_enrol": True,
+                          "devices_file": "vpn.json"}
+        return doc
     else:
         # v5 and earlier: factor-based default policy.
         groups: Dict[str, str] = {}

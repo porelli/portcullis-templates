@@ -3276,7 +3276,7 @@ settings:
         self.assertIn("credential_change", v.HOOK_TRIGGERS)
         self.cases([
             ("credential_change only", only + s_opts(FS_CONNECT, FS_UID, FS_PS), FS_COMPOSE, "", ""),
-            ("unknown trigger", bad + s_opts(FS_CONNECT), FS_COMPOSE, "", 'when "credential" must be start, settings_change, membership_change, credential_change or ai'),
+            ("unknown trigger", bad + s_opts(FS_CONNECT), FS_COMPOSE, "", 'when "credential" must be start, settings_change, membership_change, credential_change, ai or vpn'),
         ])
 
     def test_data_file_format(self) -> None:
@@ -4019,10 +4019,10 @@ class AITests(Case):
     def test_hook_ai_trigger(self) -> None:
         self.assertIn("ai", v.HOOK_TRIGGERS)
         self.rows([
-            ("unknown trigger names all five", "companion", ["when: [start, settings_change]", "when: [boot]"], [],
-             'when "boot" must be start, settings_change, membership_change, credential_change or ai'),
-            ("empty when names all five", "companion", ["when: [start, settings_change]", "when: []"], [],
-             "start, settings_change, membership_change, credential_change, ai"),
+            ("unknown trigger names all six", "companion", ["when: [start, settings_change]", "when: [boot]"], [],
+             'when "boot" must be start, settings_change, membership_change, credential_change, ai or vpn'),
+            ("empty when names all six", "companion", ["when: [start, settings_change]", "when: []"], [],
+             "start, settings_change, membership_change, credential_change, ai, vpn"),
             ("option delivers to an ai hook", "companion", ["delivery: [{hook: apply}]", "delivery: [{hook: mcp-mint}]"], [],
              "hook mcp-mint is an ai hook (when: [ai]): no option delivers to it"),
             ("reload names an ai hook", "companion", ["settings:\n", "reload: {hook: mcp-mint}\nsettings:\n"], [],
@@ -4360,6 +4360,139 @@ networks:
                 if reason_substr:
                     self.assertTrue(any(reason_substr in r for r in reasons),
                                     f"{app_id} should have reason containing '{reason_substr}', got {reasons}")
+
+
+
+VPN_BLOCK = """\
+hooks:
+  - {name: vpn-devices, service: init, command: [python3, /vpn/glue.py], when: [vpn]}
+  - {name: vpn-dns, service: init, command: [python3, /vpn/glue.py], when: [vpn]}
+vpn:
+  label: Demo tailnet
+  ranges: ["100.64.0.0/10"]
+  ingress: {service: gateway, proxy_protocol: v2}
+  identity: {source: hook, hook: vpn-devices, owner: oidc_sub, refresh: 60s}
+  dns: {hook: vpn-dns}
+  control_routers: [demo]
+"""
+VPN_GATEWAY = f"  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:{S_DIGEST}\n    command: [\"sh\", \"-c\", \"echo $$PORTCULLIS_VPN_EDGE\"]\n"
+
+
+def load_app_signin(app: str) -> Any:
+    """tests/e2e/app_signin.py as a module, for app (it reads the app's
+    manifest at import)."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e", "app_signin.py")
+    spec = importlib.util.spec_from_file_location("app_signin_" + app.replace("-", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    with mock.patch.object(sys, "argv", ["app_signin.py", app]):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+class VPNTests(Case):
+    """The vpn: block (contract §3.3), the vpn hook trigger and the
+    reserved portcullis-vpn names, as the Hub's ValidateVPN (shared
+    vectors tests/vpn_vectors.json = Hub
+    internal/templates/testdata/vpn_vectors.json)."""
+    run_raw = TestSettingsV3.run_raw
+
+    def vpn_template(self, medit: Tuple[str, str] = ("", ""), cedit: Tuple[str, str] = ("", "")) -> List[str]:
+        # group_admin: true would make the control router an admin UI.
+        m = S_OIDC.replace(AI_UNSUP, AI_UNSUP + VPN_BLOCK).replace("  group_admin: true\n", "  group_admin: false\n", 1)
+        c = s_compose(oidc=True, services=S_INIT + VPN_GATEWAY)
+        if medit[0]:
+            self.assertIn(medit[0], m)
+            m = m.replace(medit[0], medit[1], 1)
+        if cedit[0]:
+            self.assertIn(cedit[0], c)
+            c = c.replace(cedit[0], cedit[1], 1)
+        errors, _ = self.run_raw(m, c)
+        return errors
+
+    def test_vectors(self) -> None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_vectors.json")
+        with open(path, encoding="utf-8") as f:
+            vectors = json.load(f)
+        self.assertGreater(len(vectors), 40)
+        for vec in vectors:
+            with self.subTest(vec["name"]):
+                self.assertEqual(sorted(vec), ["compose", "manifest", "name", "want_error"])
+                errs = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]))
+                self.assertEqual(errs[0] if errs else "", vec["want_error"], errs)
+
+    def test_template_with_vpn_block_clean(self) -> None:
+        self.assertClean(self.vpn_template())
+
+    def test_template_reports_vpn_refusal(self) -> None:
+        self.assertError(self.vpn_template(("label: Demo tailnet", 'label: ""')), "vpn.label: a single line of 1–64 characters")
+        self.assertError(self.vpn_template(("ingress: {service: gateway,", "ingress: {service: demo,")),
+                         "vpn.ingress.service: demo has a Traefik router")
+
+    def test_schema_vpn_strict(self) -> None:
+        for name, old, new in [
+            ("top level", "  label: Demo tailnet\n", "  label: Demo tailnet\n  bogus: 1\n"),
+            ("ingress", "proxy_protocol: v2}", "proxy_protocol: v2, bogus: 1}"),
+            ("identity", "refresh: 60s}", "refresh: 60s, bogus: 1}"),
+            ("dns", "dns: {hook: vpn-dns}", "dns: {hook: vpn-dns, bogus: 1}"),
+        ]:
+            with self.subTest(name):
+                self.assertError(self.vpn_template((old, new)), "bogus")
+        self.assertError(self.vpn_template(("source: hook", "source: mesh")), "mesh")
+
+    def test_reserved_vpn_ref(self) -> None:
+        for name, old, new in [
+            ("allowlist middleware", "middlewares: security-headers@file", "middlewares: portcullis-vpnallow-x@docker,security-headers@file"),
+            ("the network", "      - portcullis-proxy\n    labels", "      - portcullis-proxy\n      - portcullis-vpn\n    labels"),
+            ("folded", "DEMO_URL:", "X: Portcullis-VPN\n      DEMO_URL:"),
+        ]:
+            with self.subTest(name):
+                errors = self.vpn_template(cedit=(old, new))
+                self.assertError(errors, "references 'portcullis-vpn'")
+        # The forwarder image name doesn't contain the reserved prefix (V1).
+        self.assertClean(self.vpn_template(cedit=("docker.io/tailscale/tailscale:v1.90.0", "ghcr.io/porelli/portcullis-forwarder:1.0.0")))
+
+    def test_reserved_vpn_var(self) -> None:
+        for name, old, new in [
+            ("braced", "DEMO_URL:", "EDGE: ${PORTCULLIS_VPN_EDGE}\n      DEMO_URL:"),
+            ("default form", "DEMO_URL:", "EDGE: ${PORTCULLIS_VPN_EDGE:-172.31.254.3:9001}\n      DEMO_URL:"),
+            ("bare", "DEMO_URL:", "EDGE: $PORTCULLIS_VPN_MODE\n      DEMO_URL:"),
+        ]:
+            with self.subTest(name):
+                self.assertError(self.vpn_template(cedit=(old, new)), "PORTCULLIS_VPN_")
+        # $$PORTCULLIS_VPN_EDGE (the container's shell reads it) is clean:
+        # VPN_GATEWAY's command uses it.
+        self.assertIn("$$PORTCULLIS_VPN_EDGE", VPN_GATEWAY)
+        self.assertClean(self.vpn_template())
+        errors = self.vpn_template(("env:\n", "env:\n  - key: PORTCULLIS_VPN_PORT\n    description: x\n"))
+        self.assertError(errors, "PORTCULLIS_VPN_PORT is reserved")
+
+    def test_core_names(self) -> None:
+        self.assertIn("wg", v.CORE_SERVICES)
+        self.assertIn("wg_data", v.CORE_VOLUMES)
+        self.assertIn("vpn", v.HOOK_TRIGGERS)
+        errors = self.vpn_template(cedit=("  gateway:\n", "  wg:\n"), medit=("service: gateway,", "service: wg,"))
+        self.assertError(errors, "wg")
+
+    def test_vpn_hooks_never_in_the_settings_engine(self) -> None:
+        """V10: a vpn hook is never a reload hook nor an option's delivery hook."""
+        self.assertError(self.vpn_template(("vpn:\n", "reload: {hook: vpn-dns}\nvpn:\n")),
+                         "reload: hook vpn-dns is a vpn hook (when: [vpn]): the settings engine never runs it")
+        opt = s_opts("{key: theme, label: Theme, type: string, default: x, applies: live, delivery: [{hook: vpn-dns}]}")
+        self.assertError(self.vpn_template(("vpn:\n", opt + "vpn:\n")),
+                         "hook vpn-dns is a vpn hook (when: [vpn]): no option delivers to it")
+
+    def test_policy_doc_v7(self) -> None:
+        mod = load_app_signin("headscale")
+        v6 = mod.policy_doc(6)
+        self.assertEqual(v6["version"], 6)
+        self.assertNotIn("vpn", v6)
+        v7 = mod.policy_doc(7)
+        self.assertEqual(v7["version"], 7)
+        self.assertEqual(v7["vpn"], {"hosts": {}, "server_mode": False, "admin_only": False, "public_enrol": True,
+                                     "devices_file": "vpn.json"})
+        self.assertEqual({k: x for k, x in v7.items() if k not in ("version", "vpn")},
+                         {k: x for k, x in v6.items() if k != "version"})
 
 
 if __name__ == "__main__":

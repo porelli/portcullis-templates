@@ -84,6 +84,8 @@ VAR_AI_READONLY = "PORTCULLIS_AI_READONLY_"
 VAR_AI_PROVIDER = "PORTCULLIS_AI_PROVIDER_"
 VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
 AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
+VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and CONTRIBUTING.md, \"VPN providers\""
+VAR_VPN_PREFIX = "PORTCULLIS_VPN_"
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
@@ -730,6 +732,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if ai_reserved_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved (AI support: PORTCULLIS_AI_* are the Hub's, "
                                f"{VAR_MCP_GATE_IP} is core's)", AI_HINT)
+        if k.startswith(VAR_VPN_PREFIX):
+            r.error(t.m_where, f"{section} key {k} is reserved (VPN-only access: PORTCULLIS_VPN_* are core's and the Hub's)",
+                    VPN_HINT)
         if k == VAR_COMPOSE_PROFILES:
             r.error(t.m_where, f"{k} is an instance variable the Hub sets — a manifest may not declare it", SETUP_HINT)
         if is_instance_var(k):
@@ -1041,6 +1046,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
+    check_vpn(t, services, r)
     check_setup(t, services, routers, r)
 
 
@@ -2270,10 +2276,11 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
-                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool"}
+                 "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
+                 "wg"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data"}
+                "group_gate_data", "wg_data"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
@@ -2284,7 +2291,13 @@ CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portculli
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
 MCP_NAME_PREFIX = "portcullis-mcp-"
-RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX)
+# VPN_NAME_PREFIX (VPN-only access, §3/§3.3): the Hub's portcullis-vpn
+# network, portcullis-vpnallow-<id> allowlist middleware and
+# portcullis-vpnonly-<id> router, refused anywhere in compose.yml like
+# MCP_NAME_PREFIX, no exception (the forwarder image is
+# ghcr.io/porelli/portcullis-forwarder).
+VPN_NAME_PREFIX = "portcullis-vpn"
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX)
 CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
 HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
 HUB_SERVICE_KEYS = {
@@ -2405,6 +2418,10 @@ def check_hub_rules(t: Template, r: Report) -> None:
                     r.error(where, f"references {MCP_NAME_PREFIX!r}: names starting {MCP_NAME_PREFIX} (routers, services, middlewares, "
                                    "aliases, container names, hostnames, any key or value) are the Hub's AI companion routes and aliases",
                             AI_HINT)
+                elif ref == VPN_NAME_PREFIX:
+                    r.error(where, f"references {VPN_NAME_PREFIX!r}: names starting {VPN_NAME_PREFIX} (the portcullis-vpn network, "
+                                   "the portcullis-vpnallow-<id> middleware, the portcullis-vpnonly-<id> router, any key or value) "
+                                   "are the Hub's: it attaches a vpn: block's ingress service itself", VPN_HINT)
                 else:
                     r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
@@ -2629,7 +2646,7 @@ RESOLVE_TYPES: Dict[str, Optional[Set[str]]] = {
     "union": {"list", "multi_enum", "groups"}, "intersection": {"list", "multi_enum", "groups"},
     "any": {"bool"}, "all": {"bool"},
 }
-HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change", "ai")   # ai: AI support (§13.8)
+HOOK_TRIGGERS = ("start", "settings_change", "membership_change", "credential_change", "ai", "vpn")   # ai: AI support, vpn: VPN providers (§13.8)
 RELOAD_SIGNALS = {"HUP", "USR1", "USR2"}
 GENERATE_CHARSETS = {"hex", "alphanumeric", "ascii_printable"}
 CLAIM_JSON_TYPES = {"int", "string", "bool", "json"}
@@ -4953,6 +4970,16 @@ class _SpecCheck:
         ${PORTCULLIS_FOLDER_GID_<KEY>} only as a whole environment: value of
         the service <KEY>'s folder block targets; no other PORTCULLIS_FOLDER_*.
         PORTCULLIS_UNPRIVILEGED_PORT_START not available to templates (P15)."""
+        # VPN-only access (§2, §3): PORTCULLIS_VPN_* are core.env's and the
+        # Hub's, never compose interpolation; a gateway's shell reads the
+        # PORTCULLIS_VPN_EDGE the Hub sets as $$PORTCULLIS_VPN_EDGE.
+        for sc in self.scalars:
+            for name, _ in go_var_refs(sc):
+                if name.startswith(VAR_VPN_PREFIX):
+                    self.cerr(f"{name} is not available to templates: PORTCULLIS_VPN_* are core's and the Hub's, never "
+                              "compose interpolation", "a VPN gateway's own shell reads the PORTCULLIS_VPN_EDGE the Hub sets: "
+                              "write $$PORTCULLIS_VPN_EDGE (contract §3.3)")
+                    return
         # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
         for sc in self.scalars:
             if "PORTCULLIS_UNPRIVILEGED_PORT_START" in sc:
@@ -5306,11 +5333,11 @@ class _SpecCheck:
                 problems.append("user contains control characters")
             when = h.get("when") or []
             if not when:
-                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change, ai)")
+                problems.append("when must list at least one trigger (start, settings_change, membership_change, credential_change, ai, vpn)")
             for tr in when:
                 if tr not in HOOK_TRIGGERS:
                     problems.append(f"when {json.dumps(scalar_text(tr))} must be start, settings_change, membership_change, "
-                                    "credential_change or ai")
+                                    "credential_change, ai or vpn")
             if "ai" in when and len(when) != 1:
                 problems.append("when: ai can't be combined with another trigger (an ai hook is run only by the AI machinery): "
                                 "write exactly when: [ai]")
@@ -5337,6 +5364,8 @@ class _SpecCheck:
                 self.err(f"reload: hook {hook} is not declared in hooks")
             elif is_ai_hook(self.hooks[hook]):
                 self.err(f"reload: hook {hook} is an ai hook (when: [ai]): the settings engine never runs it")
+            elif is_vpn_hook(self.hooks[hook]):
+                self.err(f"reload: hook {hook} is a vpn hook (when: [vpn]): the settings engine never runs it")
         else:
             if svc not in self.services:
                 self.err(f"reload: service {json.dumps(svc)} is not in compose.yml")
@@ -5696,6 +5725,8 @@ class _SpecCheck:
                     raise _Refuse(f"hook {_str(d, 'hook')} is not declared in hooks")
                 if is_ai_hook(self.hooks[_str(d, "hook")]):
                     raise _Refuse(f"hook {_str(d, 'hook')} is an ai hook (when: [ai]): no option delivers to it")
+                if is_vpn_hook(self.hooks[_str(d, "hook")]):
+                    raise _Refuse(f"hook {_str(d, 'hook')} is a vpn hook (when: [vpn]): no option delivers to it")
         if scope == "person" and not per_person:
             raise _Refuse("scope person needs a per-person delivery (claim, header, file or hook)")
         if _str(o, "applies") == "live" and not hook:
@@ -5949,6 +5980,11 @@ _AI_HEADER_TEXT = ("Host, Cookie, Content-Type, Accept, Content-Length, Transfer
 def is_ai_hook(h: Any) -> bool:
     """Hook.IsAI: when lists ai (only ever alone: check_hooks)."""
     return isinstance(h, dict) and "ai" in as_list(h.get("when"))
+
+
+def is_vpn_hook(h: Any) -> bool:
+    """Hook.IsVPN: when lists vpn (only ever alone: vpn_errors)."""
+    return isinstance(h, dict) and "vpn" in as_list(h.get("when"))
 
 
 def single_line(s: Any, limit: int) -> bool:
@@ -6509,6 +6545,162 @@ def _environment_keys(svc: Any) -> List[str]:
 def check_ai(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
     """The ai: block (contracts §3.2), as the Hub's ValidateAI checks it."""
     _AICheck(t, services, routers, r).run()
+
+
+# ── VPN providers: the vpn: block (contracts §3.3) ─────────────────
+# Mirrors portcullis-hub internal/templates/vpn.go (ValidateVPN) with the
+# same texts; tests/vpn_vectors.json is a byte copy of the Hub's
+# internal/templates/testdata/vpn_vectors.json (lint: "VPN vectors match
+# the Hub").
+
+VPN_LABEL_MAX = 64
+VPN_MAX_RANGES = 8
+VPN_MIN_BITS, VPN_MAX_BITS = 8, 30
+VPN_REFRESH_MIN, VPN_REFRESH_MAX = 15 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
+VPN_OWNERS = ("oidc_sub", "username")
+_VPN_SETTING_RE = re.compile(r"\{\{setting:([^{}]*)\}\}")
+_OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
+_VPN_PREFIX_RE = re.compile(rf"({_OCTET}(?:\.{_OCTET}){{3}})/(0|[1-9][0-9]?)")
+_ROUTER_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.routers\.")
+_HTTP_ROUTER_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$")
+
+
+def vpn_prefix(s: Any) -> Optional[ipaddress.IPv4Network]:
+    """A canonical IPv4 prefix /8-/30 (netip.ParsePrefix, Is4, Masked() ==
+    itself), else None."""
+    m = _VPN_PREFIX_RE.fullmatch(s) if isinstance(s, str) else None
+    if not m or not VPN_MIN_BITS <= int(m.group(2)) <= VPN_MAX_BITS:
+        return None
+    net = ipaddress.IPv4Network(s, strict=False)
+    return net if str(net) == s else None
+
+
+def vpn_errors(m: Any, compose: Any) -> List[str]:
+    """ValidateVPN: the vpn: block and the vpn hooks of manifest m against
+    compose file compose, every refusal in the Hub's order (the first is
+    the one the Hub reports)."""
+    m = m if isinstance(m, dict) else {}
+    services = (compose or {}).get("services") if isinstance(compose, dict) else None
+    services = {str(k): (sv if isinstance(sv, dict) else {}) for k, sv in (services or {}).items()} \
+        if isinstance(services, dict) else {}
+    hooks = {_str(h, "name"): h for h in m.get("hooks") or [] if isinstance(h, dict)}
+    out: List[str] = []
+    named: Set[str] = set()
+
+    def vpn_hook(where: str, name: str) -> None:
+        named.add(name)
+        h = hooks.get(name)
+        if h is None or as_list(h.get("when")) != ["vpn"]:
+            out.append(f"{where}: {name} is not a hook with exactly when: [vpn]")
+
+    b = m.get("vpn")
+    if isinstance(b, dict):
+        if not single_line(b.get("label"), VPN_LABEL_MAX):
+            out.append(f"vpn.label: a single line of 1–{VPN_LABEL_MAX} characters")
+        ranges = b.get("ranges") if isinstance(b.get("ranges"), list) else []
+        if not 1 <= len(ranges) <= VPN_MAX_RANGES:
+            out.append(f"vpn.ranges: 1–{VPN_MAX_RANGES} IPv4 prefixes")
+        nets: List[Tuple[str, ipaddress.IPv4Network]] = []
+        for i, rg in enumerate(ranges):
+            text = scalar_text(rg)
+            sm = _VPN_SETTING_RE.fullmatch(text)
+            if sm:
+                o = next((o for o in setting_options(m) if _str(o, "key") == sm.group(1)), None)
+                if o is None or o.get("type") != "string" or _str(o, "format") != "cidr" or scope_of(o) != "instance":
+                    out.append(f"vpn.ranges[{i}]: {text} must name a cidr setting")
+                continue
+            net = vpn_prefix(rg)
+            if net is None:
+                out.append(f"vpn.ranges[{i}]: {text} is not an IPv4 prefix between /{VPN_MIN_BITS} and /{VPN_MAX_BITS}")
+                continue
+            nets.append((text, net))
+        for i, (a, na) in enumerate(nets):
+            for bt, nb in nets[i + 1:]:
+                if na.overlaps(nb):
+                    out.append(f"vpn.ranges: {a} overlaps {bt}")
+
+        ing = b.get("ingress") if isinstance(b.get("ingress"), dict) else {}
+        svc = _str(ing, "service")
+        companions = {_str(c, "service") for c in as_list((m.get("ai") or {}).get("mcp") if isinstance(m.get("ai"), dict) else None)
+                      if isinstance(c, dict) and _str(c, "kind") == "companion"}
+        if svc not in services:
+            out.append(f"vpn.ingress.service: {svc} is not a service of compose.yml")
+        elif _has(services[svc], "network_mode"):
+            out.append(f"vpn.ingress.service: {svc} has network_mode")
+        elif svc in job_services(m, services):
+            out.append(f"vpn.ingress.service: {svc} is a job")
+        elif svc in companions:
+            out.append(f"vpn.ingress.service: {svc} is an AI companion")
+        elif any(_ROUTER_LABEL_RE.match(fold_key(k)) for k in labels_of(services[svc])):
+            out.append(f"vpn.ingress.service: {svc} has a Traefik router")
+        if _str(ing, "proxy_protocol") != "v2":
+            out.append("vpn.ingress.proxy_protocol: only v2")
+
+        ident = b.get("identity") if isinstance(b.get("identity"), dict) else {}
+        source = _str(ident, "source")
+        if source == "hook":
+            vpn_hook("vpn.identity.hook", _str(ident, "hook"))
+            if _str(ident, "owner") not in VPN_OWNERS:
+                out.append("vpn.identity.owner: oidc_sub or username")
+        elif source == "static":
+            if _has(ident, "hook") or _has(ident, "owner"):
+                out.append("vpn.identity: source static takes no hook or owner")
+        else:
+            out.append("vpn.identity.source: hook or static")
+        if _has(ident, "refresh"):
+            try:
+                ns = go_parse_duration(scalar_text(ident["refresh"]))
+            except ValueError:
+                ns = -1
+            if not VPN_REFRESH_MIN <= ns <= VPN_REFRESH_MAX:
+                out.append("vpn.identity.refresh: between 15s and 10m")
+
+        dns = b.get("dns") if isinstance(b.get("dns"), dict) else {}
+        dhook, manual = _str(dns, "hook"), dns.get("manual") is True
+        if bool(dhook) == manual:
+            out.append("vpn.dns: exactly one of hook and manual: true")
+        elif dhook:
+            vpn_hook("vpn.dns.hook", dhook)
+
+        routers: Dict[str, Dict[str, str]] = {}
+        for sv in services.values():
+            for k, val in labels_of(sv).items():
+                mm = _HTTP_ROUTER_RE.match(k)
+                if mm:
+                    routers.setdefault(mm.group(1), {})[mm.group(2)] = val
+        auth = m.get("auth") if isinstance(m.get("auth"), dict) else {}
+        admin_paths = [scalar_text(p) for p in as_list(auth.get("admin_paths"))]
+        for rt in as_list(b.get("control_routers")):
+            rt = scalar_text(rt)
+            if rt not in routers:
+                out.append(f"vpn.control_routers: {rt} is not a host router of the template")
+                continue
+            paths = PATH_RE.findall(routers[rt].get("rule", "")) or ["/"]
+            if auth.get("group_admin") is True or any(prefix_covers(p, ap) or prefix_covers(ap, p) for p in paths for ap in admin_paths):
+                out.append(f"vpn.control_routers: {rt} serves an admin UI")
+
+    for name, h in hooks.items():
+        when = as_list(h.get("when"))
+        if "vpn" not in when:
+            continue
+        if len(when) != 1:
+            out.append(f"hooks[{name}]: vpn can't be combined with other triggers")
+        elif name not in named:
+            out.append(f"hooks[{name}]: when: [vpn] needs a vpn: block that names it")
+    return out
+
+
+def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """The vpn: block (contracts §3.3), as the Hub's ValidateVPN checks it.
+    A misshapen block is left to the schema errors (its hooks are still
+    checked against the raw block)."""
+    m = t.manifest or {}
+    if "vpn" in t.schema_errors and isinstance(m.get("vpn"), dict):
+        errs = [e for e in vpn_errors(m, {"services": services}) if e.startswith("hooks[")]
+    else:
+        errs = vpn_errors(m, {"services": services})
+    for e in errs:
+        r.error(t.m_where, e, VPN_HINT)
 
 
 # ── One-off jobs and setup options (contracts §3, §13.18) ──────────
