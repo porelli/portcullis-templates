@@ -4414,15 +4414,6 @@ class VPNTests(Case):
     # rules of the Hub's settings, coreref and reservedvars checks).
     VPN_FAMILY = ("vpn.", "vpn:", "when: [vpn]", "vpn can't be combined", "is a vpn hook", "portcullis-vpn", "PORTCULLIS_VPN_")
 
-    # Vectors of the Hub's current copy written for the superseded
-    # host-networking ruling (any service); the revised ruling (controller,
-    # 2026-11-13: network_mode: host refused only for the ingress, its
-    # namespace's members and routed services; pid: host everywhere)
-    # accepts them. Remove once the Hub's vectors follow it.
-    PENDING_HUB = {
-        "host networking with a vpn block refused": "vpn: service glue uses network_mode: host",
-    }
-
     @staticmethod
     def hub_texts(error: str) -> List[str]:
         """A validate.py error as the Hub would word it: '<app>/<file>:
@@ -4450,14 +4441,6 @@ class VPNTests(Case):
                 texts = [t for e in errors for t in self.hub_texts(e)]
                 family = [e for e in errors if any(k in self.hub_texts(e)[0] for k in self.VPN_FAMILY)]
                 want = vec["want_error"]
-                if vec["name"] in self.PENDING_HUB:
-                    # The Hub's copy still has the superseded ruling: the
-                    # revised one accepts this template (an unrouted
-                    # service outside the ingress's namespace).
-                    self.assertEqual(want, self.PENDING_HUB[vec["name"]],
-                                     "the Hub changed this vector: re-copy it and drop it from PENDING_HUB")
-                    self.assertFalse([e for e in family if "vpn: service" in e], "\n".join(errors))
-                    continue
                 if want == "":
                     self.assertEqual(family, [], "\n".join(errors))
                     continue
