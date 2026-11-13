@@ -73,7 +73,7 @@ PYTHON="${PYTHON:-python3}"
 
 # The validator (schema + check_vpn) accepts the template (lint runs it
 # too; Test Apps has no validator dependencies installed).
-if ! "$PYTHON" -c 'import jsonschema, yaml' 2>/dev/null; then
+if ! "$PYTHON" -c 'import sys; sys.path.insert(0, "tests"); import validate' >/dev/null 2>&1; then
   info "validator dependencies missing (tests/requirements.txt): validate.py runs in lint"
 elif "$PYTHON" tests/validate.py "$APP_ID" >/tmp/headscale-validate.log 2>&1; then
   pass "validate.py accepts the template (vpn: block included)"
