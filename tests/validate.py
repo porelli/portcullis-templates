@@ -2327,7 +2327,12 @@ CORE_TRAEFIK_NAMES = {
                  "keycloak", "lldap", "mcp-gate"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
-FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers"}
+# Exactly core's traefik/dynamic/middlewares.yml (Hub fileMiddlewares;
+# TestCoreNamesComplete compares with a core checkout). strip-client-forwarded
+# (core vpn1) already runs first on every websecure / vpnsecure router at the
+# entrypoint, so naming it again is harmless.
+FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers",
+                    "strip-client-forwarded"}
 LABEL_SEG_RE = re.compile(r"^[A-Za-z0-9_-]+(\[[0-9]+\])?$")
 LABEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ROUTER_ATTR_RE = re.compile(r"^(rule|entrypoints|middlewares|service|priority|tls|tls\.options|observability\.(accesslogs|metrics|tracing))$")

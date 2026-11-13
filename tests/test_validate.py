@@ -885,9 +885,27 @@ class TestCoreNamesComplete(unittest.TestCase):
         for k in doc.get("networks") or {}:
             if k != "portcullis-proxy":
                 self.assertIn(k, v.CORE_NETWORKS)
+        # The @file middlewares a template may name: exactly core's.
+        mw = os.path.join(core, "traefik", "dynamic", "middlewares.yml")
+        if os.path.isfile(mw):
+            with open(mw, encoding="utf-8") as f:
+                self.assertEqual(set(v.yaml.safe_load(f)["http"]["middlewares"]), v.FILE_MIDDLEWARES)
+
+    def test_strip_client_forwarded_file_middleware(self) -> None:
+        self.assertIn("strip-client-forwarded", v.FILE_MIDDLEWARES)
 
 
 class TestHubRules(Case):
+    def test_strip_client_forwarded_allowed(self) -> None:
+        """Core's strip-client-forwarded@file may be named like the other
+        core @file middlewares; an unknown @file one stays refused."""
+        errors, _ = self.run_template()
+        self.assertClean(errors)
+        self.rewrite_compose("security-headers@file", "strip-client-forwarded@file,security-headers@file")
+        self.assertClean(self.recheck())
+        self.rewrite_compose("strip-client-forwarded@file", "strip-client-forwarded-x@file")
+        self.assertError(self.recheck(), "strip-client-forwarded-x@file")
+
     """The Hub's discovery refusals (templates/coreref.go), mirrored statically."""
 
     LABELS = '      traefik.http.services.demo.loadbalancer.server.port: "80"\n'
