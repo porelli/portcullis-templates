@@ -34,8 +34,9 @@ auth:
     config.yaml is regenerated from the template on every start (so hostname
     and client changes apply), which means manual edits to it in the
     headscale-config volume are lost; change the template instead.
-    Portcullis VPN provider (vpn: below): wired on Settings → VPN, the
-    tailnet can carry VPN-only access to this server's apps. A gateway node
+    Portcullis VPN provider (vpn: below): once wired on this instance's VPN
+    tab (Settings → VPN lists the providers and links there), the tailnet
+    can carry VPN-only access to this server's apps. A gateway node
     (tailscale/tailscale in userspace mode, no TUN or capabilities, tagged
     tag:portcullis-gateway, registered by the gateway-key start hook with a
     single-use pre-auth key) forwards tailnet connections to Portcullis with
