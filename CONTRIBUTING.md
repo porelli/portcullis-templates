@@ -650,7 +650,7 @@ vpn:
   label: Headscale tailnet            # one line, 1–64 characters
   ranges: ["100.64.0.0/10"]           # 1–8 IPv4 prefixes, /8–/30, no overlaps; or exactly "{{setting:KEY}}" (a cidr setting)
   ingress:
-    service: gateway                  # no network_mode, not a job, not an AI companion, no Traefik router
+    service: gateway                  # no network_mode, not a job, not an AI companion, no Traefik label, no ports
     proxy_protocol: v2                # the only value
   identity:
     source: hook                      # hook | static (an admin assigns addresses; no hook, no owner)
@@ -669,6 +669,10 @@ vpn:
   shell reads the variable as `$$PORTCULLIS_VPN_EDGE`: `${PORTCULLIS_VPN_*}`
   compose interpolation is refused, and so is declaring a `PORTCULLIS_VPN_*`
   key.
+- **The gateway's network namespace** holds only the ingress service and,
+  optionally, the forwarder (`network_mode: service:<ingress>`, pinned by
+  digest); every service in it follows the ingress rules above. A template
+  with a `vpn:` block has no `network_mode: host` or `pid: host` service.
 - **VPN hooks** are `when: [vpn]` only, never combined with another
   trigger, and each must be named by `vpn.identity.hook` or `vpn.dns.hook`.
   The settings engine never runs them (no `reload.hook`, no option
@@ -678,7 +682,7 @@ vpn:
   Hooks call the app's own CLI or API. Where the image has no shell, a small
   stdlib-only script run in a pinned official interpreter image may do the
   translation (headscale's `vpn/glue.py`).
-- **Control routers** are only what clients need to connect (coordination,
+- **Control routers** are host routers (a `Host()` rule alone), only what clients need to connect (coordination,
   signal, relay). Never an admin UI: a router that serves an
   `auth.admin_paths` path, or any router of a `group_admin: true` app, is
   refused.

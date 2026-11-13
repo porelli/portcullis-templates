@@ -4410,7 +4410,26 @@ class VPNTests(Case):
         errors, _ = self.run_raw(m, c)
         return errors
 
+    # The refusals the shared vectors exercise (ValidateVPN, and the VPN
+    # rules of the Hub's settings, coreref and reservedvars checks).
+    VPN_FAMILY = ("vpn.", "vpn:", "when: [vpn]", "vpn can't be combined", "is a vpn hook", "portcullis-vpn", "PORTCULLIS_VPN_")
+
+    @staticmethod
+    def hub_texts(error: str) -> List[str]:
+        """A validate.py error as the Hub would word it: '<app>/<file>:
+        msg' -> msg, '<file>: msg' and '<file> msg' (the Hub's texts carry
+        the file name where theirs need one), hint dropped."""
+        head = error.split("\n", 1)[0]
+        loc, _, msg = head.partition(": ")
+        f = loc.rsplit("/", 1)[-1]
+        return [msg, f"{f}: {msg}", f"{f} {msg}"]
+
     def test_vectors(self) -> None:
+        """Each Hub vector (a whole template; the Hub's TestVPNVectors
+        builds it as app mesh) gives the Hub's error among validate.py's,
+        and, for a ValidateVPN refusal, as vpn_errors' first; an ok
+        vector gives no VPN refusal (validate.py's other repo rules may
+        still fire on the vectors' minimal templates)."""
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_vectors.json")
         with open(path, encoding="utf-8") as f:
             vectors = json.load(f)
@@ -4418,8 +4437,17 @@ class VPNTests(Case):
         for vec in vectors:
             with self.subTest(vec["name"]):
                 self.assertEqual(sorted(vec), ["compose", "manifest", "name", "want_error"])
-                errs = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]))
-                self.assertEqual(errs[0] if errs else "", vec["want_error"], errs)
+                errors, _ = self.run_raw(vec["manifest"], vec["compose"], "mesh")
+                texts = [t for e in errors for t in self.hub_texts(e)]
+                family = [e for e in errors if any(k in self.hub_texts(e)[0] for k in self.VPN_FAMILY)]
+                want = vec["want_error"]
+                if want == "":
+                    self.assertEqual(family, [], "\n".join(errors))
+                    continue
+                self.assertIn(want, texts, "\n".join(errors))
+                first = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]))
+                if want.startswith(("vpn.", "vpn:")) or "needs a vpn: block" in want:
+                    self.assertEqual(first[:1], [want], first)
 
     def test_template_with_vpn_block_clean(self) -> None:
         self.assertClean(self.vpn_template())
@@ -4448,7 +4476,7 @@ class VPNTests(Case):
         ]:
             with self.subTest(name):
                 errors = self.vpn_template(cedit=(old, new))
-                self.assertError(errors, "references 'portcullis-vpn'")
+                self.assertError(errors, 'references "portcullis-vpn"')
         # The forwarder image name doesn't contain the reserved prefix (V1).
         self.assertClean(self.vpn_template(cedit=("docker.io/tailscale/tailscale:v1.90.0", "ghcr.io/porelli/portcullis-forwarder:1.0.0")))
 
@@ -4481,6 +4509,33 @@ class VPNTests(Case):
         opt = s_opts("{key: theme, label: Theme, type: string, default: x, applies: live, delivery: [{hook: vpn-dns}]}")
         self.assertError(self.vpn_template(("vpn:\n", opt + "vpn:\n")),
                          "hook vpn-dns is a vpn hook (when: [vpn]): no option delivers to it")
+
+    def test_ingress_namespace(self) -> None:
+        """Hub checkVPNIngress: services in the ingress's network namespace
+        (chains followed) and host namespaces."""
+        fwd = f"ghcr.io/porelli/portcullis-forwarder:1.0.0@sha256:{S_DIGEST}"
+        sib = "  {name}:\n    image: {image}\n    network_mode: service:{of}\n{extra}"
+        def with_services(*svcs: str) -> List[str]:
+            return self.vpn_template(cedit=("  gateway:\n", "".join(svcs) + "  gateway:\n"))
+        self.assertClean(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="")))
+        self.assertError(with_services(sib.format(name="side", image=f"x/y:1.0.0@sha256:{S_DIGEST}", of="gateway",
+                                                  extra="    labels:\n      traefik.enable: \"false\"\n")),
+                         "vpn.ingress.service: side shares gateway's network namespace: only the pinned "
+                         "ghcr.io/porelli/portcullis-forwarder image may")
+        self.assertError(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="    labels:\n      traefik.enable: \"false\"\n")),
+                         "vpn.ingress.service: fwd has a Traefik router")
+        self.assertError(with_services(sib.format(name="fwd", image="ghcr.io/porelli/portcullis-forwarder:1.0.0", of="gateway", extra="")),
+                         "fwd shares gateway's network namespace")
+        # A chain: tail -> fwd -> gateway.
+        self.assertError(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra=""),
+                                       sib.format(name="tail", image=f"x/y:1.0.0@sha256:{S_DIGEST}", of="fwd", extra="")),
+                         "vpn.ingress.service: tail shares gateway's network namespace")
+        self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:a"}}, "a"), None)
+        self.assertEqual(v.vpn_net_ns({"a": {"network_mode": "service:b"}, "b": {"network_mode": "service:c"}, "c": {}}, "a"), "c")
+        # Host namespaces, any service, with a vpn: block.
+        host = f"  hostly:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    {{}}: host\n"
+        self.assertError(with_services(host.format("network_mode")), "vpn: service hostly uses network_mode: host")
+        self.assertError(with_services(host.format("pid")), "vpn: service hostly uses pid: host")
 
     def test_policy_doc_v7(self) -> None:
         mod = load_app_signin("headscale")

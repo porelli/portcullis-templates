@@ -2419,9 +2419,8 @@ def check_hub_rules(t: Template, r: Report) -> None:
                                    "aliases, container names, hostnames, any key or value) are the Hub's AI companion routes and aliases",
                             AI_HINT)
                 elif ref == VPN_NAME_PREFIX:
-                    r.error(where, f"references {VPN_NAME_PREFIX!r}: names starting {VPN_NAME_PREFIX} (the portcullis-vpn network, "
-                                   "the portcullis-vpnallow-<id> middleware, the portcullis-vpnonly-<id> router, any key or value) "
-                                   "are the Hub's: it attaches a vpn: block's ingress service itself", VPN_HINT)
+                    r.error(where, f"references \"{VPN_NAME_PREFIX}\": names starting {VPN_NAME_PREFIX} (the VPN network, "
+                                   "middlewares and routers) are rendered by the Hub only (contract §3.3)", VPN_HINT)
                 else:
                     r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
@@ -4976,9 +4975,9 @@ class _SpecCheck:
         for sc in self.scalars:
             for name, _ in go_var_refs(sc):
                 if name.startswith(VAR_VPN_PREFIX):
-                    self.cerr(f"{name} is not available to templates: PORTCULLIS_VPN_* are core's and the Hub's, never "
-                              "compose interpolation", "a VPN gateway's own shell reads the PORTCULLIS_VPN_EDGE the Hub sets: "
-                              "write $$PORTCULLIS_VPN_EDGE (contract §3.3)")
+                    self.cerr(f"${{{name}}} is reserved: PORTCULLIS_VPN_* are core's and the Hub's (the Hub sets "
+                              "PORTCULLIS_VPN_EDGE in the ingress container's environment: read it in a container shell as "
+                              "$$PORTCULLIS_VPN_EDGE)", VPN_HINT)
                     return
         # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
         for sc in self.scalars:
@@ -5341,6 +5340,8 @@ class _SpecCheck:
             if "ai" in when and len(when) != 1:
                 problems.append("when: ai can't be combined with another trigger (an ai hook is run only by the AI machinery): "
                                 "write exactly when: [ai]")
+            elif "vpn" in when and len(when) != 1:
+                problems.append("vpn can't be combined with other triggers")
             if _has(h, "timeout"):
                 try:
                     ns = go_parse_duration(scalar_text(h["timeout"]))
@@ -6561,8 +6562,12 @@ VPN_OWNERS = ("oidc_sub", "username")
 _VPN_SETTING_RE = re.compile(r"\{\{setting:([^{}]*)\}\}")
 _OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
 _VPN_PREFIX_RE = re.compile(rf"({_OCTET}(?:\.{_OCTET}){{3}})/(0|[1-9][0-9]?)")
-_ROUTER_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.routers\.")
 _HTTP_ROUTER_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$")
+# A host router (contract §3.1): the rule is a Host() alone.
+_HOST_ONLY_RULE_RE = re.compile(r"Host\(`[^`]*`\)")
+# Core's forwarder image, pinned by digest (V1): the only service besides
+# the ingress allowed in its network namespace.
+FORWARDER_IMAGE_RE = re.compile(r"ghcr\.io/porelli/portcullis-forwarder(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}")
 
 
 def vpn_prefix(s: Any) -> Optional[ipaddress.IPv4Network]:
@@ -6620,21 +6625,7 @@ def vpn_errors(m: Any, compose: Any) -> List[str]:
                     out.append(f"vpn.ranges: {a} overlaps {bt}")
 
         ing = b.get("ingress") if isinstance(b.get("ingress"), dict) else {}
-        svc = _str(ing, "service")
-        companions = {_str(c, "service") for c in as_list((m.get("ai") or {}).get("mcp") if isinstance(m.get("ai"), dict) else None)
-                      if isinstance(c, dict) and _str(c, "kind") == "companion"}
-        if svc not in services:
-            out.append(f"vpn.ingress.service: {svc} is not a service of compose.yml")
-        elif _has(services[svc], "network_mode"):
-            out.append(f"vpn.ingress.service: {svc} has network_mode")
-        elif svc in job_services(m, services):
-            out.append(f"vpn.ingress.service: {svc} is a job")
-        elif svc in companions:
-            out.append(f"vpn.ingress.service: {svc} is an AI companion")
-        elif any(_ROUTER_LABEL_RE.match(fold_key(k)) for k in labels_of(services[svc])):
-            out.append(f"vpn.ingress.service: {svc} has a Traefik router")
-        if _str(ing, "proxy_protocol") != "v2":
-            out.append("vpn.ingress.proxy_protocol: only v2")
+        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol")))
 
         ident = b.get("identity") if isinstance(b.get("identity"), dict) else {}
         source = _str(ident, "source")
@@ -6668,26 +6659,102 @@ def vpn_errors(m: Any, compose: Any) -> List[str]:
                 mm = _HTTP_ROUTER_RE.match(k)
                 if mm:
                     routers.setdefault(mm.group(1), {})[mm.group(2)] = val
-        auth = m.get("auth") if isinstance(m.get("auth"), dict) else {}
-        admin_paths = [scalar_text(p) for p in as_list(auth.get("admin_paths"))]
         for rt in as_list(b.get("control_routers")):
             rt = scalar_text(rt)
-            if rt not in routers:
+            if rt not in routers or not _HOST_ONLY_RULE_RE.fullmatch(routers[rt].get("rule", "").strip()):
                 out.append(f"vpn.control_routers: {rt} is not a host router of the template")
-                continue
-            paths = PATH_RE.findall(routers[rt].get("rule", "")) or ["/"]
-            if auth.get("group_admin") is True or any(prefix_covers(p, ap) or prefix_covers(ap, p) for p in paths for ap in admin_paths):
+            elif vpn_serves_admin_ui(m, routers[rt].get("rule", "")):
                 out.append(f"vpn.control_routers: {rt} serves an admin UI")
 
+    # (when: [vpn, <other>] is check_hooks' refusal, the Hub's settings
+    # check, which runs first.)
     for name, h in hooks.items():
-        when = as_list(h.get("when"))
-        if "vpn" not in when:
-            continue
-        if len(when) != 1:
-            out.append(f"hooks[{name}]: vpn can't be combined with other triggers")
-        elif name not in named:
+        if is_vpn_hook(h) and name not in named:
             out.append(f"hooks[{name}]: when: [vpn] needs a vpn: block that names it")
     return out
+
+
+def vpn_net_ns(services: Dict[str, Dict[str, Any]], svc: str) -> Optional[str]:
+    """Routes.NetNS: the service whose network namespace svc runs in
+    (network_mode service:X followed), "host", or None for a cycle or an
+    unknown target (fail closed)."""
+    seen: Set[str] = set()
+    while True:
+        if svc in seen:
+            return None
+        seen.add(svc)
+        nm = services.get(svc, {}).get("network_mode")
+        nm = nm if isinstance(nm, str) else ""
+        if nm == "host":
+            return "host"
+        if not nm.startswith("service:"):
+            return svc
+        nxt = nm[len("service:"):]
+        if nxt not in services:
+            return None
+        svc = nxt
+
+
+def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str) -> List[str]:
+    """checkVPNIngress: the ingress exists and can join a network; no
+    service uses host networking or the host's pid namespace; every
+    service in the ingress's network namespace (chains followed) is no
+    job, no AI companion, has no Traefik label and publishes no ports, and
+    besides the ingress only the pinned forwarder may join it;
+    proxy_protocol v2. The Hub stops at the first."""
+    if s not in services:
+        return [f"vpn.ingress.service: {s} is not a service of compose.yml"]
+    if "network_mode" in services[s]:
+        return [f"vpn.ingress.service: {s} has network_mode"]
+    names = sorted(services)
+    for n in names:
+        if services[n].get("network_mode") == "host":
+            return [f"vpn: service {n} uses network_mode: host"]
+        if services[n].get("pid") == "host":
+            return [f"vpn: service {n} uses pid: host"]
+    members = [s] + [n for n in names if n != s and vpn_net_ns(services, n) == s]
+    jobs = job_services(m, services)
+    ai = m.get("ai") if isinstance(m.get("ai"), dict) else {}
+    companions = {_str(c, "service") for c in as_list(ai.get("mcp")) if isinstance(c, dict) and _str(c, "kind") == "companion"}
+    for n in members:
+        sv = services[n]
+        image = sv.get("image") if isinstance(sv.get("image"), str) else ""
+        if n != s and not FORWARDER_IMAGE_RE.fullmatch(image):
+            return [f"vpn.ingress.service: {n} shares {s}'s network namespace: only the pinned "
+                    "ghcr.io/porelli/portcullis-forwarder image may"]
+        if n in jobs:
+            return [f"vpn.ingress.service: {n} is a job"]
+        if n in companions:
+            return [f"vpn.ingress.service: {n} is an AI companion"]
+        if any(fold_key(k).startswith("traefik.") for k in labels_of(sv)):
+            return [f"vpn.ingress.service: {n} has a Traefik router"]
+        if "ports" in sv:
+            return [f"vpn.ingress.service: {n} publishes ports"]
+    if proxy != "v2":
+        return ["vpn.ingress.proxy_protocol: only v2"]
+    return []
+
+
+def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:
+    """servesAdminUI: group_admin, or an admin_paths path the router can
+    serve (no path matcher, or one no path reasoning applies to, serves
+    every path: fail closed)."""
+    auth = m.get("auth") if isinstance(m.get("auth"), dict) else {}
+    if auth.get("group_admin") is True:
+        return True
+    admin_paths = [scalar_text(p) for p in as_list(auth.get("admin_paths"))]
+    if not admin_paths:
+        return False
+    paths = re.findall(r"(Path|PathPrefix)\(`([^`]*)`\)", rule)
+    if not paths or re.search(r"\b(?!Path\(|PathPrefix\()Path[A-Za-z]*\(", rule):
+        return True
+    for kind, v in paths:
+        for ap in admin_paths:
+            if kind == "Path" and (v == ap or v.startswith(ap + "/")):
+                return True
+            if kind == "PathPrefix" and ((ap + "/").startswith(v) or v.startswith(ap + "/")):
+                return True
+    return False
 
 
 def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
