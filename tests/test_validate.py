@@ -15,7 +15,7 @@ import tempfile
 import textwrap
 import unittest
 from unittest import mock
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validate as v  # noqa: E402
@@ -4215,7 +4215,10 @@ class RootlessTests(unittest.TestCase):
             with self.subTest(name=vec["name"]):
                 # Create a minimal template
                 t = v.Template("test")
-                t.manifest = {"ports": vec.get("ports", [])}
+                # As the Hub's harness: a vector port's port is both its
+                # default (the host port) and its container port.
+                t.manifest = {"ports": [{"key": p["key"], "default": p["port"], "container": p["port"], "protocol": p["protocol"]}
+                                        for p in vec.get("ports", [])]}
                 t.compose = v.yaml.safe_load(vec["compose"])
 
                 status, reasons = v.rootless_compat(t, env=vec.get("env", {}), port_start=vec["port_start"])
@@ -4225,6 +4228,48 @@ class RootlessTests(unittest.TestCase):
 
                 self.assertEqual(status, want_status, f"Status mismatch for {vec['name']}")
                 self.assertEqual(reasons, want_reasons, f"Reasons mismatch for {vec['name']}")
+
+    def compat(self, compose: str, manifest: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Tuple[str, List[str]]:
+        t = v.Template("test")
+        t.manifest = manifest
+        t.compose = v.yaml.safe_load(compose)
+        return v.rootless_compat(t, env=env, port_start=80)
+
+    def test_rules_vectors_cannot_express(self) -> None:
+        """Rules the shared vectors' format can't carry (the Hub's TestRootlessCompatRules)."""
+        app = "services:\n  a:\n    image: x\n"
+        below = ("host port {0}/tcp is below net.ipv4.ip_unprivileged_port_start (80): "
+                 "lower it to {0} on the host to allow it (any local user can then bind ports from {0})")
+        ids = "service {} runs as id {}, outside the rootless id range (0–65535)"
+        for name, manifest, env, want in [
+            ("host port is default, not container", {"ports": [{"key": "P", "container": 53, "default": 8053}]}, None, ("ok", [])),
+            ("default below the start", {"ports": [{"key": "P", "container": 8080, "default": 53}]}, None, ("refused", [below.format(53)])),
+            ("range start", {"ports": [{"key": "R", "range": "49152-65535", "protocol": "udp"}]}, None,
+             ("degraded", ["UDP clients on port 49152 appear with a rewritten source address"])),
+            ("range from env", {"ports": [{"key": "R", "range": "49152-65535"}]}, {"R": "40-50"}, ("refused", [below.format(40)])),
+            ("folder runs_as uid", {"settings": {"options": [{"key": "media", "type": "folder", "target": {"service": "a"},
+                                                               "folder": {"runs_as": {"uid": 70000, "gid": 1000}}}]}}, None,
+             ("refused", [ids.format("a", 70000)])),
+            ("folder runs_as names the key without a target", {"settings": {"options": [{"key": "media", "folder": {"runs_as": {"gid": -1}}}]}}, None,
+             ("refused", [ids.format("media", -1)])),
+        ]:
+            with self.subTest(name=name):
+                self.assertEqual(self.compat(app, manifest, env), want)
+
+    def test_unreadable_compose_refused(self) -> None:
+        for name, text in [("bad yaml", "services: [\n"), ("services not a mapping", "services: [a]\n"),
+                           ("service not a mapping", "services:\n  a: [x]\n")]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                os.makedirs(os.path.join(tmpdir, "t"))
+                with open(os.path.join(tmpdir, "t", "compose.yml"), "w", encoding="utf-8") as f:
+                    f.write(text)
+                with mock.patch.object(v, "ROOT", tmpdir):
+                    t = v.Template("t")
+                    t.manifest = {}
+                    status, reasons = v.rootless_compat(t)
+                self.assertEqual(status, "refused")
+                self.assertEqual(len(reasons), 1)
+                self.assertTrue(reasons[0].startswith("compose.yml can't be read: "), reasons)
 
     def test_committed_classification(self) -> None:
         """Test that validate.py --rootless output matches tests/rootless.txt."""

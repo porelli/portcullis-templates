@@ -6646,197 +6646,224 @@ def check_setup(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[s
 
 # ── Rootless Podman compatibility ──────────────────────────────────
 
+ROOTLESS_MAX_ID = 65535
+_ROOTLESS_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}")
+_ROOTLESS_DEVICE_RE = re.compile(r"/dev/[A-Za-z0-9._/-]+")
+_GO_INT_RE = re.compile(r"[+-]?[0-9]+")
+
+
+def _rootless_resolve(s: str, env: Dict[str, str]) -> str:
+    """Interpolate s compose-style, as the Hub's resolve: ${V}, ${V:-d}
+    (empty or unset -> d), ${V-d} (unset -> d), ${V:?...} / ${V?...} (the
+    value); $$ is a literal dollar."""
+    esc = "\x00"
+    s = s.replace("$$", esc)
+
+    def sub(m: "re.Match[str]") -> str:
+        name, op, default = m.group(1), m.group(2) or "", m.group(3) or ""
+        val = env.get(name)
+        if op == ":-" and not val:
+            return default
+        if op == "-" and val is None:
+            return default
+        return val or ""
+
+    return _ROOTLESS_VAR_RE.sub(sub, s).replace(esc, "$")
+
+
+def _rootless_split(s: str) -> List[str]:
+    """Split s at ':' outside ${...} (the Hub's splitOutsideVars)."""
+    parts: List[str] = []
+    depth = start = 0
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "$" and i + 1 < len(s) and s[i + 1] == "{":
+            depth += 1
+            i += 1
+        elif c == "}" and depth > 0:
+            depth -= 1
+        elif c == ":" and depth == 0:
+            parts.append(s[start:i])
+            start = i + 1
+        i += 1
+    parts.append(s[start:])
+    return parts
+
+
+def _go_scalar(v: Any) -> str:
+    """A YAML scalar as the Hub sees its text."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e21:
+        return str(int(v))
+    return str(v)
+
+
+def _rootless_scalars(v: Any) -> Tuple[List[str], bool]:
+    """v's scalar items (v a list), else v itself as one; ok False for any
+    non-scalar item or a non-list collection (the Hub's scalars)."""
+    if v is None:
+        return [], True
+    if isinstance(v, (dict, list)):
+        if isinstance(v, dict):
+            return [], False
+        out = [_go_scalar(x) for x in v if not isinstance(x, (dict, list))]
+        return out, len(out) == len(v)
+    return [_go_scalar(v)], True
+
+
+def _go_atoi(s: str) -> Optional[int]:
+    if not _GO_INT_RE.fullmatch(s):
+        return None
+    n = int(s)
+    return n if -(1 << 63) <= n < (1 << 63) else None
+
+
+def _rootless_host_port(p: Dict[str, Any], env: Dict[str, str]) -> int:
+    """A manifest port's effective host port (a range's start): env's value
+    for its key when set, else the default (the Hub's hostPort)."""
+    key = p.get("key")
+    v = (env.get(key) or "").strip() if isinstance(key, str) else ""
+    rng = p.get("range")
+    if isinstance(rng, str) and rng:
+        r = v or rng
+        n = _go_atoi(r.split("-", 1)[0].strip())
+        return n if n is not None else 0
+    if v:
+        n = _go_atoi(v)
+        if n is not None:
+            return n
+    d = p.get("default")
+    return d if isinstance(d, int) and not isinstance(d, bool) else 0
+
+
 def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_start: int = 80) -> Tuple[str, List[str]]:
-    """Check whether a template can run under rootless Podman (Task 4, Task 6).
+    """Classify a template under rootless Podman, as the Hub's RootlessCompat
+    (portcullis-hub internal/templates/rootless.go; shared vectors in
+    tests/rootless_vectors.json).
 
-    Args:
-        t: Template to check
-        env: Instance environment variables (for resolving ${VAR:-default})
-        port_start: Unprivileged port start (net.ipv4.ip_unprivileged_port_start)
+    Rules, per service in compose order: devices (a source other than
+    /dev/null and /dev/net/tun refused, /dev/null and /dev/net/tun
+    degraded), cap_add (SYS_RAWIO / SYS_ADMIN / ALL refused, NET_ADMIN
+    degraded), user / group_add ids above 65535 refused, network_mode host
+    degraded; then each manifest port (below port_start refused, UDP
+    degraded); then folder runs_as ids outside 0-65535 refused. Each reason
+    once. Any refused reason gives ("refused", refused reasons); else any
+    degraded one ("degraded", degraded reasons); else ("ok", []). An
+    unreadable compose file is refused.
 
-    Returns:
-        Tuple of (status, reasons) where status is "ok", "degraded", or "refused"
+    env is the instance's effective values (None = the defaults; port keys
+    carry the instance's host ports).
     """
-    if env is None:
-        env = {}
+    env = env or {}
+    refused: List[str] = []
+    degraded: List[str] = []
 
-    if t.compose is None:
-        return ("ok", [])
+    def refuse(s: str) -> None:
+        if s not in refused:
+            refused.append(s)
 
-    services = t.compose.get("services") or {}
-    manifest = t.manifest or {}
+    def degrade(s: str) -> None:
+        if s not in degraded:
+            degraded.append(s)
 
-    refused_reasons: List[str] = []
-    degraded_reasons: List[str] = []
+    compose = t.compose
+    if compose is None:
+        try:
+            with open(t.compose_path, encoding="utf-8") as f:
+                compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+        except Exception as e:  # noqa: BLE001 - any read / parse failure refuses
+            return ("refused", [f"compose.yml can't be read: {e}"])
+    services: Dict[str, Any] = {}
+    if compose is not None:
+        if not isinstance(compose, dict):
+            return ("refused", ["compose.yml can't be read: not a mapping"])
+        if "services" in compose:
+            services = compose["services"]
+            if not isinstance(services, dict):
+                return ("refused", ["compose.yml can't be read: services is not a mapping"])
+    for name, svc in services.items():
+        if svc is not None and not isinstance(svc, dict):
+            return ("refused", [f"compose.yml can't be read: service {name}: not a mapping"])
 
-    def resolve_var(value: str) -> str:
-        """Resolve ${VAR:-default} or ${VAR} form."""
-        if not isinstance(value, str):
-            return str(value)
-        # Match ${VAR:-default}
-        m = re.match(r'^\$\{([A-Z0-9_]+):-([^}]*)\}$', value)
-        if m:
-            var_name, default = m.groups()
-            return env.get(var_name, default)
-        # Match ${VAR}
-        m = re.match(r'^\$\{([A-Z0-9_]+)\}$', value)
-        if m:
-            var_name = m.group(1)
-            return env.get(var_name, "")
-        return value
+    def check_id(service: str, v: str) -> None:
+        v = v.strip()
+        if v and re.fullmatch(r"[0-9]+", v) and int(v) > ROOTLESS_MAX_ID:
+            refuse(f"service {service} runs as id {v.lstrip('0')}, outside the rootless id range (0–65535)")
 
-    def extract_device_host(dev_entry: str) -> str:
-        """Extract host device from Docker device syntax, handling ${...} vars."""
-        if not isinstance(dev_entry, str):
-            return ""
-        # Parse respecting ${...} boundaries
-        parts = []
-        current = []
-        depth = 0
-        for char in dev_entry:
-            if char == '$' and len(current) > 0 and current[-1] == '$':
-                # Escaped dollar
-                current.append(char)
-            elif char == '{' and len(current) > 0 and current[-1] == '$':
-                depth += 1
-                current.append(char)
-            elif char == '}' and depth > 0:
-                depth -= 1
-                current.append(char)
-            elif char == ':' and depth == 0:
-                parts.append(''.join(current))
-                current = []
-            else:
-                current.append(char)
-        if current:
-            parts.append(''.join(current))
-        return parts[0] if parts else dev_entry
-
-    # Check each service
-    for sname, svc in services.items():
-        if not isinstance(svc, dict):
-            continue
-
-        # Rule 1: Check devices
-        devices = svc.get("devices") or []
-        for dev_entry in devices:
-            if isinstance(dev_entry, str):
-                src = extract_device_host(dev_entry)
-            else:
-                continue
-
-            src = resolve_var(src)
-
-            # /dev/null is degraded (device slot)
+    for name, svc in services.items():
+        svc = svc or {}
+        tun = f"service {name} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)"
+        devs, ok = _rootless_scalars(svc.get("devices"))
+        if not ok:
+            refuse(f"service {name} passes the host device a non-device source: device access needs host root")
+        for d in devs:
+            src = _rootless_resolve(_rootless_split(d)[0], env)
+            if src == "":
+                continue  # an unset source: compose itself refuses the file
             if src == "/dev/null":
-                if f"service {sname} has device slots: host devices can't be passed under rootless Podman" not in degraded_reasons:
-                    degraded_reasons.append(f"service {sname} has device slots: host devices can't be passed under rootless Podman")
-            # /dev/net/tun is degraded
+                degrade(f"service {name} has device slots: host devices can't be passed under rootless Podman")
             elif src == "/dev/net/tun":
-                if f"service {sname} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)" not in degraded_reasons:
-                    degraded_reasons.append(f"service {sname} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)")
-            # Other devices are refused (but not empty strings from unresolved vars)
-            elif src and src != "/dev/null":
-                # Format device path: only show if it matches the pattern
-                if re.match(r'^/dev/[A-Za-z0-9._/-]+$', src):
-                    dev_display = src
-                else:
-                    dev_display = "a non-device source"
-                if f"service {sname} passes the host device {dev_display}: device access needs host root" not in refused_reasons:
-                    refused_reasons.append(f"service {sname} passes the host device {dev_display}: device access needs host root")
-
-        # Rule 2: Check cap_add for SYS_RAWIO or SYS_ADMIN
-        cap_add = svc.get("cap_add") or []
-        for cap in cap_add:
-            # Resolve cap if it's a variable
-            cap_resolved = resolve_var(str(cap))
-            cap_str = cap_resolved.upper()
-            if cap_str in ("SYS_RAWIO", "SYS_ADMIN"):
-                if f"service {sname} needs {cap_str} (raw device access needs host root)" not in refused_reasons:
-                    refused_reasons.append(f"service {sname} needs {cap_str} (raw device access needs host root)")
-            # Rule 6: NET_ADMIN is degraded
-            elif cap_str == "NET_ADMIN":
-                if f"service {sname} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)" not in degraded_reasons:
-                    degraded_reasons.append(f"service {sname} uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)")
-
-        # Rule 3: Check user: and group_add for ids > 65535
+                degrade(tun)
+            else:
+                shown = src if _ROOTLESS_DEVICE_RE.fullmatch(src) else "a non-device source"
+                refuse(f"service {name} passes the host device {shown}: device access needs host root")
+        caps, _ = _rootless_scalars(svc.get("cap_add"))
+        for cp in caps:
+            c = _rootless_resolve(cp, env).strip().upper()
+            if c.startswith("CAP_"):
+                c = c[len("CAP_"):]
+            if c in ("SYS_RAWIO", "SYS_ADMIN", "ALL"):
+                refuse(f"service {name} needs {'SYS_ADMIN' if c == 'ALL' else c} (raw device access needs host root)")
+            elif c == "NET_ADMIN":
+                degrade(tun)
         user = svc.get("user")
-        if user:
-            user_str = str(user)
-            # Parse uid:gid or just uid
-            parts = user_str.split(":")
-            for part in parts:
-                if part.isdigit() and int(part) > 65535:
-                    refused_reasons.append(f"service {sname} runs as id {part}, outside the rootless id range (0–65535)")
-
-        group_add = svc.get("group_add") or []
-        for gid in group_add:
-            if isinstance(gid, (int, str)) and str(gid).isdigit() and int(gid) > 65535:
-                refused_reasons.append(f"service {sname} runs as id {gid}, outside the rootless id range (0–65535)")
-
-        # Rule 8: Check network_mode: host
+        if "user" in svc and not isinstance(user, (dict, list)):
+            for part in _rootless_resolve(_go_scalar(user), env).split(":"):
+                check_id(name, part)
+        groups, _ = _rootless_scalars(svc.get("group_add"))
+        for g in groups:
+            check_id(name, _rootless_resolve(g, env))
         if svc.get("network_mode") == "host":
-            degraded_reasons.append(f"host networking: published ports must stay at or above {port_start}")
+            degrade(f"host networking: published ports must stay at or above {port_start}")
 
-    # Rule 4: Check host ports from manifest ports
-    for port_entry in manifest.get("ports") or []:
-        if not isinstance(port_entry, dict):
+    manifest = t.manifest if isinstance(t.manifest, dict) else {}
+    ports = manifest.get("ports")
+    for p in ports if isinstance(ports, list) else []:
+        if not isinstance(p, dict):
             continue
+        n = _rootless_host_port(p, env)
+        if n <= 0:
+            continue
+        proto = p.get("protocol") or "tcp"
+        if n < port_start:
+            refuse(f"host port {n}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): "
+                   f"lower it to {n} on the host to allow it (any local user can then bind ports from {n})")
+        if proto == "udp":
+            degrade(f"UDP clients on port {n} appear with a rewritten source address")
 
-        # Check port or range start
-        port_val = port_entry.get("port")
-        container_val = port_entry.get("container")  # Use container port if host port not specified
-        if port_val is None and container_val:
-            port_val = container_val
-        range_val = port_entry.get("range")
-        proto = port_entry.get("protocol", "tcp")
+    for o in setting_options(manifest):
+        folder = o.get("folder")
+        runs_as = folder.get("runs_as") if isinstance(folder, dict) else None
+        if not isinstance(runs_as, dict):
+            continue
+        target = o.get("target")
+        svc_name = target.get("service") if isinstance(target, dict) else None
+        if not (isinstance(svc_name, str) and svc_name):
+            svc_name = _str(o, "key")
+        for k in ("uid", "gid"):
+            i = runs_as.get(k)
+            if isinstance(i, int) and not isinstance(i, bool) and (i < 0 or i > ROOTLESS_MAX_ID):
+                refuse(f"service {svc_name} runs as id {i}, outside the rootless id range (0–65535)")
 
-        # Rule 4: Port below port_start is refused (takes precedence over UDP degraded)
-        port_to_check = None
-        if port_val and isinstance(port_val, int):
-            port_to_check = port_val
-            if port_val < port_start:
-                if f"host port {port_val}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): lower it to {port_val} on the host to allow it (any local user can then bind ports from {port_val})" not in refused_reasons:
-                    refused_reasons.append(f"host port {port_val}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): lower it to {port_val} on the host to allow it (any local user can then bind ports from {port_val})")
-        elif range_val:
-            # Parse range "start-end"
-            range_str = str(range_val)
-            if "-" in range_str:
-                start = range_str.split("-")[0]
-                if start.isdigit():
-                    port_to_check = int(start)
-                    if int(start) < port_start:
-                        if f"host port {start}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): lower it to {start} on the host to allow it (any local user can then bind ports from {start})" not in refused_reasons:
-                            refused_reasons.append(f"host port {start}/{proto} is below net.ipv4.ip_unprivileged_port_start ({port_start}): lower it to {start} on the host to allow it (any local user can then bind ports from {start})")
-
-        # Rule 7: UDP ports are degraded (only if not already refused)
-        if proto == "udp" and port_to_check is not None:
-            if f"UDP clients on port {port_to_check} appear with a rewritten source address" not in degraded_reasons:
-                degraded_reasons.append(f"UDP clients on port {port_to_check} appear with a rewritten source address")
-
-    # Check folder runs_as for ids > 65535
-    folders = manifest.get("folders") or {}
-    if isinstance(folders, dict):
-        runs_as = folders.get("runs_as") or {}
-        for key, id_val in runs_as.items():
-            if isinstance(id_val, str):
-                # Parse uid:gid
-                for part in id_val.split(":"):
-                    if part.isdigit() and int(part) > 65535:
-                        # Find which service this belongs to
-                        for sname, svc in services.items():
-                            user = svc.get("user")
-                            if user and key in str(user):
-                                refused_reasons.append(f"service {sname} runs as id {part}, outside the rootless id range (0–65535)")
-                                break
-
-    # Determine status
-    if refused_reasons:
-        return ("refused", refused_reasons)
-    elif degraded_reasons:
-        return ("degraded", degraded_reasons)
-    else:
-        return ("ok", [])
+    if refused:
+        return ("refused", refused)
+    if degraded:
+        return ("degraded", degraded)
+    return ("ok", [])
 
 
 # ── Main ────────────────────────────────────────────────────────────
