@@ -2281,12 +2281,15 @@ CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgre
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
                 "group_gate_data", "wg_data", "vpn_doc"}
+# Core's network aliases that aren't service names (wg's metrics address
+# on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
+CORE_ALIASES = {"wg-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
-                 "portcullis-sessions"}
+                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
@@ -2312,8 +2315,8 @@ HUB_SERVICE_KEYS = {
 CORE_TRAEFIK_NAMES = {
     "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
                 "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal", "mcp", "hub-mcp",
-                "people-mcp"},
-    "middlewares": {"directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
+                "people-mcp", "people-vpn-enrol"},
+    "middlewares": {"vpn-required-path", "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
                  "keycloak", "lldap", "mcp-gate"},
@@ -2380,7 +2383,7 @@ def _interpolated(s: str) -> bool:
 def reserved_dns_name(name: str) -> bool:
     n = fold_key(name.strip()).rstrip(".")
     for c in (n, n.split(".", 1)[0]):
-        if c in CORE_SERVICES:
+        if c in CORE_SERVICES or c in CORE_ALIASES:
             return True
         m = CORE_CONTAINER_RE.match(c)
         if m and m.group(1) in CORE_SERVICES:
@@ -6559,7 +6562,7 @@ VPN_MAX_RANGES = 8
 VPN_MIN_BITS, VPN_MAX_BITS = 8, 30
 VPN_REFRESH_MIN, VPN_REFRESH_MAX = 15 * 10 ** 9, 10 * 60 * 10 ** 9   # ns
 VPN_OWNERS = ("oidc_sub", "username")
-_VPN_SETTING_RE = re.compile(r"\{\{setting:([^{}]*)\}\}")
+_VPN_SETTING_RE = re.compile(r"\{\{setting:(.*)\}\}", re.S)   # the Hub's prefix/suffix test
 _OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
 _VPN_PREFIX_RE = re.compile(rf"({_OCTET}(?:\.{_OCTET}){{3}})/(0|[1-9][0-9]?)")
 _HTTP_ROUTER_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$")
@@ -6634,7 +6637,7 @@ def vpn_errors(m: Any, compose: Any) -> List[str]:
             if _str(ident, "owner") not in VPN_OWNERS:
                 out.append("vpn.identity.owner: oidc_sub or username")
         elif source == "static":
-            if _has(ident, "hook") or _has(ident, "owner"):
+            if "hook" in ident or "owner" in ident:   # present at all (contract: no hook and no owner)
                 out.append("vpn.identity: source static takes no hook or owner")
         else:
             out.append("vpn.identity.source: hook or static")
@@ -6717,6 +6720,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     # (NetBird's relay keeps host networking).
     for n in names:
         routed = any(fold_key(k).startswith("traefik.") for k in labels_of(services[n]))
+        # (n in members never holds for host networking: the ingress has no
+        # network_mode and members carry service:; kept as the rule reads.)
         if services[n].get("network_mode") == "host" and (n in members or routed):
             return [f"vpn: service {n} uses network_mode: host"]
         if services[n].get("pid") == "host":

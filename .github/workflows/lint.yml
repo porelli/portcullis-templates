@@ -73,6 +73,10 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/vpn_vectors.json" -o /tmp/hub_vpn_vectors.json
           cmp tests/vpn_vectors.json /tmp/hub_vpn_vectors.json
 
+      # headscale/vpn/glue.py against a fake Headscale REST API (stdlib).
+      - name: headscale VPN glue unit tests
+        run: python -m unittest discover -s tests/vpn -p 'test_*.py'
+
       - name: docker compose config
         run: bash tests/compose-config.sh
 

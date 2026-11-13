@@ -4466,7 +4466,8 @@ class VPNTests(Case):
         ]:
             with self.subTest(name):
                 self.assertError(self.vpn_template((old, new)), "bogus")
-        self.assertError(self.vpn_template(("source: hook", "source: mesh")), "mesh")
+        # The source is the validator's (the Hub's text), not a schema enum.
+        self.assertError(self.vpn_template(("source: hook", "source: mesh")), "vpn.identity.source: hook or static")
 
     def test_reserved_vpn_ref(self) -> None:
         for name, old, new in [
@@ -4502,6 +4503,17 @@ class VPNTests(Case):
         self.assertIn("vpn", v.HOOK_TRIGGERS)
         errors = self.vpn_template(cedit=("  gateway:\n", "  wg:\n"), medit=("service: gateway,", "service: wg,"))
         self.assertError(errors, "wg")
+        # Core's wg metrics alias and VPN Traefik names (Hub coreAliases /
+        # coreTraefikNames).
+        self.assertTrue(v.reserved_dns_name("wg-metrics") and v.reserved_dns_name("WG-Metrics.example."))
+        self.assertError(self.vpn_template(cedit=("    networks:\n      - default\n      - portcullis-proxy\n    labels",
+                                                   "    networks:\n      default:\n        aliases: [wg-metrics]\n      portcullis-proxy: {}\n    labels")),
+                         "network alias 'wg-metrics' is core's DNS name (reserved)")
+        self.assertError(self.vpn_template(cedit=("traefik.http.routers.demo.", "traefik.http.routers.people-vpn-enrol.")),
+                         "router 'people-vpn-enrol' is core's (reserved)")
+        self.assertError(self.vpn_template(cedit=('      traefik.enable: "true"\n',
+                                                   '      traefik.enable: "true"\n      traefik.http.middlewares.vpn-required-path.headers.customrequestheaders.X-A: "1"\n')),
+                         "middleware 'vpn-required-path' is core's (reserved)")
         # A volume keyed like core's vpn_doc (Docker name portcullis_vpn_doc).
         errors = self.vpn_template(cedit=("volumes:\n  demo-data: {}\n", "volumes:\n  demo-data: {}\n  vpn_doc: {}\n"))
         self.assertError(errors, "vpn_doc")

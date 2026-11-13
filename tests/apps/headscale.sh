@@ -195,13 +195,15 @@ COMPOSE_OVERRIDE="$OVERRIDE" compose_up "$APP_ID"
 for _ in $(seq 1 60); do hs_api_ready && break; sleep 2; done
 
 # gateway-key (a start hook): a single-use tagged key; the gateway registers.
-if printf '{"version":1,"trigger":"start"}' | glue gateway-key; then
+HOOK_OUT=$(printf '{"version":1,"trigger":"start"}' | glue gateway-key 2>&1) && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
   pass "gateway-key hook ran"
 else
   fail "gateway-key hook failed"
 fi
 if [ "$(docker exec "$GL" stat -c '%a' /run/gateway/authkey 2>/dev/null)" = 600 ]; then
   pass "pre-auth key written 0600"
+  PREAUTH=$(docker exec "$GL" cat /run/gateway/authkey)
 else
   fail "pre-auth key missing or not 0600"
 fi
@@ -220,6 +222,40 @@ if docker inspect -f '{{.HostConfig.CapAdd}} {{.HostConfig.ReadonlyRootfs}}' por
   pass "running gateway has no added capabilities and a read-only root"
 else
   fail "running gateway has capabilities or a writable root"
+fi
+
+# The gateway's only credential, its pre-auth key: single-use, not
+# ephemeral, tag-only (no user), at most 1 h, now used; the node carries
+# exactly the gateway tag.
+hs_get() {
+  docker exec "$GL" python3 -c '
+import json, os, sys, urllib.request
+r = urllib.request.Request("http://headscale-internal:8080" + sys.argv[1], headers={"Authorization": "Bearer " + os.environ["HEADSCALE_API_KEY"]})
+print(urllib.request.urlopen(r, timeout=10).read().decode())' "$1"
+}
+KEYS=$(hs_get /api/v1/preauthkey)
+NOW=$(date -u +%s)
+if jq -e --argjson now "$NOW" '
+    [.preAuthKeys[] | select((.aclTags // []) | index("tag:portcullis-gateway"))] as $k
+    | ($k | length) == 1 and $k[0].aclTags == ["tag:portcullis-gateway"] and $k[0].user == null
+      and $k[0].reusable == false and $k[0].ephemeral == false and $k[0].used == true
+      and ($k[0].expiration | sub("\\.[0-9]+"; "") | fromdateiso8601) <= $now + 3600 + 120' <<<"$KEYS" >/dev/null; then
+  pass "gateway pre-auth key: one, tag-only, no user, single-use, not ephemeral, used, expiry ≤ 1 h"
+else
+  fail "gateway pre-auth key scope wrong: $(jq -c '[.preAuthKeys[] | del(.key)]' <<<"$KEYS")"
+fi
+if hs_get /api/v1/node | jq -e '[.nodes[] | select((.tags // []) | index("tag:portcullis-gateway"))] | length == 1 and .[0].tags == ["tag:portcullis-gateway"]' >/dev/null; then
+  pass "one gateway node, tagged exactly tag:portcullis-gateway"
+else
+  fail "gateway node tags wrong"
+fi
+# Online: a second run mints nothing and removes the used key file.
+HOOK_OUT="$HOOK_OUT$(printf '{"version":1,"trigger":"start"}' | glue gateway-key 2>&1)" || fail "second gateway-key run failed"
+if [ "$(hs_get /api/v1/preauthkey | jq '[.preAuthKeys[] | select((.aclTags // []) | index("tag:portcullis-gateway"))] | length')" = 1 ] \
+  && ! docker exec "$GL" test -e /run/gateway/authkey; then
+  pass "gateway-key with the gateway online mints nothing and removes the key file"
+else
+  fail "gateway-key minted again or left the key file while the gateway is online"
 fi
 
 # People: alice signed in through Portcullis (provider id = issuer/sub,
@@ -324,5 +360,19 @@ if [ "$rc" -ne 0 ] && docker exec "$GL" cat /dns/extra-records.json | jq -e --ar
 else
   fail "a bad dns record must be refused without touching the file ($out)"
 fi
-# Never a key on stdout/stderr.
-if grep -q "$HEADSCALE_API_KEY" <<<"$DOC$out"; then fail "the API key leaked into hook output"; else pass "no API key in hook output"; fi
+# A rejected API key names the fix, without the key.
+BAD=$(devices_req | docker exec -i -e HEADSCALE_API_KEY=hskey-api-wrong-key "$GL" python3 /vpn/glue.py 2>&1) && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'invalid or expired' <<<"$BAD" && ! grep -q 'hskey-api-wrong-key' <<<"$BAD"; then
+  pass "a rejected API key: exit $rc, names the fix, never echoes the key"
+else
+  fail "a rejected API key must fail naming the fix without the key (rc=$rc: $BAD)"
+fi
+# Never a key in hook output or in the gateway's / glue's logs.
+LOGS="$(docker logs portcullis-vpn-glue-1 2>&1)$(docker logs portcullis-gateway-1 2>&1)"
+leaked=""
+for secret in "$HEADSCALE_API_KEY" "${PREAUTH:-}"; do
+  [ -n "$secret" ] || continue
+  if grep -qF "$secret" <<<"$DOC$out$HOOK_OUT$BAD$LOGS"; then leaked=1; fi
+done
+[ -n "${PREAUTH:-}" ] || fail "the minted pre-auth key was not captured for the leak check"
+if [ -n "$leaked" ]; then fail "the API key or the pre-auth key leaked into hook output or container logs"; else pass "no API or pre-auth key in hook output or container logs"; fi

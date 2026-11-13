@@ -51,6 +51,9 @@ auth:
     clients reach this server through the gateway. In whole-server VPN mode
     only the headscale router (coordination and DERP, which clients need to
     connect) stays on the internet; Headplane, an admin UI, becomes VPN-only.
+    The template adds no Headscale ACL policy (every node reaches every node,
+    Headscale's default); an admin who adds one must let the VPN's people
+    reach tag:portcullis-gateway:443, or the gateway is unreachable.
     Upgrades: Headscale is pinned; upgrade one minor release at a time (its
     database migrations do not support skipping) and pick the Headplane release
     that supports that Headscale version.

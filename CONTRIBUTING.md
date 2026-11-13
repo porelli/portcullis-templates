@@ -683,6 +683,11 @@ vpn:
   Hooks call the app's own CLI or API. Where the image has no shell, a small
   stdlib-only script run in a pinned official interpreter image may do the
   translation (headscale's `vpn/glue.py`).
+- **The app's own access rules still apply.** The gateway must be reachable
+  from people's devices on the tunnel port the Hub forwards (443): a template
+  that ships an ACL, or whose notes tell admins to add one, says so (e.g.
+  Headscale: allow members to `tag:portcullis-gateway:443`). Never widen the
+  app's ACL to make this work.
 - **Control routers** are host routers (a `Host()` rule alone), only what clients need to connect (coordination,
   signal, relay). Never an admin UI: a router that serves an
   `auth.admin_paths` path, or any router of a `group_admin: true` app, is

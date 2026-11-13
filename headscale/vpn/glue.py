@@ -13,16 +13,21 @@ setting. It never prints the key, a pre-auth key or a response body.
 
 devices: prints the device document (version 1) on stdout. A node is a
 person's device only when its Headscale user signed in through Portcullis
-(the user's provider id is "<OIDC_ISSUER>/<sub>"); every other node (local
-users, other issuers, tagged nodes) is left out. The node tagged
-tag:portcullis-gateway is the gateway, never a device.
+(the user's provider id is "<OIDC_ISSUER>/<sub>": Headscale 0.29
+hscontrol/types/users.go OIDCClaims.Identifier = the issuer without a
+trailing "/", "/", the sub, through CleanIdentifier); every other node
+(local users, other issuers, tagged nodes) is left out. The node tagged
+tag:portcullis-gateway is the gateway, never a device; more than one
+online gateway node is refused (which address would the DNS records
+name?). A node whose expiry or last-seen time can't be read is left out.
 
 dns: writes the records to /dns/extra-records.json (Headscale's
 dns.extra_records_path, read-only in the headscale service), atomically.
 
 gateway-key: when no gateway node is online, a single-use pre-auth key
 (one hour, tagged tag:portcullis-gateway, no user) is written to
-/run/gateway/authkey (0600), where the gateway's entrypoint waits for it.
+/run/gateway/authkey (0600), where the gateway's entrypoint waits for it;
+while one is online, a leftover key file is removed.
 """
 from __future__ import annotations
 
@@ -83,17 +88,33 @@ def api(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[s
     return doc
 
 
+class BadTime(ValueError):
+    pass
+
+
 def timestamp(v: Any) -> Optional[str]:
-    """An RFC 3339 UTC time (seconds), or None for no / Go's zero time."""
-    if not isinstance(v, str) or not v:
+    """An RFC 3339 UTC time (seconds), or None for no time / Go's zero time;
+    BadTime for anything else (fail closed: never read as "no expiry")."""
+    if v is None or v == "":
         return None
+    if not isinstance(v, str):
+        raise BadTime(repr(type(v)))
     try:
         t = datetime.datetime.fromisoformat(v.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    if t.tzinfo is None or t.year <= 1:
+        raise BadTime("unparsable") from None
+    if t.tzinfo is None:
+        raise BadTime("no time zone")
+    if t.year <= 1:
         return None
     return t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def sort_time(v: Any) -> str:
+    try:
+        return timestamp(v) or ""
+    except BadTime:
+        return ""
 
 
 def first_ipv4(n: Dict[str, Any]) -> Optional[str]:
@@ -114,7 +135,7 @@ def nodes() -> List[Dict[str, Any]]:
 def gateway_nodes(ns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Gateway nodes with an IPv4, online first, then the latest seen."""
     gws = [n for n in ns if GATEWAY_TAG in (n.get("tags") or []) and first_ipv4(n)]
-    return sorted(gws, key=lambda n: (bool(n.get("online")), timestamp(n.get("lastSeen")) or ""), reverse=True)
+    return sorted(gws, key=lambda n: (n.get("online") is True, sort_time(n.get("lastSeen"))), reverse=True)
 
 
 def devices() -> None:
@@ -126,6 +147,10 @@ def devices() -> None:
     gws = gateway_nodes(ns)
     if not gws:
         die(f"no gateway node ({GATEWAY_TAG}) is registered yet: the gateway-key start hook registers it")
+    online = [str(n.get("id", "")) for n in gws if n.get("online") is True]
+    if len(online) > 1:
+        die(f"{len(online)} gateway nodes ({GATEWAY_TAG}) are online (ids {', '.join(online)}): remove all but one "
+            "(headscale nodes delete)")
     out: List[Dict[str, Any]] = []
     for n in ns:
         if n.get("tags"):
@@ -138,9 +163,15 @@ def devices() -> None:
         addr = first_ipv4(n)
         if not owner or "/" in owner or addr is None:
             continue
+        try:
+            last_seen, expires = timestamp(n.get("lastSeen")), timestamp(n.get("expiry"))
+        except BadTime as e:
+            print(f"headscale vpn glue: node {n.get('id', '')}: unreadable expiry or last-seen time ({e}): left out",
+                  file=sys.stderr)
+            continue
         out.append({"id": str(n.get("id", "")), "name": str(n.get("givenName") or n.get("name") or ""),
                     "address": addr, "owner": owner, "online": n.get("online") is True,
-                    "last_seen": timestamp(n.get("lastSeen")), "expires": timestamp(n.get("expiry"))})
+                    "last_seen": last_seen, "expires": expires})
     if len(out) > MAX_DEVICES:
         die(f"{len(out)} devices: more than {MAX_DEVICES}")
     json.dump({"version": 1, "gateway": first_ipv4(gws[0]), "devices": out}, sys.stdout, separators=(",", ":"))
@@ -193,6 +224,10 @@ def gateway_key() -> None:
               file=sys.stderr)
         return
     if any(n.get("online") is True for n in gateway_nodes(nodes())):
+        try:
+            os.unlink(AUTHKEY_PATH)   # registered: no key lying around
+        except FileNotFoundError:
+            pass
         return
     exp = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     resp = api("POST", "/api/v1/preauthkey", {"reusable": False, "ephemeral": False, "expiration": exp,
@@ -216,7 +251,7 @@ def main(argv: List[str]) -> None:
         req = json.loads(raw)
     except ValueError:
         die("stdin is not JSON")
-    if not isinstance(req, dict) or req.get("version") != 1 or req.get("trigger") != "vpn":
+    if not isinstance(req, dict) or type(req.get("version")) is not int or req["version"] != 1 or req.get("trigger") != "vpn":
         die('stdin must be {"version":1,"trigger":"vpn",...}')
     if req.get("op") == "devices":
         devices()

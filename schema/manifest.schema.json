@@ -139,7 +139,7 @@
           "additionalProperties": false,
           "required": ["source"],
           "properties": {
-            "source": {"enum": ["hook", "static"]},
+            "source": {"description": "hook | static (tests/validate.py check_vpn refuses anything else with the Hub's text).", "type": "string"},
             "hook": {"description": "A hook with exactly when: [vpn].", "type": "string"},
             "owner": {"description": "oidc_sub | username: what the hook's device owner field holds.", "type": "string"},
             "refresh": {"description": "A Go duration, 15s-10m; default 60s.", "type": "string"}
