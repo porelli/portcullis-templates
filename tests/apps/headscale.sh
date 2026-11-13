@@ -237,10 +237,16 @@ sys.exit(0 if n == 1 else 1)' "$ISSUER/$SUB" || fail "could not mark alice as an
 docker start "$HS" >/dev/null
 for _ in $(seq 1 60); do hs_api_ready && break; sleep 2; done
 HOST_HS="$PORTCULLIS_HOST_HEADSCALE"
+# The clients log in through Traefik (as on a real server): wait until the
+# restarted headscale is routed again.
+for _ in $(seq 1 60); do
+  [ "$(via_traefik "$HOST_HS" /health | cut -d' ' -f1)" = 200 ] && break
+  sleep 2
+done
 for who in alice bob; do
   uid=$(docker exec "$HS" headscale users list -o json | jq -r --arg n "$who" '.[] | select(.name == $n) | .id')
   key=$(docker exec "$HS" headscale preauthkeys create -u "$uid" -e 1h -o json | jq -r .key)
-  docker run -d --name "headscale-test-$who" --network "$NET" --cap-drop ALL \
+  docker run -d --name "headscale-test-$who" --network "$NET" --cap-drop ALL --restart on-failure:5 \
     --add-host "$HOST_HS:host-gateway" -v "$PROJECT_DIR/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro" \
     -e TS_AUTHKEY="$key" -e TS_USERSPACE=true -e TS_STATE_DIR=/var/lib/tailscale -e TS_HOSTNAME="$who-laptop" \
     -e TS_TAILSCALED_EXTRA_ARGS=--no-logs-no-support -e "TS_EXTRA_ARGS=--login-server=https://$HOST_HS" "$TS_IMAGE" >/dev/null
@@ -259,6 +265,9 @@ else
   fail "vpn-devices document wrong: $DOC"
 fi
 ALICE_IP=$(docker exec "$HS" headscale nodes list -o json | jq -r '.[] | select(.name == "alice-laptop") | .ip_addresses[0]')
+if [ -z "$ALICE_IP" ]; then
+  for c in "${CLIENTS[@]}"; do info "$c: $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' "$c")"; docker logs --tail 15 "$c" 2>&1 | grep -vi 'magicsock\|buffer size' || true; done
+fi
 if jq -e --arg ip "$ALICE_IP" --arg sub "$SUB" '[.devices[] | select(.address == $ip and .owner == $sub and .name == "alice-laptop"
      and .online == true and (.id | type) == "string" and (keys | sort) == ["address","expires","id","last_seen","name","online","owner"])] | length == 1' <<<"$DOC" >/dev/null 2>&1; then
   pass "alice's node: owner = her OIDC sub (issuer prefix stripped)"
