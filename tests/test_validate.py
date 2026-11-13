@@ -856,6 +856,37 @@ class TestImmutableHosts(Case):
 
 
 
+class TestCoreNamesComplete(unittest.TestCase):
+    """CORE_SERVICES / CORE_VOLUMES / CORE_NETWORKS / CORE_ALIASES /
+    CORE_TRAEFIK_NAMES list every name of core's docker-compose.yml (the
+    Hub's TestCoreNamesComplete / TestCoreTraefikNamesComplete; a sibling
+    core checkout or PORTCULLIS_CORE_DIR, skipped without one)."""
+
+    def test_core_names(self) -> None:
+        core = os.environ.get("PORTCULLIS_CORE_DIR") or os.path.join(os.path.dirname(v.ROOT), "portcullis")
+        path = os.path.join(core, "docker-compose.yml")
+        if not os.path.isfile(path):
+            self.skipTest(f"no core checkout at {core}")
+        with open(path, encoding="utf-8") as f:
+            doc = v.yaml.safe_load(f)
+        for name, svc in (doc.get("services") or {}).items():
+            self.assertIn(name, v.CORE_SERVICES)
+            labels = v.labels_of(svc or {})
+            for k in labels:
+                m = v.re.match(r"^traefik\.http\.(routers|middlewares|services)\.([^.]+)\.", k)
+                if m:
+                    self.assertIn(m.group(2), v.CORE_TRAEFIK_NAMES[m.group(1)], f"core {name}: {k}")
+            nets = (svc or {}).get("networks")
+            for cfg in (nets.values() if isinstance(nets, dict) else []):
+                for a in ((cfg or {}).get("aliases") or []):
+                    self.assertTrue(v.reserved_dns_name(a), f"core {name}: alias {a}")
+        for k in doc.get("volumes") or {}:
+            self.assertIn(k, v.CORE_VOLUMES)
+        for k in doc.get("networks") or {}:
+            if k != "portcullis-proxy":
+                self.assertIn(k, v.CORE_NETWORKS)
+
+
 class TestHubRules(Case):
     """The Hub's discovery refusals (templates/coreref.go), mirrored statically."""
 

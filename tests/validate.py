@@ -2315,8 +2315,13 @@ HUB_SERVICE_KEYS = {
 CORE_TRAEFIK_NAMES = {
     "routers": {"dashboard", "enroll", "enroll-invite", "enroll-self", "grafana-metrics", "hub", "keycloak",
                 "keycloak-admin", "keycloak-resources", "lldap", "oauth2-callback", "people", "portal", "mcp", "hub-mcp",
-                "people-mcp", "people-vpn-enrol"},
-    "middlewares": {"vpn-required-path", "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
+                "people-mcp", "people-vpn-enrol",
+                # VPN-only access (core vpn1): the -vpn twins of the routers
+                # through group-gate and the /vpn-required routers.
+                "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
+                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn"},
+    "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
+                    "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
                  "keycloak", "lldap", "mcp-gate"},
