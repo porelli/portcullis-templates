@@ -4515,9 +4515,13 @@ class VPNTests(Case):
     def test_core_names(self) -> None:
         self.assertIn("wg", v.CORE_SERVICES)
         self.assertIn("wg_data", v.CORE_VOLUMES)
+        self.assertIn("vpn_doc", v.CORE_VOLUMES)
         self.assertIn("vpn", v.HOOK_TRIGGERS)
         errors = self.vpn_template(cedit=("  gateway:\n", "  wg:\n"), medit=("service: gateway,", "service: wg,"))
         self.assertError(errors, "wg")
+        # A volume keyed like core's vpn_doc (Docker name portcullis_vpn_doc).
+        errors = self.vpn_template(cedit=("volumes:\n  demo-data: {}\n", "volumes:\n  demo-data: {}\n  vpn_doc: {}\n"))
+        self.assertError(errors, "vpn_doc")
 
     def test_vpn_hooks_never_in_the_settings_engine(self) -> None:
         """V10: a vpn hook is never a reload hook nor an option's delivery hook."""

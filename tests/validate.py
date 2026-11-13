@@ -2280,7 +2280,7 @@ CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgre
                  "wg"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data"}
+                "group_gate_data", "wg_data", "vpn_doc"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"

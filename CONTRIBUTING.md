@@ -689,7 +689,7 @@ vpn:
   refused.
 - **Reserved**: `portcullis-vpn` anywhere in `compose.yml` (any key or
   value, the Hub's network, `portcullis-vpnallow-<id>` middleware and
-  `portcullis-vpnonly-<id>` router), and core's `wg` service and `wg_data`
+  `portcullis-vpnonly-<id>` router), and core's `wg` service and `wg_data` / `vpn_doc`
   volume names.
 
 ## Compose rules
