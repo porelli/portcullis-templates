@@ -15,10 +15,11 @@ services:
       # forward-auth middleware below.
       HEADER_ENABLED: "true"
       HTTP_AUTH_HEADER: X-Forwarded-User
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
     # The header extension has no proxy allowlist, so only Traefik may send
     # X-Forwarded-User: a Tomcat RewriteValve answers 403 to any request that
-    # carries the header from another peer on portcullis-proxy. It also
+    # carries the header from a peer outside PORTCULLIS_TRAEFIK_SOURCE (Traefik's
+    # range). It also
     # answers 403 to any X-Forwarded-User starting with "guacadmin"
     # (case-insensitive): the extension logs a user in as the DB account of
     # that name, so no LLDAP user may become the local administrator
@@ -31,16 +32,48 @@ services:
       - /bin/bash
       - -ec
       - |
-        case "$$PORTCULLIS_TRAEFIK_IP" in
-          ""|*[!0-9.]*) echo "PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1 ;;
-        esac
-        TRAEFIK_IP_RE=$$(printf '%s' "$$PORTCULLIS_TRAEFIK_IP" | sed 's/\./\\./g')
+        cidr_ok() {
+          case "$$1" in *[!0-9./]* | */*/* | .* | *./* | *..*) return 1 ;; */*) ;; *) return 1 ;; esac
+          set -- "$${1%/*}" "$${1#*/}"
+          case "$$2" in [0-9] | [12][0-9] | 3[0-2]) ;; *) return 1 ;; esac
+          _cn=$$2 _cv=0 _ck=0 _cifs=$$IFS
+          IFS=.
+          for _co in $$1; do
+            case "$$_co" in [0-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;; *) IFS=$$_cifs; return 1 ;; esac
+            _cv=$$((_cv * 256 + _co)) _ck=$$((_ck + 1))
+          done
+          IFS=$$_cifs
+          [ "$$_ck" -eq 4 ] && [ $$((_cv % (1 << (32 - _cn)))) -eq 0 ]
+        }
+        # The anchored-by-the-caller regex of exactly the addresses in a valid
+        # CIDR: whole octets literal, the partial one as the list of its values,
+        # the rest any octet (REMOTE_ADDR is a dotted quad here).
+        cidr_re() {
+          local n=$${1#*/} re="" i v hi alt
+          local -a o
+          IFS=. read -r -a o <<< "$${1%/*}"
+          for i in 0 1 2 3; do
+            [ -z "$$re" ] || re+='\.'
+            if [ "$$n" -ge 8 ]; then
+              re+=$${o[i]} n=$$((n - 8))
+            elif [ "$$n" -eq 0 ]; then
+              re+='[0-9]+'
+            else
+              alt="" hi=$$((o[i] + (1 << (8 - n)) - 1))
+              for ((v = o[i]; v <= hi; v++)); do alt+=$${alt:+|}$$v; done
+              re+="($$alt)" n=0
+            fi
+          done
+          printf '%s' "$$re"
+        }
+        cidr_ok "$$PORTCULLIS_TRAEFIK_SOURCE" || { echo "PORTCULLIS_TRAEFIK_SOURCE must be an IPv4 CIDR a.b.c.d/n" >&2; exit 1; }
+        TRAEFIK_RE=$$(cidr_re "$$PORTCULLIS_TRAEFIK_SOURCE")
         for SCRIPT in /opt/guacamole/entrypoint.d/*.sh; do
           if [ "$${SCRIPT##*/}" = 999-start-tomcat.sh ]; then
             mkdir -p "$$CATALINA_BASE/conf/Catalina/localhost"
             {
               echo 'RewriteCond %{HTTP:X-Forwarded-User} !^$$'
-              echo "RewriteCond %{REMOTE_ADDR} !^$${TRAEFIK_IP_RE}\$$"
+              echo "RewriteCond %{REMOTE_ADDR} !^$${TRAEFIK_RE}\$$"
               echo 'RewriteRule .* - [F]'
               # Tomcat matches a RewriteCond pattern against the whole value
               # (Matcher.matches(), unlike Apache), hence the trailing .*

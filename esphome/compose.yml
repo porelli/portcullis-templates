@@ -42,7 +42,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID]
     environment:
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       GATE_UPSTREAM: http://esphome-internal:6052
       GATE_LISTEN: "6052"
     entrypoint: ["/bin/sh", "/portcullis/gate.sh"]

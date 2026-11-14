@@ -32,7 +32,7 @@ fi
 
 # Static: the header extension has no allowlist; a Tomcat RewriteValve
 # rejects X-Forwarded-User from any peer other than Traefik
-assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
+assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_SOURCE
 if grep -q 'org.apache.catalina.valves.rewrite.RewriteValve' "$COMPOSE" && grep -q 'RewriteRule .\* - \[F\]' "$COMPOSE"; then
   pass "RewriteValve forbids X-Forwarded-User from non-Traefik peers"
 else

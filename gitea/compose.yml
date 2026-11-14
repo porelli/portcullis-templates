@@ -38,7 +38,7 @@ services:
       GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY:?GITEA_SECRET_KEY must be set}
       GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN:?GITEA_INTERNAL_TOKEN must be set}
       # Client IPs from X-Forwarded-For only when Traefik sent it.
-      GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       GITEA__security__REVERSE_PROXY_LIMIT: "1"
       GITEA__server__PROTOCOL: http
       GITEA__server__HTTP_PORT: "3000"

@@ -27,10 +27,10 @@ fi
 # No second login: empty password, web server only for Traefik + loopback,
 # Host check against the instance hostname
 assert_compose_setting "$COMPOSE" FTLCONF_webserver_api_password '""'
-if grep -Eq '^[[:space:]]*FTLCONF_webserver_acl:[[:space:]]*\+\$\{PORTCULLIS_TRAEFIK_IP:-[0-9.]+\},\+127\.0\.0\.1,\+\[::1\][[:space:]]*$' "$COMPOSE"; then
-  pass "FTLCONF_webserver_acl allows only \${PORTCULLIS_TRAEFIK_IP} and loopback"
+if grep -Eq '^[[:space:]]*FTLCONF_webserver_acl:[[:space:]]*\+\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\},\+127\.0\.0\.1,\+\[::1\][[:space:]]*$' "$COMPOSE"; then
+  pass "FTLCONF_webserver_acl allows only \${PORTCULLIS_TRAEFIK_SOURCE} and loopback"
 else
-  fail "FTLCONF_webserver_acl must be +\${PORTCULLIS_TRAEFIK_IP:-...},+127.0.0.1,+[::1]"
+  fail "FTLCONF_webserver_acl must be +\${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32},+127.0.0.1,+[::1]"
 fi
 assert_compose_setting "$COMPOSE" FTLCONF_webserver_domain '\$\{PORTCULLIS_HOST_PIHOLE:-pihole\.portcullis\.local\}'
 

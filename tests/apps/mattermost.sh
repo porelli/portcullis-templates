@@ -30,7 +30,7 @@ assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS fals
 assert_compose_setting "$COMPOSE" MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER X-Real-Ip
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEUPLOADS false
 assert_compose_setting "$COMPOSE" MM_PLUGINSETTINGS_ENABLEMARKETPLACE false
-assert_compose_setting "$COMPOSE" PORTCULLIS_TRAEFIK_IP '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
+assert_compose_setting "$COMPOSE" PORTCULLIS_TRAEFIK_SOURCE '\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\}'
 # Network names of a service (list or map form).
 nets() {
   if [ "$(yq -r ".services[\"$1\"].networks | tag" "$COMPOSE")" = '!!map' ]; then
@@ -54,7 +54,7 @@ compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_MATTERMOST"
 GATE=portcullis-mattermost-gate-1
 GATE_IMG=$(yq -r '.services["mattermost-gate"].image' "$COMPOSE")
-TRAEFIK_IP=$(_core_env PORTCULLIS_TRAEFIK_IP); TRAEFIK_IP=${TRAEFIK_IP:-172.31.250.2}
+TRAEFIK_IP=${PORTCULLIS_TRAEFIK_SOURCE%/32}  # lib.sh: core's Traefik /32
 
 IP=$(app_container_ip "$APP_ID" "$SERVICE")
 # Probe sign-up as soon as Mattermost answers, racing mattermost-init: with
@@ -391,7 +391,7 @@ docker run -d --name "$gt-up" --network "$gt" --network-alias gt-upstream --entr
   printf "%s\n" "server { listen 8080; location / { default_type text/plain; return 200 \"xrip=[\$http_x_real_ip] xff=[\$http_x_forwarded_for] auth=[\$http_authorization]\n\"; } }" > /etc/nginx/conf.d/default.conf
   exec nginx -g "daemon off;"' >/dev/null
 docker create --name "$gt-gate" --network portcullis-proxy \
-  -e PORTCULLIS_TRAEFIK_IP="$TRAEFIK_IP" -e GATE_UPSTREAM=http://gt-upstream:8080 -e GATE_LISTEN=9000 \
+  -e PORTCULLIS_TRAEFIK_SOURCE="$TRAEFIK_IP/32" -e GATE_UPSTREAM=http://gt-upstream:8080 -e GATE_LISTEN=9000 \
   -v "$(cd "$(dirname "$COMPOSE")" && pwd)/gate.sh:/portcullis/gate.sh:ro" \
   -l traefik.enable=true -l traefik.docker.network=portcullis-proxy \
   -l "traefik.http.routers.mmgatetest.rule=Host(\`$GT_HOST\`)" \

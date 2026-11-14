@@ -105,12 +105,13 @@ services:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP: ${PORTCULLIS_OIDC_CLIENT_ID_AI_CHAT_MCP:-ai-chat-mcp}
       AI_CHAT_MCP_SECRET: ${AI_CHAT_MCP_SECRET:?AI_CHAT_MCP_SECRET must be set}
-    # Keycloak and the MCP gate are reached through Traefik on
-    # portcullis-proxy, whatever the public DNS answers (no NAT hairpin
+    # Keycloak and the MCP gate are reached through Traefik's published
+    # ports on the host (host-gateway, as core's forward-auth reaches
+    # auth.<domain>), whatever the public DNS answers (no NAT hairpin
     # needed; a LAN-only install works the same).
     extra_hosts:
-      - "auth.${PORTCULLIS_DOMAIN:-portcullis.local}:${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}"
-      - "mcp.${PORTCULLIS_DOMAIN:-portcullis.local}:${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}"
+      - "auth.${PORTCULLIS_DOMAIN:-portcullis.local}:host-gateway"
+      - "mcp.${PORTCULLIS_DOMAIN:-portcullis.local}:host-gateway"
     volumes:
       - librechat-config:/portcullis/librechat:ro
       - librechat-uploads:/app/uploads

@@ -33,18 +33,29 @@ services:
 
   effectcraft:
     image: nginxinc/nginx-unprivileged:1.31.7-alpine3.24@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
-    # Writes the allowlist (Traefik + loopback) nginx.conf includes, then
-    # runs nginx; without a valid Traefik IP nothing starts.
+    # Writes the allowlist (Traefik's range + loopback) nginx.conf includes,
+    # then runs nginx; without a valid PORTCULLIS_TRAEFIK_SOURCE nothing starts.
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        case "$$PORTCULLIS_TRAEFIK_IP" in
-          ""|*[!0-9.]*) echo "PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1 ;;
-        esac
-        printf 'allow %s;\nallow 127.0.0.1;\ndeny all;\n' "$$PORTCULLIS_TRAEFIK_IP" > /tmp/portcullis-allow.conf
+        cidr_ok() {
+          case "$$1" in *[!0-9./]* | */*/* | .* | *./* | *..*) return 1 ;; */*) ;; *) return 1 ;; esac
+          set -- "$${1%/*}" "$${1#*/}"
+          case "$$2" in [0-9] | [12][0-9] | 3[0-2]) ;; *) return 1 ;; esac
+          _cn=$$2 _cv=0 _ck=0 _cifs=$$IFS
+          IFS=.
+          for _co in $$1; do
+            case "$$_co" in [0-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;; *) IFS=$$_cifs; return 1 ;; esac
+            _cv=$$((_cv * 256 + _co)) _ck=$$((_ck + 1))
+          done
+          IFS=$$_cifs
+          [ "$$_ck" -eq 4 ] && [ $$((_cv % (1 << (32 - _cn)))) -eq 0 ]
+        }
+        cidr_ok "$$PORTCULLIS_TRAEFIK_SOURCE" || { echo "PORTCULLIS_TRAEFIK_SOURCE must be an IPv4 CIDR a.b.c.d/n" >&2; exit 1; }
+        printf 'allow %s;\nallow 127.0.0.1;\ndeny all;\n' "$$PORTCULLIS_TRAEFIK_SOURCE" > /tmp/portcullis-allow.conf
         exec nginx -g 'daemon off;'
     environment:
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
     volumes:
       - effectcraft-site:/srv/craft:ro
       - ./templates/effectcraft/nginx.conf:/etc/nginx/nginx.conf:ro

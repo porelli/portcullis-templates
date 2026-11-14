@@ -45,7 +45,7 @@ fi
 
 # Static: CloudBeaver itself stays off portcullis-proxy; only the gate is
 # routed by Traefik and it trusts X-Forwarded-User from Traefik alone
-assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
+assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_SOURCE
 CB_NETS=$(docker compose -f "$COMPOSE" --project-directory "$PROJECT_DIR" config --format json 2>/dev/null \
   | jq -r '.services.cloudbeaver.networks // {} | keys | join(",")' 2>/dev/null || echo "")
 if [ "$CB_NETS" = "default" ]; then

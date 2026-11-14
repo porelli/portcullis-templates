@@ -625,7 +625,8 @@ Also refused: `ai.mcp` with `auth.admin_paths`, with method `public` or
 `container_name`, `hostname` or `ports`, or whose network namespace another service joins (`network_mode: service:<companion>`); `portcullis-mcp-` anywhere in
 `compose.yml`; `keycloak_clients[].client_id` starting `portcullis-ai-`;
 `mcp` as a subdomain; declaring `PORTCULLIS_AI_*` or
-`PORTCULLIS_MCP_GATE_IP`; reading `PORTCULLIS_AI_ENABLED` other than as
+`PORTCULLIS_MCP_GATE_SOURCE`; reading `PORTCULLIS_MCP_GATE_SOURCE` other than
+as exactly `${PORTCULLIS_MCP_GATE_SOURCE:-172.31.250.3/32}`; reading `PORTCULLIS_AI_ENABLED` other than as
 exactly `${PORTCULLIS_AI_ENABLED:-false}` (only with `ai.mcp`) or a
 companion's `PORTCULLIS_AI_READONLY_<NAME>` other than as exactly
 `${PORTCULLIS_AI_READONLY_<NAME>:-true}`; any `PORTCULLIS_AI_PROVIDER_*`
@@ -758,8 +759,13 @@ vpn:
   shares them) and must exist in the directory. From core, only `./certs/ca-bundle.crt:<path>:ro` may be mounted;
   never `./scripts/` or anything else under `./certs/`.
 - **Variables.** Core variables (`PORTCULLIS_DOMAIN`, `PORTCULLIS_PROXY_SUBNET`,
-  `PORTCULLIS_PROXY_IP_RANGE`, `PORTCULLIS_TRAEFIK_IP`) always use their
-  default form, e.g. `${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}`. Every other
+  `PORTCULLIS_PROXY_IP_RANGE`, `PORTCULLIS_TRAEFIK_SOURCE`) always use their
+  default form, e.g. `${PORTCULLIS_DOMAIN:-portcullis.local}`;
+  `PORTCULLIS_TRAEFIK_SOURCE` and `PORTCULLIS_MCP_GATE_SOURCE` exactly
+  `${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}` and
+  `${PORTCULLIS_MCP_GATE_SOURCE:-172.31.250.3/32}`. `PORTCULLIS_TRAEFIK_IP` and
+  `PORTCULLIS_MCP_GATE_IP` are core settings, not template variables: the
+  validator refuses them in any file of a template. Every other
   variable must be declared in the manifest (`env`, `settings` or `ports`).
   Required ones (`${VAR:?...}`) must be `env` entries with `generate: random`,
   because that is all the Hub writes. Use `$$VAR` for variables the container
@@ -769,12 +775,18 @@ vpn:
 ## Security rules
 
 - **Identity headers only from Traefik.** A header-auth app must accept
-  `X-Forwarded-User` (and similar) only from `${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}`,
-  Traefik's static IP on `portcullis-proxy`. Use the app's proxy allowlist
-  (Grafana `GF_AUTH_PROXY_WHITELIST`, Kanboard `TRUSTED_PROXY_NETWORKS`). If the
-  app has no allowlist, reject the header from other peers in its own web
-  server (Firefly III, Guacamole) or keep the app off `portcullis-proxy` behind
-  a small gate (CloudBeaver). Never trust `**`, `0.0.0.0/0`, `::/0` or the
+  `X-Forwarded-User` (and similar) only from `${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}`,
+  Traefik's range: an IPv4 CIDR, Traefik's static IP as a /32 under Docker and
+  Podman, the pod CIDR under Kubernetes (where a NetworkPolicy admits only
+  Traefik to the routed port). Use the app's proxy allowlist (Grafana
+  `GF_AUTH_PROXY_WHITELIST`, Kanboard `TRUSTED_PROXY_NETWORKS`) when it takes
+  a CIDR. If the app has no allowlist, or one that takes a single address only,
+  reject the header from other peers in its own web server (Firefly III:
+  nginx `geo`; Guacamole: a RewriteValve regex of the range) or keep the app off
+  `portcullis-proxy` behind a small gate (CloudBeaver, `gate.sh`). A shell check
+  of the value copies `cidr_ok()` from `esphome/gate.sh` unchanged (in
+  `compose.yml` with every `$` doubled): it accepts `a.b.c.d/n` and nothing
+  else. `tests/source_consumers.txt` lists every consumer and why it is safe. Never trust `**`, `0.0.0.0/0`, `::/0` or the
   proxy subnet: every other app container shares that network.
 - **Identity is the LLDAP username, never the email.** LLDAP lets every user
   change their own email, so Keycloak marks it unverified and an email-keyed

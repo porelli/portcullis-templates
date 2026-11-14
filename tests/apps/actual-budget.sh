@@ -33,12 +33,11 @@ else
 fi
 
 TRUSTED=$(docker exec "portcullis-${APP_ID}-1" printenv ACTUAL_TRUSTED_PROXIES 2>/dev/null || echo "")
-WANT_IP=$(sed -n 's/^PORTCULLIS_TRAEFIK_IP=//p' "$PROJECT_DIR/.env" 2>/dev/null | tail -1)
-WANT_IP="${WANT_IP:-172.31.250.2}"
-if [ "$TRUSTED" = "${WANT_IP}/32" ]; then
-  pass "ACTUAL_TRUSTED_PROXIES=${WANT_IP}/32 (Traefik only)"
+WANT="$PORTCULLIS_TRAEFIK_SOURCE"  # lib.sh: core's value, else Traefik's /32
+if [ "$TRUSTED" = "$WANT" ]; then
+  pass "ACTUAL_TRUSTED_PROXIES=$WANT (Traefik only)"
 else
-  fail "ACTUAL_TRUSTED_PROXIES expected '${WANT_IP}/32', got '$TRUSTED'"
+  fail "ACTUAL_TRUSTED_PROXIES expected '$WANT', got '$TRUSTED'"
 fi
 
 compose_down "$APP_ID"

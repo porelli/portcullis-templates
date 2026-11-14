@@ -131,6 +131,22 @@ LLDAP_PASS="$(_core_env LLDAP_ADMIN_PASSWORD)"
 KC_ADMIN="$(_core_env KEYCLOAK_ADMIN)"
 KC_ADMIN="${KC_ADMIN:-admin}"
 KC_PASS="$(_core_env KEYCLOAK_ADMIN_PASSWORD)"
+# The CIDR variables core writes into the Hub's core.env (contracts §2):
+# core's own value when its .env has one, else <the pinned address>/32 as
+# core writes it under Docker and Podman. Exported for every compose call
+# (the shell environment wins over --env-file).
+_core_source() {
+  local v
+  v=$(_core_env "$1")
+  if [ -z "$v" ]; then
+    v="$(_core_env "$2")"
+    v="${v:-$3}/32"
+  fi
+  printf '%s' "$v"
+}
+PORTCULLIS_TRAEFIK_SOURCE="$(_core_source PORTCULLIS_TRAEFIK_SOURCE PORTCULLIS_TRAEFIK_IP 172.31.250.2)"
+PORTCULLIS_MCP_GATE_SOURCE="$(_core_source PORTCULLIS_MCP_GATE_SOURCE PORTCULLIS_MCP_GATE_IP 172.31.250.3)"
+export PORTCULLIS_TRAEFIK_SOURCE PORTCULLIS_MCP_GATE_SOURCE
 
 # QUIRK #4: Wildcard in --resolve doesn't actually work in curl.
 # Kept for reference; tests should use container IPs directly.
@@ -332,15 +348,16 @@ assert_body_contains() {
 }
 
 # Header-auth apps must accept identity headers only from Traefik, whose
-# static IP on portcullis-proxy is PORTCULLIS_TRAEFIK_IP (core .env).
-# Static check: the given setting line references PORTCULLIS_TRAEFIK_IP and
-# the compose file has no catch-all trust ("**", 0.0.0.0/0, ::/0).
+# range is PORTCULLIS_TRAEFIK_SOURCE (contracts §2: Traefik's /32 on
+# Docker/Podman). Static check: the given setting line is exactly the
+# default form ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32} and the compose
+# file has no catch-all trust ("**", 0.0.0.0/0, ::/0).
 assert_traefik_only_trust() {
   local compose="$1" setting="$2"
-  if grep -Eq "^[[:space:]]*${setting}:[[:space:]]*\\\$\\{PORTCULLIS_TRAEFIK_IP:-" "$compose"; then
-    pass "$setting restricted to \${PORTCULLIS_TRAEFIK_IP}"
+  if grep -Eq "^[[:space:]]*${setting}:[[:space:]]*\\\$\\{PORTCULLIS_TRAEFIK_SOURCE:-172\\.31\\.250\\.2/32\\}[[:space:]]*\$" "$compose"; then
+    pass "$setting restricted to \${PORTCULLIS_TRAEFIK_SOURCE}"
   else
-    fail "$setting is not restricted to \${PORTCULLIS_TRAEFIK_IP}"
+    fail "$setting is not restricted to \${PORTCULLIS_TRAEFIK_SOURCE}"
   fi
   if grep -Eq '"\*\*"|0\.0\.0\.0/0|::/0' "$compose"; then
     fail "compose trusts every peer (\"**\", 0.0.0.0/0 or ::/0)"

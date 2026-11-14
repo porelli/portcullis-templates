@@ -9,7 +9,7 @@ services:
       # (healthcheck, `pihole` CLI); every other peer, e.g. another app
       # container on portcullis-proxy, gets 403. Traefik serves the host only
       # through forward-auth + group-gate.
-      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2},+127.0.0.1,+[::1]
+      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32},+127.0.0.1,+[::1]
       # Empty password = API and web UI without Pi-hole's own login. FTL then
       # still refuses browser requests sent by other sites (Fetch Metadata /
       # Origin, same-site sibling hosts included) and requests for a Host it

@@ -12,7 +12,7 @@ services:
       OXICLOUD_DB_CONNECTION_STRING: postgres://oxicloud:${OXICLOUD_DB_PASSWORD:?OXICLOUD_DB_PASSWORD must be set}@oxicloud-db:5432/oxicloud
       OXICLOUD_JWT_SECRET: ${OXICLOUD_JWT_SECRET:?OXICLOUD_JWT_SECRET must be set}
       # X-Forwarded-For is trusted from Traefik only.
-      OXICLOUD_TRUST_PROXY_CIDR: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
+      OXICLOUD_TRUST_PROXY_CIDR: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       # OpenID Connect is the only login method: no password login (the
       # /api/auth/login, register and OPAQUE endpoints refuse), and the OIDC
       # master rule hard-disables magic links. GET /login redirects to the

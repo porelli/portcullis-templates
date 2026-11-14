@@ -2,8 +2,10 @@
 # Traefik-only gate in front of an app that has no login of its own (or
 # whose own login is not the access control): the app stays on the
 # instance's default network, this nginx is the only container on
-# portcullis-proxy. It answers only Traefik's static address (forward-auth +
-# group-gate run there); every other peer on portcullis-proxy gets 403.
+# portcullis-proxy. It answers only PORTCULLIS_TRAEFIK_SOURCE, Traefik's
+# address range (forward-auth + group-gate run there; Traefik's /32 on
+# Docker/Podman, the pod CIDR on Kubernetes, where a NetworkPolicy admits
+# only Traefik to the routed port); every other peer gets 403.
 # There is no real_ip handling: the peer is the TCP peer, forwarded headers
 # (X-Forwarded-For, X-Real-IP) never change it.
 # Websockets are passed through. Fails closed: a malformed address, upstream
@@ -17,15 +19,30 @@
 # are removed. A Cookie header that still names one after six passes is
 # refused (400).
 #
-# Environment: PORTCULLIS_TRAEFIK_IP (IPv4), GATE_UPSTREAM
+# Environment: PORTCULLIS_TRAEFIK_SOURCE (an IPv4 CIDR a.b.c.d/n, host bits
+# zero, nothing else), GATE_UPSTREAM
 # (http://<default-only alias>:<port>), GATE_LISTEN (port).
 set -eu
 
-ip="${PORTCULLIS_TRAEFIK_IP:-}"
-case "$ip" in
-  "" | *[!0-9.]* | .* | *. | *..*) echo "gate: PORTCULLIS_TRAEFIK_IP must be an IPv4 address (got '$ip')" >&2; exit 1 ;;
-esac
-[ "$(printf '%s' "$ip" | tr -cd . | wc -c)" -eq 3 ] || { echo "gate: PORTCULLIS_TRAEFIK_IP must be an IPv4 address" >&2; exit 1; }
+# An IPv4 CIDR a.b.c.d/n: four decimal octets without leading zeros, a
+# prefix length 0-32, no host bits set (Python's
+# ipaddress.IPv4Network(strict=True) on that form); anything else fails.
+cidr_ok() {
+  case "$1" in *[!0-9./]* | */*/* | .* | *./* | *..*) return 1 ;; */*) ;; *) return 1 ;; esac
+  set -- "${1%/*}" "${1#*/}"
+  case "$2" in [0-9] | [12][0-9] | 3[0-2]) ;; *) return 1 ;; esac
+  _cn=$2 _cv=0 _ck=0 _cifs=$IFS
+  IFS=.
+  for _co in $1; do
+    case "$_co" in [0-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;; *) IFS=$_cifs; return 1 ;; esac
+    _cv=$((_cv * 256 + _co)) _ck=$((_ck + 1))
+  done
+  IFS=$_cifs
+  [ "$_ck" -eq 4 ] && [ $((_cv % (1 << (32 - _cn)))) -eq 0 ]
+}
+
+src="${PORTCULLIS_TRAEFIK_SOURCE:-}"
+cidr_ok "$src" || { echo "gate: PORTCULLIS_TRAEFIK_SOURCE must be an IPv4 CIDR a.b.c.d/n (got '$src')" >&2; exit 1; }
 case "${GATE_UPSTREAM:-}" in
   http://[a-z0-9]*:[0-9]*) ;;
   *) echo "gate: GATE_UPSTREAM must be http://<name>:<port>" >&2; exit 1 ;;
@@ -56,7 +73,7 @@ server {
   client_max_body_size 0;
   # Room for large session / app cookies (oauth2-proxy splits at 4 kB).
   large_client_header_buffers 4 32k;
-  allow ${ip};
+  allow ${src};
   deny all;
   if (\$pc_cookie_left) { return 400; }
   # Resolve per request (Docker's DNS): the gate starts and answers 502

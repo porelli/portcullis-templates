@@ -2,8 +2,10 @@
 # Entrypoint of the dashboards service: Grafana's auth-proxy allowlist.
 #
 # Grafana accepts X-Forwarded-User only from the addresses in
-# GF_AUTH_PROXY_WHITELIST, read once at start. compose sets it to Traefik's
-# static IP (core's PORTCULLIS_TRAEFIK_IP), which forward-auth relies on.
+# GF_AUTH_PROXY_WHITELIST, read once at start. compose sets it to
+# PORTCULLIS_TRAEFIK_SOURCE, Traefik's range (its /32 on Docker/Podman, the
+# pod CIDR on Kubernetes), which forward-auth relies on: exactly an IPv4
+# CIDR a.b.c.d/n with no host bits, anything else refuses the start.
 # While AI support is on (PORTCULLIS_AI_ENABLED), this script adds the
 # instance's trust network mcp-trust (contracts §3.2, identity_headers):
 #
@@ -27,25 +29,35 @@
 #   it against `docker network inspect` and sends the header from the
 #   host's namespace.
 # - Refused (exit 1, Grafana doesn't start): not exactly two IPv4
-#   addresses, Traefik on neither or both networks, a default route not on
+#   addresses, Traefik's range overlapping neither or both networks, a default route not on
 #   portcullis-proxy (or not exactly one), any route on the trust interface
 #   but its connected prefix, more than one IPv4 or
 #   any global IPv6 address on the trust interface, a prefix broader than
 #   /16 (Docker's default pools hand out /16 and /20) or narrower than /29.
 # - dashboards joins exactly portcullis-proxy and mcp-trust: the interface
-#   whose subnet holds Traefik's address is portcullis-proxy, the other one
-#   is mcp-trust. Anything else (another count of IPv4 addresses, Traefik
-#   on neither or both, an odd prefix) refuses to start: fail closed.
+#   whose subnet overlaps Traefik's range is portcullis-proxy, the other one
+#   is mcp-trust. Anything else (another count of IPv4 addresses, Traefik's
+#   range on neither or both, an odd prefix) refuses to start: fail closed.
 set -eu
 
 die() { printf 'portcullis-trust: %s\n' "$*" >&2; exit 1; }
 
+cidr_ok() {
+  case "$1" in *[!0-9./]* | */*/* | .* | *./* | *..*) return 1 ;; */*) ;; *) return 1 ;; esac
+  set -- "${1%/*}" "${1#*/}"
+  case "$2" in [0-9] | [12][0-9] | 3[0-2]) ;; *) return 1 ;; esac
+  _cn=$2 _cv=0 _ck=0 _cifs=$IFS
+  IFS=.
+  for _co in $1; do
+    case "$_co" in [0-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;; *) IFS=$_cifs; return 1 ;; esac
+    _cv=$((_cv * 256 + _co)) _ck=$((_ck + 1))
+  done
+  IFS=$_cifs
+  [ "$_ck" -eq 4 ] && [ $((_cv % (1 << (32 - _cn)))) -eq 0 ]
+}
+
 TRAEFIK=${GF_AUTH_PROXY_WHITELIST:-}
-case "$TRAEFIK" in
-  '' | *[!0-9.]*) die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')" ;;
-esac
-printf '%s\n' "$TRAEFIK" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$' \
-  || die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's IPv4 address (got '$TRAEFIK')"
+cidr_ok "$TRAEFIK" || die "GF_AUTH_PROXY_WHITELIST must be exactly Traefik's range, an IPv4 CIDR a.b.c.d/n (got '$TRAEFIK')"
 
 if [ "${PORTCULLIS_AI_ENABLED:-false}" != true ]; then
   printf 'portcullis-trust: AI support off; Grafana accepts X-Forwarded-User from %s only\n' "$TRAEFIK" >&2
@@ -77,12 +89,13 @@ TRUST=$(printf '%s\n' "$ADDRS" | awk -v t="$TRAEFIK" '
   END {
     if (bad) exit 1
     if (n != 2) fail("want exactly two IPv4 addresses (portcullis-proxy and mcp-trust), got " n + 0)
-    tn = n4(t); k = 0
+    # The Traefik range t (checked above): [tb, tb + 2^(32-tl)).
+    split(t, tp, "/"); tl = tp[2] + 0; tb = n4(tp[1]); te = tb + p2(32 - tl); k = 0
     for (i = 1; i <= 2; i++) {
       size = p2(32 - plen[i]); base = addr[i] - addr[i] % size
-      if (tn >= base && tn < base + size) { proxy = i; k++ }
+      if (tb < base + size && base < te) { proxy = i; k++ }
     }
-    if (k != 1) fail("Traefik (" t ") must be on exactly one of the two networks")
+    if (k != 1) fail("Traefik (" t ") must overlap exactly one of the two networks")
     j = 3 - proxy; len = plen[j]
     if (len < 16 || len > 29) fail("the trust network prefix /" len " is outside /16../29")
     size = p2(32 - len); self = addr[j]; base = self - self % size

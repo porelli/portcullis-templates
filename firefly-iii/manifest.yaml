@@ -22,7 +22,7 @@ auth:
     only sets the notification address and never selects an account.
     remote_user_guard has no proxy allowlist, so the container's nginx rejects
     (403) any request carrying X-Forwarded-User or X-Forwarded-Email that does
-    not come from Traefik (PORTCULLIS_TRAEFIK_IP); TRUSTED_PROXIES is likewise
+    not come from Traefik (PORTCULLIS_TRAEFIK_SOURCE); TRUSTED_PROXIES is likewise
     limited to Traefik. Auto-creates user on first login. No group-based admin
     support. Upgrading from a release that keyed users on email: the old
     accounts are named after the email; rename them to the LLDAP username

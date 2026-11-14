@@ -17,7 +17,7 @@ services:
       VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SECRET:?VIKUNJA_SECRET must be set}
       # Client IPs (rate limits, audit) from Traefik's X-Forwarded-For only.
       VIKUNJA_SERVICE_IPEXTRACTIONMETHOD: xff
-      VIKUNJA_SERVICE_TRUSTEDPROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
+      VIKUNJA_SERVICE_TRUSTEDPROXIES: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       # Public project links (anonymous access to a project by its hash): off
       # unless the admin turns the setting on.
       VIKUNJA_SERVICE_ENABLELINKSHARING: ${VIKUNJA_LINK_SHARING:-false}

@@ -12,7 +12,7 @@ services:
       # X-Forwarded-For (client IPs, login rate limits) only from Traefik
       # (static IP on portcullis-proxy, set by core); the default is every
       # private range. CIDR form: Actual parses these lists as CIDRs.
-      ACTUAL_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32
+      ACTUAL_TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
     volumes:
       - actual-data:/data
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt:ro

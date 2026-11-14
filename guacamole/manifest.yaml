@@ -20,7 +20,7 @@ auth:
     X-Forwarded-User, the immutable LLDAP username (never the user-editable
     email); accounts are auto-created with no permissions. The extension has no proxy allowlist, so a Tomcat
     RewriteValve rejects (403) any request carrying X-Forwarded-User that
-    does not come from Traefik (PORTCULLIS_TRAEFIK_IP). On first boot the
+    does not come from Traefik (PORTCULLIS_TRAEFIK_SOURCE). On first boot the
     built-in guacadmin account gets a random password (GUACAMOLE_ADMIN_PASSWORD)
     and a per-instance, non-guessable name, guacadmin-<GUACAMOLE_ADMIN_SUFFIX>
     (both generated; break-glass only). The header extension logs a user in as

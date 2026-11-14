@@ -14,7 +14,7 @@
 - [ ] Auth method chosen per CONTRIBUTING.md; `auth.notes` explains how login, groups and admin work
 - [ ] Forward-/header-auth routers use `portcullis-auth@docker,portcullis-groups@docker`; a native-OIDC host-wide router does not
 - [ ] If any realm user could otherwise sign in: login paths gated by group, least-privileged default role
-- [ ] Header-auth: identity headers accepted only from `${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}`; `assert_traefik_only_trust` / `assert_spoofed_identity_rejected` in the test
+- [ ] Header-auth: identity headers accepted only from `${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}` (a CIDR; a setting that can't take one gets a gate); `assert_traefik_only_trust` / `assert_spoofed_identity_rejected` in the test
 - [ ] No published HTTP ports; host ports declared under manifest `ports:`
 - [ ] Secrets declared under `env:` with `generate: random`; no hard-coded or default passwords
 - [ ] `ai:` block: `ai.unsupported` with a one-line reason, or `ai.mcp` companions that are the app's own server or a vetted published image (CONTRIBUTING.md, "AI support"); no MCP server code written for Portcullis

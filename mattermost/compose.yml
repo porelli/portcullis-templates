@@ -88,7 +88,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID]
     environment:
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       GATE_UPSTREAM: http://mattermost-internal:8065
       GATE_LISTEN: "8065"
     entrypoint: ["/bin/sh", "/portcullis/gate.sh"]

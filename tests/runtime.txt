@@ -1,0 +1,102 @@
+actual-budget	kubernetes	ok	
+actual-budget	podman	ok	
+adguard	kubernetes	ok	
+adguard	podman	refused	host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53); host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)
+ai-chat	kubernetes	refused	service api sets extra_hosts (not on Kubernetes)
+ai-chat	podman	ok	
+cadcraft	kubernetes	ok	
+cadcraft	podman	ok	
+cloudbeaver	kubernetes	ok	
+cloudbeaver	podman	ok	
+craft-anything	kubernetes	ok	
+craft-anything	podman	ok	
+deckcraft	kubernetes	ok	
+deckcraft	podman	ok	
+designcraft	kubernetes	ok	
+designcraft	podman	ok	
+docs	kubernetes	ok	
+docs	podman	ok	
+dokuwiki	kubernetes	ok	
+dokuwiki	podman	ok	
+effectcraft	kubernetes	ok	
+effectcraft	podman	ok	
+esphome	kubernetes	degraded	service esphome has device slots: host devices can't be passed on Kubernetes
+esphome	podman	degraded	service esphome has device slots: host devices can't be passed under rootless Podman
+figcraft	kubernetes	ok	
+figcraft	podman	ok	
+filmcraft	kubernetes	ok	
+filmcraft	podman	ok	
+firefly-iii	kubernetes	ok	
+firefly-iii	podman	ok	
+firefox-sync	kubernetes	ok	
+firefox-sync	podman	ok	
+gitea	kubernetes	ok	
+gitea	podman	ok	
+gitlab	kubernetes	ok	
+gitlab	podman	ok	
+grafana	kubernetes	ok	
+grafana	podman	ok	
+gridcraft	kubernetes	ok	
+gridcraft	podman	ok	
+guacamole	kubernetes	ok	
+guacamole	podman	ok	
+headscale	kubernetes	refused	service gateway sets extra_hosts (not on Kubernetes)
+headscale	podman	ok	
+homeassistant	kubernetes	ok	
+homeassistant	podman	ok	
+immich	kubernetes	ok	
+immich	podman	ok	
+jellyfin	kubernetes	ok	
+jellyfin	podman	ok	
+kanboard	kubernetes	ok	
+kanboard	podman	ok	
+lightcraft	kubernetes	ok	
+lightcraft	podman	ok	
+litellm	kubernetes	ok	
+litellm	podman	ok	
+matrix	kubernetes	ok	
+matrix	podman	ok	
+mattermost	kubernetes	ok	
+mattermost	podman	ok	
+mealie	kubernetes	ok	
+mealie	podman	ok	
+motioneye	kubernetes	degraded	service motioneye has device slots: host devices can't be passed on Kubernetes
+motioneye	podman	degraded	service motioneye has device slots: host devices can't be passed under rootless Podman
+netbird	kubernetes	refused	service coturn uses network_mode: host (not on Kubernetes)
+netbird	podman	degraded	host networking: published ports must stay at or above 80; UDP clients on port 3478 appear with a rewritten source address; UDP clients on port 49152 appear with a rewritten source address
+nextcloud	kubernetes	refused	service nextcloud-cron runs as user www-data: Kubernetes needs a numeric uid
+nextcloud	podman	ok	
+oxicloud	kubernetes	ok	
+oxicloud	podman	ok	
+paperless	kubernetes	ok	
+paperless	podman	ok	
+pdfcraft	kubernetes	ok	
+pdfcraft	podman	ok	
+photocraft	kubernetes	ok	
+photocraft	podman	ok	
+pihole	kubernetes	ok	
+pihole	podman	refused	host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53); host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)
+plex	kubernetes	ok	
+plex	podman	ok	
+samba	kubernetes	ok	
+samba	podman	ok	
+scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline; service scrutiny binds /run/udev, outside the shared-folder roots (not on Kubernetes)
+scrutiny	podman	refused	service scrutiny needs SYS_RAWIO (raw device access needs host root)
+soundcraft	kubernetes	ok	
+soundcraft	podman	ok	
+texturecraft	kubernetes	ok	
+texturecraft	podman	ok	
+timemachine	kubernetes	ok	
+timemachine	podman	ok	
+vaultwarden	kubernetes	ok	
+vaultwarden	podman	ok	
+vectorcraft	kubernetes	ok	
+vectorcraft	podman	ok	
+vikunja	kubernetes	ok	
+vikunja	podman	ok	
+wiki	kubernetes	ok	
+wiki	podman	ok	
+wordcraft	kubernetes	ok	
+wordcraft	podman	ok	
+zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds /run/udev, outside the shared-folder roots (not on Kubernetes)
+zigbee2mqtt	podman	degraded	service zigbee2mqtt has device slots: host devices can't be passed under rootless Podman

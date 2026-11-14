@@ -56,7 +56,7 @@ auth:
         supporting: true
   notes: >-
     Proxy auth with X-Forwarded-User header, accepted only from Traefik
-    (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_IP) and, while AI support
+    (GF_AUTH_PROXY_WHITELIST = PORTCULLIS_TRAEFIK_SOURCE) and, while AI support
     is on, from the instance's grafana-mcp companion: its trust network
     mcp-trust (internal, members dashboards and grafana-mcp only) is added
     by trust.sh at every start, read from Grafana's own interface, without

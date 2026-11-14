@@ -30,7 +30,7 @@ services:
       # While AI support is on, trust.sh adds mcp-trust's subnet (read from
       # this container's interface; without the gateway and Grafana's own
       # address): its only other member is the grafana-mcp companion.
-      GF_AUTH_PROXY_WHITELIST: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      GF_AUTH_PROXY_WHITELIST: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       PORTCULLIS_AI_ENABLED: ${PORTCULLIS_AI_ENABLED:-false}
     volumes:
       - grafana-data:/var/lib/grafana

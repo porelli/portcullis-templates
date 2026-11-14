@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 import unicodedata
 from urllib.parse import urlsplit
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -57,11 +58,25 @@ CORE_VARS = {
     "PORTCULLIS_DOMAIN": "portcullis.local",
     "PORTCULLIS_PROXY_SUBNET": "172.31.250.0/24",
     "PORTCULLIS_PROXY_IP_RANGE": "172.31.250.128/25",
-    "PORTCULLIS_TRAEFIK_IP": "172.31.250.2",
-    # AI support (§2): mcp-gate's address on portcullis-proxy. Referencing
-    # it is allowed; declaring it is not (ai_reserved_var).
-    "PORTCULLIS_MCP_GATE_IP": "172.31.250.3",
+    # Kubernetes (§2): the CIDR of the only peers that may send identity
+    # headers (Traefik's /32 on Docker/Podman, the pod CIDR on Kubernetes),
+    # read only in exactly this default form (SOURCE_VARS).
+    "PORTCULLIS_TRAEFIK_SOURCE": "172.31.250.2/32",
+    # AI support (§2): mcp-gate's range (its /32, or the pod CIDR).
+    # Referencing it is allowed; declaring it is not (ai_reserved_var).
+    "PORTCULLIS_MCP_GATE_SOURCE": "172.31.250.3/32",
 }
+VAR_TRAEFIK_SOURCE = "PORTCULLIS_TRAEFIK_SOURCE"
+TRAEFIK_SOURCE_REF = "${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}"
+# A CIDR default that differs would widen or move the trust: exactly the
+# default form, nothing else (no other operator, no bare $NAME).
+SOURCE_VARS = {"PORTCULLIS_TRAEFIK_SOURCE", "PORTCULLIS_MCP_GATE_SOURCE"}
+# Core settings that are not template variables (§2): the Hub doesn't copy
+# them into instances; refused anywhere in a template's files, any form.
+REMOVED_VARS = {"PORTCULLIS_TRAEFIK_IP": "PORTCULLIS_TRAEFIK_SOURCE", "PORTCULLIS_MCP_GATE_IP": "PORTCULLIS_MCP_GATE_SOURCE"}
+REMOVED_VARS_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(sorted(REMOVED_VARS)) + r")(?![A-Za-z0-9_])")
+SOURCE_HINT = (f"see {DOCS_URL}/integration-contracts/ (§2, PORTCULLIS_TRAEFIK_SOURCE): an IPv4 CIDR; "
+               "a setting that can't take a CIDR gets the nginx gate (esphome/gate.sh) in front")
 
 # Subdomains owned by core (group-gate-map.conf); templates must not route them.
 CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "people", "mcp"}  # contracts §4, §5.1
@@ -74,14 +89,15 @@ CORE_SUBDOMAINS = {"auth", "traefik", "hub", "directory", "enroll", "metrics", "
 # default form the other instance variables take.
 VAR_LOCAL_NETWORKS = "PORTCULLIS_LOCAL_NETWORKS"
 # AI support (§3.1, §2): every PORTCULLIS_AI_* name is the Hub's (ENABLED,
-# READONLY_<COMPANION>, PROVIDER_<NAME>_<FIELD>); PORTCULLIS_MCP_GATE_IP is
-# core's. A manifest never declares them (check_manifest_rules); compose
+# READONLY_<COMPANION>, PROVIDER_<NAME>_<FIELD>); PORTCULLIS_MCP_GATE_SOURCE
+# (and the removed PORTCULLIS_MCP_GATE_IP) are core's. A manifest never declares them (check_manifest_rules); compose
 # reads only ${PORTCULLIS_AI_ENABLED:-false} and its own companions'
 # ${PORTCULLIS_AI_READONLY_<C>:-true} (check_ai).
 VAR_AI_PREFIX = "PORTCULLIS_AI_"
 VAR_AI_ENABLED = "PORTCULLIS_AI_ENABLED"
 VAR_AI_READONLY = "PORTCULLIS_AI_READONLY_"
 VAR_AI_PROVIDER = "PORTCULLIS_AI_PROVIDER_"
+VAR_MCP_GATE_SOURCE = "PORTCULLIS_MCP_GATE_SOURCE"
 VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
 AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
 VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and CONTRIBUTING.md, \"VPN providers\""
@@ -237,8 +253,8 @@ IDENTITY_ENV_REQUIRED = [
     ("AUTHENTICATION_GUARD", r"^remote_user_guard$", "AUTHENTICATION_GUARD_HEADER", r"^HTTP_X_FORWARDED_USER$",
      "Firefly III remote_user_guard must key users on HTTP_X_FORWARDED_USER (LLDAP username)"),
     ("FTLCONF_webserver_api_password", r"^$", "FTLCONF_webserver_acl",
-     r"^\+\$\{PORTCULLIS_TRAEFIK_IP:-[0-9.]+\}(,\+127\.0\.0\.1)?(,\+\[::1\])?$",
-     "Pi-hole without a password must set FTLCONF_webserver_acl to +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2} "
+     r"^\+\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\}(,\+127\.0\.0\.1)?(,\+\[::1\])?$",
+     "Pi-hole without a password must set FTLCONF_webserver_acl to +${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32} "
      "(optionally +127.0.0.1,+[::1]): otherwise every container on portcullis-proxy gets the admin API"),
     ("FTLCONF_webserver_api_password", r"^$", "FTLCONF_webserver_domain", r"^\$\{PORTCULLIS_HOST_[A-Z0-9_]+:-[^}]+\}$",
      "Pi-hole without a password must set FTLCONF_webserver_domain to its PORTCULLIS_HOST_<ROUTER> "
@@ -731,7 +747,7 @@ def check_manifest_rules(t: Template, r: Report) -> None:
             r.error(t.m_where, f"{section} key {k} shadows a core variable")
         if ai_reserved_var(k):
             r.error(t.m_where, f"{section} key {k} is reserved (AI support: PORTCULLIS_AI_* are the Hub's, "
-                               f"{VAR_MCP_GATE_IP} is core's)", AI_HINT)
+                               f"{VAR_MCP_GATE_SOURCE} is core's)", AI_HINT)
         if k.startswith(VAR_VPN_PREFIX):
             r.error(t.m_where, f"{section} key {k} is reserved (VPN-only access: PORTCULLIS_VPN_* are core's and the Hub's)",
                     VPN_HINT)
@@ -857,7 +873,41 @@ def check_links(t: Template, r: Report) -> None:
             r.error(t.m_where, f"links.source must be {want} (compose downloads CRAFT_REPO {repo})", LINKS_HINT)
 
 
+def check_removed_vars(t: Template, r: Report) -> None:
+    """PORTCULLIS_TRAEFIK_IP / PORTCULLIS_MCP_GATE_IP (core settings, not
+    template variables, §2) in any file of the template, in any form:
+    ${...}, $NAME, $$NAME, an environment key, a script, a comment."""
+    for root, dirs, files in os.walk(t.dir):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for fn in sorted(files):
+            path = os.path.join(root, fn)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for name in sorted(set(REMOVED_VARS_RE.findall(text))):
+                r.error(f"{t.id}/{os.path.relpath(path, t.dir)}",
+                        f"{name} is not a template variable (a core setting the Hub doesn't copy): "
+                        f"use ${{{REMOVED_VARS[name]}:-{CORE_VARS[REMOVED_VARS[name]]}}}, an IPv4 CIDR", SOURCE_HINT)
+
+
+# The reviewed IPv4 CIDR check (esphome/gate.sh): every file that defines
+# cidr_ok() has exactly this definition (compose: dollars doubled).
+CIDR_FN_RE = re.compile(r"(?ms)^( *)cidr_ok\(\) \{\n.*?^\1\}\n")
+
+
+def cidr_function(text: str, compose: bool = False) -> Optional[str]:
+    """The cidr_ok() definition in text (dedented; compose: $$ -> $), or None."""
+    m = CIDR_FN_RE.search(text)
+    if not m:
+        return None
+    fn = textwrap.dedent(m.group(0))
+    return fn.replace("$$", "$") if compose else fn
+
+
 def check_compose(t: Template, r: Report) -> None:
+    check_removed_vars(t, r)
     try:
         with open(t.compose_path, encoding="utf-8") as f:
             t.compose_text = f.read()
@@ -951,6 +1001,13 @@ def check_compose(t: Template, r: Report) -> None:
     for name, op, rest in iter_var_refs(t.compose_values):
         if is_instance_var(name) or name.startswith(FOLDER_VAR_PREFIX) or name.startswith(VAR_AI_PREFIX):
             continue  # check_instance_vars; check_settings (reserved variable forms, F36); check_ai
+        if name in SOURCE_VARS:
+            if (op, rest) != (":-", CORE_VARS[name]):
+                r.error(t.c_where, f"${{{name}}} must be exactly the default form ${{{name}:-{CORE_VARS[name]}}}",
+                        SOURCE_HINT)
+            continue
+        if name in REMOVED_VARS:
+            continue  # check_removed_vars
         if name in CORE_VARS:
             if op != ":-":
                 r.error(t.c_where, f"${{{name}}} must use the default form ${{{name}:-{CORE_VARS[name]}}}",
@@ -970,15 +1027,15 @@ def check_compose(t: Template, r: Report) -> None:
     for rx, label in CATCH_ALL_TRUST:
         if rx.search(t.compose_values):
             r.error(t.c_where, f"compose trusts every peer ({label})",
-                    "trust identity / forwarded headers only from ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}")
+                    f"trust identity / forwarded headers only from {TRAEFIK_SOURCE_REF}")
 
     if method == "header-auth":
-        if "${PORTCULLIS_TRAEFIK_IP:-" not in t.compose_values:
+        if TRAEFIK_SOURCE_REF not in t.compose_values:
             r.error(t.c_where, "header-auth app does not restrict identity headers to Traefik",
-                    "set the app's proxy allowlist (or a gate in front of it) to ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}; see CONTRIBUTING.md")
+                    f"set the app's proxy allowlist (or a gate in front of it) to {TRAEFIK_SOURCE_REF}; see CONTRIBUTING.md")
         if "${PORTCULLIS_PROXY_SUBNET" in t.compose_values or "${PORTCULLIS_PROXY_IP_RANGE" in t.compose_values:
             r.error(t.c_where, "header-auth app references the portcullis-proxy subnet",
-                    "trusting the subnet lets every app container forge X-Forwarded-User; trust PORTCULLIS_TRAEFIK_IP only")
+                    "trusting the subnet lets every app container forge X-Forwarded-User; trust PORTCULLIS_TRAEFIK_SOURCE only")
 
     routers: Dict[str, Dict[str, str]] = {}
     for sname, svc in services.items():
@@ -1335,7 +1392,8 @@ def repo_is(image: str, repo: str) -> bool:
     return got == repo or got.endswith("/" + repo)
 GATE_SH = "gate.sh"
 GATE_SH_REQUIRED = [
-    (r"(?m)^\s*allow \$\{ip\};$", "allow ${ip}; (Traefik's address only)"),
+    (r"(?m)^\s*allow \$\{src\};$", "allow ${src}; (PORTCULLIS_TRAEFIK_SOURCE, Traefik's range, only)"),
+    (r'(?m)^cidr_ok "\$src" \|\| ', "the CIDR check of PORTCULLIS_TRAEFIK_SOURCE (cidr_ok)"),
     (r"(?m)^\s*deny all;$", "deny all;"),
     (r'(?m)^\s*proxy_set_header Authorization "";$', 'proxy_set_header Authorization ""; (the Keycloak bearer token)'),
     (r'(?m)^\s*proxy_set_header X-Forwarded-Access-Token "";$', 'proxy_set_header X-Forwarded-Access-Token "";'),
@@ -1348,7 +1406,7 @@ GATE_SH_FORBIDDEN = [
      "the realip module (set_real_ip_from / real_ip_header: a forwarded header would decide the peer address)"),
 ]
 GATE_HINT = ("the app of a gated template stays on the default network; the only routed service is the nginx gate "
-             "running ./templates/<id>/gate.sh (copy it from esphome/) with PORTCULLIS_TRAEFIK_IP")
+             f"running ./templates/<id>/gate.sh (copy it from esphome/) with PORTCULLIS_TRAEFIK_SOURCE: {TRAEFIK_SOURCE_REF}")
 
 
 def _nets(svc: Dict[str, Any]) -> List[str]:
@@ -1511,8 +1569,8 @@ def check_gated_backends(t: Template, services: Dict[str, Any], r: Report) -> No
             r.error(where, f"the routed service of a gated template must be the gate: mount {want_mount}", GATE_HINT)
         if f"/portcullis/{GATE_SH}" not in " ".join(str(x) for x in as_list(svc.get("entrypoint"))):
             r.error(where, f"the gate must run /portcullis/{GATE_SH} (entrypoint)", GATE_HINT)
-        if env_of(svc).get("PORTCULLIS_TRAEFIK_IP") != "${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}":
-            r.error(where, "the gate needs PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}", GATE_HINT)
+        if env_of(svc).get(VAR_TRAEFIK_SOURCE) != TRAEFIK_SOURCE_REF:
+            r.error(where, f"the gate needs {VAR_TRAEFIK_SOURCE}: {TRAEFIK_SOURCE_REF}", GATE_HINT)
         up = gate_upstream_host(svc)
         if not up or not up.endswith(INTERNAL_SUFFIX):
             r.error(where, f"GATE_UPSTREAM must name a <app>{INTERNAL_SUFFIX} alias (got {up!r})", DNS_HINT)
@@ -2195,6 +2253,29 @@ def check_cross(templates: List[Template], r: Report) -> None:
         elif data != gate_ref[1]:
             r.error(f"{t.id}/{GATE_SH}", f"differs from {gate_ref[0]}/{GATE_SH}",
                     "every template's gate.sh must be byte-identical; copy the reviewed one")
+    # Every cidr_ok() (gates, inline checks of PORTCULLIS_TRAEFIK_SOURCE) is
+    # the reviewed one of esphome/gate.sh.
+    ref_fn: Optional[str] = None
+    ref_path = os.path.join(ROOT, "esphome", GATE_SH)
+    if os.path.isfile(ref_path):
+        with open(ref_path, encoding="utf-8") as f:
+            ref_fn = cidr_function(f.read())
+    for t in templates:
+        for root, dirs, files in os.walk(t.dir):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for fn in sorted(files):
+                path = os.path.join(root, fn)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        text = f.read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                got = cidr_function(text, compose=fn == "compose.yml" and root == t.dir)
+                if got is None and "cidr_ok()" not in text:
+                    continue
+                if got is None or got != ref_fn:
+                    r.error(f"{t.id}/{os.path.relpath(path, t.dir)}", "cidr_ok() differs from esphome/gate.sh's",
+                            "copy the reviewed IPv4 CIDR check (compose: with every $ doubled) unchanged")
 
 
 # The file-sharing templates' converge script (contract §13.17): one
@@ -3940,8 +4021,9 @@ def reserved_var(k: str) -> bool:
 
 def ai_reserved_var(k: str) -> bool:
     """The AI support variables (§3.1, §2): PORTCULLIS_AI_* (the Hub's) and
-    core's PORTCULLIS_MCP_GATE_IP; never declared by a template."""
-    return k.startswith(VAR_AI_PREFIX) or k == VAR_MCP_GATE_IP
+    core's PORTCULLIS_MCP_GATE_SOURCE (and the removed PORTCULLIS_MCP_GATE_IP);
+    never declared by a template."""
+    return k.startswith(VAR_AI_PREFIX) or k in (VAR_MCP_GATE_SOURCE, VAR_MCP_GATE_IP)
 
 
 def _set(o: Dict[str, Any], k: str) -> bool:
@@ -6926,7 +7008,7 @@ def check_setup(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[s
                     "give a setup enum option a profiles mapping that starts it, or drop profiles: (the Hub never starts it)")
 
 
-# ── Rootless Podman compatibility ──────────────────────────────────
+# ── Runtime compatibility: rootless Podman ─────────────────────────
 
 ROOTLESS_MAX_ID = 65535
 _ROOTLESS_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}")
@@ -7022,10 +7104,75 @@ def _rootless_host_port(p: Dict[str, Any], env: Dict[str, str]) -> int:
     return d if isinstance(d, int) and not isinstance(d, bool) else 0
 
 
-def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_start: int = 80) -> Tuple[str, List[str]]:
-    """Classify a template under rootless Podman, as the Hub's RootlessCompat
-    (portcullis-hub internal/templates/rootless.go; shared vectors in
-    tests/rootless_vectors.json).
+def _compat_services(t: Template) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[str, List[str]]]]:
+    """The template's compose services in order, or the refused verdict of
+    an unreadable compose file (the Hub's orderedServices)."""
+    compose = t.compose
+    if compose is None:
+        try:
+            with open(t.compose_path, encoding="utf-8") as f:
+                compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+        except Exception as e:  # noqa: BLE001 - any read / parse failure refuses
+            return None, ("refused", [f"compose.yml can't be read: {e}"])
+    services: Dict[str, Any] = {}
+    if compose is not None:
+        if not isinstance(compose, dict):
+            return None, ("refused", ["compose.yml can't be read: not a mapping"])
+        if "services" in compose:
+            services = compose["services"]
+            if not isinstance(services, dict):
+                return None, ("refused", ["compose.yml can't be read: services is not a mapping"])
+    for name, svc in services.items():
+        if svc is not None and not isinstance(svc, dict):
+            return None, ("refused", [f"compose.yml can't be read: service {name}: not a mapping"])
+    return services, None
+
+
+class _Reasons:
+    """Refused and degraded reasons, each once (the Hub's compatReasons)."""
+
+    def __init__(self) -> None:
+        self.refused: List[str] = []
+        self.degraded: List[str] = []
+
+    def refuse(self, s: str) -> None:
+        if s not in self.refused:
+            self.refused.append(s)
+
+    def degrade(self, s: str) -> None:
+        if s not in self.degraded:
+            self.degraded.append(s)
+
+    def verdict(self) -> Tuple[str, List[str]]:
+        if self.refused:
+            return ("refused", self.refused)
+        if self.degraded:
+            return ("degraded", self.degraded)
+        return ("ok", [])
+
+
+RUNTIMES = ("docker", "podman", "kubernetes")
+
+
+def runtime_compat(t: Template, rt: str, env: Optional[Dict[str, str]] = None, port_start: int = 80) -> Tuple[str, List[str]]:
+    """Classify a template for runtime rt as the Hub's RuntimeCompat
+    (portcullis-hub internal/templates/runtimecompat.go, kubecompat.go;
+    shared vectors in tests/runtime_vectors.json): docker is always ok,
+    podman the rootless rules, kubernetes the Kubernetes table (contracts
+    §3.4, §11.10). env is the instance's effective values (None = the
+    defaults; port keys carry the instance's host ports)."""
+    if rt == "podman":
+        return _podman_compat(t, env, port_start)
+    if rt == "kubernetes":
+        return _kube_compat(t, env)
+    if rt == "docker":
+        return ("ok", [])
+    raise ValueError(f"unknown runtime {rt!r}")
+
+
+def _podman_compat(t: Template, env: Optional[Dict[str, str]], port_start: int) -> Tuple[str, List[str]]:
+    """Classify a template under rootless Podman, as the Hub's rootlessCompat
+    (portcullis-hub internal/templates/runtimecompat.go).
 
     Rules, per service in compose order: devices (a source other than
     /dev/null and /dev/net/tun refused, /dev/null and /dev/net/tun
@@ -7052,24 +7199,9 @@ def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_star
         if s not in degraded:
             degraded.append(s)
 
-    compose = t.compose
-    if compose is None:
-        try:
-            with open(t.compose_path, encoding="utf-8") as f:
-                compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
-        except Exception as e:  # noqa: BLE001 - any read / parse failure refuses
-            return ("refused", [f"compose.yml can't be read: {e}"])
-    services: Dict[str, Any] = {}
-    if compose is not None:
-        if not isinstance(compose, dict):
-            return ("refused", ["compose.yml can't be read: not a mapping"])
-        if "services" in compose:
-            services = compose["services"]
-            if not isinstance(services, dict):
-                return ("refused", ["compose.yml can't be read: services is not a mapping"])
-    for name, svc in services.items():
-        if svc is not None and not isinstance(svc, dict):
-            return ("refused", [f"compose.yml can't be read: service {name}: not a mapping"])
+    services, bad = _compat_services(t)
+    if bad is not None or services is None:
+        return bad or ("refused", [])
 
     def check_id(service: str, v: str) -> None:
         v = v.strip()
@@ -7149,7 +7281,188 @@ def rootless_compat(t: Template, env: Optional[Dict[str, str]] = None, port_star
     return ("ok", [])
 
 
+
+# ── Kubernetes compatibility (contracts §3.4, §11.10) ───────────────
+
+# The Pod Security baseline's capabilities (the Hub's KubeBaselineCaps).
+KUBE_BASELINE_CAPS = {"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_BIND_SERVICE",
+                      "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT"}
+# The shared-folder roots without the Hub's own (HUB_OVERRIDE_BIND_ROOTS'
+# default), and the env key under which the Hub passes its roots.
+KUBE_DEFAULT_BIND_ROOTS = ["/srv", "/mnt", "/media"]
+KUBE_ENV_BIND_ROOTS = "\x00bind_roots"
+KUBE_DEFAULT_VPN_PORT = 51820
+AVAHI_SERVICES_DIR_KEY = "avahi_services_dir"
+_KUBE_SHOWN_USER_RE = re.compile(r"[A-Za-z0-9._-]{1,32}(:[A-Za-z0-9._-]{1,32})?")
+_KUBE_SHOWN_PATH_RE = re.compile(r"/[A-Za-z0-9._/@+-]{0,200}")
+
+
+def kube_core_ports(env: Dict[str, str]) -> List[int]:
+    """The ports no app may publish on Kubernetes (the admission policy's
+    corePorts): 80, 443, the VPN port (PORTCULLIS_VPN_PORT, default 51820),
+    8000, 8081, 8443 and 8444."""
+    vpn = KUBE_DEFAULT_VPN_PORT
+    n = _go_atoi((env.get("PORTCULLIS_VPN_PORT") or "").strip())
+    if n is not None:
+        vpn = n
+    return [80, 443, vpn, 8000, 8081, 8443, 8444]
+
+
+def _kube_scalar(svc: Dict[str, Any], key: str, env: Dict[str, str]) -> str:
+    """A service field's scalar value, resolved and trimmed ('' for a
+    missing, null or non-scalar field: the Hub's scalarValue)."""
+    v = svc.get(key)
+    if v is None or isinstance(v, (dict, list)):
+        return ""
+    return _rootless_resolve(_go_scalar(v), env).strip()
+
+
+def _kube_numeric(s: str) -> bool:
+    return s != "" and s.strip("0123456789") == ""
+
+
+def _kube_under_roots(p: str, roots: List[str]) -> bool:
+    p = go_clean(p)
+    for r in roots:
+        r = go_clean(r.strip()) if r.strip() else ""
+        if r in ("", ".") or not r.startswith("/"):
+            continue
+        if p == r or p.startswith(r.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _kube_bind_sources(vols: Any, env: Dict[str, str]) -> List[str]:
+    """A service's bind sources, resolved (short syntax with a path
+    source, long syntax type: bind); named and anonymous volumes aren't."""
+    out: List[str] = []
+    if not isinstance(vols, list):
+        return out
+    for v in vols:
+        if isinstance(v, dict):
+            if _kube_scalar(v, "type", env) != "bind":
+                continue
+            src = _kube_scalar(v, "source", env)
+            if src:
+                out.append(src)
+        elif not isinstance(v, list) and v is not None:
+            parts = _rootless_split(_go_scalar(v))
+            if len(parts) < 2:
+                continue
+            src = _rootless_resolve(parts[0], env).strip()
+            if src.startswith(("/", ".", "~")):
+                out.append(src)
+    return out
+
+
+def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
+    """The Hub's kubeCompat: per service in compose order its devices,
+    cap_add, user, network_mode, privileged, pid / ipc, binds, scale and
+    extra_hosts; then each manifest port (a core port); then the Avahi
+    option. Each reason once; refused, else degraded, else ok."""
+    env = env or {}
+    services, bad = _compat_services(t)
+    if bad is not None or services is None:
+        return bad or ("refused", [])
+    c = _Reasons()
+    roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
+    for name, svc in services.items():
+        svc = svc or {}
+        tun = f"service {name} uses TUN/NET_ADMIN (not on Kubernetes; prefer a userspace mode)"
+        devs, ok = _rootless_scalars(svc.get("devices"))
+        if not ok:
+            c.refuse(f"service {name} passes host devices (not on Kubernetes)")
+        for d in devs:
+            src = _rootless_resolve(_rootless_split(d)[0], env)
+            if src == "":
+                continue
+            if src == "/dev/null":
+                c.degrade(f"service {name} has device slots: host devices can't be passed on Kubernetes")
+            elif src == "/dev/net/tun":
+                c.refuse(tun)
+            else:
+                c.refuse(f"service {name} passes host devices (not on Kubernetes)")
+        caps, _ = _rootless_scalars(svc.get("cap_add"))
+        for cp in caps:
+            v = _rootless_resolve(cp, env).strip().upper()
+            if v.startswith("CAP_"):
+                v = v[len("CAP_"):]
+            if v == "":
+                continue
+            if v == "NET_ADMIN":
+                c.refuse(tun)
+            elif v not in KUBE_BASELINE_CAPS:
+                if v.strip("ABCDEFGHIJKLMNOPQRSTUVWXYZ_") != "" or len(v) > 32:
+                    v = "a capability"
+                c.refuse(f"service {name} adds {v}, outside the Kubernetes baseline")
+        u = _kube_scalar(svc, "user", env)
+        if u:
+            uid, _, gid = u.partition(":")
+            if not _kube_numeric(uid) or (gid != "" and not _kube_numeric(gid)):
+                shown = u if _KUBE_SHOWN_USER_RE.fullmatch(u) else "a non-numeric value"
+                c.refuse(f"service {name} runs as user {shown}: Kubernetes needs a numeric uid")
+        if _kube_scalar(svc, "network_mode", env) == "host":
+            c.refuse(f"service {name} uses network_mode: host (not on Kubernetes)")
+        if _kube_scalar(svc, "privileged", env) in ("true", "True", "yes"):
+            c.refuse(f"service {name} is privileged (not on Kubernetes)")
+        for ns in ("pid", "ipc"):
+            if _kube_scalar(svc, ns, env) == "host":
+                c.refuse(f"service {name} shares the host's {ns} namespace (not on Kubernetes)")
+        for src in _kube_bind_sources(svc.get("volumes"), env):
+            if not src.startswith("/") or _kube_under_roots(src, roots):
+                continue
+            shown = src if _KUBE_SHOWN_PATH_RE.fullmatch(src) else "a host path"
+            c.refuse(f"service {name} binds {shown}, outside the shared-folder roots (not on Kubernetes)")
+        scale = _kube_scalar(svc, "scale", env)
+        if scale:
+            k = _go_atoi(scale)
+            if k is None or k > 1:
+                c.refuse(f"service {name} sets replicas above 1 (not on Kubernetes)")
+        eh = svc.get("extra_hosts")
+        if (isinstance(eh, (dict, list)) and len(eh) > 0) or (eh is not None and not isinstance(eh, (dict, list))
+                                                            and _go_scalar(eh) != ""):
+            c.refuse(f"service {name} sets extra_hosts (not on Kubernetes)")
+
+    manifest = t.manifest if isinstance(t.manifest, dict) else {}
+    first = next(iter(services), "")
+    core = kube_core_ports(env)
+    ports = manifest.get("ports")
+    for p in ports if isinstance(ports, list) else []:
+        if not isinstance(p, dict):
+            continue
+        n = _rootless_host_port(p, env)
+        if n > 0 and n in core:
+            svc_name = p.get("service") if isinstance(p.get("service"), str) and p.get("service") else first
+            c.refuse(f"service {svc_name} publishes port {n}, a core port")
+    for o in setting_options(manifest):
+        if o.get("key") == AVAHI_SERVICES_DIR_KEY and (env.get(AVAHI_SERVICES_DIR_KEY) or "").strip():
+            c.degrade("the Avahi services directory binds a host path outside the shared-folder roots: "
+                      "leave it empty and connect by address")
+    return c.verdict()
+
+
 # ── Main ────────────────────────────────────────────────────────────
+
+def runtime_classification(apps: Optional[List[str]] = None) -> str:
+    """tests/runtime.txt: one line per template and runtime,
+    <id>\t<runtime>\t<status>\t<reasons joined "; ">, kubernetes and podman
+    (port start 80), with the defaults (no instance env), sorted (the Hub's
+    TestRealTemplatesRuntimeClassification)."""
+    lines = []
+    for app_id in apps or discover():
+        t = Template(app_id)
+        if not os.path.isfile(t.manifest_path):
+            continue
+        try:
+            with open(t.manifest_path, encoding="utf-8") as f:
+                t.manifest = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+        except (OSError, yaml.YAMLError):
+            t.manifest = None
+        for rt in ("kubernetes", "podman"):
+            status, reasons = runtime_compat(t, rt, env=None, port_start=80)
+            lines.append(f"{app_id}\t{rt}\t{status}\t{'; '.join(reasons)}")
+    return "".join(line + "\n" for line in sorted(lines))
+
 
 def discover() -> List[str]:
     out = []
@@ -7168,36 +7481,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("apps", nargs="*", help="template ids to check (default: all)")
     ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
-    ap.add_argument("--rootless", action="store_true", help="output rootless Podman classification")
+    ap.add_argument("--runtime", action="store_true",
+                    help="output the runtime compatibility classification (tests/runtime.txt)")
     args = ap.parse_args(argv)
 
-    # If --rootless, output classification and exit
-    if args.rootless:
-        all_ids = discover()
-        ids = args.apps or all_ids
-        results = []
-        for app_id in sorted(ids):
-            t = Template(app_id)
-            if not check_layout(t, Report()):
-                continue
-            # Load manifest and compose
-            try:
-                with open(t.manifest_path, encoding="utf-8") as f:
-                    t.manifest = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
-            except:
-                pass
-            try:
-                with open(t.compose_path, encoding="utf-8") as f:
-                    t.compose = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
-            except:
-                pass
-
-            status, reasons = rootless_compat(t, env=None, port_start=80)
-            reasons_str = "; ".join(reasons) if reasons else ""
-            results.append(f"{app_id}\t{status}\t{reasons_str}")
-
-        for line in results:
-            print(line)
+    if args.runtime:
+        print(runtime_classification(args.apps), end="")
         return 0
 
     with open(SCHEMA_PATH, encoding="utf-8") as f:

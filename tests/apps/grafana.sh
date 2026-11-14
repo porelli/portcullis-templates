@@ -130,7 +130,7 @@ section "AI support: mcp-grafana companion (identity headers)"
 TMP=$(mktemp -d)
 D=portcullis-dashboards-1
 M=portcullis-grafana-mcp-1
-TRAEFIK_IP=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+TRAEFIK_SRC=$PORTCULLIS_TRAEFIK_SOURCE  # lib.sh: core's value, else Traefik's /32
 GF_IMAGE=$(sed -n 's/^    image: \(grafana\/grafana:[^[:space:]]*\)$/\1/p' "$COMPOSE")
 MCP_IMAGE=$(sed -n 's/^    image: \(grafana\/mcp-grafana:[^[:space:]]*\)$/\1/p' "$COMPOSE")
 
@@ -196,7 +196,7 @@ wait_allowlist() {
 # address, gateway, broadcast and Grafana's own address; the companion's
 # address is in it.
 trust_ok() {
-  python3 - "$1" "$TRAEFIK_IP" "$SUBNET" "$GATEWAY" "$GF_TRUST_IP" "$MCP_TRUST_IP" <<'PY'
+  python3 - "$1" "$TRAEFIK_SRC" "$SUBNET" "$GATEWAY" "$GF_TRUST_IP" "$MCP_TRUST_IP" <<'PY'
 import ipaddress, sys
 wl, traefik, subnet, gw, own, comp = sys.argv[1:7]
 parts = [p for p in wl.split(",") if p]
@@ -211,7 +211,7 @@ bad = [a for a in (str(net.network_address), str(net.broadcast_address), gw, own
 sys.exit(1 if bad or not inside(comp) else 0)
 PY
 }
-traefik_only() { [ "$1" = "$TRAEFIK_IP" ]; }
+traefik_only() { [ "$1" = "$TRAEFIK_SRC" ]; }
 if wait_allowlist trust_ok 90; then
   pass "Grafana trusts Traefik and $SUBNET without its network, gateway, broadcast and own address (companion $MCP_TRUST_IP in it)"
 else
