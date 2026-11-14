@@ -4520,7 +4520,8 @@ class RuntimeCompatTests(unittest.TestCase):
             t.manifest["settings"] = {"options": [{"key": k, "type": "path"} for k in vec["settings"]]}
             env.update(vec["settings"])
         t.compose = v.yaml.safe_load(vec["compose"])
-        return v.runtime_compat(t, vec["runtime"], env=env, port_start=vec["port_start"])
+        # The Hub's templates-package vectors run without KubeLabelCheck.
+        return v.runtime_compat(t, vec["runtime"], env=env, port_start=vec["port_start"], labels=False)
 
     def test_vectors(self) -> None:
         vectors = self.vectors()
@@ -4540,24 +4541,53 @@ class RuntimeCompatTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             v.runtime_compat(v.Template("test"), "lxc")
 
+    def test_kube_labels_like_the_deploy(self) -> None:
+        """The Hub's TestCompatJudgesLabelsLikeTheDeploy (KubeLabelCheck =
+        the IngressRoute translation, on the template's own labels)."""
+        for labels, why in (
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.services.web.loadbalancer.server.port: \"80\"\n"
+                 "      traefik.http.services.web.loadbalancer.server.scheme: https\n", "service web: loadbalancer.server.scheme is not on Kubernetes"),
+                ("      traefik.tcp.routers.db.rule: HostSNI(`*`)\n", "web: tcp routers are not on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.priority: \"5000\"\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", "router web: priority 5000 is above 1000 (not on Kubernetes)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", ""),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: x-secret@docker\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n",
+                 "a middleware is not on Kubernetes (not the instance's own, not a core name apps may use)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: portcullis-auth@docker,security-headers@file\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", ""),
+                ("      traefik.http.routers.a.rule: Host(`a.example.org`)\n      traefik.http.routers.b.rule: Host(`b.example.org`)\n"
+                 "      traefik.http.services.a.loadbalancer.server.port: \"80\"\n      traefik.http.services.b.loadbalancer.server.port: \"81\"\n",
+                 "router a names no service"),
+                ("      traefik.http.middlewares.m.forwardauth.address: http://x\n", "middleware m is a forwardAuth (not allowed for apps)"),
+        ):
+            with self.subTest(why=why or "ok"):
+                compose = ("services:\n  web:\n    image: docker.io/library/nginx:1.29\n    user: \"101:101\"\n    labels:\n"
+                           "      traefik.enable: \"true\"\n" + labels)
+                t = v.Template("test")
+                t.manifest = {}
+                t.compose = v.yaml.safe_load(compose)
+                status, reasons = v.runtime_compat(t, "kubernetes")
+                self.assertEqual("; ".join(reasons), why)
+
     def test_kube_rules_vectors_cannot_express(self) -> None:
         """The Hub's TestKubeCompatBindRootsFromEnv and friends."""
         def kube(compose: str, env: Optional[Dict[str, str]] = None, manifest: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
             t = v.Template("test")
             t.manifest = manifest or {}
             t.compose = v.yaml.safe_load(compose)
-            return v.runtime_compat(t, "kubernetes", env=env)
+            return v.runtime_compat(t, "kubernetes", env=env, labels=False)
         bind = "services:\n  a:\n    image: x\n    volumes: [\"/data/media:/media\"]\n"
-        out = "service a binds /data/media, outside the shared-folder roots (not on Kubernetes)"
+        out = "service a binds a host path outside the shared-folder roots (not on Kubernetes)"
         self.assertEqual(kube(bind), ("refused", [out]))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/data:/srv"}), ("ok", []))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/srv"}), ("refused", [out]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000\"\n    volumes: [\"./templates/a/x:/x:ro\", \"data:/d\", \"/anon\"]\n"),
                          ("ok", []))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes:\n      - {type: bind, source: /etc, target: /x}\n"),
-                         ("refused", ["service a binds /etc, outside the shared-folder roots (not on Kubernetes)"]))
+                         ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"/srv/../etc:/x\"]\n"),
-                         ("refused", ["service a binds /srv/../etc, outside the shared-folder roots (not on Kubernetes)"]))
+                         ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
         # The VPN port is a core port, from the env.
         m = {"ports": [{"key": "P", "default": 51820, "container": 51820, "protocol": "udp"}]}
         self.assertEqual(kube("services:\n  a:\n    image: x\n", None, m), ("refused", ["service a publishes port 51820, a core port"]))
@@ -4565,16 +4595,16 @@ class RuntimeCompatTests(unittest.TestCase):
         self.assertEqual(v.kube_core_ports({}), [80, 443, 51820, 8000, 8081, 8443, 8444])
         # A user value is named only when it looks like a name.
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"${U:-1000}:staff\"\n"),
-                         ("refused", ["service a runs as user 1000:staff: Kubernetes needs a numeric uid"]))
+                         ("refused", ["service a runs as a non-numeric user: Kubernetes needs a numeric uid"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"a b\"\n"),
-                         ("refused", ["service a runs as user a non-numeric value: Kubernetes needs a numeric uid"]))
+                         ("refused", ["service a runs as a non-numeric user: Kubernetes needs a numeric uid"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    scale: 1\n"), ("ok", []))
         # A compose port on a specific host address (the vector covers the
         # forms); IPv6 bracketed, and a non-address host shown generically.
         self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"[fd00::5]:9080:80\", \"[::1]:9081:80\", \"[::]:9082:80\"]\n"),
-                         ("refused", ["service a publishes 9080 on fd00::5 (not on Kubernetes)"]))
+                         ("refused", ["service a publishes 9080 on a specific address (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"${H:-lan}:9080:80\"]\n"),
-                         ("refused", ["service a publishes 9080 on a host address (not on Kubernetes)"]))
+                         ("refused", ["service a publishes 9080 on a specific address (not on Kubernetes)"]))
         # uid 0 only as a one-shot job (the Hub's oneShotRoot): a job is a
         # manifest job, a service_completed_successfully target or restart
         # "no"; its shape: restart no / on-failure, no ports, no shared

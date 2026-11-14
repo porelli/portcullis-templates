@@ -7413,17 +7413,21 @@ class _Reasons:
 RUNTIMES = ("docker", "podman", "kubernetes")
 
 
-def runtime_compat(t: Template, rt: str, env: Optional[Dict[str, str]] = None, port_start: int = 80) -> Tuple[str, List[str]]:
+def runtime_compat(t: Template, rt: str, env: Optional[Dict[str, str]] = None, port_start: int = 80,
+                   labels: bool = True) -> Tuple[str, List[str]]:
     """Classify a template for runtime rt as the Hub's RuntimeCompat
     (portcullis-hub internal/templates/runtimecompat.go, kubecompat.go;
     shared vectors in tests/runtime_vectors.json): docker is always ok,
     podman the rootless rules, kubernetes the Kubernetes table (contracts
     §3.4, §11.10). env is the instance's effective values (None = the
-    defaults; port keys carry the instance's host ports)."""
+    defaults; port keys carry the instance's host ports). labels=False
+    leaves out the Traefik label translation (kube_label_check), as the
+    Hub's templates-package vectors run without internal/runtime/kube's
+    KubeLabelCheck installed; the Hub itself (runtime.txt) has it."""
     if rt == "podman":
         return _podman_compat(t, env, port_start)
     if rt == "kubernetes":
-        return _kube_compat(t, env)
+        return _kube_compat(t, env, labels)
     if rt == "docker":
         return ("ok", [])
     raise ValueError(f"unknown runtime {rt!r}")
@@ -7814,7 +7818,229 @@ def _kube_aliases_check(c: "_Reasons", services: Dict[str, Any], env: Dict[str, 
         c.refuse(f"more than {KUBE_MAX_ALIASES} network aliases (not on Kubernetes)")
 
 
-def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
+# Refusal texts never quote an instance value (the Hub's shown.go): a
+# capability name or a volume type from a fixed set, else a placeholder.
+LINUX_CAPS = {"AUDIT_CONTROL", "AUDIT_READ", "AUDIT_WRITE", "BLOCK_SUSPEND", "BPF", "CHECKPOINT_RESTORE", "CHOWN",
+              "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID", "IPC_LOCK", "IPC_OWNER", "KILL", "LEASE",
+              "LINUX_IMMUTABLE", "MAC_ADMIN", "MAC_OVERRIDE", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE", "NET_BROADCAST",
+              "NET_RAW", "PERFMON", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN", "SYS_BOOT", "SYS_CHROOT",
+              "SYS_MODULE", "SYS_NICE", "SYS_PACCT", "SYS_PTRACE", "SYS_RAWIO", "SYS_RESOURCE", "SYS_TIME",
+              "SYS_TTY_CONFIG", "SYSLOG", "WAKE_ALARM", "ALL"}
+
+
+def kube_shown_cap(c: str) -> str:
+    c = c.strip().upper()
+    c = c[len("CAP_"):] if c.startswith("CAP_") else c
+    return c if c in LINUX_CAPS else "a capability"
+
+
+def kube_shown_volume_type(t: str) -> str:
+    return t if t in ("bind", "volume", "tmpfs", "npipe", "cluster", "image") else "an unknown"
+
+
+def _kube_volume_types(c: "_Reasons", services: Dict[str, Any], env: Dict[str, str]) -> None:
+    """The Hub's kubeVolumeTypes: long-syntax volumes of type bind, volume
+    or tmpfs only."""
+    for n, svc in services.items():
+        for v in (svc or {}).get("volumes") or [] if isinstance((svc or {}).get("volumes"), list) else []:
+            if isinstance(v, dict):
+                typ = _kube_scalar(v, "type", env)
+                if typ not in ("", "bind", "volume", "tmpfs"):
+                    c.refuse(f"service {n} mounts a {kube_shown_volume_type(typ)} volume (not on Kubernetes)")
+
+
+def _kube_netns(c: "_Reasons", services: Dict[str, Any], env: Dict[str, str]) -> None:
+    """The Hub's kubeNetns: network_mode service:<x> names a service that
+    owns its network."""
+    target: Dict[str, str] = {}
+    for n, svc in services.items():
+        nm = _kube_scalar(svc or {}, "network_mode", env)
+        if nm.startswith("service:"):
+            target[str(n)] = nm[len("service:"):]
+    names = {str(n) for n in services}
+    for n in services:
+        x = target.get(str(n))
+        if x is None:
+            continue
+        if x not in names:
+            c.refuse(f"service {n} shares the network of {x}, which isn't a service")
+        elif target.get(x, "") != "":
+            c.refuse(f"service {n} shares the network of {x}, which shares another's")
+
+
+# The Hub's Kubernetes IngressRoute translation (internal/runtime/kube
+# ingress.go IngressObjects), judged on the template's own Traefik labels
+# interpolated with their defaults: its first refusal, or "".
+KUBE_FILE_MIDDLEWARES = ["client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers",
+                         "strip-client-forwarded", "portcullis-auth", "portcullis-auth-ext", "portcullis-groups",
+                         "portcullis-groups-vpn", "portcullis-public-guard", "portcullis-public-guard-vpn", "vpn-required-path"]
+KUBE_FILE_SERVICES = ["group-gate", "forward-auth-ext", "mcp-gate"]
+KUBE_CORE_NAMES = ["hub", "keycloak", "hub-proxy-secret", "portcullis-auth-console", "strip-forwarded", "api", "noop",
+                   "group-gate", "forward-auth-ext", "mcp-gate", "dashboard"]
+KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
+KUBE_MAX_APP_PRIORITY = 1000
+_HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+_KUBE_ROUTE_RE = re.compile(
+    "^\\(?Host\\(`" + _HOST_LABEL + "(\\." + _HOST_LABEL + ")+`\\)( \\|\\| Host\\(`" + _HOST_LABEL + "(\\." + _HOST_LABEL +
+    ")+`\\))*\\)?( && \\(?(PathPrefix|Path)\\(`[^`()]*`\\)( \\|\\| (PathPrefix|Path)\\(`[^`()]*`\\))*\\)?)?$")
+
+
+class _KubeRefused(Exception):
+    pass
+
+
+def _kube_split_list(s: str) -> List[str]:
+    return [p.strip() for p in s.split(",") if p.strip()]
+
+
+def _kube_shown_ref(ref: str, own: Dict[str, Any]) -> bool:
+    name, has, provider = ref.partition("@")
+    if has and provider not in ("docker", "file", "internal"):
+        return False
+    return name in own or name in KUBE_FILE_MIDDLEWARES or name in KUBE_FILE_SERVICES or name in KUBE_CORE_NAMES
+
+
+def _kube_middleware_ref(m: str, own: Dict[str, Any]) -> None:
+    name, has, provider = m.partition("@")
+    if (not has or provider == "docker") and name.lower() in own:
+        return
+    if (not has or provider in ("docker", "file")) and name in KUBE_FILE_MIDDLEWARES:
+        return
+    if _kube_shown_ref(m, own):
+        raise _KubeRefused(f"middleware {m} is not on Kubernetes (not the instance's own, not a core name apps may use)")
+    raise _KubeRefused("a middleware is not on Kubernetes (not the instance's own, not a core name apps may use)")
+
+
+def _kube_go_int(v: str, bits: int) -> Optional[int]:
+    if not re.fullmatch(r"[+-]?[0-9]+", v):
+        return None
+    n = int(v)
+    return n if -(1 << (bits - 1)) <= n < (1 << (bits - 1)) else None
+
+
+def _kube_middleware_spec(name: str, f: Dict[str, str], own: Dict[str, Any]) -> None:
+    types = set()
+    for field in sorted(f):
+        v = f[field]
+        typ, _, rest = field.partition(".")
+        if typ == "forwardauth":
+            raise _KubeRefused(f"middleware {name} is a forwardAuth (not allowed for apps)")
+        if typ == "headers":
+            sub, _, header = rest.partition(".")
+            if sub not in ("customrequestheaders", "customresponseheaders") or header == "":
+                raise _KubeRefused(f"middleware {name}: headers.{sub} is not on Kubernetes")
+            if header.lower().replace("_", "-").startswith("x-portcullis-"):
+                raise _KubeRefused(f"middleware {name} sets {header} (an X-Portcullis-* header)")
+        elif typ == "ipallowlist":
+            if rest == "rejectstatuscode" and _kube_go_int(v, 32) is None:
+                raise _KubeRefused(f"middleware {name}: its rejectstatuscode isn't a number")
+            if rest not in ("sourcerange", "rejectstatuscode"):
+                raise _KubeRefused(f"middleware {name}: ipallowlist.{rest} is not on Kubernetes")
+        elif typ == "chain":
+            if rest != "middlewares":
+                raise _KubeRefused(f"middleware {name}: chain.{rest} is not on Kubernetes")
+            for m in _kube_split_list(v):
+                _kube_middleware_ref(m, own)
+        elif typ == "addprefix":
+            if rest != "prefix":
+                raise _KubeRefused(f"middleware {name}: addprefix.{rest} is not on Kubernetes")
+        elif typ == "stripprefix":
+            if rest != "prefixes":
+                raise _KubeRefused(f"middleware {name}: stripprefix.{rest} is not on Kubernetes")
+        elif typ == "redirectregex":
+            if rest not in ("regex", "replacement", "permanent"):
+                raise _KubeRefused(f"middleware {name}: redirectregex.{rest} is not on Kubernetes")
+        else:
+            raise _KubeRefused(f"middleware {name}: type {typ} is not on Kubernetes")
+        types.add(typ)
+    if len(types) != 1:
+        raise _KubeRefused(f"middleware {name} must have exactly one type")
+
+
+def kube_label_check(labels: Dict[str, Dict[str, str]]) -> str:
+    """The Hub's KubeLabelCheck (IngressObjects' refusals), "" when the
+    labels translate."""
+    try:
+        routers: Dict[str, Dict[str, Any]] = {}
+        ports: Dict[str, int] = {}
+        mws: Dict[str, Dict[str, str]] = {}
+        for svc in sorted(labels):
+            for k, v in labels[svc].items():
+                fk = fold_key(k)
+                if not fk.startswith("traefik."):
+                    continue
+                rest = fk[len("traefik."):]
+                if rest in ("enable", "docker.network"):
+                    continue
+                parts = rest.split(".", 3)
+                if len(parts) < 4 or parts[0] != "http":
+                    if rest.startswith(("tcp.", "udp.")):
+                        raise _KubeRefused(f"{svc}: {rest.split('.', 1)[0]} routers are not on Kubernetes")
+                    continue
+                kind, name, field = parts[1], parts[2], parts[3]
+                if kind == "routers":
+                    r = routers.setdefault(name, {"rule": "", "middlewares": "", "svc": "", "priority": "", "tls_options": ""})
+                    if field == "rule":
+                        r["rule"] = v
+                    elif field == "middlewares":
+                        r["middlewares"] = v
+                    elif field == "service":
+                        r["svc"] = v
+                    elif field == "priority":
+                        r["priority"] = v
+                    elif field == "tls.options":
+                        r["tls_options"] = v
+                    elif field not in ("entrypoints", "tls", "tls.certresolver"):
+                        raise _KubeRefused(f"router {name}: {field} is not on Kubernetes")
+                elif kind == "services":
+                    if field != "loadbalancer.server.port":
+                        raise _KubeRefused(f"service {name}: {field} is not on Kubernetes")
+                    p = _kube_go_int(v, 32)
+                    if p is None or p < 1 or p > 65535:
+                        raise _KubeRefused(f"service {name}: its port isn't a port number")
+                    ports[name] = p
+                elif kind == "middlewares":
+                    mws.setdefault(name, {})[field] = v
+        for name in sorted(mws):
+            _kube_middleware_spec(name, mws[name], mws)
+        for name in sorted(routers):
+            r = routers[name]
+            if r["rule"] == "":
+                raise _KubeRefused(f"router {name} has no rule")
+            if not _KUBE_ROUTE_RE.match(r["rule"]):
+                raise _KubeRefused(f"router {name}: its rule isn't Host(…) with an optional && Path/PathPrefix over "
+                                   "lowercase hostnames (not on Kubernetes)")
+            if r["priority"] != "":
+                pr = _kube_go_int(r["priority"], 64)
+                if pr is None:
+                    raise _KubeRefused(f"router {name}: its priority isn't a number")
+                if pr > KUBE_MAX_APP_PRIORITY:
+                    raise _KubeRefused(f"router {name}: priority {pr} is above {KUBE_MAX_APP_PRIORITY} (not on Kubernetes)")
+            for m in _kube_split_list(r["middlewares"]):
+                _kube_middleware_ref(m, mws)
+            svc = r["svc"]
+            sname, has, provider = svc.partition("@")
+            if svc == "":
+                if len(ports) == 1:
+                    sname = next(iter(ports))
+                else:
+                    raise _KubeRefused(f"router {name} names no service")
+            if (not has or provider == "docker") and ports.get(sname.lower()):
+                pass
+            elif has and provider in ("docker", "file") and sname in KUBE_FILE_SERVICES:
+                pass
+            elif _kube_shown_ref(svc, {}) or ports.get(svc.split("@", 1)[0].lower()):
+                raise _KubeRefused(f"router {name}: service {svc} is not on Kubernetes")
+            else:
+                raise _KubeRefused(f"router {name}: its service isn't on Kubernetes")
+            if r["tls_options"] and r["tls_options"] not in KUBE_TLS_OPTIONS:
+                raise _KubeRefused(f"router {name}: its tls.options isn't one of the tiers")
+    except _KubeRefused as e:
+        return str(e)
+    return ""
+
+
+def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
     a specific host address, scale and extra_hosts; then each manifest port (a core port); then the Avahi
@@ -7864,15 +8090,12 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
             if v == "NET_ADMIN":
                 c.refuse(tun)
             elif v not in KUBE_BASELINE_CAPS:
-                if v.strip("ABCDEFGHIJKLMNOPQRSTUVWXYZ_") != "" or len(v) > 32:
-                    v = "a capability"
-                c.refuse(f"service {name} adds {v}, outside the Kubernetes baseline")
+                c.refuse(f"service {name} adds {kube_shown_cap(v)}, outside the Kubernetes baseline")
         u = _kube_scalar(svc, "user", env)
         if u:
             uid, _, gid = u.partition(":")
             if not _kube_numeric(uid) or (gid != "" and not _kube_numeric(gid)):
-                shown = u if _KUBE_SHOWN_USER_RE.fullmatch(u) else "a non-numeric value"
-                c.refuse(f"service {name} runs as user {shown}: Kubernetes needs a numeric uid")
+                c.refuse(f"service {name} runs as a non-numeric user: Kubernetes needs a numeric uid")
             elif int(uid) == 0:
                 # Core's admission lets root run only as the one-shot shape.
                 if not (name in jobs or _kube_scalar(svc, "restart", env) == "no"):
@@ -7900,10 +8123,11 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         for src in _kube_bind_sources(svc.get("volumes"), env):
             if not src.startswith("/") or _kube_under_roots(src, roots):
                 continue
-            shown = src if _KUBE_SHOWN_PATH_RE.fullmatch(src) else "a host path"
-            c.refuse(f"service {name} binds {shown}, outside the shared-folder roots (not on Kubernetes)")
-        for shown_ip, port in _kube_published_host_ips(svc.get("ports"), env):
-            c.refuse(f"service {name} publishes {port} on {shown_ip} (not on Kubernetes)")
+            c.refuse(f"service {name} binds a host path outside the shared-folder roots (not on Kubernetes)")
+        for _, port in _kube_published_host_ips(svc.get("ports"), env):
+            if not _kube_numeric(port):
+                port = "a port"
+            c.refuse(f"service {name} publishes {port} on a specific address (not on Kubernetes)")
         scale = _kube_scalar(svc, "scale", env)
         if scale:
             k = _go_atoi(scale)
@@ -7913,12 +8137,26 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         if (isinstance(eh, (dict, list)) and len(eh) > 0) or (eh is not None and not isinstance(eh, (dict, list))
                                                             and _go_scalar(eh) != ""):
             c.refuse(f"service {name} sets extra_hosts (not on Kubernetes)")
+        ga, _ = _rootless_scalars(svc.get("group_add"))
+        for g in ga:
+            if not _kube_numeric(_rootless_resolve(g, env).strip()):
+                c.refuse(f"service {name} adds a non-numeric group: Kubernetes needs a numeric gid")
+        ex, _ = _rootless_scalars(svc.get("expose"))
+        for e in ex:
+            if not _kube_numeric(_rootless_resolve(e, env).strip().partition("/")[0]):
+                c.refuse(f"service {name} exposes something other than a single port (not on Kubernetes)")
         # A named volume's owner on Kubernetes is the service's uid.
         if not _kube_scalar(svc, "user", env) and any(
                 v != SECRETS_VOLUME_KEY for v in _kube_named_volumes(svc.get("volumes"), env)):
             c.refuse(f"service {name} mounts a volume but has no numeric user")
 
     _kube_aliases_check(c, services, env)
+    _kube_volume_types(c, services, env)
+    _kube_netns(c, services, env)
+    why = kube_label_check({str(n): {k: _rootless_resolve(v, {}) for k, v in labels_of(svc or {}).items()}
+                            for n, svc in services.items() if labels_of(svc or {})}) if labels else ""
+    if why:
+        c.refuse(why)
     manifest = t.manifest if isinstance(t.manifest, dict) else {}
     first = next(iter(services), "")
     core = kube_core_ports(env)
