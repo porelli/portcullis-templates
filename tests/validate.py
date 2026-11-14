@@ -6758,35 +6758,44 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         why = vpn_privilege_problem(n, sv)
         if why:
             return [why]
-    # pid / ipc, both ways (Hub, after the namespace checks): the ingress and
-    # its namespace's members set neither; no other service points its pid
-    # or ipc at a member (service:<X>, or container:<X>'s container): it
-    # could reach the gateway's processes and, with capabilities, enter its
-    # network namespace.
-    for n in names:
+        # No pid or ipc key at all: a member keeps its own namespaces.
         for key in ("pid", "ipc"):
-            if n in members:
-                if key in services[n]:
-                    return [f"vpn.ingress.service: {n} sets {key}: the gateway's namespace keeps its own pid and ipc"]
-                continue
-            val = scalar_text(services[n].get(key)).strip()
-            kind, _, target = val.partition(":")
-            target = target.strip()
-            if kind == "service" and target in members or kind == "container" and any(
-                    target == x or re.search(rf"[-_]{re.escape(x)}[-_][0-9]+$", target) for x in members):
-                return [f"vpn.ingress.service: {n} shares the {key} namespace of {target}"]
-        # volumes_from, both ways: a service mounting the gateway's volumes
-        # could read its state and keys.
-        if n in members:
-            if "volumes_from" in services[n]:
-                return [f"vpn.ingress.service: {n} sets volumes_from: a VPN gateway mounts no other service's volumes"]
+            if key in sv:
+                return [f"vpn.ingress.service: {n} sets {key}: a VPN gateway keeps its own pid and ipc namespaces"]
+        if "volumes_from" in sv:
+            return [f"vpn.ingress.service: {n} uses volumes_from: a VPN gateway mounts no other service's volumes"]
+    # No other service shares the pid or ipc namespace of a member (it could
+    # reach the gateway's processes and, with capabilities, enter its
+    # network namespace), mounts a member's volumes (volumes_from), or
+    # mounts a volume / bind source a member mounts read-write (it could
+    # read or plant the gateway's state and keys). container: targets are
+    # refused for every template already (check_hub_rules).
+    in_ns = set(members)
+    member_mounts: Dict[str, List[Tuple[str, bool]]] = {}
+    for mname in members:
+        for src, ro in vpn_mount_sources(services[mname]):
+            member_mounts.setdefault(src, []).append((mname, ro))
+    for n in names:
+        sv = services[n]
+        for key in ("pid", "ipc"):
+            val = scalar_text(sv.get(key)).strip() if isinstance(sv.get(key), str) else ""
+            if val.startswith("service:") and val[len("service:"):].strip() in in_ns:
+                return [f"vpn.ingress.service: {n} shares the {key} namespace of {val[len('service:'):].strip()}"]
+        # volumes_from as Compose reads it: service: stripped, the name is
+        # everything before the first ':', a mode is exactly ro or rw.
+        for e in as_list(sv.get("volumes_from")):
+            entry = scalar_text(e).strip()
+            name, sep, mode = entry.removeprefix("service:").partition(":")
+            if sep and mode not in ("ro", "rw") and not entry.startswith("container:"):
+                return [f"vpn.ingress.service: {n} volumes_from {entry}: the mode must be ro or rw"]
+            if name in in_ns:
+                return [f"vpn.ingress.service: {n} mounts the volumes of {name} (volumes_from)"]
+        if n in in_ns:
             continue
-        for vf in as_list(services[n].get("volumes_from")):
-            parts = scalar_text(vf).strip().split(":")
-            src = parts[1] if len(parts) > 1 and parts[0] in ("service", "container") else parts[0]
-            src = src.strip()
-            if src in members or parts[0] == "container" and any(re.search(rf"[-_]{re.escape(x)}[-_][0-9]+$", src) for x in members):
-                return [f"vpn.ingress.service: {n} mounts the volumes of {src}"]
+        for src, _ in vpn_mount_sources(sv):
+            rw = [mname for mname, ro in member_mounts.get(src, []) if not ro]
+            if rw:
+                return [f"vpn.ingress.service: {n} mounts {src}, which {rw[0]} mounts read-write"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
@@ -6821,6 +6830,25 @@ def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
         if key in sv:
             return f"vpn.ingress.service: {n} has {key}: a VPN gateway runs userspace (no devices)"
     return ""
+
+
+def vpn_mount_sources(sv: Dict[str, Any]) -> List[Tuple[str, bool]]:
+    """(source, read-only) of a service's named-volume and bind mounts, as
+    Compose reads them: short syntax src:dst[:opts] (read-only when the
+    comma-separated options include ro), long syntax {type, source,
+    read_only}; anonymous volumes and tmpfs have no source."""
+    out: List[Tuple[str, bool]] = []
+    for v in as_list(sv.get("volumes")):
+        if isinstance(v, dict):
+            src = scalar_text(v.get("source")).strip()
+            if v.get("type", "volume") in ("volume", "bind") and src:
+                out.append((src.rstrip("/") or "/", v.get("read_only") is True))
+            continue
+        parts = scalar_text(v).strip().split(":")
+        if len(parts) >= 2 and parts[0]:
+            opts = parts[2].split(",") if len(parts) > 2 else []
+            out.append((parts[0].rstrip("/") or "/", "ro" in opts))
+    return out
 
 
 def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:

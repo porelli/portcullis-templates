@@ -4472,7 +4472,13 @@ class VPNTests(Case):
         head = error.split("\n", 1)[0]
         loc, _, msg = head.partition(": ")
         f = loc.rsplit("/", 1)[-1]
-        return [msg, f"{f}: {msg}", f"{f} {msg}"]
+        out = [msg, f"{f}: {msg}", f"{f} {msg}"]
+        # check_hub_rules words a service's location services.<s>: where the
+        # Hub's coreref texts say service <s>:.
+        m = v.re.match(r"services\.([^:]+): (.*)", msg, v.re.S)
+        if m:
+            out.append(f"service {m.group(1)}: {m.group(2)}")
+        return out
 
     def test_vectors(self) -> None:
         """Each Hub vector (a whole template; the Hub's TestVPNVectors
@@ -4658,21 +4664,26 @@ class VPNTests(Case):
         gw = "    cap_drop: [ALL]\n"
         for key in ("pid", "ipc"):
             self.assertError(self.vpn_template(cedit=(gw, gw + f"    {key}: private\n")),
-                             f"vpn.ingress.service: gateway sets {key}: the gateway's namespace keeps its own pid and ipc")
+                             f"vpn.ingress.service: gateway sets {key}: a VPN gateway keeps its own pid and ipc namespaces")
+        # container: targets: refused for every template (check_hub_rules).
         self.assertError(self.vpn_template(cedit=("  gateway:\n", f"  side:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n"
                                                                     "    ipc: container:portcullis-demo-gateway-1\n  gateway:\n")),
-                         "vpn.ingress.service: side shares the ipc namespace of portcullis-demo-gateway-1")
+                         "ipc container:portcullis-demo-gateway-1")
 
     def test_volumes_from_the_gateway_namespace(self) -> None:
         """volumes_from, both ways: nobody mounts the gateway's volumes, the
         gateway mounts nobody's."""
         side = f"  side:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    volumes_from: [{{}}]\n  gateway:\n"
-        for vf in ("gateway", "\"gateway:ro\"", "\"service:gateway\"", "\"container:portcullis-demo-gateway-1:rw\""):
+        for vf in ("gateway", "\"gateway:ro\"", "\"service:gateway\"", "\"service:gateway:rw\""):
             with self.subTest(vf):
-                self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format(vf))), "vpn.ingress.service: side mounts the volumes of")
+                self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format(vf))),
+                                 "vpn.ingress.service: side mounts the volumes of gateway (volumes_from)")
+        for vf in ("\"gateway:z\"", "\"gateway:ro:rw\"", "\"init:RO\""):
+            with self.subTest(vf):
+                self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format(vf))), ": the mode must be ro or rw")
         gw = "    cap_drop: [ALL]\n"
         self.assertError(self.vpn_template(cedit=(gw, gw + "    volumes_from: [init]\n")),
-                         "vpn.ingress.service: gateway sets volumes_from: a VPN gateway mounts no other service's volumes")
+                         "vpn.ingress.service: gateway uses volumes_from: a VPN gateway mounts no other service's volumes")
         self.assertFalse([e for e in self.vpn_template(cedit=("  gateway:\n", side.format("init"))) if "mounts the volumes" in e])
 
     def test_control_router_shapes(self) -> None:
