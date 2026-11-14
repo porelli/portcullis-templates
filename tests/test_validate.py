@@ -4424,7 +4424,8 @@ vpn:
   dns: {hook: vpn-dns}
   control_routers: [demo]
 """
-VPN_GATEWAY = f"  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:{S_DIGEST}\n    command: [\"sh\", \"-c\", \"echo $$PORTCULLIS_VPN_EDGE\"]\n"
+VPN_GATEWAY = (f"  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:{S_DIGEST}\n"
+               "    command: [\"sh\", \"-c\", \"echo $$PORTCULLIS_VPN_EDGE\"]\n    cap_drop: [ALL]\n")
 
 
 def load_app_signin(app: str) -> Any:
@@ -4579,7 +4580,7 @@ class VPNTests(Case):
         """Hub checkVPNIngress: services in the ingress's network namespace
         (chains followed) and host namespaces."""
         fwd = f"ghcr.io/porelli/portcullis-forwarder:1.0.0@sha256:{S_DIGEST}"
-        sib = "  {name}:\n    image: {image}\n    network_mode: service:{of}\n{extra}"
+        sib = "  {name}:\n    image: {image}\n    network_mode: service:{of}\n    cap_drop: [ALL]\n{extra}"
         def with_services(*svcs: str) -> List[str]:
             return self.vpn_template(cedit=("  gateway:\n", "".join(svcs) + "  gateway:\n"))
         self.assertClean(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="")))
@@ -4610,6 +4611,41 @@ class VPNTests(Case):
                                                    "  gateway:\n    image: docker.io/tailscale/tailscale:v1.90.0@sha256:" + S_DIGEST + "\n    pid: host\n")),
                          "vpn: service gateway uses pid: host")
         self.assertError(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="    pid: host\n")), "vpn: service fwd uses pid: host")
+
+    def test_gateway_runs_userspace(self) -> None:
+        """Ruling (Task 19): the ingress and its namespace drop every
+        capability and add none of NET_ADMIN / NET_RAW / SYS_ADMIN, no TUN,
+        not privileged; NET_BIND_SERVICE (the forwarder's :443) stays."""
+        gw = "    cap_drop: [ALL]\n"
+        for name, new, want in [
+            ("no cap_drop", "", "vpn.ingress.service: gateway must set cap_drop: [ALL]"),
+            ("NET_ADMIN", gw + "    cap_add: [NET_ADMIN]\n", "vpn.ingress.service: gateway adds NET_ADMIN"),
+            ("CAP_NET_RAW", gw + "    cap_add: [CAP_NET_RAW]\n", "vpn.ingress.service: gateway adds CAP_NET_RAW"),
+            ("sys_admin", gw + "    cap_add: [sys_admin]\n", "vpn.ingress.service: gateway adds sys_admin"),
+            ("ALL", gw + "    cap_add: [ALL]\n", "vpn.ingress.service: gateway adds ALL"),
+            ("interpolated", gw + "    cap_add: [\"${GW_CAP:-CHOWN}\"]\n", "vpn.ingress.service: gateway adds ${GW_CAP:-CHOWN}"),
+            ("tun", gw + "    devices: [\"/dev/net/tun:/dev/net/tun\"]\n", "vpn.ingress.service: gateway uses /dev/net/tun"),
+            ("tun long form", gw + "    devices:\n      - {source: /dev/net/tun, target: /dev/net/tun, permissions: rwm}\n",
+             "vpn.ingress.service: gateway uses /dev/net/tun"),
+            ("privileged", gw + "    privileged: true\n", "vpn.ingress.service: gateway is privileged"),
+        ]:
+            with self.subTest(name):
+                self.assertError(self.vpn_template(cedit=(gw, new)), want)
+        self.assertClean(self.vpn_template(cedit=(gw, gw + "    cap_add: [NET_BIND_SERVICE]\n")))
+        fwd = f"ghcr.io/porelli/portcullis-forwarder:1.0.0@sha256:{S_DIGEST}"
+        self.assertError(self.vpn_template(cedit=("  gateway:\n", f"  fwd:\n    image: {fwd}\n    network_mode: service:gateway\n"
+                                                                    "    cap_drop: [ALL]\n    cap_add: [NET_ADMIN]\n  gateway:\n")),
+                         "vpn.ingress.service: fwd adds NET_ADMIN")
+
+    def test_control_router_shapes(self) -> None:
+        """Ruling (Task 19): a control router is Host() alone or Host() &&
+        one PathPrefix()."""
+        self.assertTrue(v._HOST_ONLY_RULE_RE.fullmatch("Host(`a`) && PathPrefix(`/x/`)"))
+        self.assertTrue(v._HOST_ONLY_RULE_RE.fullmatch("Host(`a`)"))
+        for bad in ("PathPrefix(`/x`)", "Host(`a`) && Path(`/x`)", "Host(`a`) || PathPrefix(`/x`)",
+                    "Host(`a`) && PathPrefix(`/a`) && PathPrefix(`/b`)", "Host(`a`) && !PathPrefix(`/x`)"):
+            with self.subTest(bad):
+                self.assertFalse(v._HOST_ONLY_RULE_RE.fullmatch(bad))
 
     def test_policy_doc_v7(self) -> None:
         mod = load_app_signin("headscale")

@@ -669,6 +669,13 @@ vpn:
   shell reads the variable as `$$PORTCULLIS_VPN_EDGE`: `${PORTCULLIS_VPN_*}`
   compose interpolation is refused, and so is declaring a `PORTCULLIS_VPN_*`
   key.
+- **The gateway runs userspace.** The ingress service and every service in
+  its namespace set `cap_drop: [ALL]`, are not privileged, add none of
+  NET_ADMIN, NET_RAW or SYS_ADMIN and use no `/dev/net/tun` (only
+  NET_BIND_SERVICE, for a forwarder on :443). With NET_ADMIN a gateway could
+  take another provider's address on `portcullis-vpn`. A VPN app whose
+  client can't run userspace while keeping each peer's tunnel address can't
+  be a provider.
 - **The gateway's network namespace** holds only the ingress service and,
   optionally, the forwarder (`network_mode: service:<ingress>`, pinned by
   digest); every service in it follows the ingress rules above. With a
@@ -688,7 +695,8 @@ vpn:
   that ships an ACL, or whose notes tell admins to add one, says so (e.g.
   Headscale: allow members to `tag:portcullis-gateway:443`). Never widen the
   app's ACL to make this work.
-- **Control routers** are host routers (a `Host()` rule alone), only what clients need to connect (coordination,
+- **Control routers** are the template's own routers whose rule is a
+  `Host()` alone or `Host() && PathPrefix()`, only what clients need to connect (coordination,
   signal, relay). Never an admin UI: a router that serves an
   `auth.admin_paths` path, or any router of a `group_admin: true` app, is
   refused.

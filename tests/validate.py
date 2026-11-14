@@ -6577,7 +6577,9 @@ _OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])"
 _VPN_PREFIX_RE = re.compile(rf"({_OCTET}(?:\.{_OCTET}){{3}})/(0|[1-9][0-9]?)")
 _HTTP_ROUTER_RE = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$")
 # A host router (contract §3.1): the rule is a Host() alone.
-_HOST_ONLY_RULE_RE = re.compile(r"Host\(`[^`]*`\)")
+# A control router (ruling, Task 19): Host() alone, or Host() && one
+# PathPrefix() (NetBird's management / signal routers).
+_HOST_ONLY_RULE_RE = re.compile(r"Host\(`[^`]*`\)(\s*&&\s*PathPrefix\(`[^`]*`\))?")
 # Core's forwarder image, pinned by digest (V1): the only service besides
 # the ingress allowed in its network namespace.
 FORWARDER_IMAGE_RE = re.compile(r"ghcr\.io/porelli/portcullis-forwarder(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}")
@@ -6753,9 +6755,43 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
             return [f"vpn.ingress.service: {n} has a Traefik router"]
         if "ports" in sv:
             return [f"vpn.ingress.service: {n} publishes ports"]
+        why = vpn_privilege_problem(n, sv)
+        if why:
+            return [why]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
+
+
+VPN_REFUSED_CAPS = {"NET_ADMIN", "NET_RAW", "SYS_ADMIN", "ALL"}
+
+
+def _cap_name(c: Any) -> str:
+    """A capability as Docker reads it: case-insensitive, CAP_ optional."""
+    t = scalar_text(c).strip().upper()
+    return t[4:] if t.startswith("CAP_") else t
+
+
+def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
+    """Ruling (Task 19, 2026-11-14): a VPN gateway and every service in its
+    namespace run userspace. Not privileged, cap_drop: [ALL], no NET_ADMIN /
+    NET_RAW / SYS_ADMIN (or ALL, or an interpolated capability: can't be
+    checked) added, no /dev/net/tun. With NET_ADMIN a gateway could take
+    another gateway's address on portcullis-vpn (final review I6)."""
+    if sv.get("privileged") is True or scalar_text(sv.get("privileged")).lower() == "true":
+        return f"vpn.ingress.service: {n} is privileged"
+    if "ALL" not in {_cap_name(c) for c in as_list(sv.get("cap_drop"))}:
+        return f"vpn.ingress.service: {n} must set cap_drop: [ALL]"
+    for c in as_list(sv.get("cap_add")):
+        name = _cap_name(c)
+        if name in VPN_REFUSED_CAPS or "$" in name:
+            return (f"vpn.ingress.service: {n} adds {scalar_text(c).strip()}: a VPN gateway runs userspace "
+                    "(no NET_ADMIN, NET_RAW or SYS_ADMIN)")
+    for d in as_list(sv.get("devices")):
+        paths = [scalar_text(d.get(k)) for k in ("source", "target")] if isinstance(d, dict) else scalar_text(d).split(":")[:2]
+        if any(p.strip().rstrip("/") == "/dev/net/tun" or "$" in p for p in paths):
+            return f"vpn.ingress.service: {n} uses /dev/net/tun: a VPN gateway runs userspace (no TUN device)"
+    return ""
 
 
 def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:
