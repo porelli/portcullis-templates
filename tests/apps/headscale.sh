@@ -291,6 +291,33 @@ else
   docker logs portcullis-gateway-1 2>&1 | grep -vE 'magicsock: \[warning\]|buffer size' | grep -E 'exiting|left running state|boot:|Received error|health\(|state|failed|fatal|panic|Switching ipn state' | tail -60
 fi
 rm -f "$EVENTS"
+# The gateway (re)starting while its login server is down longer than
+# containerboot's default 60 s boot deadline (the Hub's wiring recreates
+# headscale, which restarts until its OIDC discovery answers): it must wait
+# (TS_BOOT_TIMEOUT), not exit.
+if [ "$(yq -r '.services.gateway.environment.TS_BOOT_TIMEOUT' "$COMPOSE")" = 10m ]; then
+  pass "gateway waits up to 10m for its login server at boot (TS_BOOT_TIMEOUT)"
+else
+  fail "gateway must set TS_BOOT_TIMEOUT: 10m"
+fi
+docker stop "$HS" >/dev/null
+docker restart portcullis-gateway-1 >/dev/null
+SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EVENTS=$(mktemp)
+docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >"$EVENTS" 2>&1 &
+EVENTS_PID=$!
+sleep 75
+docker start "$HS" >/dev/null
+for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && \
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete' && break; sleep 3; done
+kill "$EVENTS_PID" 2>/dev/null || true
+if ! grep -q ' die$' "$EVENTS" && docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then
+  pass "a gateway booting while headscale is down for 75 s waits and logs in (no exit)"
+else
+  fail "the gateway exited while its login server was down: $(tr '\n' ';' <"$EVENTS")"
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:' | tail -20
+fi
+rm -f "$EVENTS"
 for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && break; sleep 3; done
 
 # People: alice signed in through Portcullis (provider id = issuer/sub,

@@ -113,6 +113,12 @@ services:
       TS_USERSPACE: "true"
       TS_STATE_DIR: /var/lib/tailscale
       TS_AUTH_ONCE: "true"
+      # containerboot's first login must reach Running within this, or it
+      # exits (default 60 s). When the Hub wires the provider it recreates
+      # the whole project, and headscale restarts until its OIDC discovery
+      # answers: longer than 60 s, so the gateway exited and restarted once
+      # (core e2e-vpn). Wait as long as headscale takes.
+      TS_BOOT_TIMEOUT: 10m
       TS_ACCEPT_DNS: "false"
       TS_HOSTNAME: portcullis-gateway
       # No log upload to log.tailscale.com.

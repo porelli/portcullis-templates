@@ -6738,6 +6738,13 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
             return [f"vpn: service {n} uses network_mode: host"]
         if services[n].get("pid") == "host":
             return [f"vpn: service {n} uses pid: host"]
+    # pid / ipc service:<X> with X in the ingress's namespace: that service
+    # can reach the gateway's processes (or its shared memory).
+    for n in names:
+        for key in ("pid", "ipc"):
+            val = services[n].get(key)
+            if isinstance(val, str) and val.startswith("service:") and val[len("service:"):] in members:
+                return [f"vpn.ingress.service: {n} shares the {key} namespace of {val[len('service:'):]}"]
     jobs = job_services(m, services)
     ai = m.get("ai") if isinstance(m.get("ai"), dict) else {}
     companions = {_str(c, "service") for c in as_list(ai.get("mcp")) if isinstance(c, dict) and _str(c, "kind") == "companion"}

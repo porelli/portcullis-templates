@@ -4645,6 +4645,16 @@ class VPNTests(Case):
                                                                     "    cap_drop: [ALL]\n    cap_add: [NET_ADMIN]\n  gateway:\n")),
                          f"vpn.ingress.service: fwd adds NET_ADMIN: {only}")
 
+    def test_pid_ipc_of_the_gateway_namespace(self) -> None:
+        """A service sharing the pid or ipc namespace of the ingress (or a
+        member of its namespace) reaches the gateway's processes."""
+        side = f"  side:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    {{}}: service:{{}}\n  gateway:\n"
+        self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format("pid", "gateway"))),
+                         "vpn.ingress.service: side shares the pid namespace of gateway")
+        self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format("ipc", "gateway"))),
+                         "vpn.ingress.service: side shares the ipc namespace of gateway")
+        self.assertFalse([e for e in self.vpn_template(cedit=("  gateway:\n", side.format("pid", "init"))) if "shares the" in e])
+
     def test_control_router_shapes(self) -> None:
         """Ruling (Task 19): a control router is Host() alone or Host() &&
         one PathPrefix()."""
