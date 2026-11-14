@@ -82,6 +82,42 @@ if [ -n "$wasm" ] && get "$wasm" | grep -qi 'Content-Type: application/wasm'; th
 else
   fail "wasm not served as application/wasm (${wasm:-no .wasm found})"
 fi
+# Everything the page loads through the app's route: its scripts, module
+# preloads and inline imports, then every module those import, to the end of
+# the static graph (tests/web_refs.py): each must answer 200, modules as
+# JavaScript. A module importing a path the release zip doesn't have at that
+# place (PhotoCraft's app/ -> ./snippets/) fails here, not in the browser.
+if refs=$(python3 tests/web_refs.py --docker-exec "$C" http://127.0.0.1:8080/ 2>&1); then
+  pass "every script, module and import the page loads answers 200 ($(grep -c '^  200 ' <<<"$refs") files)"
+else
+  fail "the page loads files nginx doesn't serve:"
+  printf '%s\n' "$refs" | sed 's/^/    /'
+fi
+# The boot module fetches app/parts.txt (line 1 "photocraft-parts <n>", then
+# the n part names), then each part, from inside the wasm: all must be served.
+parts=$(get /app/parts.txt | sed -n '/^photocraft-parts /,$p')
+n=$(printf '%s\n' "$parts" | sed -n '1s/^photocraft-parts \([0-9][0-9]*\)$/\1/p')
+names=$(printf '%s\n' "$parts" | sed -n '2,$p' | grep -E '^[A-Za-z0-9._-]+$' || true)
+if [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$(printf '%s\n' "$names" | grep -c .)" = "$n" ]; then
+  bad=""
+  for p in $names; do
+    docker exec "$C" wget -q -O /dev/null "http://127.0.0.1:8080/app/$p" 2>/dev/null || bad="$bad $p"
+  done
+  if [ -z "$bad" ]; then pass "app/parts.txt and its $n part(s) served"; else fail "app parts not served:$bad"; fi
+else
+  fail "app/parts.txt not served or not 'photocraft-parts <n>' + n names"
+fi
+# The /app/snippets/ mapping keeps the server's rules: dotfiles, listing.
+if get /app/snippets/.htaccess | grep -q 'HTTP/1.1 404'; then pass "dotfiles under /app/snippets/ are 404"; else fail "dotfiles under /app/snippets/ are served"; fi
+if get /app/snippets/ | grep -q 'HTTP/1.1 404'; then pass "/app/snippets/ has no listing"; else fail "/app/snippets/ answers a listing"; fi
+snip=$(docker exec "$C" sh -c 'cd /srv/craft/www/snippets && find . -name "*.js" | sort | head -n 1' | sed 's|^\./||')
+hdrs=$(get "/app/snippets/$snip")
+if [ -n "$snip" ] && grep -q 'HTTP/1.1 200' <<<"$hdrs" && grep -qi 'X-Content-Type-Options: nosniff' <<<"$hdrs" \
+   && grep -qi 'Content-Security-Policy: frame-ancestors' <<<"$hdrs" && grep -qi 'Content-Type: text/javascript' <<<"$hdrs"; then
+  pass "/app/snippets/$snip served from snippets/ with the security headers"
+else
+  fail "/app/snippets/${snip:-?} not served as JavaScript with the security headers"
+fi
 if get /.htaccess | grep -q 'HTTP/1.1 404'; then pass "dotfiles are 404"; else fail "dotfiles are served"; fi
 if docker exec "$C" sh -c 'test -w /srv/craft' 2>/dev/null; then fail "site volume is writable by nginx"; else pass "site volume read-only for nginx"; fi
 if [ "$(docker exec "$C" id -u)" != 0 ]; then pass "nginx runs as non-root"; else fail "nginx runs as root"; fi
