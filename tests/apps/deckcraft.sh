@@ -82,6 +82,17 @@ if [ -n "$wasm" ] && get "$wasm" | grep -qi 'Content-Type: application/wasm'; th
 else
   fail "wasm not served as application/wasm (${wasm:-no .wasm found})"
 fi
+# Everything the page loads through the app's route: its scripts, module
+# preloads and inline imports, then every module those import, to the end of
+# the static graph (tests/web_refs.py): each must answer 200, modules as
+# JavaScript. A module importing a path the release zip doesn't have at that
+# place (PhotoCraft's app/ -> ./snippets/) fails here, not in the browser.
+if refs=$(python3 tests/web_refs.py --docker-exec "$C" http://127.0.0.1:8080/ 2>&1); then
+  pass "every script, module and import the page loads answers 200 ($(grep -c '^  200 ' <<<"$refs") files)"
+else
+  fail "the page loads files nginx doesn't serve:"
+  printf '%s\n' "$refs" | sed 's/^/    /'
+fi
 if get /.htaccess | grep -q 'HTTP/1.1 404'; then pass "dotfiles are 404"; else fail "dotfiles are served"; fi
 if docker exec "$C" sh -c 'test -w /srv/craft' 2>/dev/null; then fail "site volume is writable by nginx"; else pass "site volume read-only for nginx"; fi
 if [ "$(docker exec "$C" id -u)" != 0 ]; then pass "nginx runs as non-root"; else fail "nginx runs as root"; fi
