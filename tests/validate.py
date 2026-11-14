@@ -6814,6 +6814,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
                 if vpn_bind_outside(src):
                     return [f"vpn.ingress.service: {mname} mounts {entry}: {VPN_BIND_TEXT}"]
                 continue
+            if len(src) == 1:
+                return [f"vpn.ingress.service: {mname} mounts {entry}: {VPN_LETTER_TEXT}"]
             decl = top_vols.get(src) if src in top_vols else None
             if src not in top_vols or (isinstance(decl, dict) and any(k in decl for k in ("external", "name", "driver", "driver_opts"))) \
                     or (decl is not None and not isinstance(decl, dict)):
@@ -6822,6 +6824,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
             member_vols.setdefault(src, []).append((mname, ro))
     # Every top-level volume is a plain <project>_<key> volume.
     for k, decl in sorted(top_vols.items(), key=lambda kv: str(kv[0])):
+        if len(str(k)) == 1:
+            return [f"vpn: volume {k}: {VPN_LETTER_TEXT}"]
         for key in ("name", "external", "driver", "driver_opts"):
             if isinstance(decl, dict) and key in decl:
                 return [f"vpn: volume {k} sets {key}: a VPN template's volumes are plain <project>_<key> volumes"]
@@ -6850,6 +6854,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         # ancestors . and ./templates) are read-only for every service: a
         # read-write bind could rewrite a script the gateway runs.
         for kind, src, ro, entry in mounts:
+            if kind == "volume" and len(src) == 1:
+                return [f"vpn.ingress.service: {n} mounts {entry}: {VPN_LETTER_TEXT}"]
             if kind == "volume" and entry != src and src not in top_vols:
                 return [f"vpn.ingress.service: {n} mounts {entry}: a VPN template's short-syntax sources are ./ binds "
                         "or declared volumes"]
@@ -6927,6 +6933,8 @@ def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
 
 _VPN_VOLUME_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
 VPN_BIND_TEXT = "a VPN template's binds start with ./ and have no .. segment"
+VPN_LETTER_TEXT = "a VPN template's volume names are longer than one letter"
+_VPN_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
 
 
 def vpn_bind_outside(src: str) -> bool:
@@ -6957,6 +6965,12 @@ def vpn_mounts(sv: Dict[str, Any]) -> Tuple[List[Tuple[str, str, bool, str]], st
         entry = scalar_text(v).strip()
         if "$" in entry:
             return out, entry
+        if _VPN_DRIVE_RE.match(entry):
+            # X:\... or X:/...: a Windows host path, read before splitting
+            # on ':' (a bind, refused by the bind rules).
+            rest = entry[2:].split(":")
+            out.append(("bind", entry[:2] + rest[0], len(rest) > 2 and "ro" in rest[2].split(","), entry))
+            continue
         parts = entry.split(":")
         if len(parts) == 1:
             continue   # an anonymous volume
