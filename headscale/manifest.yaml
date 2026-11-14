@@ -52,6 +52,10 @@ auth:
     clients reach this server through the gateway. In whole-server VPN mode
     only the headscale router (coordination and DERP, which clients need to
     connect) stays on the internet; Headplane, an admin UI, becomes VPN-only.
+    The gateway reaches headscale's control and DERP server at its public
+    hostname through Traefik's published port on this host (stable across
+    headscale restarts), trusting the Hub's CA bundle that headscale-init
+    hands over through a read-only volume.
     The template adds no Headscale ACL policy (every node reaches every node,
     Headscale's default); an admin who adds one must let the VPN's people
     reach tag:portcullis-gateway:443, or the gateway is unreachable.
