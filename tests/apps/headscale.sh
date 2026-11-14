@@ -258,6 +258,41 @@ else
   fail "gateway-key minted again or left the key file while the gateway is online"
 fi
 
+# The Hub's wiring as it happens on a server: the gateway runs unwired,
+# then the override gains PORTCULLIS_VPN_EDGE (compose recreates it) and the
+# start hooks run again; the provider's hooks then run every refresh. The
+# gateway must keep running (core's e2e-vpn saw it exit about a minute
+# after wiring): docker events and its whole log are kept.
+printf 'services: {}\n' > "$OVERRIDE"
+COMPOSE_OVERRIDE="$OVERRIDE" compose_up "$APP_ID" >/dev/null
+printf '{"version":1,"trigger":"start"}' | glue gateway-key >/dev/null 2>&1 || true
+sleep 20
+printf 'services:\n  gateway:\n    environment:\n      PORTCULLIS_VPN_EDGE: "%s:9001"\n' "$EDGE_IP" > "$OVERRIDE"
+COMPOSE_OVERRIDE="$OVERRIDE" compose_up "$APP_ID" >/dev/null
+WIRED_CID=$(docker inspect -f '{{.Id}}' portcullis-gateway-1)
+EVENTS=$(mktemp)
+docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >"$EVENTS" 2>&1 &
+EVENTS_PID=$!
+printf '{"version":1,"trigger":"start"}' | glue gateway-key >/dev/null 2>&1 || true
+for i in 1 2 3; do
+  sleep 60
+  devices_req | glue >/dev/null 2>&1 || info "vpn-devices failed at minute $i"
+  [ "$i" = 1 ] && printf '{"version":1,"trigger":"vpn","instance":"%s","op":"dns","records":[{"name":"app-test.%s","type":"A","value":"%s"}]}' \
+    "$APP_ID" "$DOMAIN" "$GW_IP" | glue >/dev/null 2>&1
+done
+kill "$EVENTS_PID" 2>/dev/null || true
+restarts=$(docker inspect -f '{{.RestartCount}} {{.State.Status}} {{.Id}}' portcullis-gateway-1)
+info "gateway after 3 min wired: restarts/state/id = $restarts (wired container $WIRED_CID)"
+info "gateway events: $(tr '\n' ';' <"$EVENTS")"
+if [ "${restarts%% *}" = 0 ] && [ "${restarts##* }" = "$WIRED_CID" ] && ! grep -q ' die$' "$EVENTS"; then
+  pass "the wired gateway keeps running for 3 min (no exit, no restart)"
+else
+  fail "the wired gateway exited or restarted after wiring"
+  docker logs portcullis-gateway-1 2>&1 | grep -vE 'magicsock: \[warning\]|buffer size' | grep -E 'exiting|left running state|boot:|Received error|health\(|state|failed|fatal|panic|Switching ipn state' | tail -60
+fi
+rm -f "$EVENTS"
+for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && break; sleep 3; done
+
 # People: alice signed in through Portcullis (provider id = issuer/sub,
 # set in the store with headscale stopped), bob is a local Headscale user.
 SUB=0b5a1c2e-1111-4222-8333-444455556666
