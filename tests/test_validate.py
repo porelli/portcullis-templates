@@ -2358,7 +2358,7 @@ settings:
             with self.subTest(app_id=app_id):
                 errors, _ = self.run_raw(S_HDR, s_compose(), app_id=app_id)
                 self.assertError(errors, "id")
-                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e) for e in errors), errors)
+                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e or "may not contain \"--\"" in e) for e in errors), errors)
         for app_id in ("my-app", "a-portcullisx", "portcullisx-b", "xportcullis-b", "firefox-sync", "a1-2b"):
             with self.subTest(app_id=app_id):
                 self.assertIsNone(v.check_id_shape(app_id))
@@ -4560,6 +4560,15 @@ class RuntimeCompatTests(unittest.TestCase):
                  "      traefik.http.services.a.loadbalancer.server.port: \"80\"\n      traefik.http.services.b.loadbalancer.server.port: \"81\"\n",
                  "router a names no service"),
                 ("      traefik.http.middlewares.m.forwardauth.address: http://x\n", "middleware m is a forwardAuth (not allowed for apps)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: hub@docker\n",
+                 "router web: service hub@docker is not on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: s3cret@docker\n",
+                 "router web: its service isn't on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: hub@s3cret\n",
+                 "router web: its service isn't on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: Portcullis-Auth@docker\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n",
+                 "a middleware is not on Kubernetes (not the instance's own, not a core name apps may use)"),
         ):
             with self.subTest(why=why or "ok"):
                 compose = ("services:\n  web:\n    image: docker.io/library/nginx:1.29\n    user: \"101:101\"\n    labels:\n"

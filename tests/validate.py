@@ -4077,6 +4077,9 @@ def check_id_shape(app_id: str) -> Optional[str]:
         if seg.lower() == "portcullis":
             return (f"id {json.dumps(app_id)}: portcullis may not be a segment of an id (Traefik's automatic names "
                     f"<service>-portcullis-<id> of two instances could collide)")
+    if "--" in app_id:
+        return (f"id {json.dumps(app_id)} may not contain \"--\": it separates an instance from its objects' names "
+                "(<instance>--<object> on Kubernetes), so another instance's names could equal this one's")
     if not ID_NORMAL_RE.fullmatch(app_id):
         return (f"id {json.dumps(app_id)}: write it as letters and digits joined by single - (Traefik turns _, -- and a "
                 f"trailing - into the same automatic name as another id)")
@@ -7895,7 +7898,7 @@ def _kube_split_list(s: str) -> List[str]:
 
 def _kube_shown_ref(ref: str, own: Dict[str, Any]) -> bool:
     name, has, provider = ref.partition("@")
-    if has and provider not in ("docker", "file", "internal"):
+    if (has and provider not in ("docker", "file", "internal")) or name != name.lower():
         return False
     return name in own or name in KUBE_FILE_MIDDLEWARES or name in KUBE_FILE_SERVICES or name in KUBE_CORE_NAMES
 
@@ -8029,9 +8032,15 @@ def kube_label_check(labels: Dict[str, Dict[str, str]]) -> str:
                 pass
             elif has and provider in ("docker", "file") and sname in KUBE_FILE_SERVICES:
                 pass
-            elif _kube_shown_ref(svc, {}) or ports.get(svc.split("@", 1)[0].lower()):
-                raise _KubeRefused(f"router {name}: service {svc} is not on Kubernetes")
             else:
+                # Quote only a known name and a known provider.
+                qn, q_has, qp = svc.partition("@")
+                qn = qn.lower()
+                known = bool(ports.get(qn)) or qn in KUBE_FILE_SERVICES or qn in KUBE_CORE_NAMES
+                if known and not q_has:
+                    raise _KubeRefused(f"router {name}: service {qn} is not on Kubernetes")
+                if known and qp in ("docker", "file", "internal"):
+                    raise _KubeRefused(f"router {name}: service {qn}@{qp} is not on Kubernetes")
                 raise _KubeRefused(f"router {name}: its service isn't on Kubernetes")
             if r["tls_options"] and r["tls_options"] not in KUBE_TLS_OPTIONS:
                 raise _KubeRefused(f"router {name}: its tls.options isn't one of the tiers")
