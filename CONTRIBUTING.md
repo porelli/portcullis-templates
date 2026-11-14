@@ -672,7 +672,8 @@ vpn:
 - **The gateway runs userspace.** The ingress service and every service in
   its namespace set `cap_drop: [ALL]`, are not privileged, add no capability
   but NET_BIND_SERVICE (for a forwarder on :443) and have no `devices` or
-  `device_cgroup_rules`. With NET_ADMIN a gateway could
+  `device_cgroup_rules`. They set no `pid`, `ipc` or `volumes_from`, and no
+  other service shares their pid or ipc namespace or mounts their volumes. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.

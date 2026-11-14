@@ -6738,13 +6738,6 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
             return [f"vpn: service {n} uses network_mode: host"]
         if services[n].get("pid") == "host":
             return [f"vpn: service {n} uses pid: host"]
-    # pid / ipc service:<X> with X in the ingress's namespace: that service
-    # can reach the gateway's processes (or its shared memory).
-    for n in names:
-        for key in ("pid", "ipc"):
-            val = services[n].get(key)
-            if isinstance(val, str) and val.startswith("service:") and val[len("service:"):] in members:
-                return [f"vpn.ingress.service: {n} shares the {key} namespace of {val[len('service:'):]}"]
     jobs = job_services(m, services)
     ai = m.get("ai") if isinstance(m.get("ai"), dict) else {}
     companions = {_str(c, "service") for c in as_list(ai.get("mcp")) if isinstance(c, dict) and _str(c, "kind") == "companion"}
@@ -6765,6 +6758,35 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         why = vpn_privilege_problem(n, sv)
         if why:
             return [why]
+    # pid / ipc, both ways (Hub, after the namespace checks): the ingress and
+    # its namespace's members set neither; no other service points its pid
+    # or ipc at a member (service:<X>, or container:<X>'s container): it
+    # could reach the gateway's processes and, with capabilities, enter its
+    # network namespace.
+    for n in names:
+        for key in ("pid", "ipc"):
+            if n in members:
+                if key in services[n]:
+                    return [f"vpn.ingress.service: {n} sets {key}: the gateway's namespace keeps its own pid and ipc"]
+                continue
+            val = scalar_text(services[n].get(key)).strip()
+            kind, _, target = val.partition(":")
+            target = target.strip()
+            if kind == "service" and target in members or kind == "container" and any(
+                    target == x or re.search(rf"[-_]{re.escape(x)}[-_][0-9]+$", target) for x in members):
+                return [f"vpn.ingress.service: {n} shares the {key} namespace of {target}"]
+        # volumes_from, both ways: a service mounting the gateway's volumes
+        # could read its state and keys.
+        if n in members:
+            if "volumes_from" in services[n]:
+                return [f"vpn.ingress.service: {n} sets volumes_from: a VPN gateway mounts no other service's volumes"]
+            continue
+        for vf in as_list(services[n].get("volumes_from")):
+            parts = scalar_text(vf).strip().split(":")
+            src = parts[1] if len(parts) > 1 and parts[0] in ("service", "container") else parts[0]
+            src = src.strip()
+            if src in members or parts[0] == "container" and any(re.search(rf"[-_]{re.escape(x)}[-_][0-9]+$", src) for x in members):
+                return [f"vpn.ingress.service: {n} mounts the volumes of {src}"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []

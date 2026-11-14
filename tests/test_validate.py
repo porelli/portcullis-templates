@@ -4654,6 +4654,26 @@ class VPNTests(Case):
         self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format("ipc", "gateway"))),
                          "vpn.ingress.service: side shares the ipc namespace of gateway")
         self.assertFalse([e for e in self.vpn_template(cedit=("  gateway:\n", side.format("pid", "init"))) if "shares the" in e])
+        # Symmetric: the ingress (and its namespace) set neither key.
+        gw = "    cap_drop: [ALL]\n"
+        for key in ("pid", "ipc"):
+            self.assertError(self.vpn_template(cedit=(gw, gw + f"    {key}: private\n")),
+                             f"vpn.ingress.service: gateway sets {key}: the gateway's namespace keeps its own pid and ipc")
+        self.assertError(self.vpn_template(cedit=("  gateway:\n", f"  side:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n"
+                                                                    "    ipc: container:portcullis-demo-gateway-1\n  gateway:\n")),
+                         "vpn.ingress.service: side shares the ipc namespace of portcullis-demo-gateway-1")
+
+    def test_volumes_from_the_gateway_namespace(self) -> None:
+        """volumes_from, both ways: nobody mounts the gateway's volumes, the
+        gateway mounts nobody's."""
+        side = f"  side:\n    image: x/y:1.0.0@sha256:{S_DIGEST}\n    volumes_from: [{{}}]\n  gateway:\n"
+        for vf in ("gateway", "\"gateway:ro\"", "\"service:gateway\"", "\"container:portcullis-demo-gateway-1:rw\""):
+            with self.subTest(vf):
+                self.assertError(self.vpn_template(cedit=("  gateway:\n", side.format(vf))), "vpn.ingress.service: side mounts the volumes of")
+        gw = "    cap_drop: [ALL]\n"
+        self.assertError(self.vpn_template(cedit=(gw, gw + "    volumes_from: [init]\n")),
+                         "vpn.ingress.service: gateway sets volumes_from: a VPN gateway mounts no other service's volumes")
+        self.assertFalse([e for e in self.vpn_template(cedit=("  gateway:\n", side.format("init"))) if "mounts the volumes" in e])
 
     def test_control_router_shapes(self) -> None:
         """Ruling (Task 19): a control router is Host() alone or Host() &&
