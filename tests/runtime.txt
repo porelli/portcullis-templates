@@ -20,7 +20,7 @@ dokuwiki	kubernetes	ok
 dokuwiki	podman	ok	
 effectcraft	kubernetes	ok	
 effectcraft	podman	ok	
-esphome	kubernetes	degraded	service esphome has device slots: host devices can't be passed on Kubernetes
+esphome	kubernetes	refused	service esphome answers to alias esphome-internal (not on Kubernetes)
 esphome	podman	degraded	service esphome has device slots: host devices can't be passed under rootless Podman
 figcraft	kubernetes	ok	
 figcraft	podman	ok	
@@ -30,17 +30,17 @@ firefly-iii	kubernetes	ok
 firefly-iii	podman	ok	
 firefox-sync	kubernetes	ok	
 firefox-sync	podman	ok	
-gitea	kubernetes	ok	
+gitea	kubernetes	refused	service gitea answers to alias gitea-internal (not on Kubernetes)
 gitea	podman	ok	
 gitlab	kubernetes	ok	
 gitlab	podman	ok	
-grafana	kubernetes	ok	
+grafana	kubernetes	refused	service dashboards answers to alias dashboards-internal (not on Kubernetes)
 grafana	podman	ok	
 gridcraft	kubernetes	ok	
 gridcraft	podman	ok	
 guacamole	kubernetes	ok	
 guacamole	podman	ok	
-headscale	kubernetes	refused	service gateway sets extra_hosts (not on Kubernetes)
+headscale	kubernetes	refused	service headscale answers to alias headscale-internal (not on Kubernetes); service gateway sets extra_hosts (not on Kubernetes)
 headscale	podman	ok	
 homeassistant	kubernetes	ok	
 homeassistant	podman	ok	
@@ -56,15 +56,15 @@ litellm	kubernetes	ok
 litellm	podman	ok	
 matrix	kubernetes	ok	
 matrix	podman	ok	
-mattermost	kubernetes	ok	
+mattermost	kubernetes	refused	service mattermost answers to alias mattermost-internal (not on Kubernetes)
 mattermost	podman	ok	
 mealie	kubernetes	ok	
 mealie	podman	ok	
-motioneye	kubernetes	degraded	service motioneye has device slots: host devices can't be passed on Kubernetes
+motioneye	kubernetes	refused	service motioneye answers to alias motioneye-internal (not on Kubernetes)
 motioneye	podman	degraded	service motioneye has device slots: host devices can't be passed under rootless Podman
 netbird	kubernetes	refused	service coturn uses network_mode: host (not on Kubernetes)
 netbird	podman	degraded	host networking: published ports must stay at or above 80; UDP clients on port 3478 appear with a rewritten source address; UDP clients on port 49152 appear with a rewritten source address
-nextcloud	kubernetes	refused	service nextcloud-cron runs as user www-data: Kubernetes needs a numeric uid
+nextcloud	kubernetes	refused	service nextcloud answers to alias nextcloud-internal (not on Kubernetes); service nextcloud-cron runs as user www-data: Kubernetes needs a numeric uid
 nextcloud	podman	ok	
 oxicloud	kubernetes	ok	
 oxicloud	podman	ok	
@@ -98,5 +98,5 @@ wiki	kubernetes	ok
 wiki	podman	ok	
 wordcraft	kubernetes	ok	
 wordcraft	podman	ok	
-zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds /run/udev, outside the shared-folder roots (not on Kubernetes)
+zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds /run/udev, outside the shared-folder roots (not on Kubernetes); service zigbee2mqtt answers to alias zigbee2mqtt-internal (not on Kubernetes)
 zigbee2mqtt	podman	degraded	service zigbee2mqtt has device slots: host devices can't be passed under rootless Podman

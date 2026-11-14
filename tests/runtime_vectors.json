@@ -1,861 +1,1009 @@
 [
-  {
-    "name": "plain web app ok",
-    "runtime": "podman",
-    "compose": "services:\n  web:\n    image: nginx:alpine\n    networks: [portcullis-proxy]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "dns 53 refused at 80",
-    "runtime": "podman",
-    "compose": "services:\n  dns:\n    image: pihole/pihole:latest\n",
-    "ports": [
-      {
-        "key": "DNS_PORT",
-        "port": 53,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)"
-      ]
-    }
-  },
-  {
-    "name": "dns 53 degraded at 53",
-    "runtime": "podman",
-    "compose": "services:\n  dns:\n    image: pihole/pihole:latest\n",
-    "ports": [
-      {
-        "key": "DNS_PORT",
-        "port": 53,
-        "protocol": "udp"
-      }
-    ],
-    "env": {},
-    "port_start": 53,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "UDP clients on port 53 appear with a rewritten source address"
-      ]
-    }
-  },
-  {
-    "name": "samba 445 ok",
-    "runtime": "podman",
-    "compose": "services:\n  samba:\n    image: dperson/samba:latest\n",
-    "ports": [
-      {
-        "key": "SMB_PORT",
-        "port": 445,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "scrutiny SYS_RAWIO refused",
-    "runtime": "podman",
-    "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:master-omnibus\n    cap_add:\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service scrutiny needs SYS_RAWIO (raw device access needs host root)"
-      ]
-    }
-  },
-  {
-    "name": "scrutiny with no disks still refused (SYS_RAWIO)",
-    "runtime": "podman",
-    "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:master-omnibus\n    cap_add:\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n    devices:\n      - /dev/null:/dev/null\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service scrutiny needs SYS_RAWIO (raw device access needs host root)"
-      ]
-    }
-  },
-  {
-    "name": "device slot unset degraded",
-    "runtime": "podman",
-    "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - /dev/null:/dev/ttyUSB0\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "service esphome has device slots: host devices can't be passed under rootless Podman"
-      ]
-    }
-  },
-  {
-    "name": "device slot set refused",
-    "runtime": "podman",
-    "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - ${ESPHOME_SERIAL_DEVICE}:/dev/ttyUSB0\n",
-    "ports": [],
-    "env": {
-      "ESPHOME_SERIAL_DEVICE": "/dev/ttyUSB0"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service esphome passes the host device /dev/ttyUSB0: device access needs host root"
-      ]
-    }
-  },
-  {
-    "name": "tun degraded",
-    "runtime": "podman",
-    "compose": "services:\n  vpn:\n    image: wireguard:latest\n    devices:\n      - /dev/net/tun:/dev/net/tun\n    cap_add:\n      - NET_ADMIN\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "service vpn uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)"
-      ]
-    }
-  },
-  {
-    "name": "uid 70000 refused",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    user: \"70000:1000\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as id 70000, outside the rootless id range (0–65535)"
-      ]
-    }
-  },
-  {
-    "name": "coturn host network + udp degraded",
-    "runtime": "podman",
-    "compose": "services:\n  coturn:\n    image: coturn/coturn:latest\n    network_mode: host\n",
-    "ports": [
-      {
-        "key": "COTURN_PORT",
-        "port": 3478,
-        "protocol": "udp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "host networking: published ports must stay at or above 80",
-        "UDP clients on port 3478 appear with a rewritten source address"
-      ]
-    }
-  },
-  {
-    "name": "instance env overrides the host port",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n",
-    "ports": [
-      {
-        "key": "WEB_PORT",
-        "port": 8080,
-        "protocol": "tcp"
-      },
-      {
-        "key": "SSH_PORT",
-        "port": 22,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {
-      "WEB_PORT": "53",
-      "SSH_PORT": "not-a-port"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)",
-        "host port 22/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 22 on the host to allow it (any local user can then bind ports from 22)"
-      ]
-    }
-  },
-  {
-    "name": "empty protocol is tcp",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n",
-    "ports": [
-      {
-        "key": "APP_PORT",
-        "port": 53,
-        "protocol": ""
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)"
-      ]
-    }
-  },
-  {
-    "name": "port 0 skipped",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n",
-    "ports": [
-      {
-        "key": "APP_PORT",
-        "port": 0,
-        "protocol": "udp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "user from a :- default",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    user: \"${PUID:-70000}\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as id 70000, outside the rootless id range (0–65535)"
-      ]
-    }
-  },
-  {
-    "name": "variables anywhere in user, lower-case names",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    user: \"${puid:-1000}:${PGID}\"\n",
-    "ports": [],
-    "env": {
-      "PGID": "90000"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as id 90000, outside the rootless id range (0–65535)"
-      ]
-    }
-  },
-  {
-    "name": "$$ is a literal dollar",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    user: \"$${PUID:-70000}\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "group_add resolved, leading zeros stripped",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    group_add:\n      - ${MEDIA_GID:-100}\n      - \"070001\"\n",
-    "ports": [],
-    "env": {
-      "MEDIA_GID": "80000"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as id 80000, outside the rootless id range (0–65535)",
-        "service app runs as id 70001, outside the rootless id range (0–65535)"
-      ]
-    }
-  },
-  {
-    "name": "repeated id reasons once",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    user: \"70000:70000\"\n    group_add: [\"70000\"]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as id 70000, outside the rootless id range (0–65535)"
-      ]
-    }
-  },
-  {
-    "name": "empty env value takes the :- default device",
-    "runtime": "podman",
-    "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - ${ESPHOME_SERIAL_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0\n",
-    "ports": [],
-    "env": {
-      "ESPHOME_SERIAL_DEVICE": ""
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service esphome passes the host device /dev/ttyUSB0: device access needs host root"
-      ]
-    }
-  },
-  {
-    "name": "- default only when unset",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    devices:\n      - ${SET_EMPTY-/dev/ttyUSB0}:/dev/ttyUSB0\n      - ${UNSET-/dev/ttyACM0}:/dev/ttyACM0\n",
-    "ports": [],
-    "env": {
-      "SET_EMPTY": ""
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app passes the host device /dev/ttyACM0: device access needs host root"
-      ]
-    }
-  },
-  {
-    "name": "long-syntax device refused",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    devices:\n      - source: /dev/ttyUSB0\n        target: /dev/ttyUSB0\n      - /dev/null:/dev/null\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app passes the host device a non-device source: device access needs host root"
-      ]
-    }
-  },
-  {
-    "name": "CAP_ prefix stripped",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    cap_add:\n      - CAP_SYS_ADMIN\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app needs SYS_ADMIN (raw device access needs host root)"
-      ]
-    }
-  },
-  {
-    "name": "cap_add ALL refused as SYS_ADMIN",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    cap_add:\n      - ALL\n      - SYS_ADMIN\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app needs SYS_ADMIN (raw device access needs host root)"
-      ]
-    }
-  },
-  {
-    "name": "two host-network services once",
-    "runtime": "podman",
-    "compose": "services:\n  a:\n    image: app:latest\n    network_mode: host\n  b:\n    image: app:latest\n    network_mode: host\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "host networking: published ports must stay at or above 80"
-      ]
-    }
-  },
-  {
-    "name": "refused reason order",
-    "runtime": "podman",
-    "compose": "services:\n  zeta:\n    image: app:latest\n    network_mode: host\n    user: \"70000\"\n    cap_add: [SYS_RAWIO]\n    devices:\n      - /dev/ttyUSB0:/dev/ttyUSB0\n  alpha:\n    image: app:latest\n    devices:\n      - /dev/ttyACM0:/dev/ttyACM0\n",
-    "ports": [
-      {
-        "key": "DNS_PORT",
-        "port": 53,
-        "protocol": "udp"
-      },
-      {
-        "key": "SSH_PORT",
-        "port": 22,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service zeta passes the host device /dev/ttyUSB0: device access needs host root",
-        "service zeta needs SYS_RAWIO (raw device access needs host root)",
-        "service zeta runs as id 70000, outside the rootless id range (0–65535)",
-        "service alpha passes the host device /dev/ttyACM0: device access needs host root",
-        "host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)",
-        "host port 22/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 22 on the host to allow it (any local user can then bind ports from 22)"
-      ]
-    }
-  },
-  {
-    "name": "degraded reason order",
-    "runtime": "podman",
-    "compose": "services:\n  zeta:\n    image: app:latest\n    network_mode: host\n    cap_add: [NET_ADMIN]\n    devices:\n      - /dev/null:/dev/ttyUSB0\n  alpha:\n    image: app:latest\n    devices:\n      - /dev/net/tun:/dev/net/tun\n",
-    "ports": [
-      {
-        "key": "TURN_PORT",
-        "port": 3478,
-        "protocol": "udp"
-      },
-      {
-        "key": "WEB_PORT",
-        "port": 8080,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "service zeta has device slots: host devices can't be passed under rootless Podman",
-        "service zeta uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)",
-        "host networking: published ports must stay at or above 80",
-        "service alpha uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)",
-        "UDP clients on port 3478 appear with a rewritten source address"
-      ]
-    }
-  },
-  {
-    "name": "network_mode host from a variable",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "host networking: published ports must stay at or above 80"
-      ]
-    }
-  },
-  {
-    "name": "network_mode variable resolving to a non-host value",
-    "runtime": "podman",
-    "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
-    "ports": [],
-    "env": {
-      "APP_NETWORK_MODE": "bridge"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "kubernetes: echo ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  echo:\n    image: docker.io/ealen/echo-server:0.9.2\n    user: \"10001:10001\"\n    read_only: true\n    volumes:\n      - ./templates/echo/conf:/conf:ro\n      - echo-data:/data\n    networks: [portcullis-proxy]\nvolumes:\n  echo-data: {}\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "kubernetes: netbird coturn host networking refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  coturn:\n    image: coturn/coturn:4.18.0\n    network_mode: host\n  management:\n    image: netbirdio/management:0.50.0\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service coturn uses network_mode: host (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: scrutiny devices and SYS_RAWIO refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:v0.10.0-omnibus\n    devices:\n      - \"${SCRUTINY_DISK_1:-/dev/null}:${SCRUTINY_DISK_1:-/dev/portcullis-unused-1}:r\"\n      - \"${SCRUTINY_DISK_2:-/dev/null}:${SCRUTINY_DISK_2:-/dev/portcullis-unused-2}:r\"\n    cap_add:\n      - SYS_RAWIO\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n",
-    "ports": [],
-    "env": {
-      "SCRUTINY_DISK_1": "/dev/sda"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service scrutiny passes host devices (not on Kubernetes)",
-        "service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: scrutiny with no disks still refused (SYS_RAWIO)",
-    "runtime": "kubernetes",
-    "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:v0.10.0-omnibus\n    devices:\n      - \"${SCRUTINY_DISK_1:-/dev/null}:${SCRUTINY_DISK_1:-/dev/portcullis-unused-1}:r\"\n    cap_add:\n      - SYS_RAWIO\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: zigbee2mqtt with an empty slot degraded",
-    "runtime": "kubernetes",
-    "compose": "services:\n  zigbee2mqtt:\n    image: docker.io/koenkk/zigbee2mqtt:2.6.0\n    devices:\n      - \"${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n  mosquitto:\n    image: docker.io/library/eclipse-mosquitto:2.0.22\n    cap_add: [CHOWN, SETGID, SETUID]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "service zigbee2mqtt has device slots: host devices can't be passed on Kubernetes"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: zigbee2mqtt with a coordinator refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  zigbee2mqtt:\n    image: docker.io/koenkk/zigbee2mqtt:2.6.0\n    devices:\n      - \"${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\"\n",
-    "ports": [],
-    "env": {
-      "Z2M_SERIAL_DEVICE": "/dev/ttyACM0"
-    },
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service zigbee2mqtt passes host devices (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: guacamole's root init refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  guacd:\n    image: docker.io/guacamole/guacd:1.6.0\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service init runs as root (user 0)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: guacamole with SYS_ADMIN refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SYS_ADMIN]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service init adds SYS_ADMIN, outside the Kubernetes baseline",
-        "service init runs as root (user 0)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: timemachine with avahi_services_dir set degraded",
-    "runtime": "kubernetes",
-    "compose": "services:\n  timemachine:\n    image: ghcr.io/porelli/portcullis-samba:4.22\n    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]\n",
-    "ports": [
-      {
-        "key": "SMB_PORT",
-        "port": 445,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "degraded",
-      "reasons": [
-        "the Avahi services directory binds a host path outside the shared-folder roots: leave it empty and connect by address"
-      ]
-    },
-    "settings": {
-      "avahi_services_dir": "/etc/avahi/services"
-    }
-  },
-  {
-    "name": "kubernetes: timemachine with avahi_services_dir empty ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  timemachine:\n    image: ghcr.io/porelli/portcullis-samba:4.22\n    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]\n",
-    "ports": [
-      {
-        "key": "SMB_PORT",
-        "port": 445,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    },
-    "settings": {
-      "avahi_services_dir": ""
-    }
-  },
-  {
-    "name": "kubernetes: user app refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: app\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as user app: Kubernetes needs a numeric uid"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: privileged, host pid and ipc refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  agent:\n    image: docker.io/library/alpine:3.24.3\n    privileged: true\n    pid: host\n    ipc: host\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service agent is privileged (not on Kubernetes)",
-        "service agent shares the host's pid namespace (not on Kubernetes)",
-        "service agent shares the host's ipc namespace (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: a bind outside the shared-folder roots refused, one under them ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/alpine:3.24.3\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - /srv/media:/media:ro\n      - type: bind\n        source: /etc/localtime\n        target: /etc/localtime\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app binds /var/run/docker.sock, outside the shared-folder roots (not on Kubernetes)",
-        "service app binds /etc/localtime, outside the shared-folder roots (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: scale above 1 refused, scale 1 ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    scale: 1\n  worker:\n    image: docker.io/library/alpine:3.24.3\n    scale: 3\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service worker sets replicas above 1 (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: a core port refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  dns:\n    image: docker.io/pihole/pihole:2025.08.0\n",
-    "ports": [
-      {
-        "key": "WEB_PORT",
-        "port": 443,
-        "protocol": "tcp",
-        "service": "dns"
-      },
-      {
-        "key": "DNS_PORT",
-        "port": 53,
-        "protocol": "udp",
-        "service": "dns"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service dns publishes port 443, a core port"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: TUN and NET_ADMIN refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  vpn:\n    image: docker.io/tailscale/tailscale:v1.90.0\n    devices:\n      - /dev/net/tun:/dev/net/tun\n    cap_add: [NET_ADMIN]\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service vpn uses TUN/NET_ADMIN (not on Kubernetes; prefer a userspace mode)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: udp 53 ok (no unprivileged port limit)",
-    "runtime": "kubernetes",
-    "compose": "services:\n  dns:\n    image: docker.io/pihole/pihole:2025.08.0\n",
-    "ports": [
-      {
-        "key": "DNS_PORT",
-        "port": 53,
-        "protocol": "udp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
-  },
-  {
-    "name": "kubernetes: extra_hosts refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/alpine:3.24.3\n    extra_hosts:\n      - \"auth.example.org:host-gateway\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app sets extra_hosts (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: Traefik's 8443 is a core port",
-    "runtime": "kubernetes",
-    "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n",
-    "ports": [
-      {
-        "key": "WEB_PORT",
-        "port": 8443,
-        "protocol": "tcp"
-      }
-    ],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service web publishes port 8443, a core port"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: a port on a specific host address refused, loopback and the wildcard ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    ports:\n      - \"192.168.1.5:9080:80\"\n      - \"127.0.0.1:9081:80\"\n      - \"0.0.0.0:9082:80\"\n      - \"9083:80\"\n      - target: 80\n        published: \"9084\"\n        host_ip: 10.0.0.7\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app publishes 9080 on 192.168.1.5 (not on Kubernetes)",
-        "service app publishes 9084 on 10.0.0.7 (not on Kubernetes)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: samba as root refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  samba:\n    image: ghcr.io/servercontainers/samba:smbd-only-a3.23.3-s4.22.6-r1\n    user: \"0:0\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service samba runs as root (user 0)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: uid 0 without a group refused",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"0\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "refused",
-      "reasons": [
-        "service app runs as root (user 0)"
-      ]
-    }
-  },
-  {
-    "name": "kubernetes: a non-root gid 0 ok",
-    "runtime": "kubernetes",
-    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:0\"\n",
-    "ports": [],
-    "env": {},
-    "port_start": 80,
-    "want": {
-      "status": "ok",
-      "reasons": []
-    }
+ {
+  "name": "plain web app ok",
+  "runtime": "podman",
+  "compose": "services:\n  web:\n    image: nginx:alpine\n    networks: [portcullis-proxy]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
   }
+ },
+ {
+  "name": "dns 53 refused at 80",
+  "runtime": "podman",
+  "compose": "services:\n  dns:\n    image: pihole/pihole:latest\n",
+  "ports": [
+   {
+    "key": "DNS_PORT",
+    "port": 53,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)"
+   ]
+  }
+ },
+ {
+  "name": "dns 53 degraded at 53",
+  "runtime": "podman",
+  "compose": "services:\n  dns:\n    image: pihole/pihole:latest\n",
+  "ports": [
+   {
+    "key": "DNS_PORT",
+    "port": 53,
+    "protocol": "udp"
+   }
+  ],
+  "env": {},
+  "port_start": 53,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "UDP clients on port 53 appear with a rewritten source address"
+   ]
+  }
+ },
+ {
+  "name": "samba 445 ok",
+  "runtime": "podman",
+  "compose": "services:\n  samba:\n    image: dperson/samba:latest\n",
+  "ports": [
+   {
+    "key": "SMB_PORT",
+    "port": 445,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "scrutiny SYS_RAWIO refused",
+  "runtime": "podman",
+  "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:master-omnibus\n    cap_add:\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service scrutiny needs SYS_RAWIO (raw device access needs host root)"
+   ]
+  }
+ },
+ {
+  "name": "scrutiny with no disks still refused (SYS_RAWIO)",
+  "runtime": "podman",
+  "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:master-omnibus\n    cap_add:\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n    devices:\n      - /dev/null:/dev/null\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service scrutiny needs SYS_RAWIO (raw device access needs host root)"
+   ]
+  }
+ },
+ {
+  "name": "device slot unset degraded",
+  "runtime": "podman",
+  "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - /dev/null:/dev/ttyUSB0\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "service esphome has device slots: host devices can't be passed under rootless Podman"
+   ]
+  }
+ },
+ {
+  "name": "device slot set refused",
+  "runtime": "podman",
+  "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - ${ESPHOME_SERIAL_DEVICE}:/dev/ttyUSB0\n",
+  "ports": [],
+  "env": {
+   "ESPHOME_SERIAL_DEVICE": "/dev/ttyUSB0"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service esphome passes the host device /dev/ttyUSB0: device access needs host root"
+   ]
+  }
+ },
+ {
+  "name": "tun degraded",
+  "runtime": "podman",
+  "compose": "services:\n  vpn:\n    image: wireguard:latest\n    devices:\n      - /dev/net/tun:/dev/net/tun\n    cap_add:\n      - NET_ADMIN\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "service vpn uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)"
+   ]
+  }
+ },
+ {
+  "name": "uid 70000 refused",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    user: \"70000:1000\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as id 70000, outside the rootless id range (0–65535)"
+   ]
+  }
+ },
+ {
+  "name": "coturn host network + udp degraded",
+  "runtime": "podman",
+  "compose": "services:\n  coturn:\n    image: coturn/coturn:latest\n    network_mode: host\n",
+  "ports": [
+   {
+    "key": "COTURN_PORT",
+    "port": 3478,
+    "protocol": "udp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "host networking: published ports must stay at or above 80",
+    "UDP clients on port 3478 appear with a rewritten source address"
+   ]
+  }
+ },
+ {
+  "name": "instance env overrides the host port",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n",
+  "ports": [
+   {
+    "key": "WEB_PORT",
+    "port": 8080,
+    "protocol": "tcp"
+   },
+   {
+    "key": "SSH_PORT",
+    "port": 22,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {
+   "WEB_PORT": "53",
+   "SSH_PORT": "not-a-port"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)",
+    "host port 22/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 22 on the host to allow it (any local user can then bind ports from 22)"
+   ]
+  }
+ },
+ {
+  "name": "empty protocol is tcp",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n",
+  "ports": [
+   {
+    "key": "APP_PORT",
+    "port": 53,
+    "protocol": ""
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)"
+   ]
+  }
+ },
+ {
+  "name": "port 0 skipped",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n",
+  "ports": [
+   {
+    "key": "APP_PORT",
+    "port": 0,
+    "protocol": "udp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "user from a :- default",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    user: \"${PUID:-70000}\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as id 70000, outside the rootless id range (0–65535)"
+   ]
+  }
+ },
+ {
+  "name": "variables anywhere in user, lower-case names",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    user: \"${puid:-1000}:${PGID}\"\n",
+  "ports": [],
+  "env": {
+   "PGID": "90000"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as id 90000, outside the rootless id range (0–65535)"
+   ]
+  }
+ },
+ {
+  "name": "$$ is a literal dollar",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    user: \"$${PUID:-70000}\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "group_add resolved, leading zeros stripped",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    group_add:\n      - ${MEDIA_GID:-100}\n      - \"070001\"\n",
+  "ports": [],
+  "env": {
+   "MEDIA_GID": "80000"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as id 80000, outside the rootless id range (0–65535)",
+    "service app runs as id 70001, outside the rootless id range (0–65535)"
+   ]
+  }
+ },
+ {
+  "name": "repeated id reasons once",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    user: \"70000:70000\"\n    group_add: [\"70000\"]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as id 70000, outside the rootless id range (0–65535)"
+   ]
+  }
+ },
+ {
+  "name": "empty env value takes the :- default device",
+  "runtime": "podman",
+  "compose": "services:\n  esphome:\n    image: esphome/esphome:latest\n    devices:\n      - ${ESPHOME_SERIAL_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0\n",
+  "ports": [],
+  "env": {
+   "ESPHOME_SERIAL_DEVICE": ""
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service esphome passes the host device /dev/ttyUSB0: device access needs host root"
+   ]
+  }
+ },
+ {
+  "name": "- default only when unset",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    devices:\n      - ${SET_EMPTY-/dev/ttyUSB0}:/dev/ttyUSB0\n      - ${UNSET-/dev/ttyACM0}:/dev/ttyACM0\n",
+  "ports": [],
+  "env": {
+   "SET_EMPTY": ""
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app passes the host device /dev/ttyACM0: device access needs host root"
+   ]
+  }
+ },
+ {
+  "name": "long-syntax device refused",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    devices:\n      - source: /dev/ttyUSB0\n        target: /dev/ttyUSB0\n      - /dev/null:/dev/null\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app passes the host device a non-device source: device access needs host root"
+   ]
+  }
+ },
+ {
+  "name": "CAP_ prefix stripped",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    cap_add:\n      - CAP_SYS_ADMIN\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app needs SYS_ADMIN (raw device access needs host root)"
+   ]
+  }
+ },
+ {
+  "name": "cap_add ALL refused as SYS_ADMIN",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    cap_add:\n      - ALL\n      - SYS_ADMIN\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app needs SYS_ADMIN (raw device access needs host root)"
+   ]
+  }
+ },
+ {
+  "name": "two host-network services once",
+  "runtime": "podman",
+  "compose": "services:\n  a:\n    image: app:latest\n    network_mode: host\n  b:\n    image: app:latest\n    network_mode: host\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "host networking: published ports must stay at or above 80"
+   ]
+  }
+ },
+ {
+  "name": "refused reason order",
+  "runtime": "podman",
+  "compose": "services:\n  zeta:\n    image: app:latest\n    network_mode: host\n    user: \"70000\"\n    cap_add: [SYS_RAWIO]\n    devices:\n      - /dev/ttyUSB0:/dev/ttyUSB0\n  alpha:\n    image: app:latest\n    devices:\n      - /dev/ttyACM0:/dev/ttyACM0\n",
+  "ports": [
+   {
+    "key": "DNS_PORT",
+    "port": 53,
+    "protocol": "udp"
+   },
+   {
+    "key": "SSH_PORT",
+    "port": 22,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service zeta passes the host device /dev/ttyUSB0: device access needs host root",
+    "service zeta needs SYS_RAWIO (raw device access needs host root)",
+    "service zeta runs as id 70000, outside the rootless id range (0–65535)",
+    "service alpha passes the host device /dev/ttyACM0: device access needs host root",
+    "host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)",
+    "host port 22/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 22 on the host to allow it (any local user can then bind ports from 22)"
+   ]
+  }
+ },
+ {
+  "name": "degraded reason order",
+  "runtime": "podman",
+  "compose": "services:\n  zeta:\n    image: app:latest\n    network_mode: host\n    cap_add: [NET_ADMIN]\n    devices:\n      - /dev/null:/dev/ttyUSB0\n  alpha:\n    image: app:latest\n    devices:\n      - /dev/net/tun:/dev/net/tun\n",
+  "ports": [
+   {
+    "key": "TURN_PORT",
+    "port": 3478,
+    "protocol": "udp"
+   },
+   {
+    "key": "WEB_PORT",
+    "port": 8080,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "service zeta has device slots: host devices can't be passed under rootless Podman",
+    "service zeta uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)",
+    "host networking: published ports must stay at or above 80",
+    "service alpha uses TUN/NET_ADMIN inside the rootless network namespace (prefer a userspace mode)",
+    "UDP clients on port 3478 appear with a rewritten source address"
+   ]
+  }
+ },
+ {
+  "name": "network_mode host from a variable",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "host networking: published ports must stay at or above 80"
+   ]
+  }
+ },
+ {
+  "name": "network_mode variable resolving to a non-host value",
+  "runtime": "podman",
+  "compose": "services:\n  app:\n    image: app:latest\n    network_mode: ${APP_NETWORK_MODE:-host}\n",
+  "ports": [],
+  "env": {
+   "APP_NETWORK_MODE": "bridge"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: echo ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  echo:\n    image: docker.io/ealen/echo-server:0.9.2\n    user: \"10001:10001\"\n    read_only: true\n    volumes:\n      - ./templates/echo/conf:/conf:ro\n      - echo-data:/data\n    networks: [portcullis-proxy]\nvolumes:\n  echo-data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: netbird coturn host networking refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  coturn:\n    image: coturn/coturn:4.18.0\n    network_mode: host\n  management:\n    image: netbirdio/management:0.50.0\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service coturn uses network_mode: host (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: scrutiny devices and SYS_RAWIO refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:v0.10.0-omnibus\n    devices:\n      - \"${SCRUTINY_DISK_1:-/dev/null}:${SCRUTINY_DISK_1:-/dev/portcullis-unused-1}:r\"\n      - \"${SCRUTINY_DISK_2:-/dev/null}:${SCRUTINY_DISK_2:-/dev/portcullis-unused-2}:r\"\n    cap_add:\n      - SYS_RAWIO\n      - ${SCRUTINY_NVME_CAPABILITY:-SYS_RAWIO}\n",
+  "ports": [],
+  "env": {
+   "SCRUTINY_DISK_1": "/dev/sda"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service scrutiny passes host devices (not on Kubernetes)",
+    "service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: scrutiny with no disks still refused (SYS_RAWIO)",
+  "runtime": "kubernetes",
+  "compose": "services:\n  scrutiny:\n    image: ghcr.io/analogj/scrutiny:v0.10.0-omnibus\n    devices:\n      - \"${SCRUTINY_DISK_1:-/dev/null}:${SCRUTINY_DISK_1:-/dev/portcullis-unused-1}:r\"\n    cap_add:\n      - SYS_RAWIO\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: zigbee2mqtt with an empty slot degraded",
+  "runtime": "kubernetes",
+  "compose": "services:\n  zigbee2mqtt:\n    image: docker.io/koenkk/zigbee2mqtt:2.6.0\n    devices:\n      - \"${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n  mosquitto:\n    image: docker.io/library/eclipse-mosquitto:2.0.22\n    cap_add: [CHOWN, SETGID, SETUID]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "service zigbee2mqtt has device slots: host devices can't be passed on Kubernetes"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: zigbee2mqtt with a coordinator refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  zigbee2mqtt:\n    image: docker.io/koenkk/zigbee2mqtt:2.6.0\n    devices:\n      - \"${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\"\n",
+  "ports": [],
+  "env": {
+   "Z2M_SERIAL_DEVICE": "/dev/ttyACM0"
+  },
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service zigbee2mqtt passes host devices (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a long-running root init refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  guacd:\n    image: docker.io/guacamole/guacd:1.6.0\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init runs as root (user 0)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: guacamole with SYS_ADMIN refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SYS_ADMIN]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init adds SYS_ADMIN, outside the Kubernetes baseline",
+    "service init runs as root (user 0)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: timemachine with avahi_services_dir set degraded",
+  "runtime": "kubernetes",
+  "compose": "services:\n  timemachine:\n    image: ghcr.io/porelli/portcullis-samba:4.22\n    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]\n",
+  "ports": [
+   {
+    "key": "SMB_PORT",
+    "port": 445,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "degraded",
+   "reasons": [
+    "the Avahi services directory binds a host path outside the shared-folder roots: leave it empty and connect by address"
+   ]
+  },
+  "settings": {
+   "avahi_services_dir": "/etc/avahi/services"
+  }
+ },
+ {
+  "name": "kubernetes: timemachine with avahi_services_dir empty ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  timemachine:\n    image: ghcr.io/porelli/portcullis-samba:4.22\n    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]\n",
+  "ports": [
+   {
+    "key": "SMB_PORT",
+    "port": 445,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  },
+  "settings": {
+   "avahi_services_dir": ""
+  }
+ },
+ {
+  "name": "kubernetes: user app refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: app\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as user app: Kubernetes needs a numeric uid"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: privileged, host pid and ipc refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  agent:\n    image: docker.io/library/alpine:3.24.3\n    privileged: true\n    pid: host\n    ipc: host\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service agent is privileged (not on Kubernetes)",
+    "service agent shares the host's pid namespace (not on Kubernetes)",
+    "service agent shares the host's ipc namespace (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a bind outside the shared-folder roots refused, one under them ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/alpine:3.24.3\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - /srv/media:/media:ro\n      - type: bind\n        source: /etc/localtime\n        target: /etc/localtime\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app binds /var/run/docker.sock, outside the shared-folder roots (not on Kubernetes)",
+    "service app binds /etc/localtime, outside the shared-folder roots (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: scale above 1 refused, scale 1 ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    scale: 1\n  worker:\n    image: docker.io/library/alpine:3.24.3\n    scale: 3\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service worker sets replicas above 1 (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a core port refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  dns:\n    image: docker.io/pihole/pihole:2025.08.0\n",
+  "ports": [
+   {
+    "key": "WEB_PORT",
+    "port": 443,
+    "protocol": "tcp",
+    "service": "dns"
+   },
+   {
+    "key": "DNS_PORT",
+    "port": 53,
+    "protocol": "udp",
+    "service": "dns"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service dns publishes port 443, a core port"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: TUN and NET_ADMIN refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  vpn:\n    image: docker.io/tailscale/tailscale:v1.90.0\n    devices:\n      - /dev/net/tun:/dev/net/tun\n    cap_add: [NET_ADMIN]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service vpn uses TUN/NET_ADMIN (not on Kubernetes; prefer a userspace mode)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: udp 53 ok (no unprivileged port limit)",
+  "runtime": "kubernetes",
+  "compose": "services:\n  dns:\n    image: docker.io/pihole/pihole:2025.08.0\n",
+  "ports": [
+   {
+    "key": "DNS_PORT",
+    "port": 53,
+    "protocol": "udp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: extra_hosts refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/alpine:3.24.3\n    extra_hosts:\n      - \"auth.example.org:host-gateway\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app sets extra_hosts (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: Traefik's 8443 is a core port",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n",
+  "ports": [
+   {
+    "key": "WEB_PORT",
+    "port": 8443,
+    "protocol": "tcp"
+   }
+  ],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web publishes port 8443, a core port"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a port on a specific host address refused, loopback and the wildcard ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    ports:\n      - \"192.168.1.5:9080:80\"\n      - \"127.0.0.1:9081:80\"\n      - \"0.0.0.0:9082:80\"\n      - \"9083:80\"\n      - target: 80\n        published: \"9084\"\n        host_ip: 10.0.0.7\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app publishes 9080 on 192.168.1.5 (not on Kubernetes)",
+    "service app publishes 9084 on 10.0.0.7 (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: samba as root refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  samba:\n    image: ghcr.io/servercontainers/samba:smbd-only-a3.23.3-s4.22.6-r1\n    user: \"0:0\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service samba runs as root (user 0)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: uid 0 without a group refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"0\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service app runs as root (user 0)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a non-root gid 0 ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:0\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a one-shot root job in the ruled shape ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a one-shot root job restarting on failure ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: on-failure\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a manifest-less root job by restart no ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0\"\n    restart: \"no\"\n    cap_drop: [all]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a root job adding SETUID refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, SETUID]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job publishing a port refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    ports: [\"8080:80\"]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job with a route refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    labels:\n      traefik.enable: \"true\"\n      traefik.http.routers.init.rule: Host(`i.example.org`)\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job restarting always refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: always\n    cap_drop: [ALL]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a compose name with an underscore refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  my_db:\n    image: docker.io/library/postgres:17\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service my_db: its name isn't a DNS label without \"--\" (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a compose name with a double hyphen refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  a--b:\n    image: docker.io/library/postgres:17\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service a--b: its name isn't a DNS label without \"--\" (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: container_name refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    container_name: www\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web sets container_name (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a network alias refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    networks:\n      default:\n        aliases: [web-internal]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web answers to alias web-internal (not on Kubernetes)"
+   ]
+  }
+ }
 ]

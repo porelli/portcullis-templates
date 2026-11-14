@@ -930,9 +930,10 @@ def check_compose(t: Template, r: Report) -> None:
     method = auth.get("method")
     services: Dict[str, Any] = data["services"]
     for sname in services:
-        if not isinstance(sname, str) or not SERVICE_LABEL_RE.fullmatch(sname):
-            r.error(t.c_where, f"service name {sname!r} is not a DNS label",
-                    "use lowercase letters, digits and '-' (1-63, starting and ending with a letter or digit): "
+        if not isinstance(sname, str) or not SERVICE_LABEL_RE.fullmatch(sname) or "--" in sname:
+            r.error(t.c_where, f"service name {sname!r} is not a DNS label without \"--\"",
+                    "use lowercase letters, digits and single '-' (1-63, starting and ending with a letter or digit; "
+                    "'--' separates the Hub's object names): "
                     "on Kubernetes the services reach each other by these names as pod hostnames")
 
     for key in ("version",):
@@ -7650,26 +7651,59 @@ def _kube_published_host_ips(ports: Any, env: Dict[str, str]) -> List[Tuple[str,
     return out
 
 
-# A uid-0 service is allowed on Kubernetes only as a one-shot helper: restart
-# "no" or on-failure, no ports or Traefik labels, cap_drop [ALL] and cap_add
-# within these (the Hub's root-helper rule).
-KUBE_ROOT_HELPER_CAPS = {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+# A uid-0 service is allowed on Kubernetes only as a one-shot job (the Hub's
+# oneShotRoot): restart "no" or on-failure, no ports, no shared network
+# namespace, no Traefik routers, cap_drop [ALL] and cap_add within these.
+KUBE_ONE_SHOT_CAPS = {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+_KUBE_POD_DNS_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 
-def _kube_root_helper(svc: Dict[str, Any], env: Dict[str, str]) -> bool:
+def kube_job_services(manifest: Dict[str, Any], services: Dict[str, Any]) -> Set[str]:
+    """The Hub's JobServices: the manifest's jobs plus every service another
+    one depends on with condition service_completed_successfully."""
+    out = {j for j in (manifest.get("jobs") or []) if isinstance(j, str)}
+    for svc in services.values():
+        deps = (svc or {}).get("depends_on")
+        if isinstance(deps, dict):
+            for dep, cond in deps.items():
+                if isinstance(cond, dict) and cond.get("condition") == "service_completed_successfully":
+                    out.add(str(dep))
+    return out
+
+
+def _kube_one_shot_root(name: str, svc: Dict[str, Any], env: Dict[str, str], netns_owners: Set[str]) -> bool:
     restart = _kube_scalar(svc, "restart", env)
-    if not (restart == "no" or restart == "on-failure" or restart.startswith("on-failure:")):
+    if restart not in ("", "no", "on-failure") and not restart.startswith("on-failure:"):
         return False
-    if svc.get("ports"):
+    ports = svc.get("ports")
+    if isinstance(ports, (list, dict)) and len(ports) > 0:
         return False
-    if any(str(k).startswith("traefik.") for k in labels_of(svc)):
+    if _kube_scalar(svc, "network_mode", env).startswith("service:") or name in netns_owners:
+        return False
+    if any(fold_key(k).startswith("traefik.http.routers.") for k in labels_of(svc)):
         return False
     drop, _ = _rootless_scalars(svc.get("cap_drop"))
-    if "ALL" not in [_rootless_resolve(x, env).strip().upper() for x in drop]:
+    if not any(_rootless_resolve(d, env).strip().upper() == "ALL" for d in drop):
         return False
     add, ok = _rootless_scalars(svc.get("cap_add"))
-    caps = {_rootless_resolve(x, env).strip().upper().removeprefix("CAP_") for x in add}
-    return ok and caps <= KUBE_ROOT_HELPER_CAPS
+    for x in add:
+        c = _rootless_resolve(x, env).strip().upper()
+        if c.startswith("CAP_"):
+            c = c[len("CAP_"):]
+        if c not in KUBE_ONE_SHOT_CAPS:
+            return False
+    return ok
+
+
+def _kube_aliases(svc: Dict[str, Any]) -> List[str]:
+    nets = svc.get("networks")
+    out: List[str] = []
+    if not isinstance(nets, dict):
+        return out
+    for cfg in nets.values():
+        a, _ = _rootless_scalars(cfg.get("aliases") if isinstance(cfg, dict) else None)
+        out += a
+    return out
 
 
 def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
@@ -7683,8 +7717,13 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         return bad or ("refused", [])
     c = _Reasons()
     roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
+    jobs = kube_job_services(t.manifest if isinstance(t.manifest, dict) else {}, services)
+    netns_owners = {_kube_scalar(svc or {}, "network_mode", env)[len("service:"):] for svc in services.values()
+                    if _kube_scalar(svc or {}, "network_mode", env).startswith("service:")}
     for name, svc in services.items():
         svc = svc or {}
+        if not _KUBE_POD_DNS_RE.fullmatch(str(name)) or "--" in str(name):
+            c.refuse(f'service {name}: its name isn\'t a DNS label without "--" (not on Kubernetes)')
         tun = f"service {name} uses TUN/NET_ADMIN (not on Kubernetes; prefer a userspace mode)"
         devs, ok = _rootless_scalars(svc.get("devices"))
         if not ok:
@@ -7718,9 +7757,13 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
             if not _kube_numeric(uid) or (gid != "" and not _kube_numeric(gid)):
                 shown = u if _KUBE_SHOWN_USER_RE.fullmatch(u) else "a non-numeric value"
                 c.refuse(f"service {name} runs as user {shown}: Kubernetes needs a numeric uid")
-            elif int(uid) == 0 and not _kube_root_helper(svc, env):
-                # Core's admission lets root run only as a one-shot helper.
-                c.refuse(f"service {name} runs as root (user 0)")
+            elif int(uid) == 0:
+                # Core's admission lets root run only as the one-shot shape.
+                if not (name in jobs or _kube_scalar(svc, "restart", env) == "no"):
+                    c.refuse(f"service {name} runs as root (user 0)")
+                elif not _kube_one_shot_root(name, svc, env, netns_owners):
+                    c.refuse(f"service {name} runs as root (user 0): only a one-shot job (restart no or on-failure) "
+                             "with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may")
         if _kube_scalar(svc, "network_mode", env) == "host":
             c.refuse(f"service {name} uses network_mode: host (not on Kubernetes)")
         if _kube_scalar(svc, "privileged", env) in ("true", "True", "yes"):
@@ -7744,6 +7787,11 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         if (isinstance(eh, (dict, list)) and len(eh) > 0) or (eh is not None and not isinstance(eh, (dict, list))
                                                             and _go_scalar(eh) != ""):
             c.refuse(f"service {name} sets extra_hosts (not on Kubernetes)")
+        if _kube_scalar(svc, "container_name", env):
+            c.refuse(f"service {name} sets container_name (not on Kubernetes)")
+        for al in _kube_aliases(svc):
+            shown = al if _KUBE_POD_DNS_RE.fullmatch(al) else "a name"
+            c.refuse(f"service {name} answers to alias {shown} (not on Kubernetes)")
 
     manifest = t.manifest if isinstance(t.manifest, dict) else {}
     first = next(iter(services), "")

@@ -4262,12 +4262,12 @@ class TestSetup(Case):
 class TestServiceNames(Case):
     def test_service_names_are_dns_labels(self) -> None:
         """Compose service names resolve as pod hostnames on Kubernetes."""
-        for bad in ("Demo", "demo_db", "-demo", "demo-", "a" * 64, "dé"):
+        for bad in ("Demo", "demo_db", "-demo", "demo-", "a" * 64, "dé", "demo--db"):
             with self.subTest(name=bad):
                 self.setUp()
                 self.run_template()
                 self.rewrite_compose("services:\n  demo:\n", f"services:\n  {bad}:\n    image: x\n  demo:\n")
-                self.assertError(self.recheck(), f"service name {bad!r} is not a DNS label")
+                self.assertError(self.recheck(), f"service name {bad!r} is not a DNS label without")
         self.setUp()
         self.run_template()
         self.rewrite_compose("services:\n  demo:\n", "services:\n  db-2:\n    image: x\n  demo:\n")
@@ -4575,20 +4575,38 @@ class RuntimeCompatTests(unittest.TestCase):
                          ("refused", ["service a publishes 9080 on fd00::5 (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"${H:-lan}:9080:80\"]\n"),
                          ("refused", ["service a publishes 9080 on a host address (not on Kubernetes)"]))
-        # uid 0 only as a one-shot helper (restart no / on-failure, no ports or
-        # Traefik labels, cap_drop [ALL], cap_add within CHOWN DAC_OVERRIDE FOWNER).
+        # uid 0 only as a one-shot job (the Hub's oneShotRoot): a job is a
+        # manifest job, a service_completed_successfully target or restart
+        # "no"; its shape: restart no / on-failure, no ports, no shared
+        # network namespace, no routers, cap_drop [ALL], cap_add within
+        # CHOWN DAC_OVERRIDE FOWNER.
         helper = "services:\n  init:\n    image: x\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n"
         root = ("refused", ["service init runs as root (user 0)"])
+        shape = ("refused", ["service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], "
+                             "cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"])
         self.assertEqual(kube(helper), ("ok", []))
-        self.assertEqual(kube(helper.replace('"no"', "on-failure:3")), ("ok", []))
-        for old, new in (('restart: "no"', "restart: unless-stopped"), ('    restart: "no"\n', ""),
-                         ("cap_drop: [ALL]", "cap_drop: [NET_RAW]"), ("    cap_drop: [ALL]\n", ""),
-                         ("FOWNER]", "FOWNER, SETUID]"), ("FOWNER]", "FOWNER]\n    ports: [\"9000:9000\"]"),
-                         ("FOWNER]", "FOWNER]\n    labels:\n      traefik.enable: \"false\"")):
-            with self.subTest(change=new or old):
-                self.assertIn(old, helper)
-                self.assertEqual(kube(helper.replace(old, new)), root)
         self.assertEqual(kube(helper.replace('"0:0"', '"00"')), ("ok", []))
+        dep = "  app:\n    image: y\n    depends_on:\n      init: {condition: service_completed_successfully}\n"
+        on_failure = helper.replace('"no"', "on-failure:3")
+        self.assertEqual(kube(on_failure), root)  # not a job
+        self.assertEqual(kube(on_failure + dep), ("ok", []))  # a completed_successfully target is
+        self.assertEqual(kube(helper.replace('    restart: "no"\n', ""), None, {"jobs": ["init"]}), ("ok", []))
+        self.assertEqual(kube(helper.replace('restart: "no"', "restart: unless-stopped")), root)
+        self.assertEqual(kube(helper.replace('restart: "no"', "restart: unless-stopped") + dep), shape)
+        for old, new in (("cap_drop: [ALL]", "cap_drop: [NET_RAW]"), ("    cap_drop: [ALL]\n", ""),
+                         ("FOWNER]", "FOWNER, SETUID]"), ("FOWNER]", "FOWNER]\n    ports: [\"9000:9000\"]"),
+                         ("FOWNER]", "FOWNER]\n    labels:\n      traefik.http.routers.x.rule: Host(`x`)"),
+                         ("FOWNER]", "FOWNER]\n    network_mode: service:app\n  app:\n    image: y")):
+            with self.subTest(change=new):
+                self.assertIn(old, helper)
+                self.assertEqual(kube(helper.replace(old, new)), shape)
+        self.assertEqual(kube(helper + "  app:\n    image: y\n    network_mode: service:init\n"), shape)
+        # Names, container_name, aliases.
+        self.assertEqual(kube("services:\n  a--b:\n    image: x\n    container_name: c\n    networks:\n      default:\n        aliases: [x-internal, X_Y]\n"),
+                         ("refused", ['service a--b: its name isn\'t a DNS label without "--" (not on Kubernetes)',
+                                      "service a--b sets container_name (not on Kubernetes)",
+                                      "service a--b answers to alias x-internal (not on Kubernetes)",
+                                      "service a--b answers to alias a name (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:0\"\n"), ("ok", []))
         # Manifest ports' bind addresses are the Hub's override, not judged here.
         self.assertEqual(kube("services:\n  a:\n    image: x\n", None,
