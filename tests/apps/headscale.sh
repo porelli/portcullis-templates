@@ -389,6 +389,13 @@ if docker logs "$STUB" 2>&1 | grep -q "PROXYv2 src=$ALICE_IP\$"; then
   pass "gateway forwards to PORTCULLIS_VPN_EDGE with PROXY v2, source = the client node ($ALICE_IP)"
 else
   fail "edge stub did not get PROXY v2 from $ALICE_IP: $(docker logs "$STUB" 2>&1 | tail -3)"
+  TSC=(tailscale --socket=/tmp/tailscaled.sock)
+  info "alice status: $(docker exec headscale-test-alice "${TSC[@]}" status 2>&1 | head -5 | tr '\n' ';')"
+  info "alice ping: $(timeout 30 docker exec headscale-test-alice "${TSC[@]}" ping -c 3 "$GW_IP" 2>&1 | tr '\n' ';')"
+  info "gateway status: $(docker exec portcullis-gateway-1 "${TSC[@]}" status 2>&1 | head -5 | tr '\n' ';')"
+  info "gateway serve: $(docker exec portcullis-gateway-1 "${TSC[@]}" serve status --json 2>&1 | tr -d '\n ')"
+  info "gateway netcheck: $(timeout 30 docker exec portcullis-gateway-1 "${TSC[@]}" netcheck 2>&1 | tr '\n' ';' | cut -c1-600)"
+  docker logs portcullis-gateway-1 2>&1 | grep -iE 'derp|x509|tls|certificate' | grep -v 'buffer size' | tail -15
 fi
 
 # vpn-dns: the records land in Headscale's extra_records_path, atomically,
