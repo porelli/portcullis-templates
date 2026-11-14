@@ -4613,29 +4613,37 @@ class VPNTests(Case):
         self.assertError(with_services(sib.format(name="fwd", image=fwd, of="gateway", extra="    pid: host\n")), "vpn: service fwd uses pid: host")
 
     def test_gateway_runs_userspace(self) -> None:
-        """Ruling (Task 19): the ingress and its namespace drop every
-        capability and add none of NET_ADMIN / NET_RAW / SYS_ADMIN, no TUN,
-        not privileged; NET_BIND_SERVICE (the forwarder's :443) stays."""
+        """Ruling (Task 19, security review): an allowlist for the ingress and
+        its namespace: privileged absent or false, cap_drop includes ALL,
+        cap_add only NET_BIND_SERVICE, no devices, no device_cgroup_rules."""
         gw = "    cap_drop: [ALL]\n"
+        only = "a VPN gateway may add only NET_BIND_SERVICE"
         for name, new, want in [
             ("no cap_drop", "", "vpn.ingress.service: gateway must set cap_drop: [ALL]"),
-            ("NET_ADMIN", gw + "    cap_add: [NET_ADMIN]\n", "vpn.ingress.service: gateway adds NET_ADMIN"),
-            ("CAP_NET_RAW", gw + "    cap_add: [CAP_NET_RAW]\n", "vpn.ingress.service: gateway adds CAP_NET_RAW"),
-            ("sys_admin", gw + "    cap_add: [sys_admin]\n", "vpn.ingress.service: gateway adds sys_admin"),
-            ("ALL", gw + "    cap_add: [ALL]\n", "vpn.ingress.service: gateway adds ALL"),
-            ("interpolated", gw + "    cap_add: [\"${GW_CAP:-CHOWN}\"]\n", "vpn.ingress.service: gateway adds ${GW_CAP:-CHOWN}"),
-            ("tun", gw + "    devices: [\"/dev/net/tun:/dev/net/tun\"]\n", "vpn.ingress.service: gateway uses /dev/net/tun"),
-            ("tun long form", gw + "    devices:\n      - {source: /dev/net/tun, target: /dev/net/tun, permissions: rwm}\n",
-             "vpn.ingress.service: gateway uses /dev/net/tun"),
+            ("NET_ADMIN", gw + "    cap_add: [NET_ADMIN]\n", f"gateway adds NET_ADMIN: {only}"),
+            ("CAP_NET_RAW", gw + "    cap_add: [CAP_NET_RAW]\n", f"gateway adds CAP_NET_RAW: {only}"),
+            ("CHOWN", gw + "    cap_add: [CHOWN]\n", f"gateway adds CHOWN: {only}"),
+            ("ALL", gw + "    cap_add: [ALL]\n", f"gateway adds ALL: {only}"),
+            ("interpolated", gw + "    cap_add: [\"${GW_CAP:-NET_BIND_SERVICE}\"]\n", "gateway adds ${GW_CAP:-NET_BIND_SERVICE}"),
+            ("tun", gw + "    devices: [\"/dev/net/tun:/dev/net/tun\"]\n", "gateway has devices"),
+            ("any device", gw + "    devices: []\n", "gateway has devices"),
+            ("cgroup rules", gw + "    device_cgroup_rules: [\"c 10:200 rwm\"]\n", "gateway has device_cgroup_rules"),
             ("privileged", gw + "    privileged: true\n", "vpn.ingress.service: gateway is privileged"),
+            ("privileged interpolated", gw + "    privileged: ${GW_PRIV:-false}\n", "vpn.ingress.service: gateway is privileged"),
+            ("privileged 0", gw + "    privileged: 0\n", "vpn.ingress.service: gateway is privileged"),
         ]:
             with self.subTest(name):
                 self.assertError(self.vpn_template(cedit=(gw, new)), want)
-        self.assertClean(self.vpn_template(cedit=(gw, gw + "    cap_add: [NET_BIND_SERVICE]\n")))
+        for ok in ("    cap_add: [NET_BIND_SERVICE]\n", "    cap_add: [cap_net_bind_service]\n", "    privileged: false\n"):
+            with self.subTest(ok):
+                self.assertClean(self.vpn_template(cedit=(gw, gw + ok)))
+        # The string "false" passes the VPN rule (the repo's multi-instance
+        # rule still refuses any truthy privileged).
+        self.assertFalse([e for e in self.vpn_template(cedit=(gw, gw + '    privileged: "false"\n')) if "is privileged" in e])
         fwd = f"ghcr.io/porelli/portcullis-forwarder:1.0.0@sha256:{S_DIGEST}"
         self.assertError(self.vpn_template(cedit=("  gateway:\n", f"  fwd:\n    image: {fwd}\n    network_mode: service:gateway\n"
                                                                     "    cap_drop: [ALL]\n    cap_add: [NET_ADMIN]\n  gateway:\n")),
-                         "vpn.ingress.service: fwd adds NET_ADMIN")
+                         f"vpn.ingress.service: fwd adds NET_ADMIN: {only}")
 
     def test_control_router_shapes(self) -> None:
         """Ruling (Task 19): a control router is Host() alone or Host() &&

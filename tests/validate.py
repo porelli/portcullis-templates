@@ -6763,7 +6763,9 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     return []
 
 
-VPN_REFUSED_CAPS = {"NET_ADMIN", "NET_RAW", "SYS_ADMIN", "ALL"}
+# The only capability a VPN gateway (or a service in its namespace) may add:
+# a forwarder binding :443 (V12).
+VPN_ALLOWED_CAPS = {"NET_BIND_SERVICE"}
 
 
 def _cap_name(c: Any) -> str:
@@ -6773,24 +6775,22 @@ def _cap_name(c: Any) -> str:
 
 
 def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
-    """Ruling (Task 19, 2026-11-14): a VPN gateway and every service in its
-    namespace run userspace. Not privileged, cap_drop: [ALL], no NET_ADMIN /
-    NET_RAW / SYS_ADMIN (or ALL, or an interpolated capability: can't be
-    checked) added, no /dev/net/tun. With NET_ADMIN a gateway could take
-    another gateway's address on portcullis-vpn (final review I6)."""
-    if sv.get("privileged") is True or scalar_text(sv.get("privileged")).lower() == "true":
+    """Ruling (Task 19, security review): a VPN gateway and every service in
+    its namespace run userspace, by allowlist: privileged absent or literally
+    false, cap_drop includes ALL, cap_add only NET_BIND_SERVICE (anything
+    else, interpolation included, refused), no devices, no
+    device_cgroup_rules. With NET_ADMIN a gateway could take another
+    gateway's address on portcullis-vpn (final review I6)."""
+    if "privileged" in sv and not (sv["privileged"] is False or sv["privileged"] == "false"):
         return f"vpn.ingress.service: {n} is privileged"
     if "ALL" not in {_cap_name(c) for c in as_list(sv.get("cap_drop"))}:
         return f"vpn.ingress.service: {n} must set cap_drop: [ALL]"
     for c in as_list(sv.get("cap_add")):
-        name = _cap_name(c)
-        if name in VPN_REFUSED_CAPS or "$" in name:
-            return (f"vpn.ingress.service: {n} adds {scalar_text(c).strip()}: a VPN gateway runs userspace "
-                    "(no NET_ADMIN, NET_RAW or SYS_ADMIN)")
-    for d in as_list(sv.get("devices")):
-        paths = [scalar_text(d.get(k)) for k in ("source", "target")] if isinstance(d, dict) else scalar_text(d).split(":")[:2]
-        if any(p.strip().rstrip("/") == "/dev/net/tun" or "$" in p for p in paths):
-            return f"vpn.ingress.service: {n} uses /dev/net/tun: a VPN gateway runs userspace (no TUN device)"
+        if _cap_name(c) not in VPN_ALLOWED_CAPS:
+            return f"vpn.ingress.service: {n} adds {scalar_text(c).strip()}: a VPN gateway may add only NET_BIND_SERVICE"
+    for key in ("devices", "device_cgroup_rules"):
+        if key in sv:
+            return f"vpn.ingress.service: {n} has {key}: a VPN gateway runs userspace (no devices)"
     return ""
 
 

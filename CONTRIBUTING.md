@@ -670,9 +670,9 @@ vpn:
   compose interpolation is refused, and so is declaring a `PORTCULLIS_VPN_*`
   key.
 - **The gateway runs userspace.** The ingress service and every service in
-  its namespace set `cap_drop: [ALL]`, are not privileged, add none of
-  NET_ADMIN, NET_RAW or SYS_ADMIN and use no `/dev/net/tun` (only
-  NET_BIND_SERVICE, for a forwarder on :443). With NET_ADMIN a gateway could
+  its namespace set `cap_drop: [ALL]`, are not privileged, add no capability
+  but NET_BIND_SERVICE (for a forwarder on :443) and have no `devices` or
+  `device_cgroup_rules`. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.
