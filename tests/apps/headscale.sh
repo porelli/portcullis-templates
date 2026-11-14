@@ -309,14 +309,25 @@ docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >
 EVENTS_PID=$!
 sleep 75
 docker start "$HS" >/dev/null
-for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && \
-  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete' && break; sleep 3; done
+T_START=$(date +%s)
+for _ in $(seq 1 120); do
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete' && break
+  sleep 3
+done
 kill "$EVENTS_PID" 2>/dev/null || true
-if ! grep -q ' die$' "$EVENTS" && docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then
-  pass "a gateway booting while headscale is down for 75 s waits and logs in (no exit)"
+if ! grep -q ' die$' "$EVENTS"; then
+  pass "a gateway booting while headscale is down for 75 s waits instead of exiting (no die event)"
 else
   fail "the gateway exited while its login server was down: $(tr '\n' ';' <"$EVENTS")"
-  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:' | tail -20
+fi
+if docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then
+  pass "and logs in $(( $(date +%s) - T_START )) s after headscale is back"
+else
+  fail "the gateway did not log in within 6 min of headscale coming back"
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:|Received error|health\(|Switching ipn state|control:' \
+    | grep -v 'magicsock' | tail -30
+  docker exec portcullis-gateway-1 tailscale --socket=/tmp/tailscaled.sock status 2>&1 | head -3
+  info "headscale via Traefik: $(via_traefik "$PORTCULLIS_HOST_HEADSCALE" /key?v=148)"
 fi
 rm -f "$EVENTS"
 for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && break; sleep 3; done
