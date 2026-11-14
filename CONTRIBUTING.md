@@ -669,6 +669,26 @@ vpn:
   shell reads the variable as `$$PORTCULLIS_VPN_EDGE`: `${PORTCULLIS_VPN_*}`
   compose interpolation is refused, and so is declaring a `PORTCULLIS_VPN_*`
   key.
+- **The gateway runs userspace.** The ingress service and every service in
+  its namespace set `cap_drop: [ALL]`, are not privileged, add no capability
+  but NET_BIND_SERVICE (for a forwarder on :443) and have no `devices` or
+  `device_cgroup_rules`. They set no `pid`, `ipc` or `volumes_from`, and no
+  other service shares their pid or ipc namespace, or mounts their volumes. They bind only
+  the template's own files (`./templates/<id>/…`, read-only) and mount only
+  volumes the template declares (no `external`, `name`, `driver` or
+  `driver_opts`); another service may mount one of those only when every
+  gateway service mounts it read-only (a hand-over, like headscale's
+  pre-auth key). Mounts must be literal and unambiguous. In a VPN template no
+  service binds the template's own files read-write, no bind under
+  `./templates/<id>/` may resolve (through a symlink) outside it, and
+  `-internal` names stay on the `default` network. A VPN template's
+  compose file has no YAML anchors, aliases or merge keys, no top-level
+  volume with `name`, `external`, `driver` or `driver_opts`, and every bind source starts with `./` (no `~`, `/`, drive
+  letter, UNC path, backslash or `..` segment); a short-syntax volume is a
+  `./` bind or a volume declared under top-level `volumes:`. With NET_ADMIN a gateway could
+  take another provider's address on `portcullis-vpn`. A VPN app whose
+  client can't run userspace while keeping each peer's tunnel address can't
+  be a provider.
 - **The gateway's network namespace** holds only the ingress service and,
   optionally, the forwarder (`network_mode: service:<ingress>`, pinned by
   digest); every service in it follows the ingress rules above. With a
@@ -688,7 +708,8 @@ vpn:
   that ships an ACL, or whose notes tell admins to add one, says so (e.g.
   Headscale: allow members to `tag:portcullis-gateway:443`). Never widen the
   app's ACL to make this work.
-- **Control routers** are host routers (a `Host()` rule alone), only what clients need to connect (coordination,
+- **Control routers** are the template's own routers whose rule is a
+  `Host()` alone or `Host() && PathPrefix()`, only what clients need to connect (coordination,
   signal, relay). Never an admin UI: a router that serves an
   `auth.admin_paths` path, or any router of a `group_admin: true` app, is
   refused.

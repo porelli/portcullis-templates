@@ -258,6 +258,75 @@ else
   fail "gateway-key minted again or left the key file while the gateway is online"
 fi
 
+# The Hub's wiring as it happens on a server: the gateway runs unwired,
+# then the override gains PORTCULLIS_VPN_EDGE (compose recreates it) and the
+# start hooks run again; the provider's hooks then run every refresh. The
+# gateway must keep running (core's e2e-vpn saw it exit about a minute
+# after wiring): docker events and its whole log are kept.
+printf 'services: {}\n' > "$OVERRIDE"
+COMPOSE_OVERRIDE="$OVERRIDE" compose_up "$APP_ID" >/dev/null
+printf '{"version":1,"trigger":"start"}' | glue gateway-key >/dev/null 2>&1 || true
+sleep 20
+printf 'services:\n  gateway:\n    environment:\n      PORTCULLIS_VPN_EDGE: "%s:9001"\n' "$EDGE_IP" > "$OVERRIDE"
+COMPOSE_OVERRIDE="$OVERRIDE" compose_up "$APP_ID" >/dev/null
+WIRED_CID=$(docker inspect -f '{{.Id}}' portcullis-gateway-1)
+EVENTS=$(mktemp)
+docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >"$EVENTS" 2>&1 &
+EVENTS_PID=$!
+printf '{"version":1,"trigger":"start"}' | glue gateway-key >/dev/null 2>&1 || true
+for i in 1 2 3; do
+  sleep 60
+  devices_req | glue >/dev/null 2>&1 || info "vpn-devices failed at minute $i"
+  [ "$i" = 1 ] && printf '{"version":1,"trigger":"vpn","instance":"%s","op":"dns","records":[{"name":"app-test.%s","type":"A","value":"%s"}]}' \
+    "$APP_ID" "$DOMAIN" "$GW_IP" | glue >/dev/null 2>&1
+done
+kill "$EVENTS_PID" 2>/dev/null || true
+restarts=$(docker inspect -f '{{.RestartCount}} {{.State.Status}} {{.Id}}' portcullis-gateway-1)
+info "gateway after 3 min wired: restarts/state/id = $restarts (wired container $WIRED_CID)"
+info "gateway events: $(tr '\n' ';' <"$EVENTS")"
+if [ "${restarts%% *}" = 0 ] && [ "${restarts##* }" = "$WIRED_CID" ] && ! grep -q ' die$' "$EVENTS"; then
+  pass "the wired gateway keeps running for 3 min (no exit, no restart)"
+else
+  fail "the wired gateway exited or restarted after wiring"
+  docker logs portcullis-gateway-1 2>&1 | grep -vE 'magicsock: \[warning\]|buffer size' | grep -E 'exiting|left running state|boot:|Received error|health\(|state|failed|fatal|panic|Switching ipn state' | tail -60
+fi
+rm -f "$EVENTS"
+# The gateway (re)starting while its login server is down longer than
+# containerboot's default 60 s boot deadline (the Hub's wiring recreates
+# headscale, which restarts until its OIDC discovery answers): it must wait
+# (TS_BOOT_TIMEOUT), not exit.
+if [ "$(yq -r '.services.gateway.environment.TS_BOOT_TIMEOUT // ""' "$COMPOSE")" = "" ]; then
+  pass "gateway keeps containerboot's 60 s boot deadline (its restart cures a 421-pinned connection)"
+else
+  fail "gateway must not raise TS_BOOT_TIMEOUT: a gateway booted before headscale's router stays on 421 until it restarts"
+fi
+docker stop "$HS" >/dev/null
+docker restart portcullis-gateway-1 >/dev/null
+# The restarted instance's own log only (its start time, nanoseconds).
+SINCE=$(docker inspect -f '{{.State.StartedAt}}' portcullis-gateway-1)
+EVENTS=$(mktemp)
+docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >"$EVENTS" 2>&1 &
+EVENTS_PID=$!
+sleep 75
+docker start "$HS" >/dev/null
+T_START=$(date +%s)
+LOGGED=""
+for _ in $(seq 1 80); do
+  if [ "$(docker exec portcullis-gateway-1 tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null | jq -r '.BackendState')" = Running ] \
+    && docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then LOGGED=1; break; fi
+  sleep 3
+done
+kill "$EVENTS_PID" 2>/dev/null || true
+restarts=$(grep -c ' die$' "$EVENTS" || true)
+if [ -n "$LOGGED" ]; then
+  pass "a gateway booted while headscale was down logs in $(( $(date +%s) - T_START )) s after headscale is back ($restarts restart(s) by its boot deadline)"
+else
+  fail "the gateway did not log in within 4 min of headscale coming back ($restarts restart(s))"
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:|Received error|Switching ipn state' | grep -v magicsock | tail -20
+fi
+rm -f "$EVENTS"
+for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && break; sleep 3; done
+
 # People: alice signed in through Portcullis (provider id = issuer/sub,
 # set in the store with headscale stopped), bob is a local Headscale user.
 SUB=0b5a1c2e-1111-4222-8333-444455556666
@@ -326,6 +395,13 @@ if docker logs "$STUB" 2>&1 | grep -q "PROXYv2 src=$ALICE_IP\$"; then
   pass "gateway forwards to PORTCULLIS_VPN_EDGE with PROXY v2, source = the client node ($ALICE_IP)"
 else
   fail "edge stub did not get PROXY v2 from $ALICE_IP: $(docker logs "$STUB" 2>&1 | tail -3)"
+  TSC=(tailscale --socket=/tmp/tailscaled.sock)
+  info "alice status: $(docker exec headscale-test-alice "${TSC[@]}" status 2>&1 | head -5 | tr '\n' ';')"
+  info "alice ping: $(timeout 30 docker exec headscale-test-alice "${TSC[@]}" ping -c 3 "$GW_IP" 2>&1 | tr '\n' ';')"
+  info "gateway status: $(docker exec portcullis-gateway-1 "${TSC[@]}" status 2>&1 | head -5 | tr '\n' ';')"
+  info "gateway serve: $(docker exec portcullis-gateway-1 "${TSC[@]}" serve status --json 2>&1 | tr -d '\n ')"
+  info "gateway netcheck: $(timeout 30 docker exec portcullis-gateway-1 "${TSC[@]}" netcheck 2>&1 | tr '\n' ';' | cut -c1-600)"
+  docker logs portcullis-gateway-1 2>&1 | grep -iE 'derp|x509|tls|certificate' | grep -v 'buffer size' | tail -15
 fi
 
 # vpn-dns: the records land in Headscale's extra_records_path, atomically,
