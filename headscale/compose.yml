@@ -123,14 +123,19 @@ services:
       TS_HOSTNAME: portcullis-gateway
       # No log upload to log.tailscale.com.
       TS_TAILSCALED_EXTRA_ARGS: --no-logs-no-support
-      TS_EXTRA_ARGS: --login-server=https://${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
+      # The login (control) server over the instance's own default network:
+      # the control protocol is end-to-end encrypted (Noise, headscale's key),
+      # and a VPN gateway binds no file but its own template's (no CA
+      # bundle). Its DERP fallback is at ${PORTCULLIS_HOST_HEADSCALE}
+      # (headscale's server_url), reached through Traefik's published port
+      # (host-gateway) with the image's public roots.
+      TS_EXTRA_ARGS: --login-server=http://headscale-internal:8080
     extra_hosts:
       - "${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}:host-gateway"
     volumes:
       - gateway-state:/var/lib/tailscale
       - gateway-auth:/run/gateway:ro
       - ./templates/headscale/vpn/gateway.sh:/portcullis/gateway.sh:ro
-      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     read_only: true
     tmpfs: [/tmp, /run/tailscale]
     cap_drop: [ALL]

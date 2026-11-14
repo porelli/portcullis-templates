@@ -4501,7 +4501,7 @@ class VPNTests(Case):
                     self.assertEqual(family, [], "\n".join(errors))
                     continue
                 self.assertIn(want, texts, "\n".join(errors))
-                first = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]))
+                first = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]), "mesh")
                 if want.startswith(("vpn.", "vpn:")) or "needs a vpn: block" in want:
                     self.assertEqual(first[:1], [want], first)
 

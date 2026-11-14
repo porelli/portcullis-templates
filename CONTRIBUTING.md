@@ -673,9 +673,12 @@ vpn:
   its namespace set `cap_drop: [ALL]`, are not privileged, add no capability
   but NET_BIND_SERVICE (for a forwarder on :443) and have no `devices` or
   `device_cgroup_rules`. They set no `pid`, `ipc` or `volumes_from`, and no
-  other service shares their pid or ipc namespace, mounts their volumes, or
-  mounts a volume or bind source they mount read-write (a handover volume
-  the gateway only reads, like headscale's pre-auth key, is fine). With NET_ADMIN a gateway could
+  other service shares their pid or ipc namespace, or mounts their volumes. They bind only
+  the template's own files (`./templates/<id>/…`, read-only) and mount only
+  volumes the template declares (no `external`, `name`, `driver` or
+  `driver_opts`); another service may mount one of those only when every
+  gateway service mounts it read-only (a hand-over, like headscale's
+  pre-auth key). Mounts must be literal and unambiguous. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.

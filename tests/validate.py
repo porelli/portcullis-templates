@@ -18,6 +18,7 @@ Exit code: 0 = OK, 1 = rule violations, 2 = usage / setup error.
 from __future__ import annotations
 
 import argparse
+import posixpath
 import ipaddress
 import json
 import os
@@ -6595,7 +6596,7 @@ def vpn_prefix(s: Any) -> Optional[ipaddress.IPv4Network]:
     return net if str(net) == s else None
 
 
-def vpn_errors(m: Any, compose: Any) -> List[str]:
+def vpn_errors(m: Any, compose: Any, app_id: str = "") -> List[str]:
     """ValidateVPN: the vpn: block and the vpn hooks of manifest m against
     compose file compose, every refusal in the Hub's order (the first is
     the one the Hub reports)."""
@@ -6640,7 +6641,7 @@ def vpn_errors(m: Any, compose: Any) -> List[str]:
                     out.append(f"vpn.ranges: {a} overlaps {bt}")
 
         ing = b.get("ingress") if isinstance(b.get("ingress"), dict) else {}
-        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol")))
+        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol"), compose, app_id))
 
         ident = b.get("identity") if isinstance(b.get("identity"), dict) else {}
         source = _str(ident, "source")
@@ -6710,7 +6711,8 @@ def vpn_net_ns(services: Dict[str, Dict[str, Any]], svc: str) -> Optional[str]:
         svc = nxt
 
 
-def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str) -> List[str]:
+def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str,
+                       compose: Any = None, app_id: str = "") -> List[str]:
     """checkVPNIngress: the ingress exists and can join a network; no
     service uses the host's pid namespace, and neither the ingress, the
     services sharing its network namespace nor a routed service use host
@@ -6771,10 +6773,32 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     # read or plant the gateway's state and keys). container: targets are
     # refused for every template already (check_hub_rules).
     in_ns = set(members)
-    member_mounts: Dict[str, List[Tuple[str, bool]]] = {}
+    # Mounts (ruling, Task 19): a member binds only the template's own
+    # files under ./templates/<id>/, read-only; its named volumes are
+    # declared top-level with no external, name, driver or driver_opts; a
+    # member's volume is mounted by no other service unless every member
+    # mounts it read-only (a hand-over, like headscale's pre-auth key);
+    # anything unresolvable is refused.
+    top_vols = (compose or {}).get("volumes") if isinstance(compose, dict) else None
+    top_vols = top_vols if isinstance(top_vols, dict) else {}
+    member_vols: Dict[str, List[Tuple[str, bool]]] = {}
     for mname in members:
-        for src, ro in vpn_mount_sources(services[mname]):
-            member_mounts.setdefault(src, []).append((mname, ro))
+        mounts, bad = vpn_mounts(services[mname])
+        if bad:
+            return [f"vpn.ingress.service: {mname} mounts {bad}: unresolvable (a VPN gateway's mounts are literal)"]
+        for kind, src, ro, entry in mounts:
+            if kind == "bind":
+                norm = posixpath.normpath(src)
+                if not (src.startswith(f"./templates/{app_id}/") and norm.startswith(f"templates/{app_id}/")) or not ro:
+                    return [f"vpn.ingress.service: {mname} mounts {entry}: a VPN gateway binds only the template's own "
+                            f"files (./templates/{app_id}/…), read-only"]
+                continue
+            decl = top_vols.get(src) if src in top_vols else None
+            if src not in top_vols or (isinstance(decl, dict) and any(k in decl for k in ("external", "name", "driver", "driver_opts"))) \
+                    or (decl is not None and not isinstance(decl, dict)):
+                return [f"vpn.ingress.service: {mname} mounts volume {src}: a VPN gateway's volumes are the template's own "
+                        "(declared, with no external, name, driver or driver_opts)"]
+            member_vols.setdefault(src, []).append((mname, ro))
     for n in names:
         sv = services[n]
         for key in ("pid", "ipc"):
@@ -6792,10 +6816,13 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
                 return [f"vpn.ingress.service: {n} mounts the volumes of {name} (volumes_from)"]
         if n in in_ns:
             continue
-        for src, _ in vpn_mount_sources(sv):
-            rw = [mname for mname, ro in member_mounts.get(src, []) if not ro]
+        mounts, bad = vpn_mounts(sv)
+        if bad:
+            return [f"vpn.ingress.service: {n} mounts {bad}: unresolvable (a VPN template's mounts are literal)"]
+        for kind, src, _, _ in mounts:
+            rw = [mname for mname, ro in member_vols.get(src, []) if not ro] if kind == "volume" else []
             if rw:
-                return [f"vpn.ingress.service: {n} mounts {src}, which {rw[0]} mounts read-write"]
+                return [f"vpn.ingress.service: {n} mounts volume {src}, which {rw[0]} mounts read-write"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
@@ -6832,23 +6859,41 @@ def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
     return ""
 
 
-def vpn_mount_sources(sv: Dict[str, Any]) -> List[Tuple[str, bool]]:
-    """(source, read-only) of a service's named-volume and bind mounts, as
-    Compose reads them: short syntax src:dst[:opts] (read-only when the
-    comma-separated options include ro), long syntax {type, source,
-    read_only}; anonymous volumes and tmpfs have no source."""
-    out: List[Tuple[str, bool]] = []
+_VPN_VOLUME_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
+
+
+def vpn_mounts(sv: Dict[str, Any]) -> Tuple[List[Tuple[str, str, bool, str]], str]:
+    """A service's volumes: as (kind bind|volume, source, read-only, entry)
+    the way Compose reads them; anonymous volumes and tmpfs are skipped. The
+    second value is the first entry that can't be resolved (an interpolated
+    source, an ambiguous short form, a type other than bind / volume /
+    tmpfs), "" when none."""
+    out: List[Tuple[str, str, bool, str]] = []
     for v in as_list(sv.get("volumes")):
         if isinstance(v, dict):
+            typ = scalar_text(v.get("type") or "volume")
             src = scalar_text(v.get("source")).strip()
-            if v.get("type", "volume") in ("volume", "bind") and src:
-                out.append((src.rstrip("/") or "/", v.get("read_only") is True))
+            shown = src or json.dumps(v, sort_keys=True)
+            if typ == "tmpfs" or (typ == "volume" and not src):
+                continue
+            if typ not in ("bind", "volume") or not src or "$" in src:
+                return out, shown
+            ro = v.get("read_only") is True or v.get("read_only") == "true"
+            out.append((typ, src, ro, src))
             continue
-        parts = scalar_text(v).strip().split(":")
-        if len(parts) >= 2 and parts[0]:
-            opts = parts[2].split(",") if len(parts) > 2 else []
-            out.append((parts[0].rstrip("/") or "/", "ro" in opts))
-    return out
+        entry = scalar_text(v).strip()
+        if "$" in entry:
+            return out, entry
+        parts = entry.split(":")
+        if len(parts) == 1:
+            continue   # an anonymous volume
+        src = parts[0]
+        bind = src.startswith((".", "/"))
+        if len(parts) > 3 or not src or not parts[1] or (not bind and not _VPN_VOLUME_NAME_RE.fullmatch(src)):
+            return out, entry
+        ro = len(parts) == 3 and "ro" in parts[2].split(",")
+        out.append(("bind" if bind else "volume", src, ro, entry))
+    return out, ""
 
 
 def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:
@@ -6879,9 +6924,9 @@ def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
     checked against the raw block)."""
     m = t.manifest or {}
     if "vpn" in t.schema_errors and isinstance(m.get("vpn"), dict):
-        errs = [e for e in vpn_errors(m, {"services": services}) if e.startswith("hooks[")]
+        errs = [e for e in vpn_errors(m, dict(t.compose or {}, services=services), t.id) if e.startswith("hooks[")]
     else:
-        errs = vpn_errors(m, {"services": services})
+        errs = vpn_errors(m, dict(t.compose or {}, services=services), t.id)
     for e in errs:
         r.error(t.m_where, e, VPN_HINT)
 

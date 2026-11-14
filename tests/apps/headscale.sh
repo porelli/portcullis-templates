@@ -302,7 +302,8 @@ else
 fi
 docker stop "$HS" >/dev/null
 docker restart portcullis-gateway-1 >/dev/null
-SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# The restarted instance's own log only (its start time, nanoseconds).
+SINCE=$(docker inspect -f '{{.State.StartedAt}}' portcullis-gateway-1)
 EVENTS=$(mktemp)
 docker events --filter "container=$WIRED_CID" --format '{{.Time}} {{.Action}}' >"$EVENTS" 2>&1 &
 EVENTS_PID=$!
