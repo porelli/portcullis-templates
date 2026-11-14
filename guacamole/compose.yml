@@ -110,8 +110,11 @@ services:
     image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
     # The image runs as uid 1001, but the fresh named volume's mountpoint is
     # root-owned, so this one-shot init (it only writes a SQL file) runs as
-    # root. The long-running guacamole service stays non-root.
+    # root. The long-running guacamole service stays non-root. One-shot
+    # (restart "no"), all capabilities dropped but the three file ones: the
+    # Hub's root-helper rule on Kubernetes.
     user: "0:0"
+    restart: "no"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]

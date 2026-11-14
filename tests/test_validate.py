@@ -4259,6 +4259,21 @@ class TestSetup(Case):
         self.assertError(errors, "-bad")
 
 
+class TestServiceNames(Case):
+    def test_service_names_are_dns_labels(self) -> None:
+        """Compose service names resolve as pod hostnames on Kubernetes."""
+        for bad in ("Demo", "demo_db", "-demo", "demo-", "a" * 64, "dé"):
+            with self.subTest(name=bad):
+                self.setUp()
+                self.run_template()
+                self.rewrite_compose("services:\n  demo:\n", f"services:\n  {bad}:\n    image: x\n  demo:\n")
+                self.assertError(self.recheck(), f"service name {bad!r} is not a DNS label")
+        self.setUp()
+        self.run_template()
+        self.rewrite_compose("services:\n  demo:\n", "services:\n  db-2:\n    image: x\n  demo:\n")
+        self.assertFalse([e for e in self.recheck() if "is not a DNS label" in e])
+
+
 class TestSourceVariables(Case):
     """PORTCULLIS_TRAEFIK_SOURCE / PORTCULLIS_MCP_GATE_SOURCE (contracts §2,
     Kubernetes): CIDR variables, read only in their default form; the old
@@ -4560,6 +4575,21 @@ class RuntimeCompatTests(unittest.TestCase):
                          ("refused", ["service a publishes 9080 on fd00::5 (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"${H:-lan}:9080:80\"]\n"),
                          ("refused", ["service a publishes 9080 on a host address (not on Kubernetes)"]))
+        # uid 0 only as a one-shot helper (restart no / on-failure, no ports or
+        # Traefik labels, cap_drop [ALL], cap_add within CHOWN DAC_OVERRIDE FOWNER).
+        helper = "services:\n  init:\n    image: x\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n"
+        root = ("refused", ["service init runs as root (user 0)"])
+        self.assertEqual(kube(helper), ("ok", []))
+        self.assertEqual(kube(helper.replace('"no"', "on-failure:3")), ("ok", []))
+        for old, new in (('restart: "no"', "restart: unless-stopped"), ('    restart: "no"\n', ""),
+                         ("cap_drop: [ALL]", "cap_drop: [NET_RAW]"), ("    cap_drop: [ALL]\n", ""),
+                         ("FOWNER]", "FOWNER, SETUID]"), ("FOWNER]", "FOWNER]\n    ports: [\"9000:9000\"]"),
+                         ("FOWNER]", "FOWNER]\n    labels:\n      traefik.enable: \"false\"")):
+            with self.subTest(change=new or old):
+                self.assertIn(old, helper)
+                self.assertEqual(kube(helper.replace(old, new)), root)
+        self.assertEqual(kube(helper.replace('"0:0"', '"00"')), ("ok", []))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:0\"\n"), ("ok", []))
         # Manifest ports' bind addresses are the Hub's override, not judged here.
         self.assertEqual(kube("services:\n  a:\n    image: x\n", None,
                               {"ports": [{"key": "P", "default": 1883, "container": 1883, "bind": "192.168.1.10"}]}), ("ok", []))

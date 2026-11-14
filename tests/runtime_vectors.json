@@ -579,15 +579,17 @@
     }
   },
   {
-    "name": "kubernetes: guacamole ok (its caps are inside the baseline)",
+    "name": "kubernetes: guacamole's root init refused",
     "runtime": "kubernetes",
     "compose": "services:\n  guacd:\n    image: docker.io/guacamole/guacd:1.6.0\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
     "ports": [],
     "env": {},
     "port_start": 80,
     "want": {
-      "status": "ok",
-      "reasons": []
+      "status": "refused",
+      "reasons": [
+        "service init runs as root (user 0)"
+      ]
     }
   },
   {
@@ -600,7 +602,8 @@
     "want": {
       "status": "refused",
       "reasons": [
-        "service init adds SYS_ADMIN, outside the Kubernetes baseline"
+        "service init adds SYS_ADMIN, outside the Kubernetes baseline",
+        "service init runs as root (user 0)"
       ]
     }
   },
@@ -813,6 +816,46 @@
         "service app publishes 9080 on 192.168.1.5 (not on Kubernetes)",
         "service app publishes 9084 on 10.0.0.7 (not on Kubernetes)"
       ]
+    }
+  },
+  {
+    "name": "kubernetes: samba as root refused",
+    "runtime": "kubernetes",
+    "compose": "services:\n  samba:\n    image: ghcr.io/servercontainers/samba:smbd-only-a3.23.3-s4.22.6-r1\n    user: \"0:0\"\n",
+    "ports": [],
+    "env": {},
+    "port_start": 80,
+    "want": {
+      "status": "refused",
+      "reasons": [
+        "service samba runs as root (user 0)"
+      ]
+    }
+  },
+  {
+    "name": "kubernetes: uid 0 without a group refused",
+    "runtime": "kubernetes",
+    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"0\"\n",
+    "ports": [],
+    "env": {},
+    "port_start": 80,
+    "want": {
+      "status": "refused",
+      "reasons": [
+        "service app runs as root (user 0)"
+      ]
+    }
+  },
+  {
+    "name": "kubernetes: a non-root gid 0 ok",
+    "runtime": "kubernetes",
+    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:0\"\n",
+    "ports": [],
+    "env": {},
+    "port_start": 80,
+    "want": {
+      "status": "ok",
+      "reasons": []
     }
   }
 ]

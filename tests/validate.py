@@ -874,6 +874,9 @@ def check_links(t: Template, r: Report) -> None:
             r.error(t.m_where, f"links.source must be {want} (compose downloads CRAFT_REPO {repo})", LINKS_HINT)
 
 
+SERVICE_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
 def check_removed_vars(t: Template, r: Report) -> None:
     """PORTCULLIS_TRAEFIK_IP / PORTCULLIS_MCP_GATE_IP (core settings, not
     template variables, §2) in any file of the template, in any form:
@@ -926,6 +929,11 @@ def check_compose(t: Template, r: Report) -> None:
     auth = m.get("auth") or {}
     method = auth.get("method")
     services: Dict[str, Any] = data["services"]
+    for sname in services:
+        if not isinstance(sname, str) or not SERVICE_LABEL_RE.fullmatch(sname):
+            r.error(t.c_where, f"service name {sname!r} is not a DNS label",
+                    "use lowercase letters, digits and '-' (1-63, starting and ending with a letter or digit): "
+                    "on Kubernetes the services reach each other by these names as pod hostnames")
 
     for key in ("version",):
         if key in data:
@@ -7642,6 +7650,28 @@ def _kube_published_host_ips(ports: Any, env: Dict[str, str]) -> List[Tuple[str,
     return out
 
 
+# A uid-0 service is allowed on Kubernetes only as a one-shot helper: restart
+# "no" or on-failure, no ports or Traefik labels, cap_drop [ALL] and cap_add
+# within these (the Hub's root-helper rule).
+KUBE_ROOT_HELPER_CAPS = {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+
+
+def _kube_root_helper(svc: Dict[str, Any], env: Dict[str, str]) -> bool:
+    restart = _kube_scalar(svc, "restart", env)
+    if not (restart == "no" or restart == "on-failure" or restart.startswith("on-failure:")):
+        return False
+    if svc.get("ports"):
+        return False
+    if any(str(k).startswith("traefik.") for k in labels_of(svc)):
+        return False
+    drop, _ = _rootless_scalars(svc.get("cap_drop"))
+    if "ALL" not in [_rootless_resolve(x, env).strip().upper() for x in drop]:
+        return False
+    add, ok = _rootless_scalars(svc.get("cap_add"))
+    caps = {_rootless_resolve(x, env).strip().upper().removeprefix("CAP_") for x in add}
+    return ok and caps <= KUBE_ROOT_HELPER_CAPS
+
+
 def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
@@ -7688,6 +7718,9 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
             if not _kube_numeric(uid) or (gid != "" and not _kube_numeric(gid)):
                 shown = u if _KUBE_SHOWN_USER_RE.fullmatch(u) else "a non-numeric value"
                 c.refuse(f"service {name} runs as user {shown}: Kubernetes needs a numeric uid")
+            elif int(uid) == 0 and not _kube_root_helper(svc, env):
+                # Core's admission lets root run only as a one-shot helper.
+                c.refuse(f"service {name} runs as root (user 0)")
         if _kube_scalar(svc, "network_mode", env) == "host":
             c.refuse(f"service {name} uses network_mode: host (not on Kubernetes)")
         if _kube_scalar(svc, "privileged", env) in ("true", "True", "yes"):
