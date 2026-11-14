@@ -861,7 +861,7 @@
  {
   "name": "kubernetes: a one-shot root job in the ruled shape ok",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -873,7 +873,7 @@
  {
   "name": "kubernetes: a one-shot root job restarting on failure ok",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: on-failure\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: on-failure\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -885,7 +885,7 @@
  {
   "name": "kubernetes: a manifest-less root job by restart no ok",
   "runtime": "kubernetes",
-  "compose": "services:\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0\"\n    restart: \"no\"\n    cap_drop: [all]\n",
+  "compose": "services:\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [all]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -897,7 +897,7 @@
  {
   "name": "kubernetes: a root job adding SETUID refused",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, SETUID]\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, SETUID]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -911,7 +911,7 @@
  {
   "name": "kubernetes: a root job publishing a port refused",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    ports: [\"8080:80\"]\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    cap_drop: [ALL]\n    ports: [\"8080:80\"]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -925,7 +925,7 @@
  {
   "name": "kubernetes: a root job with a route refused",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    cap_drop: [ALL]\n    labels:\n      traefik.enable: \"true\"\n      traefik.http.routers.init.rule: Host(`i.example.org`)\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    cap_drop: [ALL]\n    labels:\n      traefik.enable: \"true\"\n      traefik.http.routers.init.rule: Host(`i.example.org`)\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -939,7 +939,7 @@
  {
   "name": "kubernetes: a root job restarting always refused",
   "runtime": "kubernetes",
-  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: always\n    cap_drop: [ALL]\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    depends_on:\n      init:\n        condition: service_completed_successfully\n  init:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: always\n    cap_drop: [ALL]\n",
   "ports": [],
   "env": {},
   "port_start": 80,
@@ -979,21 +979,207 @@
   }
  },
  {
-  "name": "kubernetes: container_name refused",
+  "name": "kubernetes: a root job on the app's own volume ok",
   "runtime": "kubernetes",
-  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    container_name: www\n",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes: [\"data:/data\"]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a root job with tmpfs ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    tmpfs: [/scratch]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a root job with a writable host bind refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes: [\"/srv/share:/data\"]\nvolumes:\n  data: {}\n",
   "ports": [],
   "env": {},
   "port_start": 80,
   "want": {
    "status": "refused",
    "reasons": [
-    "service web sets container_name (not on Kubernetes)"
+    "service perms runs as root with a host bind"
    ]
   }
  },
  {
-  "name": "kubernetes: a network alias refused",
+  "name": "kubernetes: a root job with a read-only host bind refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes: [\"/srv/share:/data:ro\"]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root with a host bind"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job with a long-syntax writable bind refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes:\n      - type: bind\n        source: /srv/share\n        target: /data\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root with a host bind"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job on a volume no non-root service owns refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes: [\"cache:/cache\"]\nvolumes:\n  cache: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root and mounts a volume no non-root service mounts (its owner on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job with group 0 refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root with group 0: set user \"0:<gid>\" with a gid other than 0"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job without a group refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root with group 0: set user \"0:<gid>\" with a gid other than 0"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job adding group 0 refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    group_add: [\"0\"]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service perms runs as root with group 0: set user \"0:<gid>\" with a gid other than 0"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a root job with template files ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    user: \"1000:1000\"\n    volumes: [\"data:/var/lib/app\"]\n    depends_on:\n      perms:\n        condition: service_completed_successfully\n  perms:\n    image: docker.io/library/alpine:3.24.3\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN]\n    volumes: [\"./templates/echo/fetch.sh:/fetch.sh:ro\"]\nvolumes:\n  data: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: a network alias on a served port ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    expose: [\"8080\"]\n    networks:\n      default:\n        aliases: [web-internal]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: container_name as an alias ok",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    container_name: www\n    labels:\n      traefik.enable: \"true\"\n      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.services.web.loadbalancer.server.port: \"8080\"\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
+ },
+ {
+  "name": "kubernetes: an alias that isn't a DNS label refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [Web_1]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web answers to alias Web_1, not a DNS label without \"--\" (not on Kubernetes)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: an alias that is a compose name refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [db]\n  db:\n    image: docker.io/library/nginx:1.29\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web answers to alias db, also a compose service name"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: an alias on two services refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  a:\n    image: docker.io/library/nginx:1.29\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [x-internal]\n  b:\n    image: docker.io/library/nginx:1.29\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [x-internal]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "alias x-internal names two services (a, b)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: an alias without a declared port refused",
   "runtime": "kubernetes",
   "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    networks:\n      default:\n        aliases: [web-internal]\n",
   "ports": [],
@@ -1002,7 +1188,49 @@
   "want": {
    "status": "refused",
    "reasons": [
-    "service web answers to alias web-internal (not on Kubernetes)"
+    "service web answers to alias web-internal but serves no declared port (expose it)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a compose service named pods refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  pods:\n    image: docker.io/library/nginx:1.29\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service pods: the name is reserved on Kubernetes (the instance's pod DNS)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: an alias pods refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [pods]\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web answers to alias pods, reserved on Kubernetes (the instance's pod DNS)"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a volume on a service with no numeric user refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  web:\n    image: docker.io/library/nginx:1.29\n    volumes: [\"site:/srv\"]\nvolumes:\n  site: {}\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "service web mounts a volume but has no numeric user"
    ]
   }
  }

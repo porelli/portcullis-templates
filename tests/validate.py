@@ -7706,6 +7706,114 @@ def _kube_aliases(svc: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _kube_named_volumes(vols: Any, env: Dict[str, str]) -> List[str]:
+    """The Hub's namedVolumes: a service's named volume sources."""
+    out: List[str] = []
+    for v in vols if isinstance(vols, list) else []:
+        if isinstance(v, dict):
+            if _kube_scalar(v, "type", env) == "volume":
+                src = _kube_scalar(v, "source", env)
+                if src:
+                    out.append(src)
+        elif not isinstance(v, list) and v is not None:
+            parts = _rootless_split(_go_scalar(v))
+            if len(parts) < 2:
+                continue
+            src = _rootless_resolve(parts[0], env).strip()
+            if src and not src.startswith(("/", ".", "~")):
+                out.append(src)
+    return out
+
+
+def _kube_root_bind(vols: Any, env: Dict[str, str]) -> str:
+    """The Hub's rootBind: why a one-shot root job's binds are refused
+    ("" = none): a root pod mounts only emptyDir, the instance's PVCs and
+    Secrets."""
+    for v in vols if isinstance(vols, list) else []:
+        if isinstance(v, dict):
+            if _kube_scalar(v, "type", env) != "bind":
+                continue
+            src = _kube_scalar(v, "source", env)
+        elif not isinstance(v, list) and v is not None:
+            parts = _rootless_split(_go_scalar(v))
+            if len(parts) < 2:
+                continue
+            src = _rootless_resolve(parts[0], env).strip()
+            if not src.startswith(("/", ".", "~")):
+                continue
+        else:
+            continue
+        if go_clean(src).startswith("templates/"):
+            continue  # the instance's own template-files ConfigMap on Kubernetes
+        return "a host bind"
+    return ""
+
+
+def _kube_root_group_ok(user: str, group_add: Any, env: Dict[str, str]) -> bool:
+    """The Hub's rootGroupOK: the group is set and not 0, and group_add
+    holds no 0."""
+    _, sep, g = user.partition(":")
+    n = _go_atoi(g) if sep else None
+    if n is None or n == 0 or not re.fullmatch(r"[+-]?[0-9]+", g):
+        return False
+    ga, _ = _rootless_scalars(group_add)
+    for x in ga:
+        k = _go_atoi(_rootless_resolve(x, env).strip())
+        if k == 0:
+            return False
+    return True
+
+
+def _kube_serves_port(svc: Dict[str, Any]) -> bool:
+    for k in labels_of(svc):
+        fk = fold_key(k)
+        if fk.startswith("traefik.http.services.") and fk.endswith(".loadbalancer.server.port"):
+            return True
+    return any(isinstance(svc.get(key), list) and len(svc.get(key)) > 0 for key in ("expose", "ports"))
+
+
+KUBE_MAX_ALIASES = 16
+# The translator's PodsName (<instance>--pods): no service or alias may take it.
+KUBE_PODS_NAME = "pods"
+
+
+def _kube_aliases_check(c: "_Reasons", services: Dict[str, Any], env: Dict[str, str]) -> None:
+    """The Hub's kubeAliases: network aliases and container_names (alias
+    Services + hostAliases)."""
+    names = {str(n) for n in services}
+    pod_of: Dict[str, str] = {}
+    for n, svc in services.items():
+        nm = _kube_scalar(svc or {}, "network_mode", env)
+        pod_of[str(n)] = nm[len("service:"):] if nm.startswith("service:") else str(n)
+    served = {pod_of[str(n)] for n, svc in services.items() if _kube_serves_port(svc or {})}
+    owner: Dict[str, str] = {}
+    for n, svc in services.items():
+        n = str(n)
+        svc = svc or {}
+        als: List[str] = []
+        cn = _kube_scalar(svc, "container_name", env)
+        if cn:
+            als.append(cn)
+        als += _kube_aliases(svc)
+        for a in als:
+            shown = a if _KUBE_SHOWN_USER_RE.fullmatch(a) else "a name"
+            prev = owner.get(a)
+            if not _KUBE_POD_DNS_RE.fullmatch(a) or "--" in a:
+                c.refuse(f'service {n} answers to alias {shown}, not a DNS label without "--" (not on Kubernetes)')
+            elif a in names:
+                c.refuse(f"service {n} answers to alias {a}, also a compose service name")
+            elif a == KUBE_PODS_NAME:
+                c.refuse(f"service {n} answers to alias {a}, reserved on Kubernetes (the instance's pod DNS)")
+            elif prev is not None and prev != n:
+                c.refuse(f"alias {a} names two services ({min(prev, n)}, {max(prev, n)})")
+            elif pod_of[n] not in served:
+                c.refuse(f"service {n} answers to alias {a} but serves no declared port (expose it)")
+            else:
+                owner[a] = n
+    if len(owner) > KUBE_MAX_ALIASES:
+        c.refuse(f"more than {KUBE_MAX_ALIASES} network aliases (not on Kubernetes)")
+
+
 def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
@@ -7718,12 +7826,20 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
     c = _Reasons()
     roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
     jobs = kube_job_services(t.manifest if isinstance(t.manifest, dict) else {}, services)
+    volume_owners: Set[str] = set()
+    for svc in services.values():
+        uid = _kube_scalar(svc or {}, "user", env).partition(":")[0]
+        n = _go_atoi(uid)
+        if n is None or n > 0:
+            volume_owners.update(_kube_named_volumes((svc or {}).get("volumes"), env))
     netns_owners = {_kube_scalar(svc or {}, "network_mode", env)[len("service:"):] for svc in services.values()
                     if _kube_scalar(svc or {}, "network_mode", env).startswith("service:")}
     for name, svc in services.items():
         svc = svc or {}
         if not _KUBE_POD_DNS_RE.fullmatch(str(name)) or "--" in str(name):
             c.refuse(f'service {name}: its name isn\'t a DNS label without "--" (not on Kubernetes)')
+        elif name == KUBE_PODS_NAME:
+            c.refuse(f"service {name}: the name is reserved on Kubernetes (the instance's pod DNS)")
         tun = f"service {name} uses TUN/NET_ADMIN (not on Kubernetes; prefer a userspace mode)"
         devs, ok = _rootless_scalars(svc.get("devices"))
         if not ok:
@@ -7764,6 +7880,16 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
                 elif not _kube_one_shot_root(name, svc, env, netns_owners):
                     c.refuse(f"service {name} runs as root (user 0): only a one-shot job (restart no or on-failure) "
                              "with cap_drop [ALL], cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may")
+                elif not _kube_root_group_ok(u, svc.get("group_add"), env):
+                    c.refuse(f'service {name} runs as root with group 0: set user "0:<gid>" with a gid other than 0')
+                else:
+                    why = _kube_root_bind(svc.get("volumes"), env)
+                    if why:
+                        c.refuse(f"service {name} runs as root with {why}")
+                    elif any(v != SECRETS_VOLUME_KEY and v not in volume_owners
+                             for v in _kube_named_volumes(svc.get("volumes"), env)):
+                        c.refuse(f"service {name} runs as root and mounts a volume no non-root service mounts "
+                                 "(its owner on Kubernetes)")
         if _kube_scalar(svc, "network_mode", env) == "host":
             c.refuse(f"service {name} uses network_mode: host (not on Kubernetes)")
         if _kube_scalar(svc, "privileged", env) in ("true", "True", "yes"):
@@ -7787,12 +7913,12 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         if (isinstance(eh, (dict, list)) and len(eh) > 0) or (eh is not None and not isinstance(eh, (dict, list))
                                                             and _go_scalar(eh) != ""):
             c.refuse(f"service {name} sets extra_hosts (not on Kubernetes)")
-        if _kube_scalar(svc, "container_name", env):
-            c.refuse(f"service {name} sets container_name (not on Kubernetes)")
-        for al in _kube_aliases(svc):
-            shown = al if _KUBE_POD_DNS_RE.fullmatch(al) else "a name"
-            c.refuse(f"service {name} answers to alias {shown} (not on Kubernetes)")
+        # A named volume's owner on Kubernetes is the service's uid.
+        if not _kube_scalar(svc, "user", env) and any(
+                v != SECRETS_VOLUME_KEY for v in _kube_named_volumes(svc.get("volumes"), env)):
+            c.refuse(f"service {name} mounts a volume but has no numeric user")
 
+    _kube_aliases_check(c, services, env)
     manifest = t.manifest if isinstance(t.manifest, dict) else {}
     first = next(iter(services), "")
     core = kube_core_ports(env)

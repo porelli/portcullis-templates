@@ -4552,7 +4552,7 @@ class RuntimeCompatTests(unittest.TestCase):
         self.assertEqual(kube(bind), ("refused", [out]))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/data:/srv"}), ("ok", []))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/srv"}), ("refused", [out]))
-        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"./templates/a/x:/x:ro\", \"data:/d\", \"/anon\"]\n"),
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000\"\n    volumes: [\"./templates/a/x:/x:ro\", \"data:/d\", \"/anon\"]\n"),
                          ("ok", []))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes:\n      - {type: bind, source: /etc, target: /x}\n"),
                          ("refused", ["service a binds /etc, outside the shared-folder roots (not on Kubernetes)"]))
@@ -4580,12 +4580,29 @@ class RuntimeCompatTests(unittest.TestCase):
         # "no"; its shape: restart no / on-failure, no ports, no shared
         # network namespace, no routers, cap_drop [ALL], cap_add within
         # CHOWN DAC_OVERRIDE FOWNER.
-        helper = "services:\n  init:\n    image: x\n    user: \"0:0\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n"
+        helper = "services:\n  init:\n    image: x\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n"
         root = ("refused", ["service init runs as root (user 0)"])
         shape = ("refused", ["service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], "
                              "cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"])
         self.assertEqual(kube(helper), ("ok", []))
-        self.assertEqual(kube(helper.replace('"0:0"', '"00"')), ("ok", []))
+        group0 = ("refused", ['service init runs as root with group 0: set user "0:<gid>" with a gid other than 0'])
+        for u in ('"0"', '"0:0"', '"00:000"'):
+            self.assertEqual(kube(helper.replace('"0:1000"', u)), group0)
+        self.assertEqual(kube(helper.replace("cap_drop", "group_add: [\"0\"]\n    cap_drop")), group0)
+        # A root job mounts only volumes a non-root service owns: no binds.
+        vol = helper + "    volumes: [\"data:/d\"]\n"
+        self.assertEqual(kube(vol), ("refused", ["service init runs as root and mounts a volume no non-root service mounts (its owner on Kubernetes)"]))
+        self.assertEqual(kube(vol + "  app:\n    image: y\n    user: \"1000\"\n    volumes: [\"data:/data\"]\n"), ("ok", []))
+        self.assertEqual(kube(vol + "  app:\n    image: y\n    user: \"0:5\"\n    volumes: [\"data:/data\"]\n"),
+                         ("refused", ["service init runs as root and mounts a volume no non-root service mounts (its owner on Kubernetes)",
+                                      "service app runs as root (user 0)"]))
+        self.assertEqual(kube(helper + "    volumes: [\"./templates/x/f.sh:/f.sh:ro\"]\n"), ("ok", []))
+        self.assertEqual(kube("services:\n  pods:\n    image: x\n"),
+                         ("refused", ["service pods: the name is reserved on Kubernetes (the instance's pod DNS)"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"d:/d\", \"portcullis-hub-secrets:/s\"]\n"),
+                         ("refused", ["service a mounts a volume but has no numeric user"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"portcullis-hub-secrets:/s\", \"./templates/a/x:/x\"]\n"), ("ok", []))
+        self.assertEqual(kube(helper + "    volumes: [\"/srv/x:/x:ro\"]\n"), ("refused", ["service init runs as root with a host bind"]))
         dep = "  app:\n    image: y\n    depends_on:\n      init: {condition: service_completed_successfully}\n"
         on_failure = helper.replace('"no"', "on-failure:3")
         self.assertEqual(kube(on_failure), root)  # not a job
@@ -4601,12 +4618,20 @@ class RuntimeCompatTests(unittest.TestCase):
                 self.assertIn(old, helper)
                 self.assertEqual(kube(helper.replace(old, new)), shape)
         self.assertEqual(kube(helper + "  app:\n    image: y\n    network_mode: service:init\n"), shape)
-        # Names, container_name, aliases.
-        self.assertEqual(kube("services:\n  a--b:\n    image: x\n    container_name: c\n    networks:\n      default:\n        aliases: [x-internal, X_Y]\n"),
-                         ("refused", ['service a--b: its name isn\'t a DNS label without "--" (not on Kubernetes)',
-                                      "service a--b sets container_name (not on Kubernetes)",
-                                      "service a--b answers to alias x-internal (not on Kubernetes)",
-                                      "service a--b answers to alias a name (not on Kubernetes)"]))
+        # Names, container_name, aliases (the Hub's kubeAliases).
+        self.assertEqual(kube("services:\n  a--b:\n    image: x\n"),
+                         ("refused", ['service a--b: its name isn\'t a DNS label without "--" (not on Kubernetes)']))
+        al = "services:\n  a:\n    image: x\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [{}]\n"
+        self.assertEqual(kube(al.format("a-internal")), ("ok", []))
+        self.assertEqual(kube(al.format("a-internal").replace("    expose: [\"80\"]\n", "")),
+                         ("refused", ["service a answers to alias a-internal but serves no declared port (expose it)"]))
+        self.assertEqual(kube(al.format("X_Y")), ("refused", ['service a answers to alias X_Y, not a DNS label without "--" (not on Kubernetes)']))
+        self.assertEqual(kube(al.format("a") ), ("refused", ["service a answers to alias a, also a compose service name"]))
+        self.assertEqual(kube(al.format("n") + "  b:\n    image: y\n    container_name: n\n    expose: [\"1\"]\n"),
+                         ("refused", ["alias n names two services (a, b)"]))
+        many = "services:\n  a:\n    image: x\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [" + \
+            ", ".join(f"x{i}" for i in range(17)) + "]\n"
+        self.assertEqual(kube(many), ("refused", ["more than 16 network aliases (not on Kubernetes)"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:0\"\n"), ("ok", []))
         # Manifest ports' bind addresses are the Hub's override, not judged here.
         self.assertEqual(kube("services:\n  a:\n    image: x\n", None,
