@@ -23,6 +23,9 @@ services:
     # ESPHOME_SERIAL_DEVICE). Empty: /dev/null under an unused name.
     devices:
       - "${ESPHOME_SERIAL_DEVICE:-/dev/null}:${ESPHOME_SERIAL_DEVICE:-/dev/portcullis-unused-1}"
+    # The port the gate calls (GATE_UPSTREAM): the alias Service on
+    # Kubernetes carries it.
+    expose: ["6052"]
     networks:
       default:
         # Called by esphome-gate under a default-only name: a service name

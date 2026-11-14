@@ -124,7 +124,8 @@ services:
   # root. Only chown, no network use.
   mealie-perms:
     image: ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784
-    user: "0:0"
+    # A non-zero gid (mealie's group): Kubernetes refuses root's group 0.
+    user: "0:911"
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

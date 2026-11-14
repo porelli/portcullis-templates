@@ -41,6 +41,9 @@ services:
       - "${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee"
     depends_on:
       - mosquitto
+    # The port the gate calls (GATE_UPSTREAM): the alias Service on
+    # Kubernetes carries it.
+    expose: ["8080"]
     networks:
       default:
         aliases: [zigbee2mqtt-internal]

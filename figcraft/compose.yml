@@ -19,7 +19,8 @@ services:
       - figcraft-site:/srv/craft
       - ./templates/figcraft/fetch.sh:/craft-fetch.sh:ro
     # Root without capabilities: owner of the fresh volume, nothing more.
-    user: "0:0"
+    # A non-zero gid (nginx-unprivileged's group (the site files are 0644/0755)): Kubernetes refuses root's group 0.
+    user: "0:101"
     read_only: true
     tmpfs:
       - /tmp:size=16m

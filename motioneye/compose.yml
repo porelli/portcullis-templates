@@ -34,6 +34,9 @@ services:
     depends_on:
       motioneye-init:
         condition: service_completed_successfully
+    # The port the gate calls (GATE_UPSTREAM): the alias Service on
+    # Kubernetes carries it.
+    expose: ["8765"]
     networks:
       default:
         aliases: [motioneye-internal]

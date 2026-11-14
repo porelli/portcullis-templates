@@ -78,7 +78,8 @@ services:
   # creates inside.
   synapse-init:
     image: ghcr.io/element-hq/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
-    user: "0:0"
+    # A non-zero gid (synapse's group): Kubernetes refuses root's group 0.
+    user: "0:991"
     # Only while /data is not 991's yet (first start): afterwards root has
     # no CAP_FOWNER here, so chmod on 991's directory would fail and keep
     # Synapse down on every later `compose up`.

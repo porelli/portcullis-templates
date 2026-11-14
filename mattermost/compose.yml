@@ -67,6 +67,9 @@ services:
         condition: service_healthy
       mattermost-plugins:
         condition: service_completed_successfully
+    # The port the gate calls (GATE_UPSTREAM): the alias Service on
+    # Kubernetes carries it.
+    expose: ["8065"]
     networks:
       default:
         # Called by mattermost-gate under a default-only name: a service name
@@ -150,7 +153,8 @@ services:
   mattermost-plugins:
     image: python:3.15.2-trixie@sha256:2a01fe7b84cc646c76d6fe8c8c216aef39de2617ad2723ed488e7c4f495a9539
     # root only to hand a fresh data volume (and the bundles) to uid 2000.
-    user: "0:0"
+    # A non-zero gid (mattermost's group): Kubernetes refuses root's group 0.
+    user: "0:2000"
     read_only: true
     tmpfs:
       - /tmp:mode=1777

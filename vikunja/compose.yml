@@ -87,7 +87,8 @@ services:
   # image has no /app/vikunja/files); hand it to uid 1000. Only chown.
   vikunja-perms:
     image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
-    user: "0:0"
+    # A non-zero gid (vikunja's group): Kubernetes refuses root's group 0.
+    user: "0:1000"
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

@@ -113,7 +113,8 @@ services:
     # root. The long-running guacamole service stays non-root. One-shot
     # (restart "no"), all capabilities dropped but the three file ones: the
     # Hub's root-helper rule on Kubernetes.
-    user: "0:0"
+    # A non-zero gid (the guacamole image's group): Kubernetes refuses root's group 0.
+    user: "0:1001"
     restart: "no"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
