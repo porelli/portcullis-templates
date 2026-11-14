@@ -7355,28 +7355,47 @@ def _kube_bind_sources(vols: Any, env: Dict[str, str]) -> List[str]:
     return out
 
 
-def _kube_port_bind(p: Dict[str, Any], env: Dict[str, str]) -> Optional[str]:
-    """A manifest port's bind address when it is a specific non-loopback
-    one (<KEY>_BIND, else the manifest's bind): None for empty, 0.0.0.0,
-    :: and loopback (a loopback-bound port gets no Service on Kubernetes)."""
-    key = p.get("key")
-    bind = (env.get(f"{key}_BIND") or "").strip() if isinstance(key, str) else ""
-    if not bind:
-        bind = p.get("bind") if isinstance(p.get("bind"), str) else ""
-    if bind in ("", "0.0.0.0", "::"):
-        return None
-    try:
-        if ipaddress.ip_address(bind).is_loopback:
-            return None
-    except ValueError:
-        pass
-    return bind
+def _kube_published_host_ips(ports: Any, env: Dict[str, str]) -> List[Tuple[str, str]]:
+    """(shown address, port) of each compose ports: entry published on a
+    specific non-loopback host address (the Hub's publishedHostIPs): short
+    syntax [ip:]host:container[/proto] (IPv6 bracketed), long syntax
+    host_ip / published; empty, 0.0.0.0, :: and loopback are skipped."""
+    out: List[Tuple[str, str]] = []
+    if not isinstance(ports, list):
+        return out
+    for p in ports:
+        ip, port = "", ""
+        if isinstance(p, dict):
+            ip, port = _kube_scalar(p, "host_ip", env), _kube_scalar(p, "published", env)
+        elif not isinstance(p, list) and p is not None:
+            v = _rootless_resolve(_go_scalar(p), env).strip()
+            if v.startswith("["):
+                i = v.find("]:")
+                if i > 0:
+                    ip, v = v[1:i], v[i + 2:]
+            else:
+                parts = v.split(":")
+                if len(parts) == 3:
+                    ip, v = parts[0], parts[1] + ":" + parts[2]
+            port = v.split(":", 1)[0]
+        else:
+            continue
+        if ip in ("", "0.0.0.0", "::"):
+            continue
+        try:
+            addr: Optional[Any] = ipaddress.ip_address(ip)
+        except ValueError:
+            addr = None
+        if addr is not None and addr.is_loopback:
+            continue
+        out.append((ip if addr is not None else "a host address", port or "a port"))
+    return out
 
 
 def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
-    cap_add, user, network_mode, privileged, pid / ipc, binds, scale and
-    extra_hosts; then each manifest port (a core port); then the Avahi
+    cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
+    a specific host address, scale and extra_hosts; then each manifest port (a core port); then the Avahi
     option. Each reason once; refused, else degraded, else ok."""
     env = env or {}
     services, bad = _compat_services(t)
@@ -7431,6 +7450,8 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
                 continue
             shown = src if _KUBE_SHOWN_PATH_RE.fullmatch(src) else "a host path"
             c.refuse(f"service {name} binds {shown}, outside the shared-folder roots (not on Kubernetes)")
+        for shown_ip, port in _kube_published_host_ips(svc.get("ports"), env):
+            c.refuse(f"service {name} publishes {port} on {shown_ip} (not on Kubernetes)")
         scale = _kube_scalar(svc, "scale", env)
         if scale:
             k = _go_atoi(scale)
@@ -7452,9 +7473,6 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         svc_name = p.get("service") if isinstance(p.get("service"), str) and p.get("service") else first
         if n > 0 and n in core:
             c.refuse(f"service {svc_name} publishes port {n}, a core port")
-        bind = _kube_port_bind(p, env)
-        if n > 0 and bind is not None:
-            c.refuse(f"service {svc_name} publishes {n} on {bind} (not on Kubernetes)")
     for o in setting_options(manifest):
         if o.get("key") == AVAHI_SERVICES_DIR_KEY and (env.get(AVAHI_SERVICES_DIR_KEY) or "").strip():
             c.degrade("the Avahi services directory binds a host path outside the shared-folder roots: "
