@@ -25,6 +25,12 @@ services:
         # vpn-dns hook (vpn/glue.py) replaces it when the Hub wires this
         # instance as a VPN provider.
         [ -e /dns/extra-records.json ] || echo '[]' > /dns/extra-records.json
+        # The CA bundle for the gateway (a hand-over it mounts read-only: a
+        # VPN gateway binds no file but its template's own). Refreshed every
+        # start, atomically.
+        cp /ca-src/ca-bundle.crt /gateway-ca/.ca-bundle.crt.new
+        chmod 0644 /gateway-ca/.ca-bundle.crt.new
+        mv /gateway-ca/.ca-bundle.crt.new /gateway-ca/ca-bundle.crt
     environment:
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       HEADSCALE_HOST: ${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
@@ -33,6 +39,8 @@ services:
     volumes:
       - headscale-config:/etc/headscale
       - headscale-dns:/dns
+      - gateway-ca:/gateway-ca
+      - ./certs/ca-bundle.crt:/ca-src/ca-bundle.crt:ro
       - ./templates/headscale/config/config.yaml:/tmp/config.yaml.tmpl:ro
 
   headscale:
@@ -123,18 +131,23 @@ services:
       TS_HOSTNAME: portcullis-gateway
       # No log upload to log.tailscale.com.
       TS_TAILSCALED_EXTRA_ARGS: --no-logs-no-support
-      # The login (control) server over the instance's own default network:
-      # the control protocol is end-to-end encrypted (Noise, headscale's key),
-      # and a VPN gateway binds no file but its own template's (no CA
-      # bundle). Its DERP fallback is at ${PORTCULLIS_HOST_HEADSCALE}
-      # (headscale's server_url), reached through Traefik's published port
-      # (host-gateway) with the image's public roots.
-      TS_EXTRA_ARGS: --login-server=http://headscale-internal:8080
+      # The login (control) and DERP server is ${PORTCULLIS_HOST_HEADSCALE}
+      # through Traefik's published port on the host (host-gateway): a
+      # stable address whatever headscale's container IP. Not
+      # http://headscale-internal:8080: tailscale falls back to Noise over
+      # https on port 443 after any failed dial (controlhttp
+      # forceNoise443) and, on a name with an explicit http port, never
+      # returns to 8080, so one headscale restart left the gateway offline.
+      TS_EXTRA_ARGS: --login-server=https://${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}
+      # The Hub's CA bundle (Portcullis CA + public roots), handed over by
+      # headscale-init through the read-only gateway-ca volume.
+      SSL_CERT_FILE: /etc/portcullis-ca/ca-bundle.crt
     extra_hosts:
       - "${PORTCULLIS_HOST_HEADSCALE:-vpn.portcullis.local}:host-gateway"
     volumes:
       - gateway-state:/var/lib/tailscale
       - gateway-auth:/run/gateway:ro
+      - gateway-ca:/etc/portcullis-ca:ro
       - ./templates/headscale/vpn/gateway.sh:/portcullis/gateway.sh:ro
     read_only: true
     tmpfs: [/tmp, /run/tailscale]
@@ -173,6 +186,7 @@ volumes:
   headscale-dns: {}
   gateway-state: {}
   gateway-auth: {}
+  gateway-ca: {}
 
 networks:
   portcullis-proxy:
