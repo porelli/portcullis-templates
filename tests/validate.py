@@ -6615,9 +6615,6 @@ def vpn_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[st
             out.append(f"{where}: {name} is not a hook with exactly when: [vpn]")
 
     b = m.get("vpn")
-    if isinstance(b, dict) and compose_text is not None and vpn_yaml_indirection(compose_text):
-        out.append("vpn: compose.yml uses YAML anchors, aliases or merge keys: a VPN template's compose file is written out "
-                   "in full")
     if isinstance(b, dict):
         if not single_line(b.get("label"), VPN_LABEL_MAX):
             out.append(f"vpn.label: a single line of 1–{VPN_LABEL_MAX} characters")
@@ -6644,7 +6641,8 @@ def vpn_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[st
                     out.append(f"vpn.ranges: {a} overlaps {bt}")
 
         ing = b.get("ingress") if isinstance(b.get("ingress"), dict) else {}
-        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol"), compose, app_id))
+        out.extend(vpn_ingress_errors(m, services, _str(ing, "service"), _str(ing, "proxy_protocol"), compose, app_id,
+                                      compose_text))
 
         ident = b.get("identity") if isinstance(b.get("identity"), dict) else {}
         source = _str(ident, "source")
@@ -6729,7 +6727,7 @@ def vpn_yaml_indirection(text: str) -> bool:
 
 
 def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str,
-                       compose: Any = None, app_id: str = "") -> List[str]:
+                       compose: Any = None, app_id: str = "", compose_text: Optional[str] = None) -> List[str]:
     """checkVPNIngress: the ingress exists and can join a network; no
     service uses the host's pid namespace, and neither the ingress, the
     services sharing its network namespace nor a routed service use host
@@ -6738,12 +6736,10 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     job, no AI companion, has no Traefik label and publishes no ports, and
     besides the ingress only the pinned forwarder may join it;
     proxy_protocol v2. The Hub stops at the first."""
-    top = (compose or {}).get("volumes") if isinstance(compose, dict) else None
-    for k, decl in sorted((top or {}).items() if isinstance(top, dict) else [], key=lambda kv: str(kv[0])):
-        for key in ("name", "external", "driver", "driver_opts"):
-            if isinstance(decl, dict) and key in decl:
-                return [f"vpn: volume {k} sets {key}: a VPN template's volumes are its own (no name, external, driver "
-                        "or driver_opts)"]
+    # No anchors, aliases or merge keys: every check reads the nodes as
+    # written.
+    if compose_text is not None and vpn_yaml_indirection(compose_text):
+        return ["compose.yml: a VPN template uses no YAML anchors, aliases or merge keys"]
     if s not in services:
         return [f"vpn.ingress.service: {s} is not a service of compose.yml"]
     if "network_mode" in services[s]:
@@ -6810,13 +6806,13 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         if bad:
             return [f"vpn.ingress.service: {mname} mounts {bad}: unresolvable (a VPN gateway's mounts are literal)"]
         for kind, src, ro, entry in mounts:
-            if kind == "bind" and (src.startswith("/") or ".." in src.split("/")):
-                return [f"vpn.ingress.service: {mname} mounts {entry}: a VPN template binds no absolute or .. path"]
             if kind == "bind":
-                norm = posixpath.normpath(src)
-                if not (src.startswith(f"./templates/{app_id}/") and norm.startswith(f"templates/{app_id}/")) or not ro:
+                tdir = f"templates/{app_id.lower()}/"
+                if not (src.lower().startswith("./" + tdir) and posixpath.normpath(src).lower().startswith(tdir)) or not ro:
                     return [f"vpn.ingress.service: {mname} mounts {entry}: a VPN gateway binds only the template's own "
                             f"files (./templates/{app_id}/…), read-only"]
+                if vpn_bind_outside(src):
+                    return [f"vpn.ingress.service: {mname} mounts {entry}: {VPN_BIND_TEXT}"]
                 continue
             decl = top_vols.get(src) if src in top_vols else None
             if src not in top_vols or (isinstance(decl, dict) and any(k in decl for k in ("external", "name", "driver", "driver_opts"))) \
@@ -6824,6 +6820,11 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
                 return [f"vpn.ingress.service: {mname} mounts volume {src}: a VPN gateway's volumes are the template's own "
                         "(declared, with no external, name, driver or driver_opts)"]
             member_vols.setdefault(src, []).append((mname, ro))
+    # Every top-level volume is a plain <project>_<key> volume.
+    for k, decl in sorted(top_vols.items(), key=lambda kv: str(kv[0])):
+        for key in ("name", "external", "driver", "driver_opts"):
+            if isinstance(decl, dict) and key in decl:
+                return [f"vpn: volume {k} sets {key}: a VPN template's volumes are plain <project>_<key> volumes"]
     for n in names:
         sv = services[n]
         for key in ("pid", "ipc"):
@@ -6834,7 +6835,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         # everything before the first ':', a mode is exactly ro or rw.
         for e in as_list(sv.get("volumes_from")):
             entry = scalar_text(e).strip()
-            name, sep, mode = entry.removeprefix("service:").partition(":")
+            ref = entry[len("service:"):] if entry[:len("service:")].lower() == "service:" else entry
+            name, sep, mode = ref.partition(":")
             if sep and mode not in ("ro", "rw") and not entry.startswith("container:"):
                 return [f"vpn.ingress.service: {n} volumes_from {entry}: the mode must be ro or rw"]
             if name in in_ns:
@@ -6848,8 +6850,9 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         # ancestors . and ./templates) are read-only for every service: a
         # read-write bind could rewrite a script the gateway runs.
         for kind, src, ro, entry in mounts:
-            if kind == "bind" and (src.startswith("/") or ".." in src.split("/")):
-                return [f"vpn.ingress.service: {n} mounts {entry}: a VPN template binds no absolute or .. path"]
+            if kind == "bind" and vpn_bind_outside(src):
+                return [f"vpn.ingress.service: {n} mounts {entry}: {VPN_BIND_TEXT}"]
+        for kind, src, ro, entry in mounts:
             if kind == "bind" and not ro:
                 norm = posixpath.normpath(src).lower()
                 tdir = f"templates/{app_id.lower()}"
@@ -6877,12 +6880,12 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
                 for net in joined:
                     if net != "default":
                         return [f"vpn: service {n} answers to {name.strip()} on network {net}: a VPN template's "
-                                "-internal names are on the default network only"]
+                                "-internal aliases are on the default network only"]
         for net, cfg in (nets.items() if isinstance(nets, dict) else []):
             for a in as_list((cfg or {}).get("aliases") if isinstance(cfg, dict) else None):
                 if internal(scalar_text(a)) and str(net) != "default":
                     return [f"vpn: service {n} answers to {scalar_text(a).strip()} on network {net}: a VPN template's "
-                            "-internal names are on the default network only"]
+                            "-internal aliases are on the default network only"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
@@ -6920,6 +6923,14 @@ def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
 
 
 _VPN_VOLUME_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
+_VPN_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
+VPN_BIND_TEXT = "a VPN template's binds are relative, without .. segments"
+
+
+def vpn_bind_outside(src: str) -> bool:
+    """A VPN template's bind source starts with ./ and has no .. segment:
+    absolute paths, ~, drive letters, UNC paths and backslashes refused."""
+    return not src.startswith("./") or "\\" in src or ".." in src.split("/")
 
 
 def vpn_mounts(sv: Dict[str, Any]) -> Tuple[List[Tuple[str, str, bool, str]], str]:
@@ -6944,11 +6955,18 @@ def vpn_mounts(sv: Dict[str, Any]) -> Tuple[List[Tuple[str, str, bool, str]], st
         entry = scalar_text(v).strip()
         if "$" in entry:
             return out, entry
+        if _VPN_DRIVE_RE.match(entry):
+            # C:\x:/y or C:/x:/y: a Windows host path, a bind (refused).
+            parts = entry.split(":")
+            if len(parts) < 3:
+                return out, entry
+            out.append(("bind", parts[0] + ":" + parts[1], False, entry))
+            continue
         parts = entry.split(":")
         if len(parts) == 1:
             continue   # an anonymous volume
         src = parts[0]
-        bind = src.startswith((".", "/"))
+        bind = src.startswith((".", "/", "~", "\\")) or "/" in src
         if len(parts) > 3 or not src or not parts[1] or (not bind and not _VPN_VOLUME_NAME_RE.fullmatch(src)):
             return out, entry
         ro = len(parts) == 3 and "ro" in parts[2].split(",")
