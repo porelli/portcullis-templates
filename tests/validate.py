@@ -6740,9 +6740,10 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     proxy_protocol v2. The Hub stops at the first."""
     top = (compose or {}).get("volumes") if isinstance(compose, dict) else None
     for k, decl in sorted((top or {}).items() if isinstance(top, dict) else [], key=lambda kv: str(kv[0])):
-        for key in ("name", "external"):
+        for key in ("name", "external", "driver", "driver_opts"):
             if isinstance(decl, dict) and key in decl:
-                return [f"vpn: volume {k} sets {key}: a VPN template's volumes are its own (no name or external)"]
+                return [f"vpn: volume {k} sets {key}: a VPN template's volumes are its own (no name, external, driver "
+                        "or driver_opts)"]
     if s not in services:
         return [f"vpn.ingress.service: {s} is not a service of compose.yml"]
     if "network_mode" in services[s]:
