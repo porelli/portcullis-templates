@@ -6596,7 +6596,7 @@ def vpn_prefix(s: Any) -> Optional[ipaddress.IPv4Network]:
     return net if str(net) == s else None
 
 
-def vpn_errors(m: Any, compose: Any, app_id: str = "") -> List[str]:
+def vpn_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[str] = None) -> List[str]:
     """ValidateVPN: the vpn: block and the vpn hooks of manifest m against
     compose file compose, every refusal in the Hub's order (the first is
     the one the Hub reports)."""
@@ -6615,6 +6615,9 @@ def vpn_errors(m: Any, compose: Any, app_id: str = "") -> List[str]:
             out.append(f"{where}: {name} is not a hook with exactly when: [vpn]")
 
     b = m.get("vpn")
+    if isinstance(b, dict) and compose_text is not None and vpn_yaml_indirection(compose_text):
+        out.append("vpn: compose.yml uses YAML anchors, aliases or merge keys: a VPN template's compose file is written out "
+                   "in full")
     if isinstance(b, dict):
         if not single_line(b.get("label"), VPN_LABEL_MAX):
             out.append(f"vpn.label: a single line of 1–{VPN_LABEL_MAX} characters")
@@ -6711,6 +6714,20 @@ def vpn_net_ns(services: Dict[str, Dict[str, Any]], svc: str) -> Optional[str]:
         svc = nxt
 
 
+def vpn_yaml_indirection(text: str) -> bool:
+    """compose_text has a YAML anchor, alias or merge key (<<): what a
+    reader sees then depends on the YAML library (fail closed)."""
+    try:
+        for ev in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(ev, yaml.AliasEvent) or getattr(ev, "anchor", None):
+                return True
+            if isinstance(ev, yaml.ScalarEvent) and ev.value == "<<" and ev.implicit[0] and not ev.style:
+                return True
+    except yaml.YAMLError:
+        return True
+    return False
+
+
 def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s: str, proxy: str,
                        compose: Any = None, app_id: str = "") -> List[str]:
     """checkVPNIngress: the ingress exists and can join a network; no
@@ -6721,6 +6738,11 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     job, no AI companion, has no Traefik label and publishes no ports, and
     besides the ingress only the pinned forwarder may join it;
     proxy_protocol v2. The Hub stops at the first."""
+    top = (compose or {}).get("volumes") if isinstance(compose, dict) else None
+    for k, decl in sorted((top or {}).items() if isinstance(top, dict) else [], key=lambda kv: str(kv[0])):
+        for key in ("name", "external"):
+            if isinstance(decl, dict) and key in decl:
+                return [f"vpn: volume {k} sets {key}: a VPN template's volumes are its own (no name or external)"]
     if s not in services:
         return [f"vpn.ingress.service: {s} is not a service of compose.yml"]
     if "network_mode" in services[s]:
@@ -6787,6 +6809,8 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         if bad:
             return [f"vpn.ingress.service: {mname} mounts {bad}: unresolvable (a VPN gateway's mounts are literal)"]
         for kind, src, ro, entry in mounts:
+            if kind == "bind" and (src.startswith("/") or ".." in src.split("/")):
+                return [f"vpn.ingress.service: {mname} mounts {entry}: a VPN template binds no absolute or .. path"]
             if kind == "bind":
                 norm = posixpath.normpath(src)
                 if not (src.startswith(f"./templates/{app_id}/") and norm.startswith(f"templates/{app_id}/")) or not ro:
@@ -6823,9 +6847,12 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         # ancestors . and ./templates) are read-only for every service: a
         # read-write bind could rewrite a script the gateway runs.
         for kind, src, ro, entry in mounts:
-            if kind == "bind" and not ro and not src.startswith("/"):
-                norm = posixpath.normpath(src)
-                if norm in (".", "templates") or norm == f"templates/{app_id}" or norm.startswith(f"templates/{app_id}/"):
+            if kind == "bind" and (src.startswith("/") or ".." in src.split("/")):
+                return [f"vpn.ingress.service: {n} mounts {entry}: a VPN template binds no absolute or .. path"]
+            if kind == "bind" and not ro:
+                norm = posixpath.normpath(src).lower()
+                tdir = f"templates/{app_id.lower()}"
+                if norm in (".", "templates") or norm == tdir or norm.startswith(tdir + "/"):
                     return [f"vpn.ingress.service: {n} mounts {entry}: in a VPN template the template's files are "
                             "read-only for every service"]
         for kind, src, _, _ in mounts:
@@ -6835,13 +6862,26 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
     # A VPN template's -internal aliases (an app's upstream behind its own
     # services, e.g. headscale-internal, the gateway's login server) are on
     # the default network only.
+    def internal(x: str) -> bool:
+        return fold_key(x.strip()).rstrip(".").endswith("-internal")
     for n in names:
-        nets = services[n].get("networks")
+        sv = services[n]
+        nets = sv.get("networks")
+        joined = [str(k) for k in nets] if isinstance(nets, dict) else [str(k) for k in as_list(nets)] if nets else ["default"]
+        if "network_mode" in sv:
+            joined = []   # no DNS name of its own
+        own = [n] + [scalar_text(sv.get(k)) for k in ("hostname", "container_name") if isinstance(sv.get(k), str)]
+        for name in own:
+            if internal(name):
+                for net in joined:
+                    if net != "default":
+                        return [f"vpn: service {n} answers to {name.strip()} on network {net}: a VPN template's "
+                                "-internal names are on the default network only"]
         for net, cfg in (nets.items() if isinstance(nets, dict) else []):
             for a in as_list((cfg or {}).get("aliases") if isinstance(cfg, dict) else None):
-                if fold_key(scalar_text(a).strip()).rstrip(".").endswith("-internal") and str(net) != "default":
+                if internal(scalar_text(a)) and str(net) != "default":
                     return [f"vpn: service {n} answers to {scalar_text(a).strip()} on network {net}: a VPN template's "
-                            "-internal aliases are on the default network only"]
+                            "-internal names are on the default network only"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
@@ -6963,7 +7003,12 @@ def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
     if "vpn" in t.schema_errors and isinstance(m.get("vpn"), dict):
         errs = [e for e in vpn_errors(m, dict(t.compose or {}, services=services), t.id) if e.startswith("hooks[")]
     else:
-        errs = vpn_errors(m, dict(t.compose or {}, services=services), t.id)
+        try:
+            with open(t.compose_path, encoding="utf-8") as f:
+                text: Optional[str] = f.read()
+        except OSError:
+            text = None
+        errs = vpn_errors(m, dict(t.compose or {}, services=services), t.id, text)
         if isinstance(m.get("vpn"), dict):
             errs += vpn_bind_escapes(t, services)
     for e in errs:

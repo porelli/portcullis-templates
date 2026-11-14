@@ -681,7 +681,9 @@ vpn:
   pre-auth key). Mounts must be literal and unambiguous. In a VPN template no
   service binds the template's own files read-write, no bind under
   `./templates/<id>/` may resolve (through a symlink) outside it, and
-  `-internal` aliases stay on the `default` network. With NET_ADMIN a gateway could
+  `-internal` names stay on the `default` network. A VPN template's
+  compose file has no YAML anchors, aliases or merge keys, no top-level
+  volume with `name` or `external`, and no absolute or `..` bind source. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.

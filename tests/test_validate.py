@@ -4500,8 +4500,12 @@ class VPNTests(Case):
                 if want == "":
                     self.assertEqual(family, [], "\n".join(errors))
                     continue
-                self.assertIn(want, texts, "\n".join(errors))
-                first = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]), "mesh")
+                # The repo's YAML 1.2 loader has no merge keys: such a file
+                # already fails to load (stricter; vpn_errors still says
+                # what the Hub says).
+                if not ("merge keys" in want and any("tag:yaml.org,2002:merge" in e for e in errors)):
+                    self.assertIn(want, texts, "\n".join(errors))
+                first = v.vpn_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]), "mesh", vec["compose"])
                 if want.startswith(("vpn.", "vpn:")) or "needs a vpn: block" in want:
                     self.assertEqual(first[:1], [want], first)
 
