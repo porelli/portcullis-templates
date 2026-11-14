@@ -799,5 +799,20 @@
         "service web publishes port 8443, a core port"
       ]
     }
+  },
+  {
+    "name": "kubernetes: a port on a specific host address refused, loopback and the wildcard ok",
+    "runtime": "kubernetes",
+    "compose": "services:\n  app:\n    image: docker.io/library/nginx:1.29\n    ports:\n      - \"192.168.1.5:9080:80\"\n      - \"127.0.0.1:9081:80\"\n      - \"0.0.0.0:9082:80\"\n      - \"9083:80\"\n      - target: 80\n        published: \"9084\"\n        host_ip: 10.0.0.7\n",
+    "ports": [],
+    "env": {},
+    "port_start": 80,
+    "want": {
+      "status": "refused",
+      "reasons": [
+        "service app publishes 9080 on 192.168.1.5 (not on Kubernetes)",
+        "service app publishes 9084 on 10.0.0.7 (not on Kubernetes)"
+      ]
+    }
   }
 ]
