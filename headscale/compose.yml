@@ -121,12 +121,13 @@ services:
       TS_USERSPACE: "true"
       TS_STATE_DIR: /var/lib/tailscale
       TS_AUTH_ONCE: "true"
-      # containerboot's first login must reach Running within this, or it
-      # exits (default 60 s). When the Hub wires the provider it recreates
-      # the whole project, and headscale restarts until its OIDC discovery
-      # answers: longer than 60 s, so the gateway exited and restarted once
-      # (core e2e-vpn). Wait as long as headscale takes.
-      TS_BOOT_TIMEOUT: 10m
+      # containerboot's boot deadline stays its default (TS_BOOT_TIMEOUT
+      # 60 s) on purpose: a gateway that boots while headscale's router is
+      # absent (the Hub's wiring recreates the project) handshakes with
+      # Traefik's default TLS options and then gets 421 Misdirected Request
+      # on that kept-alive connection for good; the deadline's exit and the
+      # restart policy give it a fresh connection. Expect one restart after
+      # a recreate (core e2e-vpn waits for it).
       TS_ACCEPT_DNS: "false"
       TS_HOSTNAME: portcullis-gateway
       # No log upload to log.tailscale.com.

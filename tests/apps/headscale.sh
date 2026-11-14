@@ -295,10 +295,10 @@ rm -f "$EVENTS"
 # containerboot's default 60 s boot deadline (the Hub's wiring recreates
 # headscale, which restarts until its OIDC discovery answers): it must wait
 # (TS_BOOT_TIMEOUT), not exit.
-if [ "$(yq -r '.services.gateway.environment.TS_BOOT_TIMEOUT' "$COMPOSE")" = 10m ]; then
-  pass "gateway waits up to 10m for its login server at boot (TS_BOOT_TIMEOUT)"
+if [ "$(yq -r '.services.gateway.environment.TS_BOOT_TIMEOUT // ""' "$COMPOSE")" = "" ]; then
+  pass "gateway keeps containerboot's 60 s boot deadline (its restart cures a 421-pinned connection)"
 else
-  fail "gateway must set TS_BOOT_TIMEOUT: 10m"
+  fail "gateway must not raise TS_BOOT_TIMEOUT: a gateway booted before headscale's router stays on 421 until it restarts"
 fi
 docker stop "$HS" >/dev/null
 docker restart portcullis-gateway-1 >/dev/null
@@ -310,24 +310,19 @@ EVENTS_PID=$!
 sleep 75
 docker start "$HS" >/dev/null
 T_START=$(date +%s)
-for _ in $(seq 1 120); do
-  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete' && break
+LOGGED=""
+for _ in $(seq 1 80); do
+  if [ "$(docker exec portcullis-gateway-1 tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null | jq -r '.BackendState')" = Running ] \
+    && docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then LOGGED=1; break; fi
   sleep 3
 done
 kill "$EVENTS_PID" 2>/dev/null || true
-if ! grep -q ' die$' "$EVENTS"; then
-  pass "a gateway booting while headscale is down for 75 s waits instead of exiting (no die event)"
+restarts=$(grep -c ' die$' "$EVENTS" || true)
+if [ -n "$LOGGED" ]; then
+  pass "a gateway booted while headscale was down logs in $(( $(date +%s) - T_START )) s after headscale is back ($restarts restart(s) by its boot deadline)"
 else
-  fail "the gateway exited while its login server was down: $(tr '\n' ';' <"$EVENTS")"
-fi
-if docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -q 'Startup complete'; then
-  pass "and logs in $(( $(date +%s) - T_START )) s after headscale is back"
-else
-  fail "the gateway did not log in within 6 min of headscale coming back"
-  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:|Received error|health\(|Switching ipn state|control:' \
-    | grep -v 'magicsock' | tail -30
-  docker exec portcullis-gateway-1 tailscale --socket=/tmp/tailscaled.sock status 2>&1 | head -3
-  info "headscale via Traefik: $(via_traefik "$PORTCULLIS_HOST_HEADSCALE" /key?v=148)"
+  fail "the gateway did not log in within 4 min of headscale coming back ($restarts restart(s))"
+  docker logs --since "$SINCE" portcullis-gateway-1 2>&1 | grep -E '^boot:|^gateway:|Received error|Switching ipn state' | grep -v magicsock | tail -20
 fi
 rm -f "$EVENTS"
 for _ in $(seq 1 60); do [ -n "$(devices_req | glue 2>/dev/null | jq -r '.gateway // empty')" ] && break; sleep 3; done
