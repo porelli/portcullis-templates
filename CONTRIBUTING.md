@@ -684,7 +684,8 @@ vpn:
   `-internal` names stay on the `default` network. A VPN template's
   compose file has no YAML anchors, aliases or merge keys, no top-level
   volume with `name`, `external`, `driver` or `driver_opts`, and every bind source starts with `./` (no `~`, `/`, drive
-  letter, UNC path, backslash or `..` segment). With NET_ADMIN a gateway could
+  letter, UNC path, backslash or `..` segment); a short-syntax volume is a
+  `./` bind or a volume declared under top-level `volumes:`. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.

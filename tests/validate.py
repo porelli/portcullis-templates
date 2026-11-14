@@ -6850,6 +6850,9 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         # ancestors . and ./templates) are read-only for every service: a
         # read-write bind could rewrite a script the gateway runs.
         for kind, src, ro, entry in mounts:
+            if kind == "volume" and entry != src and src not in top_vols:
+                return [f"vpn.ingress.service: {n} mounts {entry}: a VPN template's short-syntax sources are ./ binds "
+                        "or declared volumes"]
             if kind == "bind" and vpn_bind_outside(src):
                 return [f"vpn.ingress.service: {n} mounts {entry}: {VPN_BIND_TEXT}"]
         for kind, src, ro, entry in mounts:
@@ -6923,8 +6926,7 @@ def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
 
 
 _VPN_VOLUME_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
-_VPN_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
-VPN_BIND_TEXT = "a VPN template's binds are relative, without .. segments"
+VPN_BIND_TEXT = "a VPN template's binds start with ./ and have no .. segment"
 
 
 def vpn_bind_outside(src: str) -> bool:
@@ -6955,18 +6957,11 @@ def vpn_mounts(sv: Dict[str, Any]) -> Tuple[List[Tuple[str, str, bool, str]], st
         entry = scalar_text(v).strip()
         if "$" in entry:
             return out, entry
-        if _VPN_DRIVE_RE.match(entry):
-            # C:\x:/y or C:/x:/y: a Windows host path, a bind (refused).
-            parts = entry.split(":")
-            if len(parts) < 3:
-                return out, entry
-            out.append(("bind", parts[0] + ":" + parts[1], False, entry))
-            continue
         parts = entry.split(":")
         if len(parts) == 1:
             continue   # an anonymous volume
         src = parts[0]
-        bind = src.startswith((".", "/", "~", "\\")) or "/" in src
+        bind = src.startswith((".", "/"))
         if len(parts) > 3 or not src or not parts[1] or (not bind and not _VPN_VOLUME_NAME_RE.fullmatch(src)):
             return out, entry
         ro = len(parts) == 3 and "ro" in parts[2].split(",")
