@@ -4686,6 +4686,24 @@ class VPNTests(Case):
                          "vpn.ingress.service: gateway uses volumes_from: a VPN gateway mounts no other service's volumes")
         self.assertFalse([e for e in self.vpn_template(cedit=("  gateway:\n", side.format("init"))) if "mounts the volumes" in e])
 
+    def test_bind_symlinks_stay_in_the_template(self) -> None:
+        """A bind under ./templates/<id>/ resolves (symlinks followed) inside
+        the template's own directory."""
+        d = os.path.join(self.tmp.name, "demo", "vpn")
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "gw.sh"), "w").close()
+        os.symlink("/etc", os.path.join(d, "out"))
+        os.symlink("gw.sh", os.path.join(d, "in"))
+        bind = "  init:\n    image: demo/init:1.0.0@sha256:" + S_DIGEST + "\n"
+        for src, want in (("./templates/demo/vpn/out/passwd", "it resolves outside templates/demo/ (a symlink)"),
+                          ("./templates/demo/vpn/in", "")):
+            with self.subTest(src):
+                errors = self.vpn_template(cedit=(bind, bind + f"    volumes: [\"{src}:/x:ro\"]\n"))
+                if want:
+                    self.assertError(errors, f"vpn.ingress.service: init mounts {src}:/x:ro: {want}")
+                else:
+                    self.assertFalse([e for e in errors if "resolves outside" in e], "\n".join(errors))
+
     def test_control_router_shapes(self) -> None:
         """Ruling (Task 19): a control router is Host() alone or Host() &&
         one PathPrefix()."""

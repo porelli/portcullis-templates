@@ -6819,10 +6819,29 @@ def vpn_ingress_errors(m: Dict[str, Any], services: Dict[str, Dict[str, Any]], s
         mounts, bad = vpn_mounts(sv)
         if bad:
             return [f"vpn.ingress.service: {n} mounts {bad}: unresolvable (a VPN template's mounts are literal)"]
+        # The template's files (./templates/<id>/, what is inside, and its
+        # ancestors . and ./templates) are read-only for every service: a
+        # read-write bind could rewrite a script the gateway runs.
+        for kind, src, ro, entry in mounts:
+            if kind == "bind" and not ro and not src.startswith("/"):
+                norm = posixpath.normpath(src)
+                if norm in (".", "templates") or norm == f"templates/{app_id}" or norm.startswith(f"templates/{app_id}/"):
+                    return [f"vpn.ingress.service: {n} mounts {entry}: in a VPN template the template's files are "
+                            "read-only for every service"]
         for kind, src, _, _ in mounts:
             rw = [mname for mname, ro in member_vols.get(src, []) if not ro] if kind == "volume" else []
             if rw:
                 return [f"vpn.ingress.service: {n} mounts volume {src}, which {rw[0]} mounts read-write"]
+    # A VPN template's -internal aliases (an app's upstream behind its own
+    # services, e.g. headscale-internal, the gateway's login server) are on
+    # the default network only.
+    for n in names:
+        nets = services[n].get("networks")
+        for net, cfg in (nets.items() if isinstance(nets, dict) else []):
+            for a in as_list((cfg or {}).get("aliases") if isinstance(cfg, dict) else None):
+                if fold_key(scalar_text(a).strip()).rstrip(".").endswith("-internal") and str(net) != "default":
+                    return [f"vpn: service {n} answers to {scalar_text(a).strip()} on network {net}: a VPN template's "
+                            "-internal aliases are on the default network only"]
     if proxy != "v2":
         return ["vpn.ingress.proxy_protocol: only v2"]
     return []
@@ -6918,6 +6937,24 @@ def vpn_serves_admin_ui(m: Dict[str, Any], rule: str) -> bool:
     return False
 
 
+def vpn_bind_escapes(t: Template, services: Dict[str, Any]) -> List[str]:
+    """Every bind source under ./templates/<id>/ (any service of a VPN
+    template) resolves, symlinks followed, inside the real templates/<id>/
+    (the repo's <id>/): the Hub's SyncFiles skips symlinks, but a link that
+    leaves the directory must never be a gateway's file."""
+    base = os.path.realpath(os.path.join(ROOT, t.id))
+    for n in sorted(str(k) for k in services):
+        mounts, _ = vpn_mounts(services[n] if isinstance(services[n], dict) else {})
+        for kind, src, _, entry in mounts:
+            norm = posixpath.normpath(src)
+            if kind != "bind" or not (norm == f"templates/{t.id}" or norm.startswith(f"templates/{t.id}/")):
+                continue
+            real = os.path.realpath(os.path.join(ROOT, t.id, norm[len(f"templates/{t.id}"):].lstrip("/")))
+            if real != base and not real.startswith(base + os.sep):
+                return [f"vpn.ingress.service: {n} mounts {entry}: it resolves outside templates/{t.id}/ (a symlink)"]
+    return []
+
+
 def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
     """The vpn: block (contracts §3.3), as the Hub's ValidateVPN checks it.
     A misshapen block is left to the schema errors (its hooks are still
@@ -6927,6 +6964,8 @@ def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
         errs = [e for e in vpn_errors(m, dict(t.compose or {}, services=services), t.id) if e.startswith("hooks[")]
     else:
         errs = vpn_errors(m, dict(t.compose or {}, services=services), t.id)
+        if isinstance(m.get("vpn"), dict):
+            errs += vpn_bind_escapes(t, services)
     for e in errs:
         r.error(t.m_where, e, VPN_HINT)
 

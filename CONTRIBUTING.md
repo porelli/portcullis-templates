@@ -678,7 +678,10 @@ vpn:
   volumes the template declares (no `external`, `name`, `driver` or
   `driver_opts`); another service may mount one of those only when every
   gateway service mounts it read-only (a hand-over, like headscale's
-  pre-auth key). Mounts must be literal and unambiguous. With NET_ADMIN a gateway could
+  pre-auth key). Mounts must be literal and unambiguous. In a VPN template no
+  service binds the template's own files read-write, no bind under
+  `./templates/<id>/` may resolve (through a symlink) outside it, and
+  `-internal` aliases stay on the `default` network. With NET_ADMIN a gateway could
   take another provider's address on `portcullis-vpn`. A VPN app whose
   client can't run userspace while keeping each peer's tunnel address can't
   be a provider.
