@@ -7355,6 +7355,24 @@ def _kube_bind_sources(vols: Any, env: Dict[str, str]) -> List[str]:
     return out
 
 
+def _kube_port_bind(p: Dict[str, Any], env: Dict[str, str]) -> Optional[str]:
+    """A manifest port's bind address when it is a specific non-loopback
+    one (<KEY>_BIND, else the manifest's bind): None for empty, 0.0.0.0,
+    :: and loopback (a loopback-bound port gets no Service on Kubernetes)."""
+    key = p.get("key")
+    bind = (env.get(f"{key}_BIND") or "").strip() if isinstance(key, str) else ""
+    if not bind:
+        bind = p.get("bind") if isinstance(p.get("bind"), str) else ""
+    if bind in ("", "0.0.0.0", "::"):
+        return None
+    try:
+        if ipaddress.ip_address(bind).is_loopback:
+            return None
+    except ValueError:
+        pass
+    return bind
+
+
 def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, scale and
@@ -7431,9 +7449,12 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]]) -> Tuple[str, List[
         if not isinstance(p, dict):
             continue
         n = _rootless_host_port(p, env)
+        svc_name = p.get("service") if isinstance(p.get("service"), str) and p.get("service") else first
         if n > 0 and n in core:
-            svc_name = p.get("service") if isinstance(p.get("service"), str) and p.get("service") else first
             c.refuse(f"service {svc_name} publishes port {n}, a core port")
+        bind = _kube_port_bind(p, env)
+        if n > 0 and bind is not None:
+            c.refuse(f"service {svc_name} publishes {n} on {bind} (not on Kubernetes)")
     for o in setting_options(manifest):
         if o.get("key") == AVAHI_SERVICES_DIR_KEY and (env.get(AVAHI_SERVICES_DIR_KEY) or "").strip():
             c.degrade("the Avahi services directory binds a host path outside the shared-folder roots: "

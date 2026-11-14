@@ -4554,6 +4554,20 @@ class RuntimeCompatTests(unittest.TestCase):
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"a b\"\n"),
                          ("refused", ["service a runs as user a non-numeric value: Kubernetes needs a numeric uid"]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    scale: 1\n"), ("ok", []))
+        # A port bound to a specific non-loopback address can't be one on
+        # Kubernetes; loopback (no Service), empty, 0.0.0.0 and :: are fine.
+        def bound(bind: Optional[str], env: Optional[Dict[str, str]] = None) -> Tuple[str, List[str]]:
+            p: Dict[str, Any] = {"key": "MQTT_PORT", "default": 1883, "container": 1883, "service": "a"}
+            if bind is not None:
+                p["bind"] = bind
+            return kube("services:\n  a:\n    image: x\n", env, {"ports": [p]})
+        for b in (None, "", "0.0.0.0", "::", "127.0.0.1", "127.0.0.2", "::1"):
+            with self.subTest(bind=b):
+                self.assertEqual(bound(b), ("ok", []))
+        self.assertEqual(bound("192.168.1.10"), ("refused", ["service a publishes 1883 on 192.168.1.10 (not on Kubernetes)"]))
+        self.assertEqual(bound("127.0.0.1", {"MQTT_PORT_BIND": "10.0.0.5"}),
+                         ("refused", ["service a publishes 1883 on 10.0.0.5 (not on Kubernetes)"]))
+        self.assertEqual(bound("10.0.0.5", {"MQTT_PORT_BIND": "127.0.0.1"}), ("ok", []))
 
     def compat(self, compose: str, manifest: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Tuple[str, List[str]]:
         t = v.Template("test")
