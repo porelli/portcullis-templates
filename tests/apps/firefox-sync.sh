@@ -259,7 +259,13 @@ for _ in $(seq 1 40); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${SERVICE}-1" 2>/dev/null)" = healthy ] && break
   sleep 3
 done
-out=$(via_traefik "$HOST" /__heartbeat__)
+# Traefik adds the router only once it has seen the container healthy
+# (its docker provider, a moment after the health status flips): retry
+# while it still answers 404 / 502 / no answer.
+for _ in $(seq 1 30); do
+  out=$(via_traefik "$HOST" /__heartbeat__)
+  case "${out%% *}" in 000|404|502) sleep 1 ;; *) break ;; esac
+done
 [ "${out%% *}" = 200 ] && pass "https://$HOST/__heartbeat__ -> 200 via Traefik" || fail "heartbeat via Traefik: $out"
 out=$(via_traefik "$HOST" /1.0/sync/1.5)
 if [ "${out%% *}" = 401 ] && ! echo "${out#* }" | grep -q "auth\.$DOMAIN"; then
