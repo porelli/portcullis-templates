@@ -976,6 +976,43 @@ class TestHubRules(Case):
             "      traefik.http.middlewares.r.redirectregex.regex: ^/$$\n")
         self.assertEqual([e for e in errors if "Hub refuses" in e], [], "\n".join(errors))
 
+    def test_reserved_mail_names(self) -> None:
+        # Service names
+        for svc in ("mailctl", "mail", "mail-resolver", "mail-cert"):
+            with self.subTest(service=svc):
+                self.run_template()
+                self.rewrite_compose("services:\n  demo:", f"services:\n  {svc}:")
+                self.assertError(self.recheck(), f"DNS name {svc!r} is core's")
+        # Volume names
+        for vol in ("mail_data", "mail_etc", "mail_tls", "mail_acme", "mailctl_data"):
+            with self.subTest(volume=vol):
+                self.run_template()
+                self.rewrite_compose("volumes:\n  demo-data: {}", f"volumes:\n  demo-data: {{}}\n  {vol}: {{}}")
+                self.assertError(self.recheck(), f"volumes.{vol} is core's")
+        # Network names
+        for net in ("portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress"):
+            with self.subTest(network=net):
+                self.run_template()
+                self.rewrite_compose("networks:\n  portcullis-proxy:",
+                                    f"networks:\n  {net}: {{}}\n  portcullis-proxy:")
+                self.assertError(self.recheck(), f"networks.{net}: templates may only use")
+        # Aliases
+        for alias in ("mailctl-metrics", "mail-metrics"):
+            with self.subTest(alias=alias):
+                self.run_template()
+                self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy",
+                                    f"    networks:\n      default:\n        aliases: [{alias}]\n      portcullis-proxy: {{}}")
+                self.assertError(self.recheck(), f"network alias {alias!r} is core's DNS name")
+        # Traefik router
+        self.run_template()
+        self.rewrite_compose("      traefik.http.routers.demo.",
+                            "      traefik.http.routers.mail-wellknown.")
+        self.assertError(self.recheck(), "router 'mail-wellknown' is core's")
+        # Traefik service
+        self.run_template()
+        self.rewrite_compose("      traefik.http.services.demo.",
+                            "      traefik.http.services.mailctl.")
+        self.assertError(self.recheck(), "service 'mailctl' is core's")
 
 
 class TestGatedHomeTemplates(unittest.TestCase):

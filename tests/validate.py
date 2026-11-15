@@ -2368,19 +2368,21 @@ HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
-                 "wg"}
+                 "wg", "mail", "mailctl", "mail-resolver", "mail-cert"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data", "vpn_doc"}
+                "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
+                "mailctl_data"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
-CORE_ALIASES = {"wg-metrics"}
+CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
-                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress"}
+                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
+                 "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
@@ -2410,12 +2412,14 @@ CORE_TRAEFIK_NAMES = {
                 # VPN-only access (core vpn1): the -vpn twins of the routers
                 # through group-gate and the /vpn-required routers.
                 "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
-                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn"},
+                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn",
+                # Mail (core mail1): the well-known router.
+                "mail-wellknown"},
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
                     "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
-                 "keycloak", "lldap", "mcp-gate"},
+                 "keycloak", "lldap", "mcp-gate", "mailctl"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 # Exactly core's traefik/dynamic/middlewares.yml (Hub fileMiddlewares;
