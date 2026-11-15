@@ -8297,12 +8297,16 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                         key = opt.get("key", "")
                         reasons.append(f"has a per-person secret option ({key})")
 
-    # Check for AI companions
+    # Check for AI integration (NEW ruling: ai.mcp OR ai.chat makes it primary-only)
     ai = manifest.get("ai")
     if isinstance(ai, dict):
-        mcp = ai.get("mcp")
-        if isinstance(mcp, list) and len(mcp) > 0:
+        # ai.mcp: companions reason
+        if ai.get("mcp"):
             reasons.append("has AI companions (mcp-gate reaches them on the primary)")
+        # ai.chat: AI page reason (different from ai.mcp)
+        elif ai.get("chat"):
+            reasons.append("is an AI page (model-provider secrets stay on the primary)")
+        # ai.unsupported alone means NO AI support, so it doesn't count
 
     # Check for VPN provider
     vpn = manifest.get("vpn")
@@ -8354,6 +8358,67 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                                 reasons.append(f"binds {src_resolved} outside the server's folder roots")
                         elif src_resolved.startswith("/") and not _kube_under_roots(src_resolved, bind_roots):
                             reasons.append(f"binds {src_resolved} outside the server's folder roots")
+
+    # Check for non-HTTP backend scheme (P15)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        labels = svc.get("labels")
+        if isinstance(labels, dict):
+            for key, val in labels.items():
+                key_str = str(key)
+                # Check for loadbalancer.server.scheme
+                if ".loadbalancer.server.scheme" in key_str.lower():
+                    scheme = str(val).lower().strip()
+                    if scheme and scheme != "http":
+                        # Extract the service name from the label key
+                        # traefik.http.services.<name>.loadbalancer.server.scheme
+                        parts = key_str.split(".")
+                        if len(parts) >= 4 and parts[2] == "services":
+                            svc_label = parts[3]
+                            reasons.append(f"uses a non-HTTP backend scheme ({svc_label})")
+
+    # Check for reserved names link_doc and portcullis-link (P16)
+    # Check volumes for link_doc
+    if isinstance(volumes, dict):
+        for vol_key in volumes:
+            key_clean = fold_key(str(vol_key).strip())
+            if key_clean == "link_doc":
+                reasons.append("mounts the core volume link_doc")
+
+    # Check for portcullis-link in compose text (any reference, case-insensitive)
+    compose_text = compose.decode("utf-8", errors="ignore").lower()
+    if "portcullis-link" in compose_text:
+        # More specific check: in networks, volumes, or any other reference
+        reasons.append("references portcullis-link (reserved for the link networks)")
+
+    # Check for reserved core-only variables (§2 multi-server)
+    # PORTCULLIS_LINK_*, PORTCULLIS_WORKER_*, PORTCULLIS_ROLE, AGENT_IMAGE, RELAY_IMAGE
+    reserved_prefixes = ["PORTCULLIS_LINK_", "PORTCULLIS_WORKER_"]
+    reserved_names = ["PORTCULLIS_ROLE", "AGENT_IMAGE", "RELAY_IMAGE"]
+
+    # Check in compose text for variable references
+    for prefix in reserved_prefixes:
+        # Check for ${PREFIX...} or $PREFIX
+        if f"${{{prefix}" in compose_text or f"${prefix}" in compose_text.replace("$$", ""):
+            reasons.append(f"references reserved core variable {prefix}* (not a template variable)")
+            break  # Only report once for prefixes
+
+    for name in reserved_names:
+        if f"${{{name}" in compose_text or (f"${name}" in compose_text and f"$${name}" not in compose_text):
+            reasons.append(f"references reserved core variable {name} (not a template variable)")
+
+    # Check manifest env/settings/ports for these reserved names
+    manifest_env = manifest.get("env", [])
+    if isinstance(manifest_env, list):
+        for e in manifest_env:
+            if isinstance(e, dict):
+                key = e.get("key", "")
+                for prefix in reserved_prefixes:
+                    if key.startswith(prefix):
+                        reasons.append(f"declares reserved core variable {key} in manifest env")
+                if key in reserved_names:
+                    reasons.append(f"declares reserved core variable {key} in manifest env")
 
     # Deduplicate reasons while preserving order
     seen = set()
