@@ -103,6 +103,10 @@ VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
 AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
 VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and CONTRIBUTING.md, \"VPN providers\""
 VAR_VPN_PREFIX = "PORTCULLIS_VPN_"
+# Mail (§2, §19): the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and
+# PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables.
+VAR_MAIL_PREFIX = "PORTCULLIS_MAIL"
+MAIL_HINT = f"see {DOCS_URL}/integration-contracts/ (§2, Mail; §19)"
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
@@ -5090,6 +5094,15 @@ class _SpecCheck:
                     self.cerr(f"${{{name}}} is reserved: PORTCULLIS_VPN_* are core's and the Hub's (the Hub sets "
                               "PORTCULLIS_VPN_EDGE in the ingress container's environment: read it in a container shell as "
                               "$$PORTCULLIS_VPN_EDGE)", VPN_HINT)
+                    return
+        # Mail (§2, §19): PORTCULLIS_MAIL* (PORTCULLIS_MAIL_* and PORTCULLIS_MAILCTL_*
+        # included) are core.env-only, not template variables; the Hub doesn't copy them.
+        for sc in self.scalars:
+            for name, _ in go_var_refs(sc):
+                if name.startswith(VAR_MAIL_PREFIX):
+                    self.cerr(f"${{{name}}} is reserved: the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and "
+                              "PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables, the Hub "
+                              "doesn't copy them into instances", MAIL_HINT)
                     return
         # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
         for sc in self.scalars:

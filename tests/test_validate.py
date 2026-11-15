@@ -1014,6 +1014,22 @@ class TestHubRules(Case):
                             "      traefik.http.services.mailctl.")
         self.assertError(self.recheck(), "service 'mailctl' is core's")
 
+    def test_reserved_mail_vars(self) -> None:
+        for name, var in [
+            ("PORTCULLIS_MAIL", "PORTCULLIS_MAIL"),
+            ("PORTCULLIS_MAIL_HOSTNAME", "PORTCULLIS_MAIL_HOSTNAME"),
+            ("PORTCULLIS_MAILCTL_API_IP", "PORTCULLIS_MAILCTL_API_IP"),
+        ]:
+            for form, old, new in [
+                ("braced", "DEMO_URL:", f"MAIL_VAR: ${{{var}}}\n      DEMO_URL:"),
+                ("default form", "DEMO_URL:", f"MAIL_VAR: ${{{var}:-default}}\n      DEMO_URL:"),
+                ("bare", "DEMO_URL:", f"MAIL_VAR: ${var}\n      DEMO_URL:"),
+            ]:
+                with self.subTest(var=name, form=form):
+                    self.run_template()
+                    self.rewrite_compose(old, new)
+                    self.assertError(self.recheck(), "PORTCULLIS_MAIL")
+
 
 class TestGatedHomeTemplates(unittest.TestCase):
     """The real esphome / zigbee2mqtt / motioneye / mattermost templates,
