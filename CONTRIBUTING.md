@@ -793,6 +793,28 @@ vpn:
   shell should expand.
 - **No** `ports:`, `build:`, `container_name:` or `env_file:`.
 
+## Running on a worker
+
+Most templates can run on either the primary server or a worker. A template
+that sets parent-domain cookies, uses core volumes or TCP/UDP routers, depends
+on VPN integration or AI companions, or binds paths outside the shared-folder
+roots is primary-only.
+
+Worker rules (validated):
+- No core volume mounts (e.g. `hub_data`, `postgres_data`).
+- No Traefik TCP or UDP routers (HTTP routers are fine).
+- No per-person secret options (`type: person_secret`).
+- No AI companions (`ai.mcp`; `ai.unsupported` is fine).
+- No VPN provider (`vpn:` block).
+- No `host-gateway` in `extra_hosts` (the relay strips cookies Portcullis sets;
+  domain-level cookies like `_oauth2_proxy` wouldn't work).
+- No binds outside the server's folder roots (absolute paths, except under
+  `/srv`, `/mnt`, `/media` — the Hub can override these —, or relative paths
+  outside `./templates/<app-id>/`).
+
+Check with `python3 tests/validate.py --placement` or set
+`placement: primary_only` explicitly in the manifest when needed.
+
 ## Security rules
 
 - **Identity headers only from Traefik.** A header-auth app must accept

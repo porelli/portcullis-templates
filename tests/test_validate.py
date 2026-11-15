@@ -5133,5 +5133,73 @@ class VPNTests(Case):
                          {k: x for k, x in v6.items() if k != "version"})
 
 
+class TestPlacementVectors(unittest.TestCase):
+    """tests/placement_vectors.json is a byte copy of the Hub's
+    internal/templates/testdata/placement_vectors.json (same as runtime and
+    VPN vectors)."""
+
+    def test_byte_copy(self) -> None:
+        hub = os.environ.get("PORTCULLIS_HUB_DIR") or os.path.join(os.path.dirname(v.ROOT), "portcullis-hub")
+        path = os.path.join(hub, "internal", "templates", "testdata", "placement_vectors.json")
+        if not os.path.isfile(path):
+            self.skipTest(f"no Hub placement_vectors.json at {hub}")
+        with open(path, "rb") as f:
+            want = f.read()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "placement_vectors.json"), "rb") as f:
+            self.assertEqual(f.read(), want)
+
+
+class PlacementTests(unittest.TestCase):
+    """Placement detection (contracts §3): primary-only vs worker-placeable.
+    Shared vectors tests/placement_vectors.json."""
+
+    @staticmethod
+    def vectors() -> List[Dict[str, Any]]:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "placement_vectors.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_placement_vectors(self) -> None:
+        """Each vector: same verdict and reasons as the Hub's Placement."""
+        for vec in self.vectors():
+            name = vec.get("name", "")
+            compose_str = vec.get("compose", "")
+            manifest = vec.get("manifest", {})
+            env = vec.get("env", {})
+            bind_roots = vec.get("bind_roots", [])
+            want = vec.get("want", {})
+            want_primary_only = want.get("primary_only", False)
+            want_reasons = want.get("reasons", [])
+
+            with self.subTest(name):
+                primary_only, reasons = v.placement_reasons(
+                    compose_str.encode("utf-8"),
+                    manifest,
+                    env=env,
+                    bind_roots=bind_roots
+                )
+                self.assertEqual(primary_only, want_primary_only,
+                                f"placement mismatch: got {primary_only}, want {want_primary_only}")
+                self.assertEqual(reasons, want_reasons,
+                                f"reasons mismatch: got {reasons}, want {want_reasons}")
+
+    def test_placement_field_enum(self) -> None:
+        """The placement field accepts 'any' and 'primary_only'."""
+        for val in ["any", "primary_only"]:
+            with self.subTest(val):
+                manifest = {
+                    "name": "Test",
+                    "auth": {"method": "forward-auth"},
+                    "placement": val
+                }
+                compose = b"services:\n  app:\n    image: test:latest\n"
+                primary_only, reasons = v.placement_reasons(compose, manifest)
+                if val == "primary_only":
+                    self.assertTrue(primary_only)
+                    self.assertEqual(reasons, ["is marked placement: primary_only"])
+                else:
+                    self.assertFalse(primary_only)
+                    self.assertEqual(reasons, [])
+
+
 if __name__ == "__main__":
     unittest.main()

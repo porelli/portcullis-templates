@@ -1,0 +1,307 @@
+[
+ {
+  "name": "plain web app worker-placeable",
+  "compose": "services:\n  web:\n    image: nginx:alpine\n    networks: [portcullis-proxy]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "mounts core volume hub_data",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - hub_data:/data\nvolumes:\n  hub_data:\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["mounts the core volume hub_data"]
+  }
+ },
+ {
+  "name": "has TCP router",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.tcp.routers.myrouter.rule: \"HostSNI(`*`)\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["has a Traefik TCP/UDP router (myrouter)"]
+  }
+ },
+ {
+  "name": "has UDP router",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.udp.routers.myrouter.entrypoints: \"dns\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["has a Traefik TCP/UDP router (myrouter)"]
+  }
+ },
+ {
+  "name": "has person_secret option",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"},
+   "settings": {
+    "sections": [{"key": "general", "label": "General"}],
+    "options": [
+     {
+      "key": "smb_password",
+      "type": "person_secret",
+      "section": "general",
+      "label": "SMB Password",
+      "scope": "person"
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["has a per-person secret option (smb_password)"]
+  }
+ },
+ {
+  "name": "has AI companions",
+  "compose": "services:\n  app:\n    image: test:latest\n  companion:\n    image: mcp-server:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"},
+   "ai": {
+    "mcp": [
+     {"name": "companion", "service": "companion", "credential": {"type": "app_token"}}
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["has AI companions (mcp-gate reaches them on the primary)"]
+  }
+ },
+ {
+  "name": "is a VPN provider",
+  "compose": "services:\n  gateway:\n    image: tailscale:latest\n",
+  "manifest": {
+   "name": "Test VPN",
+   "auth": {"method": "forward-auth"},
+   "vpn": {
+    "label": "My VPN",
+    "ranges": ["10.0.0.0/8"],
+    "ingress": {"service": "gateway"},
+    "identity": {"source": "static"},
+    "dns": {"manual": true}
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["is a VPN provider (vpn: block)"]
+  }
+ },
+ {
+  "name": "uses host-gateway",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      - \"auth.example.com:host-gateway\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["uses host-gateway (app)"]
+  }
+ },
+ {
+  "name": "binds outside folder roots (absolute)",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /data/external:/mnt\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": ["/srv", "/mnt"],
+  "want": {
+   "primary_only": true,
+   "reasons": ["binds /data/external outside the server's folder roots"]
+  }
+ },
+ {
+  "name": "binds outside folder roots (relative)",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./data:/mnt\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["binds ./data outside the server's folder roots"]
+  }
+ },
+ {
+  "name": "marked placement primary_only",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"},
+   "placement": "primary_only"
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["is marked placement: primary_only"]
+  }
+ },
+ {
+  "name": "multiple reasons",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - hub_data:/data\n    extra_hosts:\n      - \"host:host-gateway\"\nvolumes:\n  hub_data:\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"},
+   "vpn": {
+    "label": "VPN",
+    "ranges": ["10.0.0.0/8"],
+    "ingress": {"service": "app"},
+    "identity": {"source": "static"},
+    "dns": {"manual": true}
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume hub_data",
+    "is a VPN provider (vpn: block)",
+    "uses host-gateway (app)"
+   ]
+  }
+ },
+ {
+  "name": "bind under folder roots is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /srv/data:/mnt\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": ["/srv", "/mnt"],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "bind under templates is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./templates/myapp/config.yml:/config.yml:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "long syntax bind outside roots",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - type: bind\n        source: /data/external\n        target: /mnt\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": ["/srv"],
+  "want": {
+   "primary_only": true,
+   "reasons": ["binds /data/external outside the server's folder roots"]
+  }
+ },
+ {
+  "name": "variable in bind",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - \"${DATA_DIR}:/mnt\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {"DATA_DIR": "/external/data"},
+  "bind_roots": ["/srv"],
+  "want": {
+   "primary_only": true,
+   "reasons": ["binds /external/data outside the server's folder roots"]
+  }
+ },
+ {
+  "name": "ai unsupported is worker-placeable",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"},
+   "ai": {
+    "unsupported": "No MCP server available"
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "extra_hosts dict format with host-gateway",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      host.example.com: host-gateway\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["uses host-gateway (app)"]
+  }
+ },
+ {
+  "name": "core volume by long syntax",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - type: volume\n        source: postgres_data\n        target: /data\nvolumes:\n  postgres_data:\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {"method": "forward-auth"}
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": ["mounts the core volume postgres_data"]
+  }
+ }
+]

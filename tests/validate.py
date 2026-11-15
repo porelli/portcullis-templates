@@ -8207,6 +8207,189 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
     return c.verdict()
 
 
+# ── Placement (server placement: primary vs worker) ────────────────
+
+def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str]] = None,
+                      bind_roots: Optional[List[str]] = None) -> Tuple[bool, List[str]]:
+    """Placement detection (Hub's Placement, contracts §3): returns
+    (primary_only, reasons). Reason strings match Task 3 exactly."""
+    if not isinstance(manifest, dict):
+        return False, []
+
+    reasons = []
+
+    # Check manifest field first
+    if str(manifest.get("placement", "")).strip() == "primary_only":
+        reasons.append("is marked placement: primary_only")
+        return True, reasons
+
+    # Parse compose
+    try:
+        c = yaml.load(compose.decode("utf-8"), Loader=_UniqueKeyLoader)  # noqa: S506
+    except (yaml.YAMLError, UnicodeDecodeError):
+        return False, []
+
+    if not isinstance(c, dict):
+        return False, []
+
+    services = c.get("services")
+    if not isinstance(services, dict):
+        return False, []
+
+    env = env or {}
+    bind_roots = bind_roots or []
+
+    # Check for core volume mounts
+    volumes = c.get("volumes")
+    if isinstance(volumes, dict):
+        for vol_key in volumes:
+            key_clean = fold_key(str(vol_key).strip())
+            if key_clean in CORE_VOLUMES:
+                reasons.append(f"mounts the core volume {vol_key}")
+
+    # Check service volumes for core volumes
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+
+        svc_vols = svc.get("volumes")
+        if isinstance(svc_vols, list):
+            for v in svc_vols:
+                if isinstance(v, str):
+                    parts = v.split(":")
+                    if parts:
+                        vol_name = parts[0].strip()
+                        key_clean = fold_key(vol_name)
+                        if key_clean in CORE_VOLUMES:
+                            reasons.append(f"mounts the core volume {vol_name}")
+                elif isinstance(v, dict):
+                    src = v.get("source", "")
+                    if isinstance(src, str):
+                        key_clean = fold_key(src.strip())
+                        if key_clean in CORE_VOLUMES:
+                            reasons.append(f"mounts the core volume {src}")
+
+    # Check for Traefik TCP/UDP routers
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        labels = svc.get("labels")
+        if isinstance(labels, dict):
+            for key, val in labels.items():
+                key_str = str(key)
+                if ".tcp.routers." in key_str or ".udp.routers." in key_str:
+                    # Extract router name
+                    if ".tcp.routers." in key_str:
+                        router = key_str.split(".tcp.routers.")[1].split(".")[0]
+                        reasons.append(f"has a Traefik TCP/UDP router ({router})")
+                    elif ".udp.routers." in key_str:
+                        router = key_str.split(".udp.routers.")[1].split(".")[0]
+                        reasons.append(f"has a Traefik TCP/UDP router ({router})")
+
+    # Check for per-person secret options
+    settings = manifest.get("settings")
+    if isinstance(settings, dict):
+        options = settings.get("options", [])
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict):
+                    if opt.get("type") == "person_secret":
+                        key = opt.get("key", "")
+                        reasons.append(f"has a per-person secret option ({key})")
+
+    # Check for AI companions
+    ai = manifest.get("ai")
+    if isinstance(ai, dict):
+        mcp = ai.get("mcp")
+        if isinstance(mcp, list) and len(mcp) > 0:
+            reasons.append("has AI companions (mcp-gate reaches them on the primary)")
+
+    # Check for VPN provider
+    vpn = manifest.get("vpn")
+    if isinstance(vpn, dict):
+        reasons.append("is a VPN provider (vpn: block)")
+
+    # Check for host-gateway usage
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        extra_hosts = svc.get("extra_hosts")
+        if isinstance(extra_hosts, (list, dict)):
+            hosts_list = extra_hosts if isinstance(extra_hosts, list) else [f"{k}:{v}" for k, v in extra_hosts.items()]
+            for host in hosts_list:
+                if isinstance(host, str) and "host-gateway" in host:
+                    reasons.append(f"uses host-gateway ({svc_name})")
+
+    # Check for binds outside folder roots
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        svc_vols = svc.get("volumes")
+        if isinstance(svc_vols, list):
+            for v in svc_vols:
+                if isinstance(v, str):
+                    parts = v.split(":")
+                    if len(parts) >= 2:
+                        src = parts[0].strip()
+                        # Check if it's a bind (starts with ./ or /)
+                        if src.startswith("./") or src.startswith("/"):
+                            # Check if outside roots
+                            if src.startswith("./"):
+                                # Relative bind - check if not under ./templates/<id>/
+                                if not src.startswith("./templates/"):
+                                    reasons.append(f"binds {src} outside the server's folder roots")
+                            elif not _kube_under_roots(src, bind_roots):
+                                reasons.append(f"binds {src} outside the server's folder roots")
+                elif isinstance(v, dict):
+                    vtype = v.get("type", "volume")
+                    src = v.get("source", "")
+                    if isinstance(src, str) and vtype == "bind":
+                        src = src.strip()
+                        if src.startswith("./"):
+                            if not src.startswith("./templates/"):
+                                reasons.append(f"binds {src} outside the server's folder roots")
+                        elif src.startswith("/") and not _kube_under_roots(src, bind_roots):
+                            reasons.append(f"binds {src} outside the server's folder roots")
+
+    # Deduplicate reasons while preserving order
+    seen = set()
+    unique_reasons = []
+    for r in reasons:
+        if r not in seen:
+            seen.add(r)
+            unique_reasons.append(r)
+
+    primary_only = len(unique_reasons) > 0
+    return primary_only, unique_reasons
+
+
+def placement_classification(apps: Optional[List[str]] = None) -> str:
+    """Output for --placement: one line per template,
+    <id>\tworker-placeable or <id>\tprimary-only: <reasons joined "; ">"""
+    lines = []
+    for app_id in apps or discover():
+        t = Template(app_id)
+        if not os.path.isfile(t.manifest_path):
+            continue
+        if not os.path.isfile(t.compose_path):
+            continue
+        try:
+            with open(t.manifest_path, encoding="utf-8") as f:
+                t.manifest = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+            with open(t.compose_path, "rb") as f:
+                compose_bytes = f.read()
+        except (OSError, yaml.YAMLError):
+            continue
+
+        primary_only, reasons = placement_reasons(compose_bytes, t.manifest, env=None, bind_roots=[])
+        if primary_only:
+            lines.append(f"{app_id}\tprimary-only: {'; '.join(reasons)}")
+        else:
+            lines.append(f"{app_id}\tworker-placeable")
+
+    return "".join(line + "\n" for line in sorted(lines))
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def runtime_classification(apps: Optional[List[str]] = None) -> str:
@@ -8249,10 +8432,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
     ap.add_argument("--runtime", action="store_true",
                     help="output the runtime compatibility classification (tests/runtime.txt)")
+    ap.add_argument("--placement", action="store_true",
+                    help="output the placement classification (worker-placeable or primary-only with reasons)")
     args = ap.parse_args(argv)
 
     if args.runtime:
         print(runtime_classification(args.apps), end="")
+        return 0
+
+    if args.placement:
+        print(placement_classification(args.apps), end="")
         return 0
 
     with open(SCHEMA_PATH, encoding="utf-8") as f:
