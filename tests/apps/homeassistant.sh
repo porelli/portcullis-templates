@@ -40,7 +40,7 @@ if grep -Eq '^http:' "$CONF"; then
 else
   pass "no http: YAML (homeassistant-init owns .storage/http)"
 fi
-assert_compose_setting "$COMPOSE" HA_TRUSTED_PROXY '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
+assert_compose_setting "$COMPOSE" HA_TRUSTED_PROXY '\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\}'
 assert_compose_setting "$COMPOSE" HA_ACCESS_GROUP '\$\{PORTCULLIS_ACCESS_GROUP:-users_homeassistant\}'
 assert_compose_setting "$COMPOSE" HA_ADMIN_GROUP '\$\{PORTCULLIS_ADMIN_GROUP:-admin_homeassistant\}'
 if grep -q '^  keycloak_access_role: true' "$DIR/manifest.yaml"; then
@@ -118,7 +118,7 @@ else
   fail "auth_oidc version: $OIDC"
 fi
 HTTPCONF=$(docker exec "portcullis-${SERVICE}-1" python3 -c 'import json;d=json.load(open("/config/.storage/http"))["data"];print(d["stable"]["trusted_proxies"], d["stable"]["use_x_forwarded_for"], d["pending"])' 2>&1 || true)
-if [ "$HTTPCONF" = "['${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}/32'] True None" ]; then
+if [ "$HTTPCONF" = "['$PORTCULLIS_TRAEFIK_SOURCE'] True None" ]; then
   pass ".storage/http: X-Forwarded-For from Traefik only, nothing pending"
 else
   fail ".storage/http: $HTTPCONF"

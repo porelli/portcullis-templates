@@ -41,6 +41,9 @@ services:
       - "${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee"
     depends_on:
       - mosquitto
+    # The port the gate calls (GATE_UPSTREAM): the alias Service on
+    # Kubernetes carries it.
+    expose: ["8080"]
     networks:
       default:
         aliases: [zigbee2mqtt-internal]
@@ -90,7 +93,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID]
     environment:
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       GATE_UPSTREAM: http://zigbee2mqtt-internal:8080
       GATE_LISTEN: "8080"
     entrypoint: ["/bin/sh", "/portcullis/gate.sh"]

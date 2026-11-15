@@ -22,7 +22,7 @@ services:
       PORTCULLIS_ACCESS_GROUP: ${PORTCULLIS_ACCESS_GROUP:-users_dokuwiki}
       PORTCULLIS_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_dokuwiki}
       # DokuWiki takes the client IP from X-Forwarded-For only from Traefik.
-      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       DOKUWIKI_OIDC_SECRET: ${DOKUWIKI_OIDC_SECRET:?DOKUWIKI_OIDC_SECRET must be set}
     volumes:
       - dokuwiki-data:/config

@@ -21,7 +21,7 @@ auth:
     every APP_PUBLIC action, local password login included.
     Reverse proxy auth: users are matched on X-Forwarded-User, the immutable
     LLDAP username, honoured only from Traefik (TRUSTED_PROXY_NETWORKS =
-    PORTCULLIS_TRAEFIK_IP). X-Forwarded-Email (user-editable) only fills the
+    PORTCULLIS_TRAEFIK_SOURCE). X-Forwarded-Email (user-editable) only fills the
     profile email and is ignored from other peers too. Auto-creates users on
     first login. The LLDAP user picked in "Kanboard administrator"
     (default admin = LLDAP's built-in admin) gets the

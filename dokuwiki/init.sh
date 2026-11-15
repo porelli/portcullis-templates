@@ -45,8 +45,24 @@ chmod 0640 "$CONF/local.protected.php"
 PHP=$(command -v php || command -v php85)
 
 : "${PORTCULLIS_DOMAIN:?}" "${PORTCULLIS_HOST_DOKUWIKI:?}" "${PORTCULLIS_OIDC_CLIENT_ID:?}"
-: "${PORTCULLIS_ACCESS_GROUP:?}" "${PORTCULLIS_ADMIN_GROUP:?}" "${PORTCULLIS_TRAEFIK_IP:?}"
+: "${PORTCULLIS_ACCESS_GROUP:?}" "${PORTCULLIS_ADMIN_GROUP:?}" "${PORTCULLIS_TRAEFIK_SOURCE:?}"
 : "${DOKUWIKI_OIDC_SECRET:?}"
+# PORTCULLIS_TRAEFIK_SOURCE: an IPv4 CIDR a.b.c.d/n (DokuWiki's
+# trustedproxies takes CIDR ranges, inc/Ip.php ipMatches), nothing else.
+cidr_ok() {
+  case "$1" in *[!0-9./]* | */*/* | .* | *./* | *..*) return 1 ;; */*) ;; *) return 1 ;; esac
+  set -- "${1%/*}" "${1#*/}"
+  case "$2" in [0-9] | [12][0-9] | 3[0-2]) ;; *) return 1 ;; esac
+  _cn=$2 _cv=0 _ck=0 _cifs=$IFS
+  IFS=.
+  for _co in $1; do
+    case "$_co" in [0-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) ;; *) IFS=$_cifs; return 1 ;; esac
+    _cv=$((_cv * 256 + _co)) _ck=$((_ck + 1))
+  done
+  IFS=$_cifs
+  [ "$_ck" -eq 4 ] && [ $((_cv % (1 << (32 - _cn)))) -eq 0 ]
+}
+cidr_ok "$PORTCULLIS_TRAEFIK_SOURCE" || { echo "portcullis: PORTCULLIS_TRAEFIK_SOURCE must be an IPv4 CIDR a.b.c.d/n" >&2; exit 1; }
 for g in "$PORTCULLIS_ACCESS_GROUP" "$PORTCULLIS_ADMIN_GROUP"; do
   case "$g" in
     ""|*[!a-z0-9_-]*) echo "portcullis: unexpected group name '$g'" >&2; exit 1 ;;
@@ -115,7 +131,7 @@ $conf = [
   // Hostname of this instance (re-applied at every start).
   "baseurl" => "https://" . $e("PORTCULLIS_HOST_DOKUWIKI"),
   "basedir" => "/",
-  "trustedproxies" => [$e("PORTCULLIS_TRAEFIK_IP")],
+  "trustedproxies" => [$e("PORTCULLIS_TRAEFIK_SOURCE")],
   "useacl" => 1,
   "authtype" => "oauth",
   "superuser" => "@" . $e("PORTCULLIS_ADMIN_GROUP"),

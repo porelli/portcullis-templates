@@ -381,13 +381,15 @@ if echo "${out#* }" | grep -q "//auth\.$DOMAIN/realms/portcullis/"; then
 else
   fail "/oauth/openid: $out"
 fi
-# Keycloak and the gate resolve to Traefik inside api (no hairpin).
+# Keycloak and the gate resolve to the host (host-gateway: Docker's default
+# bridge gateway), where Traefik publishes 443 (no hairpin through public DNS).
+HOST_GW=$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
 for h in "auth.$DOMAIN" "mcp.$DOMAIN"; do
   got=$(docker exec portcullis-api-1 getent hosts "$h" | awk '{print $1}' | head -1)
-  if [ "$got" = "${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}" ]; then
-    pass "api resolves $h to Traefik ($got)"
+  if [ -n "$got" ] && [ "$got" = "$HOST_GW" ]; then
+    pass "api resolves $h to the host gateway ($got)"
   else
-    fail "api resolves $h to '$got'"
+    fail "api resolves $h to '$got' (host gateway '$HOST_GW')"
   fi
 done
 # From LibreChat's own runtime (node, NODE_EXTRA_CA_CERTS = the CA bundle).

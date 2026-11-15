@@ -15,7 +15,7 @@
 3. The HTTP server config (.storage/http, which Home Assistant 2026.10 uses
    instead of the deprecated http: YAML) is rewritten as the confirmed
    ("stable") config with nothing pending: X-Forwarded-For trusted from
-   Traefik's address only (HA_TRUSTED_PROXY), IP bans on. A config changed
+   Traefik's range only (HA_TRUSTED_PROXY, a CIDR), IP bans on. A config changed
    in the UI is discarded at the next start.
 4. automations.yaml / scripts.yaml / scenes.yaml exist (configuration.yaml
    includes them).
@@ -165,17 +165,21 @@ def remove_stale_deps() -> None:
 
 
 def http_config() -> None:
+    # PORTCULLIS_TRAEFIK_SOURCE: exactly an IPv4 CIDR a.b.c.d/n with no host
+    # bits (HA's trusted_proxies takes networks); any other form refused.
     raw = os.environ.get("HA_TRUSTED_PROXY", "")
     try:
-        proxy = ipaddress.ip_address(raw)
+        proxy = ipaddress.IPv4Network(raw, strict=True)
     except ValueError:
-        die(f"HA_TRUSTED_PROXY {raw!r} is not an IP address")
+        proxy = None
+    if proxy is None or "/" not in raw or str(proxy) != raw:
+        die(f"HA_TRUSTED_PROXY {raw!r} is not an IPv4 CIDR a.b.c.d/n")
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     stable = {
         "server_port": 8123,
         "cors_allowed_origins": ["https://cast.home-assistant.io"],
         "use_x_forwarded_for": True,
-        "trusted_proxies": [str(ipaddress.ip_network(f"{proxy}/{proxy.max_prefixlen}"))],
+        "trusted_proxies": [str(proxy)],
         "login_attempts_threshold": 10,
         "ip_ban_enabled": True,
         "ssl_profile": "modern",

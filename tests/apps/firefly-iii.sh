@@ -32,7 +32,7 @@ fi
 # Verify compose has forward-auth + group-gate middleware
 COMPOSE=$(_find_compose "$APP_ID")
 assert_traefik_only_trust "$COMPOSE" TRUSTED_PROXIES
-assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_IP
+assert_traefik_only_trust "$COMPOSE" PORTCULLIS_TRAEFIK_SOURCE
 
 # nginx answers 403 to X-Forwarded-User / X-Forwarded-Email from any peer
 # other than Traefik

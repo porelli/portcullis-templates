@@ -69,7 +69,7 @@ services:
     image: demo/demo:1.2.3@sha256:{digest}
     environment:
       DEMO_URL: {url}
-      TRUSTED_PROXY: ${{PORTCULLIS_TRAEFIK_IP:-172.31.250.2}}
+      TRUSTED_PROXY: ${{PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}}
       DEMO_SECRET: ${{DEMO_SECRET:?DEMO_SECRET must be set}}
 {env}    volumes:
       - demo-data:/data
@@ -415,7 +415,7 @@ class TestIdentityRules(Case):
         self.assertError(errors, "FTLCONF_webserver_acl")
         self.assertError(errors, "FTLCONF_webserver_domain")
         errors, _ = self.run_template(env='      FTLCONF_webserver_api_password: ""\n'
-                                          "      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_IP:-172.31.250.2},+127.0.0.1,+[::1]\n"
+                                          "      FTLCONF_webserver_acl: +${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32},+127.0.0.1,+[::1]\n"
                                           "      FTLCONF_webserver_domain: ${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n")
         self.assertClean(errors)
         errors, _ = self.run_template(env='      FTLCONF_webserver_api_password: ""\n'
@@ -1026,7 +1026,8 @@ class TestGatedHomeTemplates(unittest.TestCase):
 
     def test_gate_sh_lines(self) -> None:
         for line, needle in (
-                ("  allow ${ip};\n", "allow ${ip};"),
+                ("  allow ${src};\n", "allow ${src};"),
+                ('cidr_ok "$src" || ', "the CIDR check"),
                 ("  deny all;\n", "deny all;"),
                 ('    proxy_set_header Authorization "";\n', "proxy_set_header Authorization"),
                 ('    proxy_set_header X-Forwarded-Access-Token "";\n', "X-Forwarded-Access-Token"),
@@ -1059,9 +1060,9 @@ class TestGatedHomeTemplates(unittest.TestCase):
                 self.edit(app, "compose.yml", line)
                 self.assertFails(needle)
         self.setUp()
-        # Only the gate's PORTCULLIS_TRAEFIK_IP is in the compose file.
-        self.edit("esphome", "compose.yml", "      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n")
-        self.assertFails("PORTCULLIS_TRAEFIK_IP")
+        # Only the gate's PORTCULLIS_TRAEFIK_SOURCE is in the compose file.
+        self.edit("esphome", "compose.yml", "      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n")
+        self.assertFails("PORTCULLIS_TRAEFIK_SOURCE")
 
     def test_backend_isolation(self) -> None:
         self.edit("esphome", "compose.yml", "        aliases: [esphome-internal]\n",
@@ -1128,7 +1129,7 @@ class TestGatedHomeTemplates(unittest.TestCase):
         for line, needle in (
                 ("      - ./templates/mattermost/gate.sh:/portcullis/gate.sh:ro\n", "must be the gate"),
                 ("    cap_drop: [ALL]\n    cap_add: [CHOWN, SETGID, SETUID]\n", "drop all capabilities"),
-                ("      PORTCULLIS_TRAEFIK_IP: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n", "PORTCULLIS_TRAEFIK_IP"),
+                ("      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n", "PORTCULLIS_TRAEFIK_SOURCE"),
         ):
             with self.subTest(line=line.strip()):
                 self.setUp()
@@ -1325,7 +1326,7 @@ def s_compose(env: str = "", routers: str = "", demo: str = "", services: str = 
         routers = router("demo", S_HOST, gated=not oidc)
     return (f"services:\n  demo:\n    image: demo/demo:1.2.3@sha256:{S_DIGEST}\n    environment:\n"
             "      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n"
-            "      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n"
+            "      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n"
             "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n"
             f"{env}    volumes:\n      - demo-data:/data\n{nets}{demo}    labels:\n{labels}{routers}"
             "      traefik.http.services.demo.loadbalancer.server.port: \"80\"\n"
@@ -2357,7 +2358,7 @@ settings:
             with self.subTest(app_id=app_id):
                 errors, _ = self.run_raw(S_HDR, s_compose(), app_id=app_id)
                 self.assertError(errors, "id")
-                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e) for e in errors), errors)
+                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e or "may not contain \"--\"" in e) for e in errors), errors)
         for app_id in ("my-app", "a-portcullisx", "portcullisx-b", "xportcullis-b", "firefox-sync", "a1-2b"):
             with self.subTest(app_id=app_id):
                 self.assertIsNone(v.check_id_shape(app_id))
@@ -3983,15 +3984,20 @@ class AITests(Case):
         self.assertFalse([e for e in errors if "only AI variables" in e or "no ai: field names it" in e
                           or "may appear only as exactly" in e], "\n".join(errors))
 
-    def test_mcp_gate_ip_is_a_core_variable(self) -> None:
+    def test_mcp_gate_source_is_a_core_variable(self) -> None:
         fx = ai_fixtures()
         m, c = fx["unsupported"]
         env = "      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n"
-        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}\n"]))
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_SOURCE:-172.31.250.3/32}\n"]))
         self.assertClean(errors)
-        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_IP}\n"]))
-        self.assertError(errors, "${PORTCULLIS_MCP_GATE_IP} must use the default form ${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}")
-        self.assertEqual(v.CORE_VARS[v.VAR_MCP_GATE_IP], "172.31.250.3")
+        errors, _ = self.run_raw(m, self.edit(c, [env, env + "      GATE: ${PORTCULLIS_MCP_GATE_SOURCE}\n"]))
+        self.assertError(errors, "${PORTCULLIS_MCP_GATE_SOURCE} must be exactly the default form ${PORTCULLIS_MCP_GATE_SOURCE:-172.31.250.3/32}")
+        self.assertEqual(v.CORE_VARS[v.VAR_MCP_GATE_SOURCE], "172.31.250.3/32")
+        # The old address variable is refused in every form (contracts §2).
+        for ref in ("${PORTCULLIS_MCP_GATE_IP:-172.31.250.3}", "${PORTCULLIS_MCP_GATE_IP}", "$$PORTCULLIS_MCP_GATE_IP"):
+            with self.subTest(ref=ref):
+                errors, _ = self.run_raw(m, self.edit(c, [env, env + f"      GATE: {ref}\n"]))
+                self.assertError(errors, "PORTCULLIS_MCP_GATE_IP is not a template variable")
 
     def test_alias_limit(self) -> None:
         fx = ai_fixtures()
@@ -4042,16 +4048,16 @@ class AITests(Case):
             ("provider var map key lowercase", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n",
                                                          "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      portcullis_ai_provider_x_key: sk-literal\n"],
              "service demo sets portcullis_ai_provider_x_key"),
-            ("provider var list bare", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_PROVIDER_X_KEY\n"],
+            ("provider var list bare", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_PROVIDER_X_KEY\n"],
              "service demo sets PORTCULLIS_AI_PROVIDER_X_KEY"),
-            ("provider var list assignment", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - Portcullis_AI_Provider_X_KEY=sk-literal\n"],
+            ("provider var list assignment", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - Portcullis_AI_Provider_X_KEY=sk-literal\n"],
              "service demo sets Portcullis_AI_Provider_X_KEY"),
             # Security review: names built by interpolation, AI names in defaults.
             ("env name interpolated", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      PORTCULLIS_AI_${X}: sk-literal\n"], "is built by interpolation"),
-            ("env list name interpolated", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_${X}PROVIDER_X_KEY=sk\n"], "is built by interpolation"),
+            ("env list name interpolated", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      - PORTCULLIS_AI_${X}PROVIDER_X_KEY=sk\n"], "is built by interpolation"),
             ("AI name in a default", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: ${FOO:-PORTCULLIS_AI_PROVIDER_X_KEY}\n"], "a default or alternate value naming PORTCULLIS_AI_"),
             ("AI name in an alternate", chat, [], ["      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n      KEY: ${FOO:+portcullis_ai_x}\n"], "a default or alternate value naming PORTCULLIS_AI_"),
-            ("env list without provider vars", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n"], ""),
+            ("env list without provider vars", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n"], ""),
             ("ai-providers file", "companion", ["hooks:\n", "files:\n  - {name: ai-providers, service: demo, mount: /data}\nhooks:\n"], [],
              "files[ai-providers]: the data file name ai-providers is reserved"),
         ])
@@ -4098,6 +4104,7 @@ class AITests(Case):
             ("declares PORTCULLIS_AI_ENABLED", plain, ["env:\n", "env:\n  - key: PORTCULLIS_AI_ENABLED\n    description: x\n"], [], "env key PORTCULLIS_AI_ENABLED is reserved"),
             ("declares a provider variable", plain, ["env:\n", "env:\n  - key: PORTCULLIS_AI_PROVIDER_X\n    description: x\n"], [], "env key PORTCULLIS_AI_PROVIDER_X is reserved"),
             ("declares the gate IP", plain, ["env:\n", "ports:\n  - {key: PORTCULLIS_MCP_GATE_IP, label: X, container: 1, default: 1, service: demo}\nenv:\n"], [], "ports key PORTCULLIS_MCP_GATE_IP is reserved"),
+            ("declares the gate source", plain, ["env:\n", "ports:\n  - {key: PORTCULLIS_MCP_GATE_SOURCE, label: X, container: 1, default: 1, service: demo}\nenv:\n"], [], "ports key PORTCULLIS_MCP_GATE_SOURCE is reserved"),
             ("mcp default subdomain", plain, ["{{HOST_DEMO}}", "{{HOST_DEMO}}"], ["demo.portcullis.local}`)", "mcp.portcullis.local}`)"], "subdomain 'mcp' belongs to core"),
             ("core service mcp-gate", plain, [], ["  init:\n", "  mcp-gate:\n"], "the DNS name 'mcp-gate' is core's"),
             ("core service dns-tool", plain, [], ["  init:\n", "  dns-tool:\n"], "the DNS name 'dns-tool' is core's"),
@@ -4105,7 +4112,8 @@ class AITests(Case):
             ("core router mcp", plain, [], ["routers.demo.", "routers.mcp."] * 4, "Traefik label 'traefik.http.routers.mcp.rule': router 'mcp' is core's (reserved)"),
             ("core service mcp-gate label", plain, [], ["traefik.http.services.demo.", "traefik.http.services.mcp-gate."], "service 'mcp-gate' is core's (reserved)"),
         ])
-        for k in ("PORTCULLIS_AI_ENABLED", "PORTCULLIS_AI_READONLY_GITEA", "PORTCULLIS_AI_PROVIDER_X", "PORTCULLIS_AI_ANYTHING", "PORTCULLIS_MCP_GATE_IP"):
+        for k in ("PORTCULLIS_AI_ENABLED", "PORTCULLIS_AI_READONLY_GITEA", "PORTCULLIS_AI_PROVIDER_X", "PORTCULLIS_AI_ANYTHING", "PORTCULLIS_MCP_GATE_IP",
+                  "PORTCULLIS_MCP_GATE_SOURCE"):
             self.assertTrue(v.reserved_var(k), k)
             self.assertTrue(v.ai_reserved_var(k), k)
         self.assertIn("mcp", v.CORE_SUBDOMAINS)
@@ -4251,41 +4259,442 @@ class TestSetup(Case):
         self.assertError(errors, "-bad")
 
 
-class RootlessTests(unittest.TestCase):
-    """Tests for rootless Podman compatibility classification (Task 6)."""
+class TestServiceNames(Case):
+    def test_service_names_are_dns_labels(self) -> None:
+        """Compose service names resolve as pod hostnames on Kubernetes."""
+        for bad in ("Demo", "demo_db", "-demo", "demo-", "a" * 64, "dé", "demo--db"):
+            with self.subTest(name=bad):
+                self.setUp()
+                self.run_template()
+                self.rewrite_compose("services:\n  demo:\n", f"services:\n  {bad}:\n    image: x\n  demo:\n")
+                self.assertError(self.recheck(), f"service name {bad!r} is not a DNS label without")
+        self.setUp()
+        self.run_template()
+        self.rewrite_compose("services:\n  demo:\n", "services:\n  db-2:\n    image: x\n  demo:\n")
+        self.assertFalse([e for e in self.recheck() if "is not a DNS label" in e])
+
+
+class TestSourceVariables(Case):
+    """PORTCULLIS_TRAEFIK_SOURCE / PORTCULLIS_MCP_GATE_SOURCE (contracts §2,
+    Kubernetes): CIDR variables, read only in their default form; the old
+    PORTCULLIS_TRAEFIK_IP / PORTCULLIS_MCP_GATE_IP are refused anywhere in a
+    template."""
+
+    def test_default_form_clean(self) -> None:
+        errors, _ = self.run_template(env="      GATE: ${PORTCULLIS_MCP_GATE_SOURCE:-172.31.250.3/32}\n")
+        self.assertClean(errors)
+        self.assertEqual(v.CORE_VARS["PORTCULLIS_TRAEFIK_SOURCE"], "172.31.250.2/32")
+        self.assertEqual(v.CORE_VARS["PORTCULLIS_MCP_GATE_SOURCE"], "172.31.250.3/32")
+        self.assertNotIn("PORTCULLIS_TRAEFIK_IP", v.CORE_VARS)
+        self.assertNotIn("PORTCULLIS_MCP_GATE_IP", v.CORE_VARS)
+
+    def test_ip_reference_refused(self) -> None:
+        for name in ("PORTCULLIS_TRAEFIK_IP", "PORTCULLIS_MCP_GATE_IP"):
+            for line in (f"      X: ${{{name}:-172.31.250.2}}\n", f"      X: ${{{name}}}\n", f"      X: ${name}\n",
+                         f"      X: $${name}\n", f"      X: ${{{name}:-172.31.250.2}}/32\n", f"      {name}: x\n"):
+                with self.subTest(line=line.strip()):
+                    errors, _ = self.run_template(env=line)
+                    self.assertError(errors, f"{name} is not a template variable")
+            for fname in ("gate.sh", "nginx.conf", "init.py"):
+                with self.subTest(file=fname, name=name):
+                    self.setUp()
+                    errors, _ = self.run_template(extra_files=((fname, f"# reads {name}\n"),))
+                    self.assertError(errors, f"demo/{fname}: {name} is not a template variable")
+            with self.subTest(file="manifest.yaml", name=name):
+                errors, _ = self.run_template(notes=f" Trusts {name}.")
+                self.assertError(errors, f"demo/manifest.yaml: {name} is not a template variable")
+        # Names that merely contain it are other variables.
+        self.setUp()
+        errors, _ = self.run_template(extra_files=(("init.sh", "# PORTCULLIS_AUTH_TRAEFIK_IP X_PORTCULLIS_TRAEFIK_IPS\n"),))
+        self.assertClean(errors)
+
+    def test_source_non_default_form_refused(self) -> None:
+        for name, default in (("PORTCULLIS_TRAEFIK_SOURCE", "172.31.250.2/32"), ("PORTCULLIS_MCP_GATE_SOURCE", "172.31.250.3/32")):
+            for ref in (f"${{{name}}}", f"${name}", f"${{{name}:-{default.split('/')[0]}}}", f"${{{name}-{default}}}",
+                        f"${{{name}:-10.0.0.0/8}}", f"${{{name}:-0.0.0.0/0}}", f"${{{name}:+{default}}}",
+                        f"${{{name}:?{default}}}", f"${{{name}:-}}"):
+                with self.subTest(ref=ref):
+                    errors, _ = self.run_template(env=f"      X: {ref}\n")
+                    self.assertError(errors, f"${{{name}}} must be exactly the default form ${{{name}:-{default}}}")
+            # A container shell's own $$NAME is the container's environment.
+            errors, _ = self.run_template(env=f"      {name}: ${{{name}:-{default}}}\n      Y: $${name}\n")
+            self.assertClean(errors)
+
+    def test_header_auth_needs_the_source(self) -> None:
+        self.run_template()
+        self.rewrite_compose("      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n", "")
+        self.assertError(self.recheck(), "header-auth app does not restrict identity headers to Traefik")
+
+
+# The reviewed CIDR check (esphome/gate.sh's cidr_ok) and every inline copy:
+# compose (dollars doubled) and the other scripts that read
+# PORTCULLIS_TRAEFIK_SOURCE.
+CIDR_ACCEPT = ["10.42.0.0/16", "172.31.250.2/32", "0.0.0.0/0", "10.0.0.0/8", "192.168.16.0/20", "255.255.255.255/32",
+               "128.0.0.0/1", "10.43.0.20/32"]
+CIDR_REFUSE = ["10.42.0.0/33", "any", "", "172.31.250.2", "10.42.0.1/16", "10.0.0.0/08", "010.0.0.0/8", "256.0.0.0/8",
+               "1.2.3./8", ".1.2.3/8", "1..2.3/8", "1.2.3.4.5/32", "1.2.3/24", "/8", "1.2.3.4/", "1.2.3.4//32",
+               "1.2.3.4/32/1", "10.0.0.0/255.0.0.0", " 10.0.0.0/8", "10.0.0.0/8 ", "10.0.0.0/8,1.2.3.4/32", "10.0.0.0/-1",
+               "10.0.0.0/+8", "a.b.c.d/8", "1.2.3.4/3a", "*", "10.42.0.0/16\n"]
+
+
+def cidr_functions() -> Dict[str, str]:
+    """file -> its cidr_ok() definition (compose: dedented, $$ undoubled)."""
+    out: Dict[str, str] = {}
+    for root, _, files in os.walk(v.ROOT):
+        if os.sep + "." in root or os.path.relpath(root, v.ROOT).split(os.sep)[0] in ("tests", "docs", "schema"):
+            continue
+        for fn in files:
+            p = os.path.join(root, fn)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    text = f.read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            fn_text = v.cidr_function(text, compose=fn == "compose.yml")
+            if fn_text is not None:
+                out[os.path.relpath(p, v.ROOT)] = fn_text
+    return out
+
+
+class TestCidrGates(unittest.TestCase):
+    """Every gate accepts a.b.c.d/n (0 <= n <= 32, no host bits: Python's
+    IPv4Network(strict=True) on that form) and nothing else."""
+
+    def run_sh(self, shell: str, script: str, *args: str) -> "subprocess.CompletedProcess[str]":
+        import subprocess
+        return subprocess.run([shell, "-c", script, "sh", *args], capture_output=True, text=True, timeout=30)
+
+    def test_every_copy_is_the_reviewed_one(self) -> None:
+        fns = cidr_functions()
+        want = {"esphome/gate.sh", "mattermost/gate.sh", "motioneye/gate.sh", "zigbee2mqtt/gate.sh",
+                "grafana/portcullis/trust.sh", "dokuwiki/init.sh", "cloudbeaver/compose.yml",
+                "firefly-iii/compose.yml", "guacamole/compose.yml", "paperless/compose.yml"}
+        self.assertLessEqual(want, set(fns), sorted(fns))
+        ref = fns["esphome/gate.sh"]
+        for f, text in fns.items():
+            with self.subTest(file=f):
+                self.assertEqual(text, ref)
+
+    def test_accepts_and_refuses(self) -> None:
+        import ipaddress
+        import shutil
+        fn = cidr_functions()["esphome/gate.sh"]
+        for c in CIDR_ACCEPT:
+            ipaddress.IPv4Network(c, strict=True)
+        shells = [s for s in ("sh", "bash", "dash", "busybox") if shutil.which(s)]
+        for shell in shells:
+            for c, want in [(c, 0) for c in CIDR_ACCEPT] + [(c, 1) for c in CIDR_REFUSE]:
+                with self.subTest(shell=shell, cidr=c):
+                    cmd = [shell] if shell != "busybox" else ["busybox", "sh"]
+                    import subprocess
+                    got = subprocess.run(cmd + ["-c", fn + 'cidr_ok "$1"', "sh", c], capture_output=True, timeout=30)
+                    self.assertEqual(got.returncode, want, got.stderr)
+
+    def test_gate_sh_end_to_end(self) -> None:
+        """The real gate.sh up to nginx: a CIDR source is written as nginx's
+        allow; anything else stops it before any configuration is written."""
+        with open(os.path.join(v.ROOT, "esphome", "gate.sh"), encoding="utf-8") as f:
+            gate = f.read()
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = os.path.join(tmp, "default.conf")
+            self.assertIn("/etc/nginx/conf.d/default.conf", gate)
+            self.assertIn("exec nginx -g 'daemon off;'", gate)
+            script = gate.replace("/etc/nginx/conf.d/default.conf", conf).replace("exec nginx -g 'daemon off;'", "exit 0")
+            env = {"PATH": os.environ["PATH"], "GATE_UPSTREAM": "http://app-internal:8080", "GATE_LISTEN": "9000"}
+            import subprocess
+            for c in ("10.42.0.0/16", "172.31.250.2/32"):
+                with self.subTest(source=c):
+                    r = subprocess.run(["sh", "-c", script], env={**env, "PORTCULLIS_TRAEFIK_SOURCE": c}, capture_output=True,
+                                       text=True, timeout=30)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    with open(conf, encoding="utf-8") as f:
+                        text = f.read()
+                    self.assertIn(f"  allow {c};\n  deny all;\n", text)
+                    os.remove(conf)
+            for c in ("10.42.0.0/33", "any", "", "172.31.250.2"):
+                with self.subTest(source=c):
+                    r = subprocess.run(["sh", "-c", script], env={**env, "PORTCULLIS_TRAEFIK_SOURCE": c}, capture_output=True,
+                                       text=True, timeout=30)
+                    self.assertNotEqual(r.returncode, 0)
+                    self.assertIn("PORTCULLIS_TRAEFIK_SOURCE must be an IPv4 CIDR", r.stderr)
+                    self.assertFalse(os.path.exists(conf))
+
+    def test_guacamole_cidr_re(self) -> None:
+        """guacamole's RewriteValve regex matches exactly the CIDR's addresses."""
+        import ipaddress
+        import random
+        import re
+        import shutil
+        import subprocess
+        if not shutil.which("bash"):
+            self.skipTest("no bash")
+        with open(os.path.join(v.ROOT, "guacamole", "compose.yml"), encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r"(?ms)^( *)cidr_re\(\) \{\n.*?^\1\}\n", text)
+        self.assertIsNotNone(m)
+        fn = textwrap.dedent(m.group(0)).replace("$$", "$")
+        rnd = random.Random(7)
+        cidrs = ["172.31.250.2/32", "10.42.0.0/16", "0.0.0.0/0", "192.168.16.0/20", "10.0.0.128/25", "128.0.0.0/1",
+                 "10.1.2.0/23", "10.1.2.4/30"]
+        for c in cidrs:
+            with self.subTest(cidr=c):
+                r = subprocess.run(["bash", "-c", fn + 'cidr_re "$1"', "bash", c], capture_output=True, text=True, timeout=30)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                rx = re.compile("^" + r.stdout + "$")
+                net = ipaddress.IPv4Network(c)
+                lo, hi = int(net.network_address), int(net.broadcast_address)
+                probes = {lo, hi, max(lo - 1, 0), min(hi + 1, 2**32 - 1)} | {rnd.randrange(2**32) for _ in range(300)} | \
+                    {rnd.randint(lo, hi) for _ in range(100)}
+                for n in probes:
+                    a = str(ipaddress.IPv4Address(n))
+                    self.assertEqual(bool(rx.match(a)), ipaddress.IPv4Address(n) in net, (c, a, r.stdout))
+
+
+class TestCidrCopies(unittest.TestCase):
+    """An inline copy of cidr_ok() (compose, scripts) that drifts from the
+    reviewed one fails validation."""
+
+    APPS = ("esphome", "cadcraft", "guacamole", "dokuwiki")
+    REPO = v.ROOT
+    setUp = TestGatedHomeTemplates.setUp
+    edit = TestGatedHomeTemplates.edit
+    errors = TestGatedHomeTemplates.errors
+    assertFails = TestGatedHomeTemplates.assertFails
+
+    def test_real_templates_are_clean(self) -> None:
+        self.assertEqual(self.errors(), [])
+
+    def test_weakened_copy_fails(self) -> None:
+        for app, name, old, new in (
+                ("cadcraft", "compose.yml", "3[0-2]) ;;", "3[0-9]) ;;"),
+                ("guacamole", "compose.yml", "[ \"$$_ck\" -eq 4 ] && ", ""),
+                ("dokuwiki", "init.sh", "*..*) return 1", "*...*) return 1"),
+                ("esphome", "gate.sh", "25[0-5]) ;;", "2[0-9][0-9]) ;;"),
+        ):
+            with self.subTest(app=app):
+                self.setUp()
+                self.edit(app, name, old, new)
+                self.assertFails("cidr_ok() differs from esphome/gate.sh's")
+
+
+
+class TestRuntimeVectorsMatchHub(unittest.TestCase):
+    """tests/runtime_vectors.json is a byte copy of the Hub's
+    internal/templates/testdata/runtime_vectors.json (a sibling Hub checkout
+    or PORTCULLIS_HUB_DIR; skipped without one; CI's lint fetches the Hub's
+    same-named branch, else main)."""
+
+    def test_byte_copy(self) -> None:
+        hub = os.environ.get("PORTCULLIS_HUB_DIR") or os.path.join(os.path.dirname(v.ROOT), "portcullis-hub")
+        path = os.path.join(hub, "internal", "templates", "testdata", "runtime_vectors.json")
+        if not os.path.isfile(path):
+            self.skipTest(f"no Hub runtime_vectors.json at {hub}")
+        with open(path, "rb") as f:
+            want = f.read()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_vectors.json"), "rb") as f:
+            self.assertEqual(f.read(), want)
+
+
+class RuntimeCompatTests(unittest.TestCase):
+    """Runtime compatibility (contracts §3.4, §11.10): the Hub's
+    RuntimeCompat through the shared vectors (tests/runtime_vectors.json, a
+    byte copy of the Hub's), the rules they can't carry, and the committed
+    classification tests/runtime.txt."""
+
+    @staticmethod
+    def vectors() -> List[Dict[str, Any]]:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_vectors.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def verdict(vec: Dict[str, Any]) -> Tuple[str, List[str]]:
+        """As the Hub's vectorVerdict: a vector port's port is both its
+        default (the host port) and its container port; each setting is a
+        declared path option whose value is in the env."""
+        t = v.Template("test")
+        t.manifest = {"ports": [{k: val for k, val in (("key", p["key"]), ("default", p["port"]), ("container", p["port"]),
+                                                        ("protocol", p.get("protocol", "")), ("service", p.get("service", "")))}
+                                for p in vec.get("ports") or []]}
+        env = dict(vec.get("env") or {})
+        if vec.get("settings"):
+            t.manifest["settings"] = {"options": [{"key": k, "type": "path"} for k in vec["settings"]]}
+            env.update(vec["settings"])
+        t.compose = v.yaml.safe_load(vec["compose"])
+        # The Hub's templates-package vectors run without KubeLabelCheck.
+        return v.runtime_compat(t, vec["runtime"], env=env, port_start=vec["port_start"], labels=False)
 
     def test_vectors(self) -> None:
-        """Test each vector through rootless_compat equals want."""
-        vectors_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rootless_vectors.json")
-        with open(vectors_path, encoding="utf-8") as f:
-            vectors = json.load(f)
-
+        vectors = self.vectors()
+        counts: Dict[str, int] = {}
         for vec in vectors:
             with self.subTest(name=vec["name"]):
-                # Create a minimal template
+                self.assertIn(vec["runtime"], ("podman", "kubernetes"))
+                counts[vec["runtime"]] = counts.get(vec["runtime"], 0) + 1
+                self.assertEqual(self.verdict(vec), (vec["want"]["status"], vec["want"]["reasons"]))
+        self.assertGreaterEqual(counts.get("podman", 0), 11)
+        self.assertGreaterEqual(counts.get("kubernetes", 0), 15)
+
+    def test_docker_always_ok(self) -> None:
+        for vec in self.vectors():
+            with self.subTest(name=vec["name"]):
+                self.assertEqual(self.verdict({**vec, "runtime": "docker"}), ("ok", []))
+        with self.assertRaises(ValueError):
+            v.runtime_compat(v.Template("test"), "lxc")
+
+    def test_kube_labels_like_the_deploy(self) -> None:
+        """The Hub's TestCompatJudgesLabelsLikeTheDeploy (KubeLabelCheck =
+        the IngressRoute translation, on the template's own labels)."""
+        for labels, why in (
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.services.web.loadbalancer.server.port: \"80\"\n"
+                 "      traefik.http.services.web.loadbalancer.server.scheme: https\n", "service web: loadbalancer.server.scheme is not on Kubernetes"),
+                ("      traefik.tcp.routers.db.rule: HostSNI(`*`)\n", "web: tcp routers are not on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.priority: \"5000\"\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", "router web: priority 5000 is above 1000 (not on Kubernetes)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", ""),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: x-secret@docker\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n",
+                 "a middleware is not on Kubernetes (not the instance's own, not a core name apps may use)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: portcullis-auth@docker,security-headers@file\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n", ""),
+                ("      traefik.http.routers.a.rule: Host(`a.example.org`)\n      traefik.http.routers.b.rule: Host(`b.example.org`)\n"
+                 "      traefik.http.services.a.loadbalancer.server.port: \"80\"\n      traefik.http.services.b.loadbalancer.server.port: \"81\"\n",
+                 "router a names no service"),
+                ("      traefik.http.middlewares.m.forwardauth.address: http://x\n", "middleware m is a forwardAuth (not allowed for apps)"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: hub@docker\n",
+                 "router web: service hub@docker is not on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: s3cret@docker\n",
+                 "router web: its service isn't on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.service: hub@s3cret\n",
+                 "router web: its service isn't on Kubernetes"),
+                ("      traefik.http.routers.web.rule: Host(`a.example.org`)\n      traefik.http.routers.web.middlewares: Portcullis-Auth@docker\n"
+                 "      traefik.http.services.web.loadbalancer.server.port: \"80\"\n",
+                 "a middleware is not on Kubernetes (not the instance's own, not a core name apps may use)"),
+        ):
+            with self.subTest(why=why or "ok"):
+                compose = ("services:\n  web:\n    image: docker.io/library/nginx:1.29\n    user: \"101:101\"\n    labels:\n"
+                           "      traefik.enable: \"true\"\n" + labels)
                 t = v.Template("test")
-                # As the Hub's harness: a vector port's port is both its
-                # default (the host port) and its container port.
-                t.manifest = {"ports": [{"key": p["key"], "default": p["port"], "container": p["port"], "protocol": p["protocol"]}
-                                        for p in vec.get("ports", [])]}
-                t.compose = v.yaml.safe_load(vec["compose"])
+                t.manifest = {}
+                t.compose = v.yaml.safe_load(compose)
+                status, reasons = v.runtime_compat(t, "kubernetes")
+                self.assertEqual("; ".join(reasons), why)
 
-                status, reasons = v.rootless_compat(t, env=vec.get("env", {}), port_start=vec["port_start"])
-
-                want_status = vec["want"]["status"]
-                want_reasons = vec["want"]["reasons"]
-
-                self.assertEqual(status, want_status, f"Status mismatch for {vec['name']}")
-                self.assertEqual(reasons, want_reasons, f"Reasons mismatch for {vec['name']}")
+    def test_kube_rules_vectors_cannot_express(self) -> None:
+        """The Hub's TestKubeCompatBindRootsFromEnv and friends."""
+        def kube(compose: str, env: Optional[Dict[str, str]] = None, manifest: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
+            t = v.Template("test")
+            t.manifest = manifest or {}
+            t.compose = v.yaml.safe_load(compose)
+            return v.runtime_compat(t, "kubernetes", env=env, labels=False)
+        bind = "services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes: [\"/data/media:/media\"]\n"
+        out = "service a binds a host path outside the shared-folder roots (not on Kubernetes)"
+        self.assertEqual(kube(bind), ("refused", [out]))
+        self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/data:/srv"}), ("ok", []))
+        self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/srv"}), ("refused", [out]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000\"\n    volumes: [\"./templates/a/x:/x:ro\", \"data:/d\", \"/anon\"]\n"),
+                         ("ok", []))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes:\n      - {type: bind, source: /etc, target: /x}\n"),
+                         ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes: [\"/srv/../etc:/x\"]\n"),
+                         ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
+        # A host bind needs a numeric uid:gid with gid other than 0, also for
+        # every service in its pod (network_mode service:); no group_add 0.
+        hb = "services:\n  a:\n    image: x\n{}    volumes: [\"/srv/m:/m\"]\n"
+        self.assertEqual(kube(hb.format("")), ("refused", ["service a binds a host path but has no numeric user"]))
+        grp = ('service a binds a host path but its group isn\'t set or is 0: set user "<uid>:<gid>" with a gid other than 0')
+        for u in ('    user: "1000"\n', '    user: "1000:0"\n', '    user: "1000:1000"\n    group_add: ["0"]\n'):
+            self.assertEqual(kube(hb.format(u)), ("refused", [grp]))
+        self.assertEqual(kube(hb.format('    user: "1000:1000"\n')), ("ok", []))
+        self.assertEqual(kube(hb.format('    user: "1000:1000"\n') + "  b:\n    image: y\n    user: \"1000\"\n    network_mode: service:a\n"),
+                         ("refused", ['service b shares a pod with a host path but its group isn\'t set or is 0: set user "<uid>:<gid>" with a gid other than 0']))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"./templates/a/x:/x:ro\"]\n"), ("ok", []))
+        # The VPN port is a core port, from the env.
+        m = {"ports": [{"key": "P", "default": 51820, "container": 51820, "protocol": "udp"}]}
+        self.assertEqual(kube("services:\n  a:\n    image: x\n", None, m), ("refused", ["service a publishes port 51820, a core port"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n", {"PORTCULLIS_VPN_PORT": "51821"}, m), ("ok", []))
+        self.assertEqual(v.kube_core_ports({}), [80, 443, 51820, 8000, 8081, 8443, 8444])
+        # A user value is named only when it looks like a name.
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"${U:-1000}:staff\"\n"),
+                         ("refused", ["service a runs as a non-numeric user: Kubernetes needs a numeric uid"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"a b\"\n"),
+                         ("refused", ["service a runs as a non-numeric user: Kubernetes needs a numeric uid"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    scale: 1\n"), ("ok", []))
+        # A compose port on a specific host address (the vector covers the
+        # forms); IPv6 bracketed, and a non-address host shown generically.
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"[fd00::5]:9080:80\", \"[::1]:9081:80\", \"[::]:9082:80\"]\n"),
+                         ("refused", ["service a publishes 9080 on a specific address (not on Kubernetes)"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    ports: [\"${H:-lan}:9080:80\"]\n"),
+                         ("refused", ["service a publishes 9080 on a specific address (not on Kubernetes)"]))
+        # uid 0 only as a one-shot job (the Hub's oneShotRoot): a job is a
+        # manifest job, a service_completed_successfully target or restart
+        # "no"; its shape: restart no / on-failure, no ports, no shared
+        # network namespace, no routers, cap_drop [ALL], cap_add within
+        # CHOWN DAC_OVERRIDE FOWNER.
+        helper = "services:\n  init:\n    image: x\n    user: \"0:1000\"\n    restart: \"no\"\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]\n"
+        root = ("refused", ["service init runs as root (user 0)"])
+        shape = ("refused", ["service init runs as root (user 0): only a one-shot job (restart no or on-failure) with cap_drop [ALL], "
+                             "cap_add within CHOWN, DAC_OVERRIDE, FOWNER, no ports and no routes may"])
+        self.assertEqual(kube(helper), ("ok", []))
+        group0 = ("refused", ['service init runs as root with group 0: set user "0:<gid>" with a gid other than 0'])
+        for u in ('"0"', '"0:0"', '"00:000"'):
+            self.assertEqual(kube(helper.replace('"0:1000"', u)), group0)
+        self.assertEqual(kube(helper.replace("cap_drop", "group_add: [\"0\"]\n    cap_drop")), group0)
+        # A root job mounts only volumes a non-root service owns: no binds.
+        vol = helper + "    volumes: [\"data:/d\"]\n"
+        self.assertEqual(kube(vol), ("refused", ["service init runs as root and mounts a volume no non-root service mounts (its owner on Kubernetes)"]))
+        self.assertEqual(kube(vol + "  app:\n    image: y\n    user: \"1000\"\n    volumes: [\"data:/data\"]\n"), ("ok", []))
+        self.assertEqual(kube(vol + "  app:\n    image: y\n    user: \"0:5\"\n    volumes: [\"data:/data\"]\n"),
+                         ("refused", ["service init runs as root and mounts a volume no non-root service mounts (its owner on Kubernetes)",
+                                      "service app runs as root (user 0)"]))
+        self.assertEqual(kube(helper + "    volumes: [\"./templates/x/f.sh:/f.sh:ro\"]\n"), ("ok", []))
+        self.assertEqual(kube("services:\n  pods:\n    image: x\n"),
+                         ("refused", ["service pods: the name is reserved on Kubernetes (the instance's pod DNS)"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"d:/d\", \"portcullis-hub-secrets:/s\"]\n"),
+                         ("refused", ["service a mounts a volume but has no numeric user"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"portcullis-hub-secrets:/s\", \"./templates/a/x:/x\"]\n"), ("ok", []))
+        self.assertEqual(kube(helper + "    volumes: [\"/srv/x:/x:ro\"]\n"), ("refused", ["service init runs as root with a host bind"]))
+        dep = "  app:\n    image: y\n    depends_on:\n      init: {condition: service_completed_successfully}\n"
+        on_failure = helper.replace('"no"', "on-failure:3")
+        self.assertEqual(kube(on_failure), root)  # not a job
+        self.assertEqual(kube(on_failure + dep), ("ok", []))  # a completed_successfully target is
+        self.assertEqual(kube(helper.replace('    restart: "no"\n', ""), None, {"jobs": ["init"]}), ("ok", []))
+        self.assertEqual(kube(helper.replace('restart: "no"', "restart: unless-stopped")), root)
+        self.assertEqual(kube(helper.replace('restart: "no"', "restart: unless-stopped") + dep), shape)
+        for old, new in (("cap_drop: [ALL]", "cap_drop: [NET_RAW]"), ("    cap_drop: [ALL]\n", ""),
+                         ("FOWNER]", "FOWNER, SETUID]"), ("FOWNER]", "FOWNER]\n    ports: [\"9000:9000\"]"),
+                         ("FOWNER]", "FOWNER]\n    labels:\n      traefik.http.routers.x.rule: Host(`x`)"),
+                         ("FOWNER]", "FOWNER]\n    network_mode: service:app\n  app:\n    image: y")):
+            with self.subTest(change=new):
+                self.assertIn(old, helper)
+                self.assertEqual(kube(helper.replace(old, new)), shape)
+        self.assertEqual(kube(helper + "  app:\n    image: y\n    network_mode: service:init\n"), shape)
+        # Names, container_name, aliases (the Hub's kubeAliases).
+        self.assertEqual(kube("services:\n  a--b:\n    image: x\n"),
+                         ("refused", ['service a--b: its name isn\'t a DNS label without "--" (not on Kubernetes)']))
+        al = "services:\n  a:\n    image: x\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [{}]\n"
+        self.assertEqual(kube(al.format("a-internal")), ("ok", []))
+        self.assertEqual(kube(al.format("a-internal").replace("    expose: [\"80\"]\n", "")),
+                         ("refused", ["service a answers to alias a-internal but serves no declared port (expose it)"]))
+        self.assertEqual(kube(al.format("X_Y")), ("refused", ['service a answers to alias X_Y, not a DNS label without "--" (not on Kubernetes)']))
+        self.assertEqual(kube(al.format("a") ), ("refused", ["service a answers to alias a, also a compose service name"]))
+        self.assertEqual(kube(al.format("n") + "  b:\n    image: y\n    container_name: n\n    expose: [\"1\"]\n"),
+                         ("refused", ["alias n names two services (a, b)"]))
+        many = "services:\n  a:\n    image: x\n    expose: [\"80\"]\n    networks:\n      default:\n        aliases: [" + \
+            ", ".join(f"x{i}" for i in range(17)) + "]\n"
+        self.assertEqual(kube(many), ("refused", ["more than 16 network aliases (not on Kubernetes)"]))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:0\"\n"), ("ok", []))
+        # Manifest ports' bind addresses are the Hub's override, not judged here.
+        self.assertEqual(kube("services:\n  a:\n    image: x\n", None,
+                              {"ports": [{"key": "P", "default": 1883, "container": 1883, "bind": "192.168.1.10"}]}), ("ok", []))
 
     def compat(self, compose: str, manifest: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Tuple[str, List[str]]:
         t = v.Template("test")
         t.manifest = manifest
         t.compose = v.yaml.safe_load(compose)
-        return v.rootless_compat(t, env=env, port_start=80)
+        return v.runtime_compat(t, "podman", env=env, port_start=80)
 
     def test_rules_vectors_cannot_express(self) -> None:
-        """Rules the shared vectors' format can't carry (the Hub's TestRootlessCompatRules)."""
+        """Rootless rules the shared vectors' format can't carry (the Hub's TestRootlessCompatRules)."""
         app = "services:\n  a:\n    image: x\n"
         below = ("host port {0}/tcp is below net.ipv4.ip_unprivileged_port_start (80): "
                  "lower it to {0} on the host to allow it (any local user can then bind ports from {0})")
@@ -4315,25 +4724,18 @@ class RootlessTests(unittest.TestCase):
                 with mock.patch.object(v, "ROOT", tmpdir):
                     t = v.Template("t")
                     t.manifest = {}
-                    status, reasons = v.rootless_compat(t)
+                    status, reasons = v.runtime_compat(t, "podman")
                 self.assertEqual(status, "refused")
                 self.assertEqual(len(reasons), 1)
                 self.assertTrue(reasons[0].startswith("compose.yml can't be read: "), reasons)
 
     def test_committed_classification(self) -> None:
-        """Test that validate.py --rootless output matches tests/rootless.txt."""
-        rootless_txt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rootless.txt")
-        if not os.path.exists(rootless_txt_path):
-            self.skipTest("tests/rootless.txt does not exist yet")
-
-        with open(rootless_txt_path, encoding="utf-8") as f:
-            expected = f.read().strip()
-
-        # Run validate.py --rootless
-        result = v.main(["--rootless"])
-        self.assertEqual(result, 0, "validate.py --rootless should exit 0")
-
-        # We can't easily capture stdout from main(), so we test it separately below
+        """validate.py --runtime equals tests/runtime.txt (both runtimes; the
+        Hub's TestRealTemplatesRuntimeClassification reads the same file)."""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime.txt"), encoding="utf-8") as f:
+            want = f.read()
+        self.assertEqual(v.runtime_classification(), want)
+        self.assertEqual({ln.split("\t")[1] for ln in want.splitlines()}, {"kubernetes", "podman"})
 
     def test_reserved_port_start(self) -> None:
         """Test that a template referencing PORTCULLIS_UNPRIVILEGED_PORT_START is refused (P15)."""
@@ -4403,7 +4805,7 @@ networks:
                 except:
                     continue
 
-                status, reasons = v.rootless_compat(t, env={}, port_start=80)
+                status, reasons = v.runtime_compat(t, "podman", env={}, port_start=80)
 
                 self.assertEqual(status, want_status, f"{app_id} should be {want_status}, got {status}")
                 if reason_substr:

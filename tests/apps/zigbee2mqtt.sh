@@ -363,7 +363,7 @@ docker run -d --name "$gt-up" --network "$gt" --network-alias gt-upstream --entr
   printf "%s\n" "server { listen 8080; location / { default_type text/plain; return 200 \"auth=[\$http_authorization] xfat=[\$http_x_forwarded_access_token] xarat=[\$http_x_auth_request_access_token] cookie=[\$http_cookie]\n\"; } }" > /etc/nginx/conf.d/default.conf
   exec nginx -g "daemon off;"' >/dev/null
 docker run -d --name "$gt-gate" --network "$gt" --ip 10.254.77.20 \
-  -e PORTCULLIS_TRAEFIK_IP=10.254.77.10 -e GATE_UPSTREAM=http://gt-upstream:8080 -e GATE_LISTEN=9000 \
+  -e PORTCULLIS_TRAEFIK_SOURCE=10.254.77.10/32 -e GATE_UPSTREAM=http://gt-upstream:8080 -e GATE_LISTEN=9000 \
   -v "$GATE_SH:/portcullis/gate.sh:ro" --entrypoint /bin/sh "$GATE_IMG" /portcullis/gate.sh >/dev/null
 gt_get() {  # <client ip> [wget args...]: the answer's status line(s) and body
   local ip="$1"; shift
@@ -405,7 +405,7 @@ gt_cleanup
 
 # The real gate, from a throwaway container on portcullis-proxy (any other
 # app's container), with forged forwarding headers: 403.
-TRAEFIK_IP=$(_core_env PORTCULLIS_TRAEFIK_IP); TRAEFIK_IP=${TRAEFIK_IP:-172.31.250.2}
+TRAEFIK_IP=${PORTCULLIS_TRAEFIK_SOURCE%/32}  # lib.sh: core's Traefik /32
 st=$(docker run --rm --network portcullis-proxy --entrypoint wget "$GATE_IMG" -S -q -O /dev/null -T 10 \
   --header "X-Forwarded-For: $TRAEFIK_IP" --header "X-Real-IP: $TRAEFIK_IP" "http://${GATE_IP}:8080/" 2>&1 \
   | grep -o 'HTTP/1.1 [0-9]*' | tail -1 || true)

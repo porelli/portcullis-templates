@@ -56,7 +56,7 @@ services:
       OVERWRITEHOST: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}
       # Only Traefik (static IP on portcullis-proxy, set by core) may supply
       # X-Forwarded-For.
-      TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_IP:-172.31.250.2}
+      TRUSTED_PROXIES: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
       # Read by setup.sh at every start (hostname, OIDC client, groups).
       PORTCULLIS_DOMAIN: ${PORTCULLIS_DOMAIN:-portcullis.local}
       PORTCULLIS_HOST_NEXTCLOUD: ${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}

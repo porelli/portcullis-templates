@@ -1,0 +1,102 @@
+actual-budget	kubernetes	refused	service actual-budget mounts a volume but has no numeric user
+actual-budget	podman	ok	
+adguard	kubernetes	refused	service adguard mounts a volume but has no numeric user
+adguard	podman	refused	host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53); host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)
+ai-chat	kubernetes	refused	service api sets extra_hosts (not on Kubernetes); service api mounts a volume but has no numeric user; service mongodb mounts a volume but has no numeric user; service meilisearch mounts a volume but has no numeric user
+ai-chat	podman	ok	
+cadcraft	kubernetes	refused	service cadcraft mounts a volume but has no numeric user
+cadcraft	podman	ok	
+cloudbeaver	kubernetes	refused	service cloudbeaver mounts a volume but has no numeric user; service cloudbeaver-config mounts a volume but has no numeric user
+cloudbeaver	podman	ok	
+craft-anything	kubernetes	refused	service craft-anything mounts a volume but has no numeric user
+craft-anything	podman	ok	
+deckcraft	kubernetes	refused	service deckcraft mounts a volume but has no numeric user
+deckcraft	podman	ok	
+designcraft	kubernetes	refused	service designcraft mounts a volume but has no numeric user
+designcraft	podman	ok	
+docs	kubernetes	ok	
+docs	podman	ok	
+dokuwiki	kubernetes	refused	service dokuwiki mounts a volume but has no numeric user
+dokuwiki	podman	ok	
+effectcraft	kubernetes	refused	service effectcraft mounts a volume but has no numeric user
+effectcraft	podman	ok	
+esphome	kubernetes	refused	service esphome mounts a volume but has no numeric user
+esphome	podman	degraded	service esphome has device slots: host devices can't be passed under rootless Podman
+figcraft	kubernetes	refused	service figcraft mounts a volume but has no numeric user
+figcraft	podman	ok	
+filmcraft	kubernetes	refused	service filmcraft mounts a volume but has no numeric user
+filmcraft	podman	ok	
+firefly-iii	kubernetes	refused	service firefly-iii mounts a volume but has no numeric user; service firefly-db mounts a volume but has no numeric user
+firefly-iii	podman	ok	
+firefox-sync	kubernetes	ok	
+firefox-sync	podman	ok	
+gitea	kubernetes	refused	service gitea mounts a volume but has no numeric user; service gitea-migrate mounts a volume but has no numeric user; service gitea-db mounts a volume but has no numeric user
+gitea	podman	ok	
+gitlab	kubernetes	refused	service gitlab mounts a volume but has no numeric user
+gitlab	podman	ok	
+grafana	kubernetes	refused	service dashboards mounts a volume but has no numeric user
+grafana	podman	ok	
+gridcraft	kubernetes	refused	service gridcraft mounts a volume but has no numeric user
+gridcraft	podman	ok	
+guacamole	kubernetes	refused	service guacamole-db mounts a volume but has no numeric user
+guacamole	podman	ok	
+headscale	kubernetes	refused	service headscale-init mounts a volume but has no numeric user; service headscale mounts a volume but has no numeric user; service headplane mounts a volume but has no numeric user; service gateway sets extra_hosts (not on Kubernetes); service gateway mounts a volume but has no numeric user; service vpn-glue mounts a volume but has no numeric user; router headplane names no service
+headscale	podman	ok	
+homeassistant	kubernetes	refused	service homeassistant mounts a volume but has no numeric user; service homeassistant-init mounts a volume but has no numeric user
+homeassistant	podman	ok	
+immich	kubernetes	refused	service immich-server mounts a volume but has no numeric user; service immich-init mounts a volume but has no numeric user; service immich-machine-learning mounts a volume but has no numeric user; service immich-db mounts a volume but has no numeric user
+immich	podman	ok	
+jellyfin	kubernetes	refused	service jellyfin mounts a volume but has no numeric user; service jellyfin-plugin mounts a volume but has no numeric user; service jellyfin-setup mounts a volume but has no numeric user
+jellyfin	podman	ok	
+kanboard	kubernetes	refused	service kanboard mounts a volume but has no numeric user
+kanboard	podman	ok	
+lightcraft	kubernetes	refused	service lightcraft mounts a volume but has no numeric user
+lightcraft	podman	ok	
+litellm	kubernetes	refused	service litellm-db mounts a volume but has no numeric user
+litellm	podman	ok	
+matrix	kubernetes	refused	service matrix-db mounts a volume but has no numeric user
+matrix	podman	ok	
+mattermost	kubernetes	refused	service mattermost mounts a volume but has no numeric user
+mattermost	podman	ok	
+mealie	kubernetes	ok	
+mealie	podman	ok	
+motioneye	kubernetes	refused	service motioneye mounts a volume but has no numeric user; service motioneye-init mounts a volume but has no numeric user
+motioneye	podman	degraded	service motioneye has device slots: host devices can't be passed under rootless Podman
+netbird	kubernetes	refused	service coturn uses network_mode: host (not on Kubernetes); service coturn mounts a volume but has no numeric user; service netbird-management mounts a volume but has no numeric user; service netbird-mgmt: loadbalancer.server.scheme is not on Kubernetes
+netbird	podman	degraded	host networking: published ports must stay at or above 80; UDP clients on port 3478 appear with a rewritten source address; UDP clients on port 49152 appear with a rewritten source address
+nextcloud	kubernetes	refused	service nextcloud mounts a volume but has no numeric user; service nextcloud-cron runs as a non-numeric user: Kubernetes needs a numeric uid
+nextcloud	podman	ok	
+oxicloud	kubernetes	refused	service oxicloud mounts a volume but has no numeric user
+oxicloud	podman	ok	
+paperless	kubernetes	ok	
+paperless	podman	ok	
+pdfcraft	kubernetes	refused	service pdfcraft mounts a volume but has no numeric user
+pdfcraft	podman	ok	
+photocraft	kubernetes	refused	service photocraft mounts a volume but has no numeric user
+photocraft	podman	ok	
+pihole	kubernetes	refused	service pihole mounts a volume but has no numeric user
+pihole	podman	refused	host port 53/tcp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53); host port 53/udp is below net.ipv4.ip_unprivileged_port_start (80): lower it to 53 on the host to allow it (any local user can then bind ports from 53)
+plex	kubernetes	refused	service plex mounts a volume but has no numeric user
+plex	podman	ok	
+samba	kubernetes	refused	service samba mounts a volume but has no numeric user
+samba	podman	ok	
+scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline; service scrutiny binds a host path but has no numeric user; service scrutiny binds a host path outside the shared-folder roots (not on Kubernetes); service scrutiny mounts a volume but has no numeric user
+scrutiny	podman	refused	service scrutiny needs SYS_RAWIO (raw device access needs host root)
+soundcraft	kubernetes	refused	service soundcraft mounts a volume but has no numeric user
+soundcraft	podman	ok	
+texturecraft	kubernetes	refused	service texturecraft mounts a volume but has no numeric user
+texturecraft	podman	ok	
+timemachine	kubernetes	refused	service timemachine mounts a volume but has no numeric user
+timemachine	podman	ok	
+vaultwarden	kubernetes	refused	service vaultwarden mounts a volume but has no numeric user
+vaultwarden	podman	ok	
+vectorcraft	kubernetes	refused	service vectorcraft mounts a volume but has no numeric user
+vectorcraft	podman	ok	
+vikunja	kubernetes	ok	
+vikunja	podman	ok	
+wiki	kubernetes	refused	service wiki-setup mounts a volume but has no numeric user; service wiki-db mounts a volume but has no numeric user
+wiki	podman	ok	
+wordcraft	kubernetes	refused	service wordcraft mounts a volume but has no numeric user
+wordcraft	podman	ok	
+zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds a host path but has no numeric user; service zigbee2mqtt binds a host path outside the shared-folder roots (not on Kubernetes); service zigbee2mqtt mounts a volume but has no numeric user; service mosquitto mounts a volume but has no numeric user; service mosquitto-init mounts a volume but has no numeric user
+zigbee2mqtt	podman	degraded	service zigbee2mqtt has device slots: host devices can't be passed under rootless Podman

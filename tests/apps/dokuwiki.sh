@@ -35,7 +35,7 @@ if command -v php >/dev/null 2>&1; then
     env PORTCULLIS_DW_ROOT="$T/dw" PORTCULLIS_DW_APP="$T/app" PORTCULLIS_DW_PLUGIN_SRC="$1" \
       PORTCULLIS_DOMAIN=example.org PORTCULLIS_HOST_DOKUWIKI=wiki.example.org PORTCULLIS_OIDC_CLIENT_ID=dokuwiki \
       PORTCULLIS_ACCESS_GROUP=users_dokuwiki PORTCULLIS_ADMIN_GROUP=admin_dokuwiki \
-      PORTCULLIS_TRAEFIK_IP=172.31.250.2 DOKUWIKI_OIDC_SECRET=s3cr3t bash "$INIT" >/dev/null 2>&1
+      PORTCULLIS_TRAEFIK_SOURCE=172.31.250.2/32 DOKUWIKI_OIDC_SECRET=s3cr3t bash "$INIT" >/dev/null 2>&1
   }
   # 1. The plugins can't be installed: the wiki must stay locked down.
   if run_init "$T/missing"; then

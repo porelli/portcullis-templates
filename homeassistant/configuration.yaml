@@ -16,7 +16,7 @@ homeassistant:
 # No http: section: Home Assistant 2026.10 keeps the HTTP server config in
 # .storage/http (YAML is migrated once as an unconfirmed trial that reverts
 # after 5 minutes). homeassistant-init writes it before every start:
-# X-Forwarded-For trusted from Traefik's address only (HA_TRUSTED_PROXY).
+# X-Forwarded-For trusted from Traefik's range only (HA_TRUSTED_PROXY, a CIDR).
 
 default_config:
 

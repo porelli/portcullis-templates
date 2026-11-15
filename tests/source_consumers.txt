@@ -1,0 +1,92 @@
+# K9 survey (Kubernetes plan Task 9): every file that referenced
+# PORTCULLIS_TRAEFIK_IP or PORTCULLIS_MCP_GATE_IP at templates 37350f4, the
+# setting it feeds and whether that setting takes a CIDR
+# (PORTCULLIS_TRAEFIK_SOURCE: <ip>/32 on Docker/Podman, the pod CIDR on
+# Kubernetes). "single IP -> gate" names the gate that now matches the range.
+# PORTCULLIS_MCP_GATE_IP appeared in CLAUDE.md, CONTRIBUTING.md and the
+# validator and its tests only (no template).
+# <file>\t<setting>\t<verdict>
+.github/pull_request_template.md	checklist text	docs only
+.github/workflows/test-apps.yml	core's own compose (Traefik's ipv4_address) and .env check	not a template reference: core setting PORTCULLIS_TRAEFIK_IP stays core's; unchanged
+CLAUDE.md	docs	docs only
+CONTRIBUTING.md	docs	docs only
+actual-budget/compose.yml	ACTUAL_TRUSTED_PROXIES	CIDR ok (Actual server config trustedProxies: CIDR list, actualbudget.org/docs/config)
+ai-chat/compose.yml	extra_hosts auth./mcp.<domain> (a destination, not a trust source)	not a consumer: now host-gateway (as core forward-auth); refused on Kubernetes (extra_hosts, contract §3.4)
+cadcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+cadcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+cloudbeaver/compose.yml	cloudbeaver-gate nginx: 403 for X-Forwarded-User/-Email from other peers	single IP (if $remote_addr != ip) -> gate: cloudbeaver-gate matches nginx geo $portcullis_from_traefik { CIDR 1; } (ngx_http_geo_module: CIDR)
+cloudbeaver/manifest.yaml	notes text	docs only
+craft-anything/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+craft-anything/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+deckcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+deckcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+designcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+designcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+dokuwiki/compose.yml	PORTCULLIS_TRAEFIK_SOURCE env for init.sh	CIDR ok (feeds dokuwiki/init.sh)
+dokuwiki/init.sh	$conf[trustedproxies] (X-Forwarded-For)	CIDR ok (DokuWiki inc/Ip.php proxyIsTrusted -> ipMatches: IP or CIDR range); cidr_ok checked, fails closed after the lockdown
+effectcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+effectcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+esphome/compose.yml	the gate service env PORTCULLIS_TRAEFIK_SOURCE	CIDR ok (feeds gate.sh)
+esphome/gate.sh	nginx allow ${src}; deny all;	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+figcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+figcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+filmcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+filmcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+firefly-iii/compose.yml	nginx 403 for X-Forwarded-User/-Email from other peers; Laravel TRUSTED_PROXIES	nginx: single IP (if $realip_remote_addr != ip) -> gate: geo $realip_remote_addr $portcullis_from_traefik in conf.d (http context, ngx_http_geo_module: CIDR); TRUSTED_PROXIES: CIDR ok (Symfony Request::setTrustedProxies / IpUtils::checkIp)
+firefly-iii/manifest.yaml	notes text	docs only
+gitea/compose.yml	GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES	CIDR ok (Gitea config cheat sheet: list of IP addresses and networks)
+grafana/compose.yml	GF_AUTH_PROXY_WHITELIST (via portcullis/trust.sh)	CIDR ok (Grafana auth proxy whitelist: IPs or CIDR)
+grafana/manifest.yaml	notes text	docs only
+grafana/portcullis/trust.sh	GF_AUTH_PROXY_WHITELIST check + trust network selection	CIDR ok: cidr_ok checked; portcullis-proxy = the interface whose prefix overlaps the range
+gridcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+gridcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+guacamole/compose.yml	Tomcat RewriteValve: 403 for X-Forwarded-User from other peers	single IP (REMOTE_ADDR regex of one address) -> gate: RewriteCond %{REMOTE_ADDR} !^<cidr_re>$ (the exact regex of the CIDR, tested against ipaddress)
+guacamole/manifest.yaml	notes text	docs only
+homeassistant/compose.yml	HA_TRUSTED_PROXY -> init.py http trusted_proxies	CIDR ok (HA http integration trusted_proxies: IP networks); init.py accepts exactly an IPv4Network(strict=True) a.b.c.d/n
+kanboard/compose.yml	TRUSTED_PROXY_NETWORKS	CIDR ok (Kanboard config: list of networks, CIDR; was IP/32)
+kanboard/manifest.yaml	notes text	docs only
+lightcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+lightcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+mattermost/compose.yml	the gate service env PORTCULLIS_TRAEFIK_SOURCE	CIDR ok (feeds gate.sh)
+mattermost/gate.sh	nginx allow ${src}; deny all;	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+mealie/compose.yml	HOST_IP -> uvicorn forwarded_allow_ips	CIDR ok (uvicorn 0.54 ProxyHeadersMiddleware _TrustedHosts: ip_network; mealie main._with_mapped_proxy_ips maps networks)
+motioneye/compose.yml	the gate service env PORTCULLIS_TRAEFIK_SOURCE	CIDR ok (feeds gate.sh)
+motioneye/gate.sh	nginx allow ${src}; deny all;	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+nextcloud/compose.yml	TRUSTED_PROXIES -> config trusted_proxies	CIDR ok (Nextcloud admin manual reverse proxy: trusted_proxies takes CIDR)
+oxicloud/compose.yml	OXICLOUD_TRUST_PROXY_CIDR	CIDR ok (a CIDR by name; was IP/32)
+paperless/compose.yml	PAPERLESS_TRUSTED_PROXIES (python-ipware 3: client IP for logs; allauth proxy count)	single IP / prefix (ipware 3.0.0 legacy engine: str.startswith, no CIDR) -> gate: the entrypoint writes the one exact prefix (/32 the address, /24 /16 /8 the octets and a dot) and refuses any other range
+pdfcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+pdfcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+photocraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+photocraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+pihole/compose.yml	FTLCONF_webserver_acl (+addr)	CIDR ok (Pi-hole FTL webserver.acl: CivetWeb ACL, +a.b.c.d/n subnets)
+soundcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+soundcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+tests/apps/actual-budget.sh	test assertions	tests
+tests/apps/ai-chat.sh	test assertions	tests
+tests/apps/cloudbeaver.sh	test assertions	tests
+tests/apps/dokuwiki.sh	test assertions	tests
+tests/apps/esphome.sh	test assertions	tests
+tests/apps/firefly-iii.sh	test assertions	tests
+tests/apps/grafana.sh	test assertions	tests
+tests/apps/guacamole.sh	test assertions	tests
+tests/apps/homeassistant.sh	test assertions	tests
+tests/apps/mattermost.sh	test assertions	tests
+tests/apps/mealie.sh	test assertions	tests
+tests/apps/motioneye.sh	test assertions	tests
+tests/apps/oxicloud.sh	test assertions	tests
+tests/apps/pihole.sh	test assertions	tests
+tests/apps/vikunja.sh	test assertions	tests
+tests/apps/zigbee2mqtt.sh	test assertions	tests
+tests/lib.sh	assert_traefik_only_trust; exports PORTCULLIS_TRAEFIK_SOURCE / _MCP_GATE_SOURCE	test harness: core.env emulation (core value, else <core IP>/32)
+tests/test_validate.py	validator tests	tests
+tests/validate.py	CORE_VARS, gate / header-auth / pihole rules	validator: _SOURCE default form only, _IP refused anywhere
+texturecraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+texturecraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+vectorcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+vectorcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+vikunja/compose.yml	VIKUNJA_SERVICE_TRUSTEDPROXIES	CIDR ok (Vikunja config service.trustedproxies: IPs or CIDR; was IP/32)
+wordcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked
+wordcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
+zigbee2mqtt/compose.yml	the gate service env PORTCULLIS_TRAEFIK_SOURCE	CIDR ok (feeds gate.sh)
+zigbee2mqtt/gate.sh	nginx allow ${src}; deny all;	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked

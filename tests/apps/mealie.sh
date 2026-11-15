@@ -35,7 +35,7 @@ assert_compose_setting "$COMPOSE" ALLOW_SIGNUP false
 assert_compose_setting "$COMPOSE" ALLOW_PASSWORD_LOGIN false
 assert_compose_setting "$COMPOSE" LDAP_AUTH_ENABLED false
 assert_compose_setting "$COMPOSE" REVERSE_PROXY_AUTH_ENABLED false
-assert_compose_setting "$COMPOSE" HOST_IP '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}'
+assert_compose_setting "$COMPOSE" HOST_IP '\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\}'
 if grep -q '^  group_access: true' "$MANIFEST" && grep -q '^  group_admin: true' "$MANIFEST"; then
   pass "manifest: group_access + group_admin"
 else

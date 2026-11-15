@@ -31,7 +31,7 @@ assert_compose_setting "$COMPOSE" OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH false
 assert_compose_setting "$COMPOSE" OXICLOUD_DISABLE_REGISTRATION true
 assert_compose_setting "$COMPOSE" OXICLOUD_NEXTCLOUD_ENABLED false
 assert_compose_setting "$COMPOSE" OXICLOUD_OIDC_ADMIN_GROUPS '\$\{PORTCULLIS_ADMIN_GROUP:-admin_oxicloud\}'
-assert_compose_setting "$COMPOSE" OXICLOUD_TRUST_PROXY_CIDR '\$\{PORTCULLIS_TRAEFIK_IP:-172\.31\.250\.2\}/32'
+assert_compose_setting "$COMPOSE" OXICLOUD_TRUST_PROXY_CIDR '\$\{PORTCULLIS_TRAEFIK_SOURCE:-172\.31\.250\.2/32\}'
 if grep -q '^  group_access: true' "$MANIFEST" && grep -q '^  keycloak_access_role: true' "$MANIFEST"; then
   pass "manifest: group_access + keycloak_access_role"
 else

@@ -37,6 +37,15 @@ auth:
     upstream default 3 weeks), so a removed admin keeps superuser rights
     for at most that long. API tokens keep working: deactivate the user in
     Paperless to cut them off at once.
+    PAPERLESS_TRUSTED_PROXIES never decides who signs in (no REMOTE_USER or
+    header auth): it feeds only the client address of a failed-login log
+    line (python-ipware 3, which matches proxies as string prefixes against
+    the X-Forwarded-For entries themselves) and allauth's proxy count (1).
+    The entrypoint passes the narrowest prefix of PORTCULLIS_TRAEFIK_SOURCE
+    (its address for a /32, which also prefixes .20-.29 and .200-.255; the
+    exact octets for a /8, /16 or /24) and refuses any other range, so a
+    container that reaches Paperless directly can at most falsify that log
+    line or its own rate-limit address, never an identity.
     No password logins at all: DISABLE_REGULAR_LOGIN only hides the form,
     while HTTP Basic auth, POST /api/token/ and a password a user sets on
     their profile would still work, so the one-shot paperless-init job
