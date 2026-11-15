@@ -8209,6 +8209,67 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
 
 # ── Placement (server placement: primary vs worker) ────────────────
 
+def _core_volume_name(n: str) -> str:
+    """CoreVolumeName: the core volume name n stands for ("" = none): a core
+    volume key (portcullis_<key> too), link_doc, or the Hub's secrets volume key.
+    Matches Hub's placement.go CoreVolumeName."""
+    f = fold_key(n.strip())
+    # Hub's secrets volume (NamesSecretsVolumeKey)
+    if f == "hub_secrets" or f == "portcullis-hub-secrets":
+        return SECRETS_VOLUME_KEY
+    # Direct core volume key
+    if f in CORE_VOLUMES or f == "link_doc":
+        return f
+    # portcullis_<key> prefix
+    if f.startswith("portcullis_"):
+        key = f[len("portcullis_"):]
+        if key in CORE_VOLUMES:
+            return key
+    return ""
+
+
+def _is_path_source(s: str) -> bool:
+    """isPathSource: compose reads a short-syntax source as a host path when
+    it starts with ".", "/" or "~" (else it is a volume name).
+    Matches Hub's placement.go isPathSource."""
+    return s.startswith(("/", ".", "~"))
+
+
+def _bind_outside(src: str, roots: List[str]) -> Tuple[str, bool]:
+    """bindOutside: whether bind source src (resolved) lies outside every root
+    (absolute) or outside ./templates/ (relative; ~ always), and the path as
+    a reason shows it. Returns (shown_path, is_outside).
+    Matches Hub's placement.go bindOutside."""
+    if not src:
+        return "", False  # compose itself refuses an empty source
+
+    if src.startswith("~"):
+        return src, True
+
+    if src.startswith("/"):
+        # Absolute path: clean and check against roots
+        p = go_clean(src)
+        for r in roots:
+            if r and _path_under_root(p, go_clean(r)):
+                return p, False
+        return p, True
+
+    # Relative path: clean first
+    p = go_clean(src)
+    if p.startswith("templates/") or p == "certs/ca-bundle.crt":
+        return "./" + p, False
+    return "./" + p, True
+
+
+def _path_under_root(p: str, root: str) -> bool:
+    """pathUnderRoot: clean absolute p is root or inside it (root "/" never
+    counts: it would admit the whole host).
+    Matches Hub's placement.go pathUnderRoot."""
+    if root == "/" or not root.startswith("/"):
+        return False
+    return p == root or p.startswith(root + "/")
+
+
 def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str]] = None,
                       bind_roots: Optional[List[str]] = None) -> Tuple[bool, List[str]]:
     """Placement detection (Hub's Placement, contracts §3): returns
@@ -8220,14 +8281,14 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     try:
         c = yaml.load(compose.decode("utf-8"), Loader=_UniqueKeyLoader)  # noqa: S506
     except (yaml.YAMLError, UnicodeDecodeError):
-        return False, []
+        return True, ["compose.yml can't be read"]
 
     if not isinstance(c, dict):
-        return False, []
+        return True, ["compose.yml can't be read"]
 
     services = c.get("services")
     if not isinstance(services, dict):
-        return False, []
+        return True, ["compose.yml can't be read"]
 
     env = env or {}
     bind_roots = bind_roots or []
@@ -8247,20 +8308,37 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
 
     volumes = c.get("volumes")
 
-    # Check for core volume mounts (first bucket)
+    # Build core_of map: volume key → core volume name (checking key, name, external.name)
+    # Matches Hub's Placement lines 73-90
+    core_of = {}
     if isinstance(volumes, dict):
         for vol_key in volumes:
-            key_clean = fold_key(str(vol_key).strip())
-            # Special case: hub_secrets reported as portcullis-hub-secrets
-            if key_clean == "hub_secrets":
-                if "mounts the core volume portcullis-hub-secrets" not in core_volume_reasons:
-                    core_volume_reasons.append("mounts the core volume portcullis-hub-secrets")
-            elif key_clean in CORE_VOLUMES or key_clean == "link_doc":
-                reason = f"mounts the core volume {vol_key}"
-                if reason not in core_volume_reasons:
-                    core_volume_reasons.append(reason)
+            vol_key_str = str(vol_key).strip()
+            vol_def = volumes[vol_key]
 
-    # Check service volumes for core volumes
+            # Check volume key itself
+            c_name = _core_volume_name(vol_key_str)
+            if c_name:
+                core_of[vol_key_str] = c_name
+
+            # Check name: and external.name: fields
+            if isinstance(vol_def, dict):
+                # Check name: field
+                if "name" in vol_def:
+                    name_val = _rootless_resolve(str(vol_def["name"]), env)
+                    c_name = _core_volume_name(name_val)
+                    if c_name:
+                        core_of[vol_key_str] = c_name
+
+                # Check external.name: field
+                external = vol_def.get("external")
+                if isinstance(external, dict) and "name" in external:
+                    ext_name = _rootless_resolve(str(external["name"]), env)
+                    c_name = _core_volume_name(ext_name)
+                    if c_name:
+                        core_of[vol_key_str] = c_name
+
+    # Check service volumes for core volumes and binds
     for svc_name, svc in services.items():
         if not isinstance(svc, dict):
             continue
@@ -8268,46 +8346,64 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
         svc_vols = svc.get("volumes")
         if isinstance(svc_vols, list):
             for v in svc_vols:
+                src = ""
+                vol_type = ""
+
                 if isinstance(v, str):
-                    parts = v.split(":")
-                    if parts:
-                        vol_name = parts[0].strip()
-                        key_clean = fold_key(vol_name)
-                        # Special case: hub_secrets reported as portcullis-hub-secrets
-                        if key_clean == "hub_secrets":
-                            if "mounts the core volume portcullis-hub-secrets" not in core_volume_reasons:
-                                core_volume_reasons.append("mounts the core volume portcullis-hub-secrets")
-                        elif key_clean in CORE_VOLUMES or key_clean == "link_doc":
-                            reason = f"mounts the core volume {vol_name}"
-                            if reason not in core_volume_reasons:
-                                core_volume_reasons.append(reason)
+                    # Short syntax: split outside ${...}
+                    parts = _rootless_split(v)
+                    if len(parts) < 2:
+                        continue  # anonymous volume
+                    src = _rootless_resolve(parts[0], env)
+                    # Determine type: path source → bind, else volume
+                    if _is_path_source(src):
+                        vol_type = "bind"
+                    else:
+                        vol_type = "volume"
                 elif isinstance(v, dict):
-                    vtype = v.get("type", "volume")
-                    src = v.get("source", "")
-                    if isinstance(src, str) and vtype == "volume":
-                        key_clean = fold_key(src.strip())
-                        # Special case: hub_secrets reported as portcullis-hub-secrets
-                        if key_clean == "hub_secrets":
-                            if "mounts the core volume portcullis-hub-secrets" not in core_volume_reasons:
-                                core_volume_reasons.append("mounts the core volume portcullis-hub-secrets")
-                        elif key_clean in CORE_VOLUMES or key_clean == "link_doc":
-                            reason = f"mounts the core volume {src}"
+                    vol_type = v.get("type", "volume")
+                    src = _rootless_resolve(str(v.get("source", "")), env)
+
+                # Handle by type
+                if vol_type == "volume" and src:
+                    # Check if this volume key is a core volume
+                    if src in core_of:
+                        reason = f"mounts the core volume {core_of[src]}"
+                        if reason not in core_volume_reasons:
+                            core_volume_reasons.append(reason)
+                    else:
+                        # Check source directly as core volume name
+                        c_name = _core_volume_name(src)
+                        if c_name:
+                            reason = f"mounts the core volume {c_name}"
                             if reason not in core_volume_reasons:
                                 core_volume_reasons.append(reason)
+                elif vol_type == "bind" and src:
+                    # Check if bind is outside roots
+                    shown, outside = _bind_outside(src, bind_roots)
+                    if outside:
+                        reason = f"binds {shown} outside the server's folder roots"
+                        if reason not in bind_reasons:
+                            bind_reasons.append(reason)
+
+    # Add declared-but-unmounted core volumes
+    for vol_key in sorted(core_of.keys()):
+        reason = f"mounts the core volume {core_of[vol_key]}"
+        if reason not in core_volume_reasons:
+            core_volume_reasons.append(reason)
 
     # Check for Traefik TCP/UDP routers (second bucket)
     for svc_name, svc in services.items():
         if not isinstance(svc, dict):
             continue
-        labels = svc.get("labels")
-        if isinstance(labels, dict):
-            for key, val in labels.items():
-                key_lower = fold_key(str(key))
-                parts = key_lower.split(".")
-                if len(parts) >= 4 and parts[0] == "traefik" and (parts[1] == "tcp" or parts[1] == "udp"):
-                    reason = f"has a Traefik TCP/UDP router ({parts[3]})"
-                    if reason not in router_reasons:
-                        router_reasons.append(reason)
+        labels = labels_of(svc)  # Use labels_of to handle list-form labels
+        for key, val in labels.items():
+            key_lower = fold_key(str(key))
+            parts = key_lower.split(".")
+            if len(parts) >= 4 and parts[0] == "traefik" and (parts[1] == "tcp" or parts[1] == "udp"):
+                reason = f"has a Traefik TCP/UDP router ({parts[3]})"
+                if reason not in router_reasons:
+                    router_reasons.append(reason)
 
     # Check for per-person secret options (third bucket)
     settings = manifest.get("settings")
@@ -8364,13 +8460,12 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                     if reason not in device_reasons:
                         device_reasons.append(reason)
                 elif isinstance(d, str):
-                    # Short-syntax: split on : and take first part (source)
-                    parts = d.split(":")
+                    # Short-syntax: split outside ${...} and take first part (source)
+                    parts = _rootless_split(d)
                     if parts:
-                        src = parts[0].strip()
-                        src_resolved = _rootless_resolve(src, env)
+                        src = _rootless_resolve(parts[0], env).strip()
                         # /dev/null is allowed (travels with the template)
-                        if src_resolved and src_resolved != "/dev/null":
+                        if src and src != "/dev/null":
                             reason = f"passes a host device ({svc_name})"
                             if reason not in device_reasons:
                                 device_reasons.append(reason)
@@ -8405,69 +8500,22 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                         if reason not in capability_reasons:
                             capability_reasons.append(reason)
 
-    # Check for binds outside folder roots (tenth bucket) - Hub's bindOutside logic
-    for svc_name, svc in services.items():
-        if not isinstance(svc, dict):
-            continue
-        svc_vols = svc.get("volumes")
-        if isinstance(svc_vols, list):
-            for v in svc_vols:
-                src = ""
-                is_bind = False
-                if isinstance(v, str):
-                    parts = v.split(":")
-                    if len(parts) >= 2:
-                        src = parts[0].strip()
-                        is_bind = True
-                elif isinstance(v, dict):
-                    vtype = v.get("type", "volume")
-                    if vtype == "bind":
-                        src = str(v.get("source", "")).strip()
-                        is_bind = True
-
-                if is_bind and src:
-                    src_resolved = _rootless_resolve(src, env)
-                    # Hub's bindOutside logic
-                    outside = False
-                    shown = src_resolved
-                    if src_resolved.startswith("~"):
-                        outside = True
-                    elif src_resolved.startswith("/"):
-                        # Absolute path - check if under roots
-                        if not _kube_under_roots(src_resolved, bind_roots):
-                            outside = True
-                    else:
-                        # Relative path: allowed if starts with templates/ or is certs/ca-bundle.crt
-                        # Clean path first (remove ./ prefix)
-                        clean = src_resolved.lstrip("./")
-                        if clean.startswith("templates/") or clean == "certs/ca-bundle.crt":
-                            outside = False
-                        else:
-                            outside = True
-                            shown = "./" + clean
-
-                    if outside:
-                        reason = f"binds {shown} outside the server's folder roots"
-                        if reason not in bind_reasons:
-                            bind_reasons.append(reason)
-
     # Check for non-HTTP backend scheme (eleventh bucket) - after binds per Hub order
     for svc_name, svc in services.items():
         if not isinstance(svc, dict):
             continue
-        labels = svc.get("labels")
-        if isinstance(labels, dict):
-            for key, val in labels.items():
-                key_lower = fold_key(str(key))
-                parts = key_lower.split(".")
-                # traefik.http.services.<name>.loadbalancer.server.scheme
-                if len(parts) == 7 and parts[0] == "traefik" and parts[1] == "http" and parts[2] == "services" and parts[4] == "loadbalancer" and parts[5] == "server" and parts[6] == "scheme":
-                    scheme_val = _rootless_resolve(str(val), env).strip().lower()
-                    if scheme_val and scheme_val != "http":
-                        # Report the full label key, not the service name
-                        reason = f"uses a non-HTTP backend scheme ({key})"
-                        if reason not in scheme_reasons:
-                            scheme_reasons.append(reason)
+        labels = labels_of(svc)  # Use labels_of to handle list-form labels
+        for key, val in labels.items():
+            key_lower = fold_key(str(key))
+            parts = key_lower.split(".")
+            # traefik.http.services.<name>.loadbalancer.server.scheme
+            if len(parts) == 7 and parts[0] == "traefik" and parts[1] == "http" and parts[2] == "services" and parts[4] == "loadbalancer" and parts[5] == "server" and parts[6] == "scheme":
+                scheme_val = _rootless_resolve(str(val), env).strip().lower()
+                if scheme_val and scheme_val != "http":
+                    # Report the full label key, not the service name
+                    reason = f"uses a non-HTTP backend scheme ({key})"
+                    if reason not in scheme_reasons:
+                        scheme_reasons.append(reason)
 
     # Assemble reasons in §3 contract order
     reasons = []
