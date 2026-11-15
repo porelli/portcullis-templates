@@ -8331,25 +8331,29 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                     parts = v.split(":")
                     if len(parts) >= 2:
                         src = parts[0].strip()
+                        # Resolve environment variables
+                        src_resolved = _rootless_resolve(src, env)
                         # Check if it's a bind (starts with ./ or /)
-                        if src.startswith("./") or src.startswith("/"):
+                        if src_resolved.startswith("./") or src_resolved.startswith("/"):
                             # Check if outside roots
-                            if src.startswith("./"):
+                            if src_resolved.startswith("./"):
                                 # Relative bind - check if not under ./templates/<id>/
-                                if not src.startswith("./templates/"):
-                                    reasons.append(f"binds {src} outside the server's folder roots")
-                            elif not _kube_under_roots(src, bind_roots):
-                                reasons.append(f"binds {src} outside the server's folder roots")
+                                if not src_resolved.startswith("./templates/"):
+                                    reasons.append(f"binds {src_resolved} outside the server's folder roots")
+                            elif not _kube_under_roots(src_resolved, bind_roots):
+                                reasons.append(f"binds {src_resolved} outside the server's folder roots")
                 elif isinstance(v, dict):
                     vtype = v.get("type", "volume")
                     src = v.get("source", "")
                     if isinstance(src, str) and vtype == "bind":
                         src = src.strip()
-                        if src.startswith("./"):
-                            if not src.startswith("./templates/"):
-                                reasons.append(f"binds {src} outside the server's folder roots")
-                        elif src.startswith("/") and not _kube_under_roots(src, bind_roots):
-                            reasons.append(f"binds {src} outside the server's folder roots")
+                        # Resolve environment variables
+                        src_resolved = _rootless_resolve(src, env)
+                        if src_resolved.startswith("./"):
+                            if not src_resolved.startswith("./templates/"):
+                                reasons.append(f"binds {src_resolved} outside the server's folder roots")
+                        elif src_resolved.startswith("/") and not _kube_under_roots(src_resolved, bind_roots):
+                            reasons.append(f"binds {src_resolved} outside the server's folder roots")
 
     # Deduplicate reasons while preserving order
     seen = set()
