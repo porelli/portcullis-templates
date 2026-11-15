@@ -4586,17 +4586,28 @@ class RuntimeCompatTests(unittest.TestCase):
             t.manifest = manifest or {}
             t.compose = v.yaml.safe_load(compose)
             return v.runtime_compat(t, "kubernetes", env=env, labels=False)
-        bind = "services:\n  a:\n    image: x\n    volumes: [\"/data/media:/media\"]\n"
+        bind = "services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes: [\"/data/media:/media\"]\n"
         out = "service a binds a host path outside the shared-folder roots (not on Kubernetes)"
         self.assertEqual(kube(bind), ("refused", [out]))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/data:/srv"}), ("ok", []))
         self.assertEqual(kube(bind, {v.KUBE_ENV_BIND_ROOTS: "/srv"}), ("refused", [out]))
         self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000\"\n    volumes: [\"./templates/a/x:/x:ro\", \"data:/d\", \"/anon\"]\n"),
                          ("ok", []))
-        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes:\n      - {type: bind, source: /etc, target: /x}\n"),
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes:\n      - {type: bind, source: /etc, target: /x}\n"),
                          ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
-        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"/srv/../etc:/x\"]\n"),
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    user: \"1000:1000\"\n    volumes: [\"/srv/../etc:/x\"]\n"),
                          ("refused", ["service a binds a host path outside the shared-folder roots (not on Kubernetes)"]))
+        # A host bind needs a numeric uid:gid with gid other than 0, also for
+        # every service in its pod (network_mode service:); no group_add 0.
+        hb = "services:\n  a:\n    image: x\n{}    volumes: [\"/srv/m:/m\"]\n"
+        self.assertEqual(kube(hb.format("")), ("refused", ["service a binds a host path but has no numeric user"]))
+        grp = ('service a binds a host path but its group isn\'t set or is 0: set user "<uid>:<gid>" with a gid other than 0')
+        for u in ('    user: "1000"\n', '    user: "1000:0"\n', '    user: "1000:1000"\n    group_add: ["0"]\n'):
+            self.assertEqual(kube(hb.format(u)), ("refused", [grp]))
+        self.assertEqual(kube(hb.format('    user: "1000:1000"\n')), ("ok", []))
+        self.assertEqual(kube(hb.format('    user: "1000:1000"\n') + "  b:\n    image: y\n    user: \"1000\"\n    network_mode: service:a\n"),
+                         ("refused", ['service b shares a pod with a host path but its group isn\'t set or is 0: set user "<uid>:<gid>" with a gid other than 0']))
+        self.assertEqual(kube("services:\n  a:\n    image: x\n    volumes: [\"./templates/a/x:/x:ro\"]\n"), ("ok", []))
         # The VPN port is a core port, from the env.
         m = {"ports": [{"key": "P", "default": 51820, "container": 51820, "protocol": "udp"}]}
         self.assertEqual(kube("services:\n  a:\n    image: x\n", None, m), ("refused", ["service a publishes port 51820, a core port"]))

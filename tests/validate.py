@@ -7732,6 +7732,12 @@ def _kube_named_volumes(vols: Any, env: Dict[str, str]) -> List[str]:
     return out
 
 
+def _kube_host_bind_in(vols: Any, env: Dict[str, str]) -> bool:
+    """The Hub's hostBindIn: a bind of a host path (absolute or ~; not the
+    template's ./ files)."""
+    return any(src.startswith(("/", "~")) for src in _kube_bind_sources(vols, env))
+
+
 def _kube_root_bind(vols: Any, env: Dict[str, str]) -> str:
     """The Hub's rootBind: why a one-shot root job's binds are refused
     ("" = none): a root pod mounts only emptyDir, the instance's PVCs and
@@ -8061,6 +8067,11 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
     c = _Reasons()
     roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
     jobs = kube_job_services(t.manifest if isinstance(t.manifest, dict) else {}, services)
+    pod_of: Dict[str, str] = {}
+    for n, svc in services.items():
+        nm = _kube_scalar(svc or {}, "network_mode", env)
+        pod_of[str(n)] = nm[len("service:"):] if nm.startswith("service:") else str(n)
+    host_pods = {pod_of[str(n)] for n, svc in services.items() if _kube_host_bind_in((svc or {}).get("volumes"), env)}
     volume_owners: Set[str] = set()
     for svc in services.values():
         uid = _kube_scalar(svc or {}, "user", env).partition(":")[0]
@@ -8129,6 +8140,18 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
         for ns in ("pid", "ipc"):
             if _kube_scalar(svc, ns, env) == "host":
                 c.refuse(f"service {name} shares the host's {ns} namespace (not on Kubernetes)")
+        user = _kube_scalar(svc, "user", env)
+        hb = _kube_host_bind_in(svc.get("volumes"), env)
+        if user == "" and hb:
+            # A host path's pod runs non-root: the service must say who it is.
+            c.refuse(f"service {name} binds a host path but has no numeric user")
+        elif pod_of[str(name)] in host_pods and not _kube_root_group_ok(user, svc.get("group_add"), env):
+            if hb:
+                c.refuse(f'service {name} binds a host path but its group isn\'t set or is 0: set user "<uid>:<gid>" '
+                         "with a gid other than 0")
+            else:
+                c.refuse(f'service {name} shares a pod with a host path but its group isn\'t set or is 0: set user '
+                         '"<uid>:<gid>" with a gid other than 0')
         for src in _kube_bind_sources(svc.get("volumes"), env):
             if not src.startswith("/") or _kube_under_roots(src, roots):
                 continue

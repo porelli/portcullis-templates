@@ -80,7 +80,7 @@ plex	kubernetes	refused	service plex mounts a volume but has no numeric user
 plex	podman	ok	
 samba	kubernetes	refused	service samba mounts a volume but has no numeric user
 samba	podman	ok	
-scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline; service scrutiny binds a host path outside the shared-folder roots (not on Kubernetes); service scrutiny mounts a volume but has no numeric user
+scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline; service scrutiny binds a host path but has no numeric user; service scrutiny binds a host path outside the shared-folder roots (not on Kubernetes); service scrutiny mounts a volume but has no numeric user
 scrutiny	podman	refused	service scrutiny needs SYS_RAWIO (raw device access needs host root)
 soundcraft	kubernetes	refused	service soundcraft mounts a volume but has no numeric user
 soundcraft	podman	ok	
@@ -98,5 +98,5 @@ wiki	kubernetes	refused	service wiki-setup mounts a volume but has no numeric us
 wiki	podman	ok	
 wordcraft	kubernetes	refused	service wordcraft mounts a volume but has no numeric user
 wordcraft	podman	ok	
-zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds a host path outside the shared-folder roots (not on Kubernetes); service zigbee2mqtt mounts a volume but has no numeric user; service mosquitto mounts a volume but has no numeric user; service mosquitto-init mounts a volume but has no numeric user
+zigbee2mqtt	kubernetes	refused	service zigbee2mqtt binds a host path but has no numeric user; service zigbee2mqtt binds a host path outside the shared-folder roots (not on Kubernetes); service zigbee2mqtt mounts a volume but has no numeric user; service mosquitto mounts a volume but has no numeric user; service mosquitto-init mounts a volume but has no numeric user
 zigbee2mqtt	podman	degraded	service zigbee2mqtt has device slots: host devices can't be passed under rootless Podman
