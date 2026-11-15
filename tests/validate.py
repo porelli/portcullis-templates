@@ -8387,20 +8387,21 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                 reasons.append("mounts the core volume link_doc")
 
     # Check for portcullis-link in compose text (any reference, case-insensitive)
-    compose_text = compose.decode("utf-8", errors="ignore").lower()
-    if "portcullis-link" in compose_text:
+    compose_text_lower = compose.decode("utf-8", errors="ignore").lower()
+    if "portcullis-link" in compose_text_lower:
         # More specific check: in networks, volumes, or any other reference
         reasons.append("references portcullis-link (reserved for the link networks)")
 
     # Check for reserved core-only variables (§2 multi-server)
     # PORTCULLIS_LINK_*, PORTCULLIS_WORKER_*, PORTCULLIS_ROLE, AGENT_IMAGE, RELAY_IMAGE
+    compose_text = compose.decode("utf-8", errors="ignore")
     reserved_prefixes = ["PORTCULLIS_LINK_", "PORTCULLIS_WORKER_"]
     reserved_names = ["PORTCULLIS_ROLE", "AGENT_IMAGE", "RELAY_IMAGE"]
 
-    # Check in compose text for variable references
+    # Check in compose text for variable references (case-sensitive for var names)
     for prefix in reserved_prefixes:
-        # Check for ${PREFIX...} or $PREFIX
-        if f"${{{prefix}" in compose_text or f"${prefix}" in compose_text.replace("$$", ""):
+        # Check for ${PREFIX...} or $PREFIX (but not $$PREFIX which is literal)
+        if f"${{{prefix}" in compose_text or (f"${prefix}" in compose_text and f"$${prefix}" not in compose_text):
             reasons.append(f"references reserved core variable {prefix}* (not a template variable)")
             break  # Only report once for prefixes
 
