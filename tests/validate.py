@@ -8240,6 +8240,8 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     ai_chat_reasons = []
     vpn_reasons = []
     host_gateway_reasons = []
+    device_reasons = []
+    capability_reasons = []
     bind_reasons = []
     scheme_reasons = []
 
@@ -8349,7 +8351,61 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                     if reason not in host_gateway_reasons:
                         host_gateway_reasons.append(reason)
 
-    # Check for binds outside folder roots (eighth bucket) - Hub's bindOutside logic
+    # Check for host devices (eighth bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        devices = svc.get("devices")
+        if isinstance(devices, list):
+            for d in devices:
+                if isinstance(d, dict):
+                    # Long-syntax device: always primary-only (not a string, Hub logic)
+                    reason = f"passes a host device ({svc_name})"
+                    if reason not in device_reasons:
+                        device_reasons.append(reason)
+                elif isinstance(d, str):
+                    # Short-syntax: split on : and take first part (source)
+                    parts = d.split(":")
+                    if parts:
+                        src = parts[0].strip()
+                        src_resolved = _rootless_resolve(src, env)
+                        # /dev/null is allowed (travels with the template)
+                        if src_resolved and src_resolved != "/dev/null":
+                            reason = f"passes a host device ({svc_name})"
+                            if reason not in device_reasons:
+                                device_reasons.append(reason)
+
+    # Check for capabilities (ninth bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        cap_add = svc.get("cap_add")
+        if isinstance(cap_add, list):
+            for c in cap_add:
+                if isinstance(c, str):
+                    # Resolve, strip CAP_ prefix, uppercase, trim
+                    cap_str = _rootless_resolve(c, env).strip().upper()
+                    cap_str = cap_str.removeprefix("CAP_")
+                    # Skip if in baseline
+                    if cap_str in KUBE_BASELINE_CAPS:
+                        continue
+                    # Check if it's ALL
+                    if cap_str == "ALL":
+                        reason = f"adds the capability ALL ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+                    # Check if it's a known Linux capability
+                    elif cap_str in LINUX_CAPS:
+                        reason = f"adds the capability {cap_str} ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+                    # Unknown capability
+                    else:
+                        reason = f"adds an unknown capability ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+
+    # Check for binds outside folder roots (tenth bucket) - Hub's bindOutside logic
     for svc_name, svc in services.items():
         if not isinstance(svc, dict):
             continue
@@ -8395,7 +8451,7 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                         if reason not in bind_reasons:
                             bind_reasons.append(reason)
 
-    # Check for non-HTTP backend scheme (ninth bucket) - after binds per Hub order
+    # Check for non-HTTP backend scheme (eleventh bucket) - after binds per Hub order
     for svc_name, svc in services.items():
         if not isinstance(svc, dict):
             continue
@@ -8422,6 +8478,8 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     reasons.extend(ai_chat_reasons)
     reasons.extend(vpn_reasons)
     reasons.extend(host_gateway_reasons)
+    reasons.extend(device_reasons)
+    reasons.extend(capability_reasons)
     reasons.extend(bind_reasons)
     reasons.extend(scheme_reasons)
 
