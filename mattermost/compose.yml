@@ -157,7 +157,7 @@ services:
     user: "0:2000"
     read_only: true
     tmpfs:
-      - /tmp:mode=1777
+      - /tmp:mode=1777,size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]

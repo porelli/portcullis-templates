@@ -8,7 +8,7 @@ services:
     image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 512m
@@ -84,7 +84,7 @@ services:
     image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 512m
