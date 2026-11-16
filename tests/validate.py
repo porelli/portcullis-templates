@@ -103,6 +103,10 @@ VAR_MCP_GATE_IP = "PORTCULLIS_MCP_GATE_IP"
 AI_HINT = f"see {DOCS_URL}/integration-contracts/#32-ai-support-the-ai-block-new-ai-support and CONTRIBUTING.md, \"AI support\""
 VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and CONTRIBUTING.md, \"VPN providers\""
 VAR_VPN_PREFIX = "PORTCULLIS_VPN_"
+# Mail (§2, §19): the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and
+# PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables.
+VAR_MAIL_PREFIX = "PORTCULLIS_MAIL"
+MAIL_HINT = f"see {DOCS_URL}/integration-contracts/ (§2, Mail; §19)"
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
 INSTANCE_VAR_PREFIXES = ("PORTCULLIS_HOST_", "PORTCULLIS_OIDC_CLIENT_ID_")
@@ -2368,19 +2372,21 @@ HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
-                 "wg"}
+                 "wg", "mail", "mailctl", "mail-resolver", "mail-cert"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data", "vpn_doc"}
+                "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
+                "mailctl_data"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
-CORE_ALIASES = {"wg-metrics"}
+CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
-                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress"}
+                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
+                 "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
@@ -2410,12 +2416,14 @@ CORE_TRAEFIK_NAMES = {
                 # VPN-only access (core vpn1): the -vpn twins of the routers
                 # through group-gate and the /vpn-required routers.
                 "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
-                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn"},
+                "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn",
+                # Mail (core mail1): the well-known router.
+                "mail-wellknown"},
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
                     "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
-                 "keycloak", "lldap", "mcp-gate"},
+                 "keycloak", "lldap", "mcp-gate", "mailctl"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 # Exactly core's traefik/dynamic/middlewares.yml (Hub fileMiddlewares;
@@ -5086,6 +5094,15 @@ class _SpecCheck:
                     self.cerr(f"${{{name}}} is reserved: PORTCULLIS_VPN_* are core's and the Hub's (the Hub sets "
                               "PORTCULLIS_VPN_EDGE in the ingress container's environment: read it in a container shell as "
                               "$$PORTCULLIS_VPN_EDGE)", VPN_HINT)
+                    return
+        # Mail (§2, §19): PORTCULLIS_MAIL* (PORTCULLIS_MAIL_* and PORTCULLIS_MAILCTL_*
+        # included) are core.env-only, not template variables; the Hub doesn't copy them.
+        for sc in self.scalars:
+            for name, _ in go_var_refs(sc):
+                if name.startswith(VAR_MAIL_PREFIX):
+                    self.cerr(f"${{{name}}} is reserved: the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and "
+                              "PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables, the Hub "
+                              "doesn't copy them into instances", MAIL_HINT)
                     return
         # P15: PORTCULLIS_UNPRIVILEGED_PORT_START is core.env-only, never available to templates
         for sc in self.scalars:
