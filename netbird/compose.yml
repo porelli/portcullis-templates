@@ -47,7 +47,7 @@ services:
       COTURN_AUTH_SECRET: ${COTURN_AUTH_SECRET:?COTURN_AUTH_SECRET must be set}
 
   netbird-management:
-    image: netbirdio/management:0.82.0@sha256:07c8f979fcc980678cc64e584cf6b7b27204ceb4c871531b29e2dce39592e9ff
+    image: netbirdio/management:0.83.1@sha256:77c74f342e4d36251ad4b920c2f21a9f13e62c69d8ae51a2ec5060052cd485d8
     entrypoint: ["/bin/sh", "/etc/netbird/management-entrypoint.sh"]
     command: >
       --port 8011
@@ -94,7 +94,7 @@ services:
     restart: unless-stopped
 
   netbird-signal:
-    image: netbirdio/signal:0.82.0@sha256:0c0c38bbef7dcdfa1822b6d59844615db55dc7303b664e7aed498151edc0dbfb
+    image: netbirdio/signal:0.83.1@sha256:9ceb99a656b3b35b573afcce91507db8c39e0f9412a7634be0a620f4e74c5b58
     networks:
       - default
       - portcullis-proxy
@@ -110,7 +110,7 @@ services:
     restart: unless-stopped
 
   netbird-dashboard:
-    image: netbirdio/dashboard:v2.96.0@sha256:340b13c00b84349572a2acc5605e907cb09250a9e6461c757097eabdb8e02f2c
+    image: netbirdio/dashboard:v2.97.0@sha256:203b2dc90dc20d3fd45729caac7c922deb399586a68202e0a35be099720bac7d
     environment:
       NETBIRD_MGMT_API_ENDPOINT: https://${PORTCULLIS_HOST_NETBIRD_DASH:-netbird.portcullis.local}
       NETBIRD_MGMT_GRPC_API_ENDPOINT: https://${PORTCULLIS_HOST_NETBIRD_DASH:-netbird.portcullis.local}
