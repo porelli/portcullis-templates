@@ -154,7 +154,7 @@ services:
   # SERVER-121912), GitHub's runners included; 7.0 isn't affected and is
   # supported by LibreChat. Move to 8 by hand once that is behind us.
   mongodb:
-    image: mongo:7.0.45@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4
+    image: mongo:7.0.48@sha256:9896df581dfd0718b7abe112f4c37598d0986c54060e4ec1384997e6503c8c71
     environment:
       MONGO_INITDB_ROOT_USERNAME: librechat
       MONGO_INITDB_ROOT_PASSWORD: ${AI_CHAT_MONGO_PASSWORD:?AI_CHAT_MONGO_PASSWORD must be set}
