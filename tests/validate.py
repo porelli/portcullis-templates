@@ -2476,8 +2476,9 @@ CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefi
                 "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
                 "mailctl_data", "link_doc",
                 # The mail slot (mail provider, plan P9; the removed mail core
-                # names stay until core has merged).
-                "mail_slot"}
+                # names stay until core has merged) and the provider's slot
+                # volume (Ruling R-POD2: mounted whole into the provider).
+                "mail_slot", "mail_provider_slot"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
 CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics",

@@ -5619,6 +5619,7 @@ class MailTests(Case):
     def test_reserved_slot_names(self) -> None:
         """The mail slot's names (contract §3 "Mail slot names", plan P9)."""
         self.assertIn("mail_slot", v.CORE_VOLUMES)
+        self.assertIn("mail_provider_slot", v.CORE_VOLUMES)
         self.assertIn("portcullis-mail-api", v.CORE_NETWORKS)
         for a in ("mail-api", "mail-provider-metrics", "mail-provider-server-metrics"):
             self.assertIn(a, v.CORE_ALIASES)
