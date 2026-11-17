@@ -101,12 +101,17 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh ./*/bin/* ./*/vpn/*.sh
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh tests/mail/*.sh ./*/bin/* ./*/vpn/*.sh ./*/gate/*.sh
 
       # portcullis-sync (the file-sharing templates' converge script) with
       # stubbed Samba / account tools: no root, no Docker.
       - name: portcullis-sync unit tests
         run: bash tests/sync/test_portcullis_sync.sh
+
+      # stalwart's start gate (mail provider plan P3, the recovery-mode
+      # refusal, the store lock) with a stub server under dash.
+      - name: stalwart gate unit tests
+        run: GATE_SH=dash bash tests/mail/test_gate_entrypoint.sh
 
       # grafana's trust.sh (Traefik's CIDR + the AI trust network allowlist)
       # with a stubbed ip.

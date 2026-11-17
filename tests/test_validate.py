@@ -5350,6 +5350,16 @@ class MailTests(Case):
         self.assertError(errors, "mail: resolver mounts ./templates/mailsrv/out/unbound.conf:/etc/unbound/unbound.conf:ro: "
                                  "it resolves outside templates/mailsrv/ (a symlink)")
 
+    def test_mail_template_networks_and_volumes(self) -> None:
+        """A mail template keeps its own project networks and unnamed
+        volumes (check_compose); a named or external network is refused."""
+        vec = self.ok_vector()
+        errors, _ = self.run_raw(vec["manifest"], vec["compose"], self.VECTOR_ID)
+        self.assertFalse([e for e in errors if "networks." in e or "needs an explicit 'name:" in e], "\n".join(errors))
+        c = vec["compose"].replace("  egress: {}\n", "  egress: {name: some-net}\n", 1)
+        errors, _ = self.run_raw(vec["manifest"], c, self.VECTOR_ID)
+        self.assertError(errors, "networks.egress: a mail template's networks are its project's own (no name:, no external:)")
+
     def test_reserved_slot_names(self) -> None:
         """The mail slot's names (contract §3 "Mail slot names", plan P9)."""
         self.assertIn("mail_slot", v.CORE_VOLUMES)

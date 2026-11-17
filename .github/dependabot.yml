@@ -68,6 +68,7 @@ updates:
       - "/photocraft"
       - "/pihole"
       - "/samba"
+      - "/stalwart"
       - "/plex"
       - "/scrutiny"
       - "/soundcraft"

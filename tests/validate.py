@@ -949,9 +949,18 @@ def check_compose(t: Template, r: Report) -> None:
     if "portcullis" in top_nets:
         r.error(t.c_where, "network 'portcullis' is wrong; frontends join the external network 'portcullis-proxy'")
     trust_nets = trust_networks(t, services)
+    # A mail provider (contracts §3.5, §19.1) keeps its server on its own
+    # networks (an internal one, an egress one): project networks, never
+    # named or external (the Hub's override attaches it to core's).
+    mail_provider = isinstance(m.get("mail"), dict)
     for name, spec in top_nets.items():
         if name in trust_nets:
             continue  # check_ai's check_trust_network judges it
+        if mail_provider and name not in ("default", PROXY_NET):
+            if isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
+                r.error(t.c_where, f"networks.{name}: a mail template's networks are its project's own (no name:, no external:)",
+                        MAIL_HINT)
+            continue
         if name == PROXY_NET:
             if not (isinstance(spec, dict) and spec.get("external") is True):
                 r.error(t.c_where, f"networks.{PROXY_NET} must be declared 'external: true'",
@@ -972,6 +981,12 @@ def check_compose(t: Template, r: Report) -> None:
         if isinstance(spec, dict) and spec.get("external"):
             r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
         vol_name = spec.get("name") if isinstance(spec, dict) else None
+        if mail_provider:
+            # A mail template's volumes are plain <project>_<key> volumes
+            # (check_mail refuses name:); its one instance's project is
+            # portcullis-<template id>.
+            t.volume_names[f"portcullis-{t.id}_{vname}"] = vname
+            continue
         if t.multi:
             if vol_name is not None:
                 r.error(t.c_where, f"volumes.{vname}: an instances: multi template must not declare name:",
