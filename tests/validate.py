@@ -7235,47 +7235,53 @@ def _mail_get(v: Any, key: str) -> Any:
     return v.get(key) if isinstance(v, dict) else None
 
 
-# A mail template's networks are its project's own bridges (security
-# review, T17): only these keys; a driver (macvlan onto the host LAN),
-# driver_opts, attachable, labels, name, external, ipam.driver / options,
-# a gateway or aux_addresses are refused.
-MAIL_NETWORK_KEYS = ("internal", "ipam", "enable_ipv6")
-MAIL_IPAM_CONFIG_KEYS = ("subnet", "ip_range")
-MAIL_NETWORK_TEXT = "a mail template's networks set only internal, ipam.config[].subnet / ip_range and enable_ipv6: false"
+# A mail template's networks are plain project networks (security review,
+# T17; Hub mailNetworkRefusal, c919f6b): only internal, ipam with only
+# config entries of subnet / ip_range, and enable_ipv6: false. A driver
+# (macvlan onto the host LAN), driver_opts, attachable, labels, name,
+# external, ipam.driver / options, a gateway or aux_addresses are refused.
+MAIL_NETWORK_TEXT = ("a mail template's networks are plain project networks (internal, ipam subnets and IP ranges, "
+                     "enable_ipv6: false)")
 
 
-def mail_network_key(decl: Any) -> str:
-    """The first key (document order) of a mail template's network outside
-    MAIL_NETWORK_KEYS, as its path ("" = none): internal must be a boolean,
-    ipam only {config: [{subnet, ip_range}]} with string values (a value of
-    another shape is named like an unknown key). null / {} is a plain
-    bridge. enable_ipv6 is judged before, by the IPv6 refusal."""
-    if decl is None:
+def mail_network_refusal(nets: Any) -> str:
+    """mailNetworkRefusal: per top-level network (file order), its keys in
+    file order; enable_ipv6 anything but false is the IPv6 refusal at its
+    own position; a network that isn't a mapping (null) is a plain one;
+    "" = none."""
+    if not isinstance(nets, dict):
         return ""
-    if not isinstance(decl, dict):
-        return "(not a mapping)"
-    for key, val in decl.items():
-        key = scalar_text(key)
-        if key not in MAIL_NETWORK_KEYS:
-            return key
-        if key == "internal" and not isinstance(val, bool):
-            return "internal"
-        if key == "ipam":
-            if not isinstance(val, dict):
-                return "ipam"
-            for ik, iv in val.items():
-                ik = scalar_text(ik)
-                if ik != "config":
-                    return f"ipam.{ik}"
-                if not isinstance(iv, list):
-                    return "ipam.config"
-                for i, entry in enumerate(iv):
-                    if not isinstance(entry, dict):
-                        return f"ipam.config[{i}]"
-                    for ck, cv in entry.items():
-                        ck = scalar_text(ck)
-                        if ck not in MAIL_IPAM_CONFIG_KEYS or not isinstance(cv, str):
-                            return f"ipam.config[{i}].{ck}"
+    for n, body in nets.items():
+        if not isinstance(body, dict):
+            continue
+
+        def sets(key: str) -> str:
+            return f"mail: network {n} sets {key}: {MAIL_NETWORK_TEXT}"
+
+        for k, val in body.items():
+            k = scalar_text(k)
+            if k == "enable_ipv6":
+                if not (val is False or val in ("false", "False", "FALSE")):
+                    return f"mail: network {n} enables IPv6"
+            elif k == "internal":
+                continue
+            elif k == "ipam":
+                if not isinstance(val, dict):
+                    return sets("ipam")
+                for ik, iv in val.items():
+                    ik = scalar_text(ik)
+                    if ik != "config":
+                        return sets("ipam." + ik)
+                    if not isinstance(iv, list):
+                        return sets("ipam.config")
+                    for c in iv:
+                        if not isinstance(c, dict):
+                            return sets("ipam.config")
+                        for ck in c:
+                            if scalar_text(ck) not in ("subnet", "ip_range"):
+                                return sets("ipam.config." + scalar_text(ck))
+            else:
+                return sets(k)
     return ""
 
 
@@ -7468,15 +7474,9 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             if isinstance(decl, dict) and key in decl:
                 return [f"mail: volume {k} sets {key}: a mail template's volumes are plain <project>_<key> volumes"]
     nets = (compose or {}).get("networks") if isinstance(compose, dict) else None
-    for k, decl in (nets.items() if isinstance(nets, dict) else []):
-        if isinstance(decl, dict) and "enable_ipv6" in decl:
-            val = decl["enable_ipv6"]
-            if not (val is False or val in ("false", "False", "FALSE")):
-                return [f"mail: network {k} enables IPv6"]
-    for k, decl in (nets.items() if isinstance(nets, dict) else []):
-        bad = mail_network_key(decl)
-        if bad:
-            return [f"mail: network {k} sets {bad}: {MAIL_NETWORK_TEXT}"]
+    e = mail_network_refusal(nets)
+    if e:
+        return [e]
     if compose_text is not None and vpn_yaml_indirection(compose_text):
         return ["compose.yml: a mail template uses no YAML anchors, aliases or merge keys"]
     return []
