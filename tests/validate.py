@@ -1113,11 +1113,93 @@ def check_compose(t: Template, r: Report) -> None:
     check_mosquitto(t, services, r)
     check_signin_test(t, r)
     check_hub_rules(t, r)
+    check_worker_tmpfs(t, services, r)
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
     check_vpn(t, services, r)
     check_setup(t, services, routers, r)
+
+
+# A worker's agent (Hub agentapi scope.go) refuses a tmpfs without a size,
+# over MaxTmpfsSize, or with other short-form options: a worker-placeable
+# template's tmpfs must pass, else its first start on a worker is a 400.
+WORKER_MAX_TMPFS = 2 << 30
+WORKER_TMPFS_OPTIONS = {"size", "mode", "uid", "gid", "noexec", "nosuid", "nodev", "exec", "suid", "dev", "ro", "rw"}
+_RAM_RE = re.compile(r"^(\d+(?:\.\d+)*) ?([kKmMgGtTpP])?[iI]?[bB]?$")
+
+
+def ram_in_bytes(s: str) -> int:
+    """docker/go-units RAMInBytes (binary units); -1 when not a size."""
+    m = _RAM_RE.fullmatch(s.strip())
+    if not m:
+        return -1
+    mult = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40, "p": 1 << 50}[(m.group(2) or "").lower()]
+    return int(float(m.group(1)) * mult)
+
+
+def worker_tmpfs_problems(services: Dict[str, Any]) -> List[str]:
+    """What a worker's agent would refuse in the services' tmpfs mounts
+    (short service tmpfs: entries and long-form type: tmpfs volumes);
+    interpolated sizes are skipped (resolved per instance)."""
+    out: List[str] = []
+
+    def size_problem(where: str, n: int) -> None:
+        if n <= 0:
+            out.append(f"{where}: a size is required on a worker (size=…, at most 2g)")
+        elif n > WORKER_MAX_TMPFS:
+            out.append(f"{where}: size over {WORKER_MAX_TMPFS} bytes (2g, a worker's cap)")
+
+    for name, svc in sorted((services or {}).items()):
+        if not isinstance(svc, dict):
+            continue
+        short = svc.get("tmpfs")
+        for e in ([short] if isinstance(short, str) else short if isinstance(short, list) else []):
+            if not isinstance(e, str) or _interpolated(e):
+                continue
+            target, _, opts = e.partition(":")
+            where, size, seen = f"service {name}: tmpfs {target}", 0, set()
+            bad = False
+            for o in (x.strip() for x in opts.split(",")):
+                if not o:
+                    continue
+                k, _, val = o.partition("=")
+                if k not in WORKER_TMPFS_OPTIONS or k in seen:
+                    out.append(f"{where}: option {k!r} {'given twice' if k in seen else 'is not allowed'} on a worker")
+                    bad = True
+                    break
+                seen.add(k)
+                if k == "size":
+                    size = ram_in_bytes(val)
+                    if size <= 0:
+                        out.append(f"{where}: size {val!r} isn't a size")
+                        bad = True
+                        break
+            if not bad:
+                size_problem(where, size)
+        for vol in svc.get("volumes") or []:
+            if not isinstance(vol, dict) or vol.get("type") != "tmpfs":
+                continue
+            where = f"service {name}: tmpfs {vol.get('target')}"
+            sz = (vol.get("tmpfs") or {}).get("size") if isinstance(vol.get("tmpfs"), dict) else None
+            if isinstance(sz, str) and _interpolated(sz):
+                continue
+            n = sz if isinstance(sz, int) and not isinstance(sz, bool) else ram_in_bytes(sz) if isinstance(sz, str) else 0
+            size_problem(where, n)
+    return out
+
+
+def check_worker_tmpfs(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """A worker-placeable template (no placement reason) sizes every tmpfs
+    the way a worker's agent requires (L2)."""
+    if not isinstance(t.manifest, dict) or not t.compose_text:
+        return
+    primary_only, _ = placement_reasons(t.compose_text.encode("utf-8"), t.manifest, env=None, bind_roots=[])
+    if primary_only:
+        return
+    for p in worker_tmpfs_problems(services):
+        r.error(t.c_where, f"{p} (the template is worker-placeable: a worker's agent refuses it)",
+                "size every tmpfs, e.g. /tmp:size=64m (at most 2g), or mark the template placement: primary_only")
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")

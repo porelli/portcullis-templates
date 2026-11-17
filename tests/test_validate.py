@@ -934,6 +934,48 @@ class TestMultiServerReserved(Case):
         self.assertIn("link_doc", v.CORE_VOLUMES)
 
 
+class TestWorkerTmpfs(Case):
+    """A worker-placeable template sizes every tmpfs as a worker's agent
+    requires (size, at most 2g, the short form's option allowlist)."""
+
+    NET = "    networks:\n      - default\n      - portcullis-proxy"
+
+    def tmpfs_case(self, block: str) -> List[str]:
+        self.run_template()
+        self.rewrite_compose(self.NET, block + self.NET)
+        return self.recheck()
+
+    def test_placeable_by_default(self) -> None:
+        self.run_template()
+        primary_only, reasons = v.placement_reasons(self.template.compose_text.encode(), self.template.manifest)
+        self.assertFalse(primary_only, reasons)
+
+    def test_refused(self) -> None:
+        for block, needle in (
+            ("    tmpfs: /tmp\n", "tmpfs /tmp: a size is required on a worker"),
+            ("    tmpfs: [/tmp, \"/run:size=64m\"]\n", "tmpfs /tmp: a size is required on a worker"),
+            ("    tmpfs: [\"/tmp:size=3g\"]\n", "tmpfs /tmp: size over"),
+            ("    tmpfs: [\"/tmp:size=64m,nr_inodes=1k\"]\n", "option 'nr_inodes' is not allowed"),
+            ("    tmpfs: [\"/tmp:size=lots\"]\n", "size 'lots' isn't a size"),
+        ):
+            with self.subTest(block=block):
+                self.assertError(self.tmpfs_case(block), needle)
+        self.run_template()
+        self.rewrite_compose("      - demo-data:/data\n", "      - demo-data:/data\n      - type: tmpfs\n        target: /cache\n")
+        self.assertError(self.recheck(), "tmpfs /cache: a size is required on a worker")
+
+    def test_sized_clean(self) -> None:
+        self.assertClean(self.tmpfs_case("    tmpfs: [\"/tmp:size=64m,mode=1777\", \"/run:size=2g\"]\n"))
+        self.run_template()
+        self.rewrite_compose("      - demo-data:/data\n",
+                             "      - demo-data:/data\n      - type: tmpfs\n        target: /cache\n        tmpfs:\n          size: 67108864\n")
+        self.assertClean(self.recheck())
+
+    def test_ram_in_bytes(self) -> None:
+        for s, n in (("64m", 64 << 20), ("2g", 2 << 30), ("1GiB", 1 << 30), ("512", 512), ("1.5k", 1536), ("x", -1)):
+            self.assertEqual(v.ram_in_bytes(s), n, s)
+
+
 class TestHubRules(Case):
     def test_strip_client_forwarded_allowed(self) -> None:
         """Core's strip-client-forwarded@file may be named like the other
