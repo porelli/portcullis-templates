@@ -98,6 +98,11 @@
       "default": "single"
     },
     "ai": {"$ref": "#/$defs/ai"},
+    "placement": {
+      "description": "Server placement (contracts §3): whether the instance can run on a worker server. any (default) = any server; primary_only = only the primary, for reasons tests/validate.py placement_reasons() and the Hub's Placement() detect.",
+      "enum": ["any", "primary_only"],
+      "default": "any"
+    },
     "vpn": {"$ref": "#/$defs/vpn"},
     "jobs": {
       "description": "Contracts §3 (NEW, apps): compose services that run once and exit (a setup or migration container). The Hub counts a job's container done when it exited 0 and failed when it exited non-zero. A service another one depends on with condition: service_completed_successfully is a job without being listed. Each entry is a compose service, listed once, with no Traefik router (tests/validate.py check_setup).",

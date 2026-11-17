@@ -92,7 +92,7 @@ services:
       - ./templates/gitea/portcullis/mcp-token.sh:/portcullis/mcp-token.sh:ro
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=512m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 2g
@@ -144,7 +144,7 @@ services:
     # The image's healthcheck (gitea-mcp -healthcheck) needs /tmp.
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 256m
@@ -178,7 +178,7 @@ services:
       - ./templates/gitea/setup.sh:/portcullis/setup.sh:ro
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 512m
@@ -229,8 +229,8 @@ services:
       - gitea-db-data:/var/lib/postgresql/data
     read_only: true
     tmpfs:
-      - /tmp
-      - /var/run/postgresql
+      - /tmp:size=256m
+      - /var/run/postgresql:size=1m
     security_opt: [no-new-privileges:true]
     # The entrypoint starts as root to own the data directory, then drops
     # to the postgres user.

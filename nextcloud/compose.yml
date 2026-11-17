@@ -119,9 +119,9 @@ services:
     read_only: true
     # Ephemeral token database (unused in this mode) and document spool.
     tmpfs:
-      - /tmp
-      - /app/data
-      - /home/appuser
+      - /tmp:size=256m
+      - /app/data:size=64m
+      - /home/appuser:size=64m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 1g
