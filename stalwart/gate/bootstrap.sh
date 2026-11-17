@@ -24,9 +24,12 @@
 #    mailkey) to $MAILCTL_API_KEY_FILE in the key volume (its own files,
 #    .server-image, in job_data at $MAILCTL_DATA), a normal start that must
 #    refuse the recovery login, then the store's marker. A marked store
-#    gets one normal start that tests the key (with the role-permission
-#    update after a server image change); a missing or refused key gets a
-#    new key only, the settings untouched (Ruling R-H2).
+#    gets a recovery start that checks the key through the recovery admin
+#    (the key itself admits only the adapter's /32 and is never used here),
+#    then the normal start that must refuse the recovery login (with the
+#    role-permission update after a server image change); a missing or
+#    out-of-scope key gets a new key only, the settings untouched (Ruling
+#    R-H2).
 set -eu
 # The job is gated too (it gets the slot files: the base plan reads the
 # metrics secret there): the P3 predicate before anything else.

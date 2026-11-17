@@ -45,8 +45,9 @@ auth:
     only the job and the adapter mount) and exits 0 only once the recovery
     login is refused. It runs as Stalwart's uid, adds only NET_BIND_SERVICE
     (the Stalwart binary's file capability; no other), is gated like the
-    server, re-runs on every cold start (one normal start testing the API
-    key; a lost key gets a new key only, the settings untouched) and does
+    server, re-runs on every cold start (a recovery start that checks the
+    API key, then a normal start; a lost key gets a new key only, the
+    settings untouched) and does
     nothing while the server holds the store lock.
     Start gate: stalwart starts only when the Hub's slot files say so
     (.present, or the Hub's void mode with its session nonce); a raw compose
