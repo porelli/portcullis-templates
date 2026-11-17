@@ -895,6 +895,45 @@ class TestCoreNamesComplete(unittest.TestCase):
         self.assertIn("strip-client-forwarded", v.FILE_MIDDLEWARES)
 
 
+class TestMultiServerReserved(Case):
+    """Contract §2 (multiple servers): PORTCULLIS_LINK*, PORTCULLIS_WORKER_*,
+    PORTCULLIS_ROLE, AGENT_IMAGE and RELAY_IMAGE are core's settings (no
+    compose interpolation, no manifest env / settings / ports key), and the
+    link networks and link_doc volume are core's names (Hub coreref.go)."""
+
+    def compose_case(self, old: str, new: str) -> List[str]:
+        self.run_template()
+        self.rewrite_compose(old, new)
+        return self.recheck()
+
+    def test_interpolation_refused(self) -> None:
+        for ref in ("${PORTCULLIS_LINK_PORT:-1}", "${PORTCULLIS_LINK}", "$PORTCULLIS_ROLE", "${PORTCULLIS_WORKER_DATA:?x}",
+                    "${AGENT_IMAGE}", "${RELAY_IMAGE:-x}"):
+            with self.subTest(ref=ref):
+                name = ref.lstrip("${").split(":")[0].rstrip("}")
+                self.assertError(self.compose_case("      DEMO_URL:", f"      X: {ref}\n      DEMO_URL:"), f"${{{name}}} is reserved")
+        # $$ is a literal (a container shell reads it), not interpolation.
+        self.assertClean(self.compose_case("      DEMO_URL:", "      X: $$PORTCULLIS_ROLE\n      DEMO_URL:"))
+
+    def test_manifest_keys_refused(self) -> None:
+        for key in ("PORTCULLIS_WORKER_X", "AGENT_IMAGE", "RELAY_IMAGE", "PORTCULLIS_ROLE", "PORTCULLIS_LINK_PORT"):
+            with self.subTest(key=key):
+                self.run_template()
+                self.rewrite_manifest("env:\n", f"env:\n  - key: {key}\n    description: x\n    generate: random\n")
+                self.assertError(self.recheck(), f"env key {key} is reserved (multiple servers")
+
+    def test_link_names_refused(self) -> None:
+        self.assertError(self.compose_case("networks:\n  portcullis-proxy:\n    external: true\n",
+                                           "networks:\n  portcullis-proxy:\n    external: true\n  data:\n    name: portcullis-link-data\n"),
+                         'references "portcullis-link"')
+        self.assertError(self.compose_case("volumes:\n  demo-data: {}", "volumes:\n  demo-data:\n    name: portcullis_link_doc"),
+                         "core's volume")
+        self.assertError(self.compose_case("volumes:\n  demo-data: {}", "volumes:\n  demo-data: {}\n  link_doc: {}"),
+                         "volumes.link_doc is core's")
+        self.assertIn("portcullis-link", v.CORE_NETWORKS)
+        self.assertIn("link_doc", v.CORE_VOLUMES)
+
+
 class TestHubRules(Case):
     def test_strip_client_forwarded_allowed(self) -> None:
         """Core's strip-client-forwarded@file may be named like the other

@@ -752,6 +752,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if k.startswith(VAR_VPN_PREFIX):
             r.error(t.m_where, f"{section} key {k} is reserved (VPN-only access: PORTCULLIS_VPN_* are core's and the Hub's)",
                     VPN_HINT)
+        if ms_reserved_var(k):
+            r.error(t.m_where, f"{section} key {k} is reserved (multiple servers: PORTCULLIS_LINK*, PORTCULLIS_WORKER_*, "
+                               "PORTCULLIS_ROLE, AGENT_IMAGE and RELAY_IMAGE are core's settings)", MS_HINT)
         if k == VAR_COMPOSE_PROFILES:
             r.error(t.m_where, f"{k} is an instance variable the Hub sets — a manifest may not declare it", SETUP_HINT)
         if is_instance_var(k):
@@ -2371,7 +2374,7 @@ CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgre
                  "wg"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data", "vpn_doc"}
+                "group_gate_data", "wg_data", "vpn_doc", "link_doc"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
 CORE_ALIASES = {"wg-metrics"}
@@ -2380,7 +2383,8 @@ CORE_ALIASES = {"wg-metrics"}
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
-                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress"}
+                 "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
+                 "portcullis-link", "portcullis-link-data"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
@@ -2391,7 +2395,22 @@ MCP_NAME_PREFIX = "portcullis-mcp-"
 # MCP_NAME_PREFIX, no exception (the forwarder image is
 # ghcr.io/porelli/portcullis-forwarder).
 VPN_NAME_PREFIX = "portcullis-vpn"
-RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX)
+# LINK_NAME_PREFIX (multiple servers, §17.2): the link role's networks
+# portcullis-link and portcullis-link-data, refused anywhere in compose.yml
+# like VPN_NAME_PREFIX (Hub templates.LinkReservedPrefix).
+LINK_NAME_PREFIX = "portcullis-link"
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX,
+                 LINK_NAME_PREFIX)
+# Multiple servers (contract §2): core's settings, never template
+# variables: no compose interpolation, no manifest env / settings / ports key.
+MS_RESERVED_PREFIXES = ("PORTCULLIS_LINK_", "PORTCULLIS_WORKER_")
+MS_RESERVED_NAMES = {"PORTCULLIS_LINK", "PORTCULLIS_ROLE", "AGENT_IMAGE", "RELAY_IMAGE"}
+MS_HINT = f"see {DOCS_URL}/integration-contracts/ (§2, multiple servers: core's settings, not template variables)"
+
+
+def ms_reserved_var(k: str) -> bool:
+    """A multiple-servers core setting (contract §2)."""
+    return k in MS_RESERVED_NAMES or k.startswith(MS_RESERVED_PREFIXES)
 CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
 HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
 HUB_SERVICE_KEYS = {
@@ -2525,9 +2544,20 @@ def check_hub_rules(t: Template, r: Report) -> None:
                 elif ref == VPN_NAME_PREFIX:
                     r.error(where, f"references \"{VPN_NAME_PREFIX}\": names starting {VPN_NAME_PREFIX} (the VPN network, "
                                    "middlewares and routers) are rendered by the Hub only (contract §3.3)", VPN_HINT)
+                elif ref == LINK_NAME_PREFIX:
+                    r.error(where, f"references \"{LINK_NAME_PREFIX}\": names starting {LINK_NAME_PREFIX} are the link role's "
+                                   "networks (contract §17)", HUB_HINT)
                 else:
                     r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
+
+    ms_seen: Set[str] = set()
+    for s in _walk_strings(data):
+        for name, _ in go_var_refs(s):
+            if ms_reserved_var(name) and name not in ms_seen:
+                ms_seen.add(name)
+                r.error(where, f"${{{name}}} is reserved: PORTCULLIS_LINK*, PORTCULLIS_WORKER_*, PORTCULLIS_ROLE, AGENT_IMAGE and "
+                               "RELAY_IMAGE are core's settings, not template variables (contract §2)", MS_HINT)
 
     def literal(what: str, val: Any) -> bool:
         if isinstance(val, str) and _interpolated(val):
@@ -8218,7 +8248,7 @@ def _core_volume_name(n: str) -> str:
     if f == "hub_secrets" or f == "portcullis-hub-secrets":
         return SECRETS_VOLUME_KEY
     # Direct core volume key
-    if f in CORE_VOLUMES or f == "link_doc":
+    if f in CORE_VOLUMES:
         return f
     # portcullis_<key> prefix
     if f.startswith("portcullis_"):
