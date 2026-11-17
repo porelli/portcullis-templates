@@ -65,7 +65,7 @@ mail:
   metrics:   {service: adapter, port: 9100}
   server_metrics: {service: stalwart, port: 9180, path: /metrics/prometheus}   # optional
   tls:       [stalwart, adapter, bootstrap]   # services that get the mail certificate, read-only (the job's base plan reads it)
-  gated:     [stalwart, adapter]        # services that get the gate files and must honour them
+  gated:     [stalwart, adapter, bootstrap]   # services that get the gate files and must honour them (the job's base plan reads the metrics secret)
   sessions:  {restart: stalwart}        # restarted after every removal and revoke
   export:    {service: adapter, argv: ["mailctl", "export", "--former", "{former_id}"]}   # optional
 

@@ -26,7 +26,7 @@ services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
   adapter-bin:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bc476b6@sha256:76f118a198973273ef2bd6c2e8a0b918497f8e1e777799c9367b99281c824c1b
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
     user: "10010:10010"
     entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
     read_only: true
@@ -65,13 +65,17 @@ services:
       MAILCTL_LOCAL_RESOLVER: 172.31.255.4:5353
       MAILCTL_RESOLVERS: 172.31.255.4:5353
       MAILCTL_DATA: /etc/stalwart
+      MAILCTL_API_KEY_FILE: /etc/stalwart/api-key
+      # The store volume: mailctl's lock and the base plan's marker.
+      MAILCTL_STORE_DIR: /var/lib/stalwart
       MAILCTL_JOB_SESSION_FILE: /run/portcullis/bootstrap/session
       MAILCTL_SERVER_IMAGE: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
     tmpfs:
       - /tmp:size=64m
       # The default Tracer's path before the base plan logs to stdout.
       - /var/log/stalwart:size=16m
-      # The job-only session nonce (no other service has this tmpfs).
+      # The job-only session nonce and the job's mark (no other service
+      # has this tmpfs).
       - /run/portcullis/bootstrap:size=1m,mode=1777
     volumes:
       - data:/var/lib/stalwart
@@ -132,7 +136,7 @@ services:
   # the spam rules 8082 (internal), metrics 9100. The only holder of
   # Stalwart's API key besides the job.
   adapter:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bc476b6@sha256:76f118a198973273ef2bd6c2e8a0b918497f8e1e777799c9367b99281c824c1b
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]
@@ -148,6 +152,7 @@ services:
       MAILCTL_LOCAL_RESOLVER: 172.31.255.4:5353
       MAILCTL_RESOLVERS: 172.31.255.4:5353
       MAILCTL_DATA: /data
+      MAILCTL_API_KEY_FILE: /run/portcullis/stalwart-key/api-key
       GOMEMLIMIT: 200MiB
       STALWART_DQS_KEY: ${STALWART_DQS_KEY:-}
     tmpfs:

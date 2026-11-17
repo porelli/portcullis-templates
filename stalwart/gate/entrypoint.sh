@@ -3,7 +3,8 @@
 # the entrypoint of the `stalwart` service and of the bootstrap job's
 # server child. Usage: entrypoint.sh <server argv...> (exec'd unchanged).
 #
-# Three starts, in this order:
+# Three starts, in this order (`entrypoint.sh --check` runs only the
+# predicate of 3. and exits 0: the bootstrap job's own gate):
 #
 # 1. Recovery mode (any STALWART_RECOVERY_* variable set): only inside the
 #    bootstrap job. Its job-only tmpfs holds the session nonce the job made
@@ -11,11 +12,13 @@
 #    as MAILCTL_RECOVERY_SESSION; both must be non-empty and equal byte for
 #    byte. No store lock: the job already holds it (a second flock on a new
 #    descriptor would wait for the job itself).
-# 2. The job's normal start (it checks the recovery login is refused):
-#    MAILCTL_JOB_SESSION_FILE is exactly $JOB_SESSION and that file is
-#    non-empty (the job removes it only when it ends). No gate (the job
-#    isn't gated: it has no slot files and publishes nothing; its network is
-#    the template's internal one) and no lock (the job holds it).
+# 2. The job's normal starts (the recovery login refused; after a server
+#    image change, the role-permission update): MAILCTL_JOB_SESSION_FILE is
+#    exactly $JOB_SESSION and the job's mark $JOB_MARK (bootstrap.sh writes
+#    it into the same job-only tmpfs before mailctl runs) is non-empty. No
+#    gate (the job isn't gated: it has no slot files and publishes nothing;
+#    its network is the template's internal one) and no lock (the job
+#    holds it).
 # 3. Every other start: the P3 predicate over the Hub's slot files, then the
 #    store lock, then exec. The predicate:
 #      - void-pending absent and .present exactly "portcullis-mail-gate"
@@ -29,7 +32,7 @@
 #    never overlap.
 #
 # Forging case 1 or 2 on the `stalwart` service needs a compose change (a
-# tmpfs at $JOB_SESSION plus the variables): that is a template change,
+# tmpfs at /run/portcullis/bootstrap plus the variables): that is a template change,
 # which holds a wired provider until an admin re-confirms it (plan P4).
 set -u
 export LC_ALL=C
@@ -38,6 +41,7 @@ export LC_ALL=C
 # only; compose never sets them).
 SLOT="${PORTCULLIS_MAIL_SLOT_DIR:-/run/portcullis/mail/slot}"
 JOB_SESSION="${STALWART_GATE_JOB_SESSION:-/run/portcullis/bootstrap/session}"
+JOB_MARK="${STALWART_GATE_JOB_MARK:-/run/portcullis/bootstrap/job}"
 LOCK="${STALWART_GATE_LOCK:-/var/lib/stalwart/.portcullis.lock}"
 SENTINEL=portcullis-mail-gate
 NL='
@@ -46,6 +50,10 @@ NL='
 refuse() { echo "stalwart gate: $*: refused" >&2; exit 1; }
 
 [ "$#" -gt 0 ] || refuse "no server command"
+# --check: the P3 predicate only (the bootstrap job, a gated service too,
+# honours the gate before it opens the store), then exit 0.
+CHECK_ONLY=""
+if [ "$1" = --check ]; then CHECK_ONLY=1; fi
 
 # read_exact FILE: R = the file's bytes exactly (every trailing newline
 # kept: $(cat) would strip them), at most 4096 bytes; fails when the file
@@ -57,7 +65,7 @@ read_exact() {
   [ "${#R}" -le 4096 ] && [ "$n" -eq "${#R}" ]
 }
 
-if env | grep -q '^STALWART_RECOVERY_'; then
+if [ -z "$CHECK_ONLY" ] && env | grep -q '^STALWART_RECOVERY_'; then
   read_exact "$JOB_SESSION" || refuse "a recovery-mode start outside the bootstrap job"
   if [ -z "$R" ] || [ -z "${MAILCTL_RECOVERY_SESSION:-}" ] || [ "$R" != "$MAILCTL_RECOVERY_SESSION" ]; then
     refuse "a recovery-mode start outside the bootstrap job"
@@ -65,7 +73,7 @@ if env | grep -q '^STALWART_RECOVERY_'; then
   exec "$@"
 fi
 
-if [ "${MAILCTL_JOB_SESSION_FILE:-}" = "$JOB_SESSION" ] && read_exact "$JOB_SESSION" && [ -n "$R" ]; then
+if [ -z "$CHECK_ONLY" ] && [ "${MAILCTL_JOB_SESSION_FILE:-}" = "$JOB_SESSION" ] && read_exact "$JOB_MARK" && [ -n "$R" ]; then
   exec "$@"
 fi
 
@@ -78,6 +86,8 @@ else
   read_exact "$SLOT/.present" || refuse "the mail gate isn't readable: the slot's files are missing (is this instance wired?)"
   [ "$R" = "$SENTINEL" ] || [ "$R" = "$SENTINEL$NL" ] || refuse "the mail gate is closed: .present isn't the gate sentinel"
 fi
+
+[ -z "$CHECK_ONLY" ] || exit 0
 
 { : >> "$LOCK"; } 2>/dev/null || refuse "the store lock $LOCK can't be created"
 exec 9<"$LOCK" || refuse "the store lock $LOCK isn't readable"

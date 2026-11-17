@@ -13,6 +13,7 @@ trap 'rm -rf "$T"' EXIT
 FAILS=0
 S="$T/slot"           # the Hub's _mail/ files
 J="$T/job/session"    # the bootstrap job's tmpfs session file
+K="$T/job/job"        # the job's mark (bootstrap.sh), same tmpfs
 L="$T/store/.portcullis.lock"
 mkdir -p "$T/job" "$T/store"
 printf '#!/bin/sh\necho "STARTED $#:$*"\n' > "$T/server"
@@ -20,7 +21,7 @@ chmod +x "$T/server"
 
 reset() {
   chmod -R u+rwx "$S" 2>/dev/null || true
-  rm -rf "$S" "$J"
+  rm -rf "$S" "$J" "$K"
   mkdir -p "$S"
 }
 
@@ -31,7 +32,7 @@ run() {
   local name="$1" want="$2" out rc
   shift 2
   set +e
-  out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" STALWART_GATE_JOB_SESSION="$J" STALWART_GATE_LOCK="$L" "$@" \
+  out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" STALWART_GATE_JOB_SESSION="$J" STALWART_GATE_JOB_MARK="$K" STALWART_GATE_LOCK="$L" "$@" \
     "$SH" "$GATE" "$T/server" --config "/a b/config.json" 2>&1)
   rc=$?
   set -e
@@ -94,14 +95,15 @@ run "recovery mode, job session, right nonce" start STALWART_RECOVERY_MODE=1 STA
 run "recovery mode, empty job session, empty nonce" refused STALWART_RECOVERY_MODE=1 MAILCTL_RECOVERY_SESSION=
 
 # The job's own normal start (no gate, no lock: the job holds it).
-reset; printf '%s' "$N" > "$J"
+reset; printf '%s' "$N" > "$K"
 exec 8>"$L"; flock 8   # the job's lock, held while it runs
-run "the job's normal start, gate closed, store locked" start MAILCTL_JOB_SESSION_FILE="$J"
+run "the job's normal start (no session file: an image-update start), gate closed, store locked" start MAILCTL_JOB_SESSION_FILE="$J"
 run "job session file named differently" refused MAILCTL_JOB_SESSION_FILE="$J.other"
-: > "$J"
-run "the job's start with an empty session file" refused MAILCTL_JOB_SESSION_FILE="$J"
-rm -f "$J"
-run "the job's start without its session file" refused MAILCTL_JOB_SESSION_FILE="$J"
+run "the job's mark without MAILCTL_JOB_SESSION_FILE" refused
+: > "$K"
+run "the job's start with an empty mark" refused MAILCTL_JOB_SESSION_FILE="$J"
+rm -f "$K"; printf '%s' "$N" > "$J"
+run "the job's start with a session file but no mark" refused MAILCTL_JOB_SESSION_FILE="$J"
 
 # The store lock: a gated start waits while the job holds it.
 reset; printf 'portcullis-mail-gate' > "$S/.present"
@@ -117,6 +119,29 @@ run "a gated start, lock free" start
 printf '#!/bin/sh\nif flock -n 7 7<"%s"; then echo "STARTED unlocked"; else echo "STARTED locked"; fi\n' "$L" > "$T/server"
 out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" STALWART_GATE_LOCK="$L" "$SH" "$GATE" "$T/server" 2>&1 || true)
 if [ "$out" = "STARTED locked" ]; then echo "PASS the server's lock blocks another opener"; else echo "FAIL lock not held by the server: $out"; FAILS=$((FAILS + 1)); fi
+
+# --check: the predicate only (the bootstrap job's gate), never a server,
+# never the job's bypasses.
+chk() {
+  local name="$1" want="$2" rc
+  shift 2
+  set +e
+  env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" STALWART_GATE_JOB_SESSION="$J" STALWART_GATE_JOB_MARK="$K" \
+    STALWART_GATE_LOCK="$L" "$@" "$SH" "$GATE" --check >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" = "$want" ]; then echo "PASS $name"; else echo "FAIL $name: rc $rc"; FAILS=$((FAILS + 1)); fi
+}
+reset; printf 'portcullis-mail-gate' > "$S/.present"
+exec 8>"$L"; flock 8
+chk "--check, gate open, store locked: 0 at once" 0
+exec 8>&-
+reset; chk "--check, gate closed: 1" 1
+reset; printf '%s' "$N" > "$K"; printf '%s' "$N" > "$J"
+chk "--check ignores the job's mark: 1" 1 MAILCTL_JOB_SESSION_FILE="$J"
+chk "--check ignores recovery mode: 1" 1 STALWART_RECOVERY_MODE=1 MAILCTL_RECOVERY_SESSION="$N"
+reset; : > "$S/void-pending"; printf '%s' "$N" > "$S/void-session"
+chk "--check in the Hub's void mode: 0" 0 PORTCULLIS_MAIL_VOID_SESSION="$N"
 
 # No server command at all.
 set +e

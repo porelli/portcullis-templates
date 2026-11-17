@@ -85,6 +85,10 @@ mounters=$(yq -r '.services | to_entries[] | .key as $s | .value.volumes[]? | se
   && pass "the store: bootstrap and stalwart only" || fail "data mounts: $mounters"
 [ "$(y '.services.bootstrap.environment.MAILCTL_DATA')" = /etc/stalwart ] && [ "$(y '.services.adapter.environment.MAILCTL_DATA')" = /data ] \
   && pass "MAILCTL_DATA: the key volume in the job, adapter_data in the adapter" || fail "MAILCTL_DATA"
+[ "$(y '.services.bootstrap.environment.MAILCTL_API_KEY_FILE')" = /etc/stalwart/api-key ] \
+  && [ "$(y '.services.adapter.environment.MAILCTL_API_KEY_FILE')" = /run/portcullis/stalwart-key/api-key ] \
+  && [ "$(y '.services.bootstrap.environment.MAILCTL_STORE_DIR')" = /var/lib/stalwart ] \
+  && pass "MAILCTL_API_KEY_FILE in the key volume (job rw, adapter ro); MAILCTL_STORE_DIR the store" || fail "MAILCTL_API_KEY_FILE / MAILCTL_STORE_DIR"
 tmpfs_job=$(y '.services.bootstrap.tmpfs | map(select(test("^/run/portcullis/bootstrap"))) | length')
 tmpfs_all=$(yq -r '[.services[].tmpfs[]? | select(test("^/run/portcullis/bootstrap"))] | length' "$COMPOSE")
 [ "$tmpfs_job" = 1 ] && [ "$tmpfs_all" = 1 ] && [ "$(y '.services.bootstrap.environment.MAILCTL_JOB_SESSION_FILE')" = /run/portcullis/bootstrap/session ] \
@@ -107,10 +111,12 @@ grep -q 'access-control: 172.31.255.0/28 allow' "$DIR/unbound/unbound.conf" && p
 [ "$(y '.services.stalwart.entrypoint | join(" ")')" = "/bin/sh /portcullis/gate/entrypoint.sh" ] \
   && [ "$(y '.services.stalwart.command | join(" ")')" = "/usr/local/bin/stalwart --config /portcullis/config/config.json" ] \
   && pass "stalwart starts through the gate wrapper" || fail "stalwart entrypoint / command"
+grep -q '^/bin/sh /portcullis/gate/entrypoint.sh --check$' "$DIR/gate/bootstrap.sh" \
+  && pass "the job checks the slot gate first" || fail "bootstrap.sh: no gate check"
 grep -q '/bin/sh /portcullis/gate/entrypoint.sh /usr/local/bin/stalwart --config /portcullis/config/config.json' "$DIR/gate/bootstrap.sh" \
   && pass "the job's server child starts through the same wrapper" || fail "bootstrap.sh server argv"
-[ "$(yq -r '.mail.gated | join(",")' "$MANIFEST")" = stalwart,adapter ] && [ "$(yq -r '.mail.tls | join(",")' "$MANIFEST")" = stalwart,adapter,bootstrap ] && [ "$(yq -r '.jobs | join(",")' "$MANIFEST")" = adapter-bin,bootstrap ] \
-  && pass "gated: stalwart, adapter; tls also bootstrap (its base plan reads the certificate); jobs: adapter-bin, bootstrap" || fail "manifest gated / jobs"
+[ "$(yq -r '.mail.gated | join(",")' "$MANIFEST")" = stalwart,adapter,bootstrap ] && [ "$(yq -r '.mail.tls | join(",")' "$MANIFEST")" = stalwart,adapter,bootstrap ] && [ "$(yq -r '.jobs | join(",")' "$MANIFEST")" = adapter-bin,bootstrap ] \
+  && pass "gated and tls: stalwart, adapter, bootstrap (its base plan reads the certificate and the metrics secret); jobs: adapter-bin, bootstrap" || fail "manifest gated / jobs"
 if bash tests/mail/test_gate_entrypoint.sh >/tmp/stalwart-gate.log 2>&1; then
   pass "gate wrapper: $(tail -1 /tmp/stalwart-gate.log)"
 else

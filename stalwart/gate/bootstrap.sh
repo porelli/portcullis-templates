@@ -1,27 +1,32 @@
 #!/bin/sh
 # The stalwart template's bootstrap job (contract §19.4 via the stalwart
-# app page; Rulings T3-a, T3-b, T17-a): runs in the Stalwart image as uid
+# app page; Rulings T3-a, T17-a, T17-c): runs in the Stalwart image as uid
 # 2000 with primary gid 2010 (mailkey), cap_drop ALL and no capability,
 # before `stalwart` and `adapter` (service_completed_successfully).
 #
-# 1. The store lock: the job takes $LOCK with flock -n and holds it (fd 9,
-#    inherited by mailctl) for its whole run. When it's busy, the server is
-#    running on this store (a later `up` re-runs the job): exit 0 without
-#    opening the store; RocksDB's own LOCK stays the backstop.
-# 2. `mailctl bootstrap --job` (the binary the adapter-bin job copied from
-#    the pinned adapter image) starts the server as its own child, through
-#    the gate wrapper, in recovery mode with a password made inside the job,
-#    applies the base plan (re-run on every cold start, Ruling T3-b), writes
-#    Stalwart's API key into $MAILCTL_DATA (this job's key volume), then
-#    starts the server normally once and exits 0 only when the recovery
-#    login is refused there.
-# 3. The key is made 0640 (group mailkey): the adapter reads it through its
-#    read-only mount of the key volume with group_add mailkey. No other
-#    service mounts that volume (Ruling T17-a).
+# 0. The slot gate (entrypoint.sh --check): unwired, or a void owed
+#    outside the Hub's void mode, the job exits 1 before opening the store.
+# 1. The server's store lock: the job takes $LOCK with flock -n (fd 9,
+#    inherited by mailctl, held for the whole run). When it's busy, the
+#    server is running on this store (a later `up` re-runs the job): exit 0
+#    without opening the store; RocksDB's own LOCK stays the backstop.
+# 2. The job's mark in its job-only tmpfs: the gate wrapper lets the job's
+#    own server child start without the slot gate and the store lock.
+# 3. `mailctl bootstrap --job` (the binary adapter-bin copied from the
+#    pinned adapter image) takes its own lock in the store
+#    ($MAILCTL_STORE_DIR) and runs the base plan once per store: the server
+#    as its own child through the gate wrapper, in recovery mode with a
+#    password made inside the job, the plan, the API key written 0640
+#    (group mailkey) to $MAILCTL_API_KEY_FILE in the key volume, a normal
+#    start that must refuse the recovery login, then the store's marker. A
+#    marked store with its key starts nothing (after a server image change,
+#    one start with the role-permission update).
 set -eu
-umask 027
-LOCK=/var/lib/stalwart/.portcullis.lock
-KEY="${MAILCTL_DATA:?MAILCTL_DATA is required}/api-key"
+# The job is gated too (it gets the slot files: the base plan reads the
+# metrics secret there): the P3 predicate before anything else.
+/bin/sh /portcullis/gate/entrypoint.sh --check
+LOCK="${MAILCTL_STORE_DIR:?MAILCTL_STORE_DIR is required}/.portcullis.lock"
+MARK=/run/portcullis/bootstrap/job
 
 : >> "$LOCK"
 exec 9<"$LOCK"
@@ -29,17 +34,7 @@ if ! flock -n 9; then
   echo "bootstrap: the store is in use (the server is running): nothing to do"
   exit 0
 fi
+(umask 077; head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$MARK")
 
-/portcullis/bin/mailctl bootstrap --job -- \
-  /bin/sh /portcullis/gate/entrypoint.sh /usr/local/bin/stalwart --config /portcullis/config/config.json &
-pid=$!
-trap 'kill -TERM "$pid" 2>/dev/null' TERM INT
-rc=0
-wait "$pid" || rc=$?
-# A signal interrupts the first wait: wait again for mailctl to stop its server.
-while kill -0 "$pid" 2>/dev/null; do wait "$pid" || rc=$?; done
-[ "$rc" -eq 0 ] || { echo "bootstrap: mailctl bootstrap failed (exit $rc)" >&2; exit "$rc"; }
-
-[ -s "$KEY" ] || { echo "bootstrap: no API key at $KEY" >&2; exit 1; }
-chmod 0640 "$KEY"
-echo "bootstrap: done"
+exec /portcullis/bin/mailctl bootstrap --job -- \
+  /bin/sh /portcullis/gate/entrypoint.sh /usr/local/bin/stalwart --config /portcullis/config/config.json
