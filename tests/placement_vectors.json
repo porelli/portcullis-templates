@@ -635,6 +635,126 @@
   }
  },
  {
+  "name": "delivers a settings secrets file",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "files": [
+    {
+     "name": "cfg",
+     "service": "app",
+     "mount": "/cfg"
+    }
+   ],
+   "settings": {
+    "options": [
+     {
+      "key": "api_key",
+      "label": "API key",
+      "type": "secret",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     },
+     {
+      "key": "theme",
+      "label": "Theme",
+      "type": "string",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "delivers a settings secrets file (only the primary can hand it to the app's reader)"
+   ]
+  }
+ },
+ {
+  "name": "a data file without a secret stays worker-placeable",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "files": [
+    {
+     "name": "cfg",
+     "service": "app",
+     "mount": "/cfg"
+    }
+   ],
+   "settings": {
+    "options": [
+     {
+      "key": "theme",
+      "label": "Theme",
+      "type": "string",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     },
+     {
+      "key": "token",
+      "label": "Token",
+      "type": "secret",
+      "scope": "instance",
+      "delivery": [
+       {
+        "env": "TOKEN"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
   "name": "has AI companions",
   "compose": "services:\n  app:\n    image: test:latest\n  companion:\n    image: mcp-server:latest\n",
   "manifest": {

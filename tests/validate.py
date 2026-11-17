@@ -8297,6 +8297,7 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     core_volume_reasons = []
     router_reasons = []
     person_secret_reasons = []
+    secret_file_reasons = []
     ai_mcp_reasons = []
     ai_chat_reasons = []
     vpn_reasons = []
@@ -8418,7 +8419,22 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
                         if reason not in person_secret_reasons:
                             person_secret_reasons.append(reason)
 
-    # Check for AI integration (fourth and fifth buckets)
+    # Check for secret options with file delivery (fourth bucket)
+    if isinstance(settings, dict):
+        options = settings.get("options", [])
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict):
+                    if opt.get("type") == "secret":
+                        delivery = opt.get("delivery", [])
+                        if isinstance(delivery, list):
+                            for d in delivery:
+                                if isinstance(d, dict) and d.get("file") is not None:
+                                    reason = "delivers a settings secrets file (only the primary can hand it to the app's reader)"
+                                    if reason not in secret_file_reasons:
+                                        secret_file_reasons.append(reason)
+
+    # Check for AI integration (fifth and sixth buckets)
     ai = manifest.get("ai")
     if isinstance(ai, dict):
         # ai.mcp: companions reason
@@ -8522,6 +8538,7 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     reasons.extend(core_volume_reasons)
     reasons.extend(router_reasons)
     reasons.extend(person_secret_reasons)
+    reasons.extend(secret_file_reasons)
     reasons.extend(ai_mcp_reasons)
     reasons.extend(ai_chat_reasons)
     reasons.extend(vpn_reasons)
