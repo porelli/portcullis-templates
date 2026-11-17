@@ -2463,8 +2463,8 @@ CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefi
                 "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
                 "mailctl_data", "link_doc"}
 # Core's network aliases that aren't service names (wg's metrics address
-# on portcullis-metrics-wg): reserved DNS names too (Hub coreAliases).
-CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics"}
+# on portcullis-metrics-wg, the Hub's usage metrics on portcullis-metrics-hub): reserved DNS names too (Hub coreAliases).
+CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics", "hub-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
@@ -2472,7 +2472,7 @@ CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portculli
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
                  "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
                  "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress",
-                 "portcullis-link", "portcullis-link-data"}
+                 "portcullis-link", "portcullis-link-data", "portcullis-metrics-hub"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
