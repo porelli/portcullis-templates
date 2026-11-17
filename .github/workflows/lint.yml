@@ -74,6 +74,22 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/vpn_vectors.json" -o /tmp/hub_vpn_vectors.json
           cmp tests/vpn_vectors.json /tmp/hub_vpn_vectors.json
 
+      # Mail vectors (the mail: block refusals) must match the Hub's copy
+      # (shared contract §3.5). Same-named branch if it exists, else main.
+      - name: Mail vectors match the Hub
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads https://github.com/porelli/portcullis-hub.git "refs/heads/$REF" >/dev/null 2>&1; then
+            hub_ref="$REF"
+          else
+            hub_ref="main"
+          fi
+          echo "Checking mail_vectors.json against portcullis-hub branch: $hub_ref"
+          curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/mail_vectors.json" -o /tmp/hub_mail_vectors.json
+          cmp tests/mail_vectors.json /tmp/hub_mail_vectors.json
+
       # headscale/vpn/glue.py against a fake Headscale REST API (stdlib).
       - name: headscale VPN glue unit tests
         run: python -m unittest discover -s tests/vpn -p 'test_*.py'

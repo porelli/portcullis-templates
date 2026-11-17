@@ -5186,5 +5186,182 @@ class VPNTests(Case):
                          {k: x for k, x in v6.items() if k != "version"})
 
 
+class TestMailVectorsMatchHub(unittest.TestCase):
+    """tests/mail_vectors.json is a byte copy of the Hub's
+    internal/templates/testdata/mail_vectors.json (a sibling Hub checkout
+    or PORTCULLIS_HUB_DIR; skipped without one; CI's lint fetches the Hub's
+    same-named branch, else main)."""
+
+    def test_byte_copy(self) -> None:
+        hub = os.environ.get("PORTCULLIS_HUB_DIR") or os.path.join(os.path.dirname(v.ROOT), "portcullis-hub")
+        path = os.path.join(hub, "internal", "templates", "testdata", "mail_vectors.json")
+        if not os.path.isfile(path):
+            self.skipTest(f"no Hub mail_vectors.json at {hub}")
+        with open(path, "rb") as f:
+            want = f.read()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_vectors.json"), "rb") as f:
+            self.assertEqual(f.read(), want)
+
+
+class MailTests(Case):
+    """The mail: block (contract §3.5), as the Hub's ValidateMail (shared
+    vectors tests/mail_vectors.json = Hub
+    internal/templates/testdata/mail_vectors.json, template id mailsrv)."""
+    run_raw = TestSettingsV3.run_raw
+    VECTOR_ID = "mailsrv"
+    MAIL_FAMILY = ("mail.", "mail:", "a mail template uses no YAML")
+
+    @staticmethod
+    def vectors() -> List[Dict[str, str]]:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_vectors.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_mail_vectors(self) -> None:
+        """Every vector's first mail_errors refusal is the Hub's want_error
+        (none for an ok vector)."""
+        vectors = self.vectors()
+        self.assertGreater(len(vectors), 40)
+        for vec in vectors:
+            with self.subTest(vec["name"]):
+                self.assertEqual(sorted(vec), ["compose", "manifest", "name", "want_error"])
+                want = vec["want_error"]
+                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]),
+                                    self.VECTOR_ID, vec["compose"])
+                self.assertEqual(got[:1], [want] if want else [], got)
+
+    def test_vectors_through_validate(self) -> None:
+        """The whole validator reports the vector's refusal (an ok vector
+        gives no mail refusal; the other repo rules may still fire on the
+        vectors' minimal templates)."""
+        for vec in self.vectors():
+            with self.subTest(vec["name"]):
+                errors, _ = self.run_raw(vec["manifest"], vec["compose"], self.VECTOR_ID)
+                texts = [t for e in errors for t in VPNTests.hub_texts(e)]
+                family = [e for e in errors if VPNTests.hub_texts(e)[0].startswith(self.MAIL_FAMILY)]
+                want = vec["want_error"]
+                if want == "":
+                    self.assertEqual(family, [], "\n".join(errors))
+                elif not ("merge keys" in want and any("tag:yaml.org,2002:merge" in e for e in errors)):
+                    self.assertIn(want, texts, "\n".join(errors))
+
+    def ok_vector(self) -> Dict[str, str]:
+        return next(x for x in self.vectors() if x["name"] == "stalwart-shaped ok")
+
+    def test_schema_mail_strict(self) -> None:
+        vec = self.ok_vector()
+        for name, old, new in [
+            ("top level", "  label: Stalwart\n", "  label: Stalwart\n  bogus: 1\n"),
+            ("api", "api: {service: adapter, port: 8080}", "api: {service: adapter, port: 8080, bogus: 1}"),
+            ("listeners", "imaps: 10993}", "imaps: 10993, bogus: 1}"),
+            ("sessions", "sessions: {restart: stalwart}", "sessions: {restart: stalwart, bogus: 1}"),
+            ("export", "{former_id}\"]}", "{former_id}\"], bogus: 1}"),
+        ]:
+            with self.subTest(name):
+                self.assertIn(old, vec["manifest"])
+                errors, _ = self.run_raw(vec["manifest"].replace(old, new, 1), vec["compose"], self.VECTOR_ID)
+                self.assertTrue([e for e in errors if "bogus" in e and "mail" in e], "\n".join(errors))
+
+    def test_edges(self) -> None:
+        """Shapes the vectors don't spell out (the Hub's TestMailFieldEdges
+        and its YAML node reading)."""
+        vec = self.ok_vector()
+        cases = [
+            ("label null", "label: Stalwart", "label:", "mail.label: 1–64 characters, one line"),
+            ("label a list", "label: Stalwart", "label: [a]", "mail.label: 1–64 characters, one line"),
+            ("api_version a string", "api_version: 1", "api_version: \"1\"", "mail.api_version: only 1"),
+            ("api not a mapping", "api: {service: adapter, port: 8080}", "api: adapter",
+             "mail.api: service  is not a service of this template"),
+            ("api port a string", "port: 8080}", "port: \"8080\"}", "mail.api: port must be 1024–65535"),
+            ("listeners a list", "listeners: {service: stalwart, smtp: 10025, submissions: 10465, submission: 10587, "
+             "imaps: 10993}", "listeners: [stalwart]",
+             "mail.listeners: exactly smtp, submissions, submission and imaps, on one service"),
+            ("listeners missing imaps", ", imaps: 10993}", "}",
+             "mail.listeners: exactly smtp, submissions, submission and imaps, on one service"),
+            ("listener port low", "submission: 10587", "submission: 587", "mail.listeners: port must be 1024–65535"),
+            ("tls a scalar", "tls: [stalwart, adapter]", "tls: stalwart",
+             "mail.tls: service stalwart is not a service of this template"),
+            ("gated with a number", "gated: [stalwart, adapter]", "gated: [stalwart, 1]",
+             "mail.gated: service  is not a service of this template"),
+            ("tls unknown service", "tls: [stalwart, adapter]", "tls: [stalwart, adapter, nope]",
+             "mail.tls: service nope is not a service of this template"),
+            ("server_metrics dotdot", "path: /metrics/prometheus", "path: /metrics/../x",
+             "mail.server_metrics.path: an absolute URL path"),
+            ("export two placeholders", '"--former", "{former_id}"', '"{former_id}", "{former_id}"',
+             "mail.export.argv: exactly one {former_id}"),
+            ("export embedded placeholder", '"--former", "{former_id}"', '"--former={former_id}", "{former_id}"',
+             "mail.export.argv: exactly one {former_id}"),
+            ("export empty argv", 'argv: ["mailctl", "export", "--former", "{former_id}"]', "argv: []",
+             "mail.export.argv: exactly one {former_id}"),
+            ("sessions.restart a job", "restart: stalwart}", "restart: bootstrap}", "mail.sessions.restart: bootstrap is a job"),
+            ("server_metrics optional", "  server_metrics: {service: stalwart, port: 9180, path: /metrics/prometheus}\n", "", ""),
+            ("export optional", '  export: {service: adapter, argv: ["mailctl", "export", "--former", "{former_id}"]}\n',
+             "", ""),
+        ]
+        for name, old, new, want in cases:
+            with self.subTest(name):
+                self.assertIn(old, vec["manifest"])
+                m = vec["manifest"].replace(old, new, 1)
+                got = v.mail_errors(v.yaml.safe_load(m), v.yaml.safe_load(vec["compose"]), self.VECTOR_ID, vec["compose"])
+                self.assertEqual(got[:1], [want] if want else [], got)
+
+    def test_compose_edges(self) -> None:
+        vec = self.ok_vector()
+        cases = [
+            ("enable_ipv6 false", "  egress: {}\n", "  egress: {enable_ipv6: false}\n", ""),
+            ("enable_ipv6 null", "  egress: {}\n", "  egress: {enable_ipv6: null}\n", "mail: network egress enables IPv6"),
+            ("traefik label as a list", "  adapter:\n    image: x\n", "  adapter:\n    image: x\n    labels: [\"traefik.enable=false\"]\n",
+             "mail: service adapter has a Traefik router: a mail provider's only router is the Hub's well-known router"),
+            ("long-syntax bind read-only", "      - ./templates/mailsrv/unbound.conf:/etc/unbound/unbound.conf:ro\n",
+             "      - {type: bind, source: ./templates/mailsrv/unbound.conf, target: /etc/unbound/unbound.conf, read_only: true}\n", ""),
+            ("long-syntax bind read-write", "      - ./templates/mailsrv/unbound.conf:/etc/unbound/unbound.conf:ro\n",
+             "      - {type: bind, source: ./templates/mailsrv/unbound.conf, target: /etc/unbound/unbound.conf}\n",
+             "mail: resolver mounts ./templates/mailsrv/unbound.conf: a mail provider binds only the template's own files "
+             "(./templates/mailsrv/…), read-only"),
+            ("bind of another template", "./templates/mailsrv/unbound.conf:/etc/unbound/unbound.conf:ro",
+             "./templates/other/unbound.conf:/etc/unbound/unbound.conf:ro",
+             "mail: resolver mounts ./templates/other/unbound.conf:/etc/unbound/unbound.conf:ro: a mail provider binds only "
+             "the template's own files (./templates/mailsrv/…), read-only"),
+            ("absolute bind", "./templates/mailsrv/unbound.conf:/etc/unbound/unbound.conf:ro",
+             "/etc/unbound.conf:/etc/unbound/unbound.conf:ro",
+             "mail: resolver mounts /etc/unbound.conf:/etc/unbound/unbound.conf:ro: a mail template's binds start with ./ "
+             "and have no .. segment"),
+            ("pid null still set", "  resolver:\n    image: x\n", "  resolver:\n    image: x\n    pid:\n",
+             "mail: resolver sets pid: a mail provider keeps its own pid and ipc namespaces"),
+            ("volume driver", "  data: {}\n", "  data: {driver: local}\n",
+             "mail: volume data sets driver: a mail template's volumes are plain <project>_<key> volumes"),
+        ]
+        for name, old, new, want in cases:
+            with self.subTest(name):
+                self.assertIn(old, vec["compose"])
+                c = vec["compose"].replace(old, new, 1)
+                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c)
+                self.assertEqual(got[:1], [want] if want else [], got)
+
+    def test_bind_symlink_escape(self) -> None:
+        """A bind under ./templates/<id>/ resolving outside it (Hub
+        bindEscapes, the text the vectors can't carry)."""
+        vec = self.ok_vector()
+        d = os.path.join(self.tmp.name, self.VECTOR_ID)
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "gate.sh"), "w").close()
+        os.symlink("/etc", os.path.join(d, "out"))
+        c = vec["compose"].replace("./templates/mailsrv/unbound.conf:", "./templates/mailsrv/out/unbound.conf:", 1)
+        errors, _ = self.run_raw(vec["manifest"], c, self.VECTOR_ID)
+        self.assertError(errors, "mail: resolver mounts ./templates/mailsrv/out/unbound.conf:/etc/unbound/unbound.conf:ro: "
+                                 "it resolves outside templates/mailsrv/ (a symlink)")
+
+    def test_reserved_slot_names(self) -> None:
+        """The mail slot's names (contract §3 "Mail slot names", plan P9)."""
+        self.assertIn("mail_slot", v.CORE_VOLUMES)
+        self.assertIn("portcullis-mail-api", v.CORE_NETWORKS)
+        for a in ("mail-api", "mail-provider-metrics", "mail-provider-server-metrics"):
+            self.assertIn(a, v.CORE_ALIASES)
+        self.assertIn("portcullis-mail-wellknown", v.CORE_TRAEFIK_NAMES["routers"])
+        self.assertIn("portcullis-mail-wellknown", v.CORE_TRAEFIK_NAMES["services"])
+        # The removed mail core names stay until core has merged (P9).
+        for n in ("mail", "mailctl", "mail-resolver"):
+            self.assertIn(n, v.CORE_SERVICES)
+
+
 if __name__ == "__main__":
     unittest.main()
