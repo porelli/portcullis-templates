@@ -1,7 +1,8 @@
 #!/bin/sh
 # The stalwart template's bootstrap job (contract §19.4 via the stalwart
 # app page; Rulings T3-a, T17-a, T17-c): runs in the Stalwart image as uid
-# 2000 with primary gid 2010 (mailkey), cap_drop ALL and no capability,
+# 2000 with primary gid 2010 (mailkey), cap_drop ALL plus NET_BIND_SERVICE
+# only (Ruling T17-a amended: the Stalwart binary's file capability),
 # before `stalwart` and `adapter` (service_completed_successfully).
 #
 # 0. The slot gate (entrypoint.sh --check): unwired, or a void owed
@@ -11,13 +12,15 @@
 #    server is running on this store (a later `up` re-runs the job): exit 0
 #    without opening the store; RocksDB's own LOCK stays the backstop.
 # 2. The job's mark in its job-only tmpfs: the gate wrapper lets the job's
-#    own server child start without the slot gate and the store lock.
+#    own server child start without the store lock (it re-checks the slot
+#    gate).
 # 3. `mailctl bootstrap --job` (the binary adapter-bin copied from the
 #    pinned adapter image) takes its own lock in the store
 #    ($MAILCTL_STORE_DIR) and runs the base plan once per store: the server
 #    as its own child through the gate wrapper, in recovery mode with a
 #    password made inside the job, the plan, the API key written 0640
-#    (group mailkey) to $MAILCTL_API_KEY_FILE in the key volume, a normal
+#    (group mailkey) to $MAILCTL_API_KEY_FILE in the key volume (its own
+#    files, .server-image, in job_data at $MAILCTL_DATA), a normal
 #    start that must refuse the recovery login, then the store's marker. A
 #    marked store with its key starts nothing (after a server image change,
 #    one start with the role-permission update).

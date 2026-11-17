@@ -5211,6 +5211,13 @@ class MailTests(Case):
     VECTOR_ID = "mailsrv"
     MAIL_FAMILY = ("mail.", "mail:", "a mail template uses no YAML")
 
+    def errors(self, manifest: str, compose: str) -> List[str]:
+        """mail_errors as check_mail calls it: both files read with the
+        validator's own YAML 1.2 loader, the manifest's text for the
+        Hub's integer reading."""
+        load = lambda text: v.yaml.load(text, Loader=v._UniqueKeyLoader)  # noqa: E731,S506
+        return v.mail_errors(load(manifest), load(compose), self.VECTOR_ID, compose, None, manifest)
+
     @staticmethod
     def vectors() -> List[Dict[str, str]]:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_vectors.json"), encoding="utf-8") as f:
@@ -5225,8 +5232,7 @@ class MailTests(Case):
             with self.subTest(vec["name"]):
                 self.assertEqual(sorted(vec), ["compose", "manifest", "name", "want_error"])
                 want = vec["want_error"]
-                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(vec["compose"]),
-                                    self.VECTOR_ID, vec["compose"])
+                got = self.errors(vec["manifest"], vec["compose"])
                 self.assertEqual(got[:1], [want] if want else [], got)
 
     def test_vectors_through_validate(self) -> None:
@@ -5243,6 +5249,9 @@ class MailTests(Case):
                     self.assertEqual(family, [], "\n".join(errors))
                 elif not ("merge keys" in want and any("tag:yaml.org,2002:merge" in e for e in errors)):
                     self.assertIn(want, texts, "\n".join(errors))
+                    # check_mail reports only the Hub's first refusal.
+                    mine = [VPNTests.hub_texts(e)[0] for e in errors if v.MAIL_BLOCK_HINT in e]
+                    self.assertEqual(mine, [want], "\n".join(errors))
 
     def ok_vector(self) -> Dict[str, str]:
         return next(x for x in self.vectors() if x["name"] == "stalwart-shaped ok")
@@ -5301,8 +5310,49 @@ class MailTests(Case):
             with self.subTest(name):
                 self.assertIn(old, vec["manifest"])
                 m = vec["manifest"].replace(old, new, 1)
-                got = v.mail_errors(v.yaml.safe_load(m), v.yaml.safe_load(vec["compose"]), self.VECTOR_ID, vec["compose"])
+                got = self.errors(m, vec["compose"])
                 self.assertEqual(got[:1], [want] if want else [], got)
+
+    def test_integers_as_the_hub_reads_them(self) -> None:
+        """M1: every integer of the mail: block is the Hub's scalarInt: a
+        yaml.v3 !!int whose text strconv.Atoi parses. 0x / 0o / 0b /
+        underscores aren't integers (the Hub refuses them), a leading zero
+        is decimal (017620 is 17620, not octal 8080), a quoted or tagged
+        string isn't one; !!int "10025" is."""
+        vec = self.ok_vector()
+        port = "mail.{f}: port must be 1024–65535"
+        cases = []
+        for f, old in (("api", "api: {service: adapter, port: 8080}"), ("wellknown", "wellknown: {service: adapter, port: 8081}"),
+                       ("metrics", "metrics: {service: adapter, port: 9100}"),
+                       ("server_metrics", "server_metrics: {service: stalwart, port: 9180, path: /metrics/prometheus}")):
+            n = old.split("port: ")[1].split(",")[0].rstrip("}")
+            for spelling in (hex(int(n)), "0o" + format(int(n), "o"), "0b" + format(int(n), "b"), n[:1] + "_" + n[1:]):
+                cases.append((f"{f} {spelling}", old, old.replace(f"port: {n}", f"port: {spelling}"), port.format(f=f)))
+            cases.append((f"{f} quoted", old, old.replace(f"port: {n}", f'port: "{n}"'), port.format(f=f)))
+        for k, n in (("smtp", "10025"), ("submissions", "10465"), ("submission", "10587"), ("imaps", "10993")):
+            old = f"{k}: {n}"
+            for spelling in (hex(int(n)), "0o" + format(int(n), "o"), n[:2] + "_" + n[2:], f'"{n}"'):
+                cases.append((f"listeners.{k} {spelling}", old, f"{k}: {spelling}", "mail.listeners: port must be 1024–65535"))
+        for spelling in ("0b1", "0x1", "0o1", "+0b1", '"1"', "!!str 1"):
+            cases.append((f"api_version {spelling}", "api_version: 1", f"api_version: {spelling}", "mail.api_version: only 1"))
+        cases += [
+            # Read as decimal: the same number to both sides.
+            ("leading zero is decimal (api port 017620 = 17620, valid)", "port: 8080}", "port: 017620}", ""),
+            ("leading zero api_version 01 = 1", "api_version: 1", "api_version: 01", ""),
+            ("leading zero listener port 0587 = 587, out of range", "submission: 10587", "submission: 0587",
+             "mail.listeners: port must be 1024–65535"),
+            ("explicit !!int on a quoted port", "smtp: 10025", 'smtp: !!int "10025"', ""),
+            ("a sign", "port: 8080}", "port: +8080}", ""),
+        ]
+        for name, old, new, want in cases:
+            with self.subTest(name):
+                self.assertIn(old, vec["manifest"])
+                got = self.errors(vec["manifest"].replace(old, new, 1), vec["compose"])
+                self.assertEqual(got[:1], [want] if want else [], got)
+        # The whole validator reports the same refusal (check_mail reads
+        # the manifest file).
+        errors, _ = self.run_raw(vec["manifest"].replace("port: 8080}", "port: 0x1F90}", 1), vec["compose"], self.VECTOR_ID)
+        self.assertError(errors, "mail.api: port must be 1024–65535")
 
     def test_compose_edges(self) -> None:
         vec = self.ok_vector()
@@ -5334,7 +5384,7 @@ class MailTests(Case):
             with self.subTest(name):
                 self.assertIn(old, vec["compose"])
                 c = vec["compose"].replace(old, new, 1)
-                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c)
+                got = self.errors(vec["manifest"], c)
                 self.assertEqual(got[:1], [want] if want else [], got)
 
     def test_bind_symlink_escape(self) -> None:
@@ -5358,7 +5408,7 @@ class MailTests(Case):
         self.assertFalse([e for e in errors if "networks." in e or "needs an explicit 'name:" in e], "\n".join(errors))
         c = vec["compose"].replace("  egress: {}\n", "  egress: {name: some-net}\n", 1)
         errors, _ = self.run_raw(vec["manifest"], c, self.VECTOR_ID)
-        self.assertError(errors, "networks.egress: a mail template's networks are its project's own (no name:, no external:)")
+        self.assertError(errors, f"mail: network egress sets name: {v.MAIL_NETWORK_TEXT}")
 
     def test_mail_network_keys(self) -> None:
         """A mail template's networks are plain project networks (security
@@ -5390,13 +5440,13 @@ class MailTests(Case):
             with self.subTest(name):
                 self.assertIn("  internal: {internal: true}\n", vec["compose"])
                 c = vec["compose"].replace("  internal: {internal: true}\n", f"  internal: {decl}\n", 1)
-                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c)
+                got = self.errors(vec["manifest"], c)
                 self.assertEqual(got[:1], [f"mail: network internal sets {key}: {text}"] if key else [], got)
         # enable_ipv6 at its own position: after a refused key, that key wins.
         for decl, want in (("{enable_ipv6: true, driver: macvlan}", "mail: network egress enables IPv6"),
                            ("{driver: macvlan, enable_ipv6: true}", f"mail: network egress sets driver: {text}")):
             c = vec["compose"].replace("  egress: {}\n", f"  egress: {decl}\n", 1)
-            self.assertEqual(v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c), [want])
+            self.assertEqual(self.errors(vec["manifest"], c), [want])
 
     def test_reserved_slot_names(self) -> None:
         """The mail slot's names (contract §3 "Mail slot names", plan P9)."""

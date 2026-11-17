@@ -950,16 +950,13 @@ def check_compose(t: Template, r: Report) -> None:
         r.error(t.c_where, "network 'portcullis' is wrong; frontends join the external network 'portcullis-proxy'")
     trust_nets = trust_networks(t, services)
     # A mail provider (contracts §3.5, §19.1) keeps its server on its own
-    # networks (an internal one, an egress one): project networks, never
-    # named or external (the Hub's override attaches it to core's).
+    # networks (an internal one, an egress one): check_mail judges every
+    # one of them by the Hub's allowlist (mail_network_refusal).
     mail_provider = isinstance(m.get("mail"), dict)
     for name, spec in top_nets.items():
         if name in trust_nets:
             continue  # check_ai's check_trust_network judges it
         if mail_provider and name not in ("default", PROXY_NET):
-            if isinstance(spec, dict) and (spec.get("name") is not None or spec.get("external") not in (None, False)):
-                r.error(t.c_where, f"networks.{name}: a mail template's networks are its project's own (no name:, no external:)",
-                        MAIL_HINT)
             continue
         if name == PROXY_NET:
             if not (isinstance(spec, dict) and spec.get("external") is True):
@@ -7049,23 +7046,32 @@ def _cap_name(c: Any) -> str:
     return t[4:] if t.startswith("CAP_") else t
 
 
-def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
+# A block's privilege texts (the Hub's capWords): the refusal's location,
+# who may add only NET_BIND_SERVICE, the devices refusal.
+VPN_CAP_WORDS = ("vpn.ingress.service: ", "a VPN gateway", "a VPN gateway runs userspace (no devices)")
+MAIL_CAP_WORDS = ("mail: ", "a mail provider", "a mail provider has no devices")
+
+
+def vpn_privilege_problem(n: str, sv: Dict[str, Any], words: Tuple[str, str, str] = VPN_CAP_WORDS) -> str:
     """Ruling (Task 19, security review): a VPN gateway and every service in
     its namespace run userspace, by allowlist: privileged absent or literally
     false, cap_drop includes ALL, cap_add only NET_BIND_SERVICE (anything
     else, interpolation included, refused), no devices, no
     device_cgroup_rules. With NET_ADMIN a gateway could take another
-    gateway's address on portcullis-vpn (final review I6)."""
+    gateway's address on portcullis-vpn (final review I6). words are the
+    block's texts (Hub namespaceCaps' capWords: VPN_CAP_WORDS,
+    MAIL_CAP_WORDS)."""
+    loc, who, devices = words
     if "privileged" in sv and not (sv["privileged"] is False or sv["privileged"] == "false"):
-        return f"vpn.ingress.service: {n} is privileged"
+        return f"{loc}{n} is privileged"
     if "ALL" not in {_cap_name(c) for c in as_list(sv.get("cap_drop"))}:
-        return f"vpn.ingress.service: {n} must set cap_drop: [ALL]"
+        return f"{loc}{n} must set cap_drop: [ALL]"
     for c in as_list(sv.get("cap_add")):
         if _cap_name(c) not in VPN_ALLOWED_CAPS:
-            return f"vpn.ingress.service: {n} adds {scalar_text(c).strip()}: a VPN gateway may add only NET_BIND_SERVICE"
+            return f"{loc}{n} adds {scalar_text(c).strip()}: {who} may add only NET_BIND_SERVICE"
     for key in ("devices", "device_cgroup_rules"):
         if key in sv:
-            return f"vpn.ingress.service: {n} has {key}: a VPN gateway runs userspace (no devices)"
+            return f"{loc}{n} has {key}: {devices}"
     return ""
 
 
@@ -7192,7 +7198,7 @@ def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
 # same texts in the same order; shared vectors tests/mail_vectors.json =
 # Hub internal/templates/testdata/mail_vectors.json.
 
-MAIL_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.5, the mail: block)"
+MAIL_BLOCK_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.5, the mail: block)"
 MAIL_LABEL_MAX = 64
 MAIL_FORMER_ID_ARG = "{former_id}"
 MAIL_TOP_KEYS = ("label", "api_version", "api", "listeners", "wellknown", "metrics", "server_metrics", "tls", "gated",
@@ -7219,8 +7225,76 @@ def _mail_str(v: Any) -> str:
 
 
 def _mail_int(v: Any) -> Optional[int]:
-    """scalarInt: a plain YAML integer (never a quoted or boolean one)."""
+    """scalarInt: a plain YAML integer (never a quoted or boolean one).
+    With the manifest's text, mail_errors first replaces every integer
+    field by mail_int_view's reading (the Hub's)."""
+    if isinstance(v, _MailNotInt):
+        return None
     return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+class _MailNotInt(str):
+    """A scalar the Hub's scalarInt doesn't read as an integer (its YAML
+    tag isn't !!int, or its text fails strconv.Atoi: 0x1F90, 0b1, 0o17,
+    8_080)."""
+
+
+_GO_ATOI_RE = re.compile(r"[+-]?[0-9]+")
+MAIL_INT_FIELDS = {"api_version": None, "api": ("port",), "wellknown": ("port",), "metrics": ("port",),
+                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS}
+
+
+def go_atoi(text: str) -> Optional[int]:
+    """strconv.Atoi: an optional sign and decimal digits only (leading
+    zeros read as decimal, no underscores, no 0x / 0o / 0b), int64."""
+    if not _GO_ATOI_RE.fullmatch(text):
+        return None
+    n = int(text, 10)
+    return n if INT64_MIN <= n <= INT64_MAX else None
+
+
+def _mail_scalar_int(node: yaml.Node) -> Any:
+    """scalarInt over a node: the Hub's integer (yaml.v3 tag !!int, then
+    Atoi of the text as written), else _MailNotInt."""
+    if v3_tag(node) == "!!int":
+        n = go_atoi(node.value)
+        if n is not None:
+            return n
+    return _MailNotInt(node.value)
+
+
+def mail_int_view(b: Dict[str, Any], manifest_text: str) -> Dict[str, Any]:
+    """The mail: block with its integer fields (api_version and every
+    port) read as the Hub's scalarInt reads them from the manifest's node
+    graph: 017620 is 17620 (not octal 8080), 0x1F90 / 0b1 / 8_080 aren't
+    integers. Other values stay as parsed; on a YAML error, b itself."""
+    try:
+        root = yaml.compose(manifest_text, Loader=_IDNodeLoader)
+    except yaml.YAMLError:
+        return b
+    if not isinstance(root, yaml.MappingNode):
+        return b
+    mail = next((v for k, v in root.value if isinstance(k, yaml.ScalarNode) and k.value == "mail"), None)
+    if not isinstance(mail, yaml.MappingNode):
+        return b
+    out = dict(b)
+    for k, v in mail.value:
+        key = k.value if isinstance(k, yaml.ScalarNode) else None
+        if key not in MAIL_INT_FIELDS or key not in out:
+            continue
+        subs = MAIL_INT_FIELDS[key]
+        if subs is None:
+            if isinstance(v, yaml.ScalarNode):
+                out[key] = _mail_scalar_int(v)
+            continue
+        if not isinstance(v, yaml.MappingNode) or not isinstance(out[key], dict):
+            continue
+        sub = dict(out[key])
+        for sk, sv in v.value:
+            if isinstance(sk, yaml.ScalarNode) and sk.value in subs and sk.value in sub and isinstance(sv, yaml.ScalarNode):
+                sub[sk.value] = _mail_scalar_int(sv)
+        out[key] = sub
+    return out
 
 
 def _mail_strings(v: Any) -> Optional[List[str]]:
@@ -7302,7 +7376,7 @@ def mail_unknown_key(b: Any) -> str:
 
 
 def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[str] = None,
-                tdir: Optional[str] = None) -> List[str]:
+                tdir: Optional[str] = None, manifest_text: Optional[str] = None) -> List[str]:
     """ValidateMail: the mail: block of manifest m against compose file
     compose (template id app_id, compose_text its text, tdir the template
     directory for the symlink check, none without one), the Hub's first
@@ -7316,6 +7390,8 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
     if k:
         return [f"mail: unknown key {k}"]
     b = b if isinstance(b, dict) else {}
+    if manifest_text is not None:
+        b = mail_int_view(b, manifest_text)
     services = (compose or {}).get("services") if isinstance(compose, dict) else None
     services = {str(n): (sv if isinstance(sv, dict) else {}) for n, sv in services.items()} \
         if isinstance(services, dict) else {}
@@ -7435,11 +7511,9 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             return [f"mail: service {n} publishes ports: the Hub publishes a mail provider's ports"]
         if any(fold_key(k).startswith("traefik.") for k in labels_of(sv)):
             return [f"mail: service {n} has a Traefik router: a mail provider's only router is the Hub's well-known router"]
-        why = vpn_privilege_problem(n, sv)
+        why = vpn_privilege_problem(n, sv, MAIL_CAP_WORDS)
         if why:
-            return ["mail: " + why[len("vpn.ingress.service: "):]
-                    .replace("a VPN gateway may add", "a mail provider may add")
-                    .replace("a VPN gateway runs userspace (no devices)", "a mail provider has no devices")]
+            return [why]
         for key in ("pid", "ipc"):
             if key in sv:
                 return [f"mail: {n} sets {key}: a mail provider keeps its own pid and ipc namespaces"]
@@ -7493,9 +7567,14 @@ def check_mail(t: Template, services: Dict[str, Any], r: Report) -> None:
             text: Optional[str] = f.read()
     except OSError:
         text = None
+    try:
+        with open(t.manifest_path, encoding="utf-8") as f:
+            mtext: Optional[str] = f.read()
+    except OSError:
+        mtext = None
     compose = dict(t.compose or {}, services=services)
-    for e in mail_errors(m, compose, t.id, text, os.path.join(ROOT, t.id)):
-        r.error(t.m_where, e, MAIL_HINT)
+    for e in mail_errors(m, compose, t.id, text, os.path.join(ROOT, t.id), mtext):
+        r.error(t.m_where, e, MAIL_BLOCK_HINT)
 
 
 # ── One-off jobs and setup options (contracts §3, §13.18) ──────────

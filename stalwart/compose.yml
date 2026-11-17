@@ -7,21 +7,24 @@
 # gated services refuse to start (stalwart: gate/entrypoint.sh; adapter:
 # mailctl's own start check).
 #
-# Every service: cap_drop ALL (only stalwart adds NET_BIND_SERVICE: the
-# image's binary carries that file capability and can't run without it in
-# its bounding set), no-new-privileges, read-only root, an explicit
+# Every service: cap_drop ALL (stalwart and the bootstrap job add only
+# NET_BIND_SERVICE, the one capability contract §3.5 allows, Ruling T17-a
+# amended: the Stalwart binary carries it as a file capability and can't be
+# exec'd without it in the bounding set), no-new-privileges, read-only root, an explicit
 # pids_limit (rootless Podman through the Docker CLI otherwise gives
 # pids.max = 1), no ports, no Traefik labels, no anchors.
 #
 # Volume ownership without CHOWN (Ruling T17-a, checked on Docker 29 and
 # rootless Podman 4.9): a volume takes the owner of the image directory it
 # is first mounted on (Docker's copy-up, Podman's first-mount chown), so
-#   - data (the RocksDB store) and adapter_key are first mounted by the
-#     Stalwart image at its 2000-owned /var/lib/stalwart and /etc/stalwart;
-#     the adapter mounts adapter_key at a path its image doesn't have
-#     (nothing is copied again);
-#   - adapter_data and mailctl_bin by the mailctl image at its 10010-owned
-#     /data.
+#   - data (the RocksDB store) and job_data (the job's own files) are
+#     first mounted by the Stalwart image at its 2000-owned
+#     /var/lib/stalwart and /etc/stalwart;
+#   - adapter_data, mailctl_bin and adapter_key by the mailctl image at its
+#     10010-owned /data; key-init then makes adapter_key 2770 10010:2010
+#     (the owner may, without CHOWN), and the job and the adapter mount it
+#     at a path neither image has (nothing is copied again). adapter_key
+#     holds the API key alone.
 services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
@@ -35,6 +38,24 @@ services:
     network_mode: none
     volumes:
       - mailctl_bin:/data
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+    mem_limit: 64m
+    pids_limit: 32
+    restart: "no"
+
+  # Prepares the key volume (gate/key-init.sh): 2770 10010:2010, only
+  # api-key in it. No network.
+  key-init:
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
+    user: "10010:10010"
+    group_add: ["2010"]
+    entrypoint: ["/bin/sh", "/portcullis/gate/key-init.sh"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    network_mode: none
+    volumes:
+      - adapter_key:/data
       - ./templates/stalwart/gate:/portcullis/gate:ro
     mem_limit: 64m
     pids_limit: 32
@@ -64,8 +85,9 @@ services:
       MAILCTL_RULES_ADDR: 172.31.255.3:8082
       MAILCTL_LOCAL_RESOLVER: 172.31.255.4:5353
       MAILCTL_RESOLVERS: 172.31.255.4:5353
+      # The job's own files (job_data; .server-image).
       MAILCTL_DATA: /etc/stalwart
-      MAILCTL_API_KEY_FILE: /etc/stalwart/api-key
+      MAILCTL_API_KEY_FILE: /run/portcullis/stalwart-key/api-key
       # The store volume: mailctl's lock and the base plan's marker.
       MAILCTL_STORE_DIR: /var/lib/stalwart
       MAILCTL_JOB_SESSION_FILE: /run/portcullis/bootstrap/session
@@ -79,14 +101,17 @@ services:
       - /run/portcullis/bootstrap:size=1m,mode=1777
     volumes:
       - data:/var/lib/stalwart
-      # The key volume, here at the image's 2000-owned /etc/stalwart.
-      - adapter_key:/etc/stalwart
+      # The job's own volume at the image's 2000-owned /etc/stalwart.
+      - job_data:/etc/stalwart
+      # The key volume (key-init: 2770 10010:2010).
+      - adapter_key:/run/portcullis/stalwart-key
       - mailctl_bin:/portcullis/bin:ro
       - ./templates/stalwart/gate:/portcullis/gate:ro
       - ./templates/stalwart/config:/portcullis/config:ro
     networks: [internal]
     depends_on:
       adapter-bin: {condition: service_completed_successfully}
+      key-init: {condition: service_completed_successfully}
       resolver: {condition: service_started}
     mem_limit: 1g
     pids_limit: 512
@@ -222,4 +247,5 @@ volumes:
   data: {}
   adapter_data: {}
   adapter_key: {}
+  job_data: {}
   mailctl_bin: {}

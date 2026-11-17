@@ -33,19 +33,28 @@ auth:
     API, the well-known files, the spam rules, the checks and metrics; the
     only holder of Stalwart's API key), resolver (Unbound, a validating
     recursive resolver for the two), and two one-off jobs: adapter-bin
-    copies the pinned mailctl into a volume, and bootstrap runs Stalwart in
+    copies the pinned mailctl into a volume, key-init prepares the key
+    volume (it holds the API key alone), and bootstrap runs Stalwart in
     recovery mode inside its own container only (a random recovery password
-    made in the job, a job-only session nonce), applies the base plan, writes
-    the API key (0640, group mailkey, in a volume only the job and the
-    adapter mount) and exits 0 only once the recovery login is refused. It
-    runs as Stalwart's uid with no added capability, re-runs on every cold
-    start, and does nothing while the server holds the store lock.
+    made in the job, a job-only session nonce), applies the base plan once
+    per store, writes the API key (0640, group mailkey, in the key volume
+    only the job and the adapter mount) and exits 0 only once the recovery
+    login is refused. It runs as Stalwart's uid, adds only NET_BIND_SERVICE
+    (the Stalwart binary's file capability; no other), is gated like the
+    server, re-runs on every cold start and does nothing while the server
+    holds the store lock.
     Start gate: stalwart starts only when the Hub's slot files say so
     (.present, or the Hub's void mode with its session nonce); a raw compose
     up after a core restore stays stopped. A recovery-mode start outside the
     bootstrap job is refused.
-    Networks: internal (no internet; pinned 172.31.255.2 / .3 / .4) and
-    egress (stalwart and the resolver only). Mail over IPv6 isn't supported.
+    Networks: internal (no internet; pinned 172.31.255.2 / .3 / .4 in the
+    fixed subnet 172.31.255.0/28: an existing network on that range stops
+    the start) and egress (stalwart and the resolver only). Mail over IPv6
+    isn't supported.
+    The dqs_key setting reaches the adapter as an environment variable (the
+    adapter moves it to a file before mailctl starts), so it shows in the
+    adapter container's configuration (docker inspect): a third-party lookup
+    key, not a Portcullis credential.
     Updates: Stalwart is pinned; any change to this template (an image bump
     included) holds the wired provider until an admin re-confirms it on the
     instance's Mail tab.
@@ -54,7 +63,7 @@ tests:
   signin:
     skip: router-less mail provider, no web page (tests/apps/stalwart.sh checks the template)
 
-jobs: [adapter-bin, bootstrap]
+jobs: [adapter-bin, key-init, bootstrap]
 
 mail:
   label: Stalwart
