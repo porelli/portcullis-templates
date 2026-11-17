@@ -5435,6 +5435,20 @@ class MailTests(Case):
             ("ipam.config entry not a mapping", "{ipam: {config: [10.0.0.0/24]}}", "ipam.config"),
             ("ipam gateway", "{ipam: {config: [{subnet: 10.0.0.0/24, gateway: 10.0.0.1}]}}", "ipam.config.gateway"),
             ("ipam aux_addresses", "{ipam: {config: [{subnet: 10.0.0.0/24, aux_addresses: {a: 10.0.0.5}}]}}", "ipam.config.aux_addresses"),
+            # IPv4 only (Hub f2a8b6b): netip.ParsePrefix + Is4.
+            ("ipam IPv6 subnet", "{ipam: {config: [{subnet: \"fd00::/64\"}]}}", "ipam.config.subnet"),
+            ("ipam IPv6 ip_range", "{ipam: {config: [{subnet: 10.0.0.0/24, ip_range: \"fd00::/80\"}]}}", "ipam.config.ip_range"),
+            ("ipam IPv4-mapped subnet", "{ipam: {config: [{subnet: \"::ffff:10.0.0.0/120\"}]}}", "ipam.config.subnet"),
+            ("ipam unparsable subnet", "{ipam: {config: [{subnet: banana}]}}", "ipam.config.subnet"),
+            ("ipam subnet without bits", "{ipam: {config: [{subnet: 10.0.0.0}]}}", "ipam.config.subnet"),
+            ("ipam subnet octet leading zero", "{ipam: {config: [{subnet: 10.0.0.010/24}]}}", "ipam.config.subnet"),
+            ("ipam subnet bits 33", "{ipam: {config: [{subnet: 10.0.0.0/33}]}}", "ipam.config.subnet"),
+            ("ipam subnet bits leading zero", "{ipam: {config: [{subnet: 10.0.0.0/024}]}}", "ipam.config.subnet"),
+            ("ipam subnet octet 256", "{ipam: {config: [{subnet: 10.0.0.256/24}]}}", "ipam.config.subnet"),
+            ("ipam subnet a number", "{ipam: {config: [{subnet: 1}]}}", "ipam.config.subnet"),
+            ("ipam subnet a list", "{ipam: {config: [{subnet: [10.0.0.0/24]}]}}", "ipam.config.subnet"),
+            ("ipam host bits set ok", "{ipam: {config: [{subnet: 10.0.0.1/24}]}}", ""),
+            ("ipam /32 and /0 ok", "{ipam: {config: [{subnet: 10.0.0.1/32, ip_range: 0.0.0.0/0}]}}", ""),
         ]
         for name, decl, key in cases:
             with self.subTest(name):

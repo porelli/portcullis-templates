@@ -7318,6 +7318,17 @@ MAIL_NETWORK_TEXT = ("a mail template's networks are plain project networks (int
                      "enable_ipv6: false)")
 
 
+_GO_IPV4_PREFIX_RE = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/(0|[1-9][0-9]?)")
+
+
+def go_ipv4_prefix(text: str) -> bool:
+    """netip.ParsePrefix(text) succeeds and its address Is4: dotted
+    decimal, each octet 0-255 without a leading zero, bits 0-32 without a
+    leading zero, no zone (an IPv4-mapped IPv6 form isn't Is4)."""
+    m = _GO_IPV4_PREFIX_RE.fullmatch(text)
+    return bool(m) and all(int(o) <= 255 for o in m.groups()[:4]) and int(m.group(5)) <= 32
+
+
 def mail_network_refusal(nets: Any) -> str:
     """mailNetworkRefusal: per top-level network (file order), its keys in
     file order; enable_ipv6 anything but false is the IPv6 refusal at its
@@ -7351,9 +7362,14 @@ def mail_network_refusal(nets: Any) -> str:
                     for c in iv:
                         if not isinstance(c, dict):
                             return sets("ipam.config")
-                        for ck in c:
-                            if scalar_text(ck) not in ("subnet", "ip_range"):
-                                return sets("ipam.config." + scalar_text(ck))
+                        for ck, cv in c.items():
+                            ck = scalar_text(ck)
+                            if ck not in ("subnet", "ip_range"):
+                                return sets("ipam.config." + ck)
+                            # IPv4 only (enable_ipv6 is false): an IPv6 or
+                            # unparsable range is refused (Hub f2a8b6b).
+                            if isinstance(cv, (dict, list)) or not go_ipv4_prefix(scalar_text(cv)):
+                                return sets("ipam.config." + ck)
             else:
                 return sets(k)
     return ""
