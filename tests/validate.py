@@ -7467,6 +7467,56 @@ def mail_core_network(nets: Any) -> str:
     return ""
 
 
+_GO_IPV4_RE = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})")
+
+
+def _service_nets(sv: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    """A service's networks in file order: (name, its config or None)."""
+    nets = sv.get("networks")
+    if isinstance(nets, dict):
+        return [(scalar_text(k), v) for k, v in nets.items()]
+    if isinstance(nets, list):
+        return [(scalar_text(n), None) for n in nets]
+    return []
+
+
+def mail_service_networks(services: Dict[str, Dict[str, Any]], nets: Any) -> str:
+    """Hub RR2-H1 (contract §3.5): every service joins only networks the
+    template declares at the top level (list or mapping form), then a
+    fixed address is an ipv4_address inside a declared ipam subnet of that
+    network (ipv6_address and link_local_ips always refused). Services in
+    compose order, their networks in file order; "" = none."""
+    top = nets if isinstance(nets, dict) else {}
+    declared = {scalar_text(k) for k in top}
+    for s, sv in services.items():
+        for n, _ in _service_nets(sv):
+            if n not in declared:
+                return f"mail: service {s} joins network {n}: a mail template's services join only networks it declares at the top level"
+    text = "a mail template's fixed addresses are IPv4 inside that network's own declared subnet"
+    for s, sv in services.items():
+        for n, cfg in _service_nets(sv):
+            if not isinstance(cfg, dict):
+                continue
+            for key, val in cfg.items():
+                key = scalar_text(key)
+                if key in ("ipv6_address", "link_local_ips"):
+                    return f"mail: service {s} sets {key} on network {n}: {text}"
+                if key != "ipv4_address":
+                    continue
+                addr = scalar_text(val) if not isinstance(val, (dict, list)) else ""
+                m = _GO_IPV4_RE.fullmatch(addr)
+                ok = bool(m) and all(int(o) <= 255 for o in m.groups())
+                if ok:
+                    ip = ipaddress.IPv4Address(addr)
+                    decl = top.get(n) if isinstance(top.get(n), dict) else {}
+                    ipam = decl.get("ipam") if isinstance(decl.get("ipam"), dict) else {}
+                    subnets = [scalar_text(c.get("subnet")) for c in as_list(ipam.get("config")) if isinstance(c, dict)]
+                    ok = any(go_ipv4_prefix(sn) and ip in ipaddress.IPv4Network(sn, strict=False) for sn in subnets)
+                if not ok:
+                    return f"mail: service {s} sets {key} on network {n}: {text}"
+    return ""
+
+
 def mail_network_refusal(nets: Any) -> str:
     """mailNetworkRefusal: per top-level network (file order), its keys in
     file order; enable_ipv6 anything but false is the IPv6 refusal at its
@@ -7703,7 +7753,7 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             if isinstance(decl, dict) and key in decl:
                 return [f"mail: volume {k} sets {key}: a mail template's volumes are plain <project>_<key> volumes"]
     nets = (compose or {}).get("networks") if isinstance(compose, dict) else None
-    e = mail_network_refusal(nets) or mail_core_network(nets)
+    e = mail_network_refusal(nets) or mail_core_network(nets) or mail_service_networks(services, nets)
     if e:
         return [e]
     if compose_text is not None and vpn_yaml_indirection(compose_text):

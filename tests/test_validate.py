@@ -5580,6 +5580,36 @@ class MailTests(Case):
         c = vec["compose"].replace("  egress: {}\n", "  egress: {}\n  mail-backend: {internal: true}\n", 1)
         self.assertEqual(self.errors(vec["manifest"], c), [])
 
+    def test_service_networks_and_fixed_addresses(self) -> None:
+        """Hub RR2-H1: services join only declared networks; a fixed address
+        is an IPv4 inside that network's declared subnet."""
+        vec = self.ok_vector()
+        join = "mail: service {s} joins network {n}: a mail template's services join only networks it declares at the top level"
+        fixed = "mail: service {s} sets {k} on network {n}: a mail template's fixed addresses are IPv4 inside that network's own declared subnet"
+        ipam = "  internal: {internal: true, ipam: {config: [{subnet: 172.31.255.0/28, ip_range: 172.31.255.8/29}]}}\n"
+        res = "    networks: [internal, egress]\n  adapter:"
+        cases = [
+            ("list form, undeclared", ("    networks: [internal]\n  stalwart:", "    networks: [internal, portcullis-mail-api]\n  stalwart:"), None, join.format(s="bootstrap", n="portcullis-mail-api")),
+            ("mapping form, undeclared", (res, "    networks: {internal: {}, elsewhere: {}}\n  adapter:"), None, join.format(s="stalwart", n="elsewhere")),
+            ("pinned inside the declared subnet ok", (res, "    networks:\n      internal: {ipv4_address: 172.31.255.2}\n      egress: {}\n  adapter:"), ipam, ""),
+            ("pinned outside the subnet", (res, "    networks:\n      internal: {ipv4_address: 172.31.250.2}\n      egress: {}\n  adapter:"), ipam, fixed.format(s="stalwart", k="ipv4_address", n="internal")),
+            ("pinned without a declared subnet", (res, "    networks:\n      internal: {ipv4_address: 172.31.255.2}\n      egress: {}\n  adapter:"), None, fixed.format(s="stalwart", k="ipv4_address", n="internal")),
+            ("pinned, not an address", (res, "    networks:\n      internal: {ipv4_address: 172.31.255.02}\n      egress: {}\n  adapter:"), ipam, fixed.format(s="stalwart", k="ipv4_address", n="internal")),
+            ("ipv6_address", (res, "    networks:\n      internal: {ipv6_address: \"fd00::2\"}\n      egress: {}\n  adapter:"), ipam, fixed.format(s="stalwart", k="ipv6_address", n="internal")),
+            ("link_local_ips", (res, "    networks:\n      internal: {link_local_ips: [169.254.1.1]}\n      egress: {}\n  adapter:"), ipam, fixed.format(s="stalwart", k="link_local_ips", n="internal")),
+        ]
+        for name, (old, new), net, want in cases:
+            with self.subTest(name):
+                self.assertIn(old, vec["compose"])
+                c = vec["compose"].replace(old, new, 1)
+                if net:
+                    c = c.replace("  internal: {internal: true}\n", net, 1)
+                self.assertEqual(self.errors(vec["manifest"], c)[:1], [want] if want else [])
+        # The joins come before the fixed addresses (two passes).
+        c = vec["compose"].replace(res, "    networks:\n      internal: {ipv6_address: \"fd00::2\"}\n      egress: {}\n  adapter:", 1)
+        c = c.replace("    networks: [internal]\n  resolver:", "    networks: [internal, nope]\n  resolver:", 1)
+        self.assertEqual(self.errors(vec["manifest"], c)[:1], [join.format(s="adapter", n="nope")])
+
     def test_mail_provider_placement(self) -> None:
         """A mail: block makes the template primary-only (Hub placement)."""
         po, reasons = v.placement_reasons(b"services:\n  a:\n    image: x\n", {"name": "M", "mail": {"label": "x"}})
