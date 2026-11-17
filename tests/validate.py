@@ -8193,6 +8193,13 @@ def _podman_compat(t: Template, env: Optional[Dict[str, str]], port_start: int) 
             if isinstance(i, int) and not isinstance(i, bool) and (i < 0 or i > ROOTLESS_MAX_ID):
                 refuse(f"service {svc_name} runs as id {i}, outside the rootless id range (0–65535)")
 
+    # Per-person passwords need the hub_secrets subpath mount, which
+    # Podman's compat API ignores (Ruling R-POD2): only the first such
+    # option is named.
+    ps = next((o for o in setting_options(manifest) if o.get("type") == "person_secret"), None)
+    if ps is not None:
+        refuse(f"option {_str(ps, 'key')} is a per-person password: per-person passwords need Docker for now")
+
     if refused:
         return ("refused", refused)
     if degraded:

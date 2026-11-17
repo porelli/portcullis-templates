@@ -79,7 +79,7 @@ pihole	podman	refused	host port 53/tcp is below net.ipv4.ip_unprivileged_port_st
 plex	kubernetes	refused	service plex mounts a volume but has no numeric user
 plex	podman	ok	
 samba	kubernetes	refused	service samba mounts a volume but has no numeric user
-samba	podman	ok	
+samba	podman	refused	option share_password is a per-person password: per-person passwords need Docker for now
 scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kubernetes baseline; service scrutiny binds a host path but has no numeric user; service scrutiny binds a host path outside the shared-folder roots (not on Kubernetes); service scrutiny mounts a volume but has no numeric user
 scrutiny	podman	refused	service scrutiny needs SYS_RAWIO (raw device access needs host root)
 soundcraft	kubernetes	refused	service soundcraft mounts a volume but has no numeric user
@@ -89,7 +89,7 @@ stalwart	podman	ok
 texturecraft	kubernetes	refused	service texturecraft mounts a volume but has no numeric user
 texturecraft	podman	ok	
 timemachine	kubernetes	refused	service timemachine mounts a volume but has no numeric user
-timemachine	podman	ok	
+timemachine	podman	refused	option share_password is a per-person password: per-person passwords need Docker for now
 vaultwarden	kubernetes	refused	service vaultwarden mounts a volume but has no numeric user
 vaultwarden	podman	ok	
 vectorcraft	kubernetes	refused	service vectorcraft mounts a volume but has no numeric user

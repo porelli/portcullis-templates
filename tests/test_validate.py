@@ -4636,6 +4636,7 @@ class RuntimeCompatTests(unittest.TestCase):
     classification tests/runtime.txt."""
 
     @staticmethod
+
     def vectors() -> List[Dict[str, Any]]:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_vectors.json"), encoding="utf-8") as f:
             return json.load(f)
@@ -4650,9 +4651,15 @@ class RuntimeCompatTests(unittest.TestCase):
                                                         ("protocol", p.get("protocol", "")), ("service", p.get("service", "")))}
                                 for p in vec.get("ports") or []]}
         env = dict(vec.get("env") or {})
+        opts = []
         if vec.get("settings"):
-            t.manifest["settings"] = {"options": [{"key": k, "type": "path"} for k in vec["settings"]]}
+            opts += [{"key": k, "type": "path"} for k in vec["settings"]]
             env.update(vec["settings"])
+        # person_secrets: [<option key>] builds person_secret options (the
+        # Hub's vectorVerdict, R-POD2).
+        opts += [{"key": k, "type": "person_secret"} for k in vec.get("person_secrets") or []]
+        if opts:
+            t.manifest["settings"] = {"options": opts}
         t.compose = v.yaml.safe_load(vec["compose"])
         # The Hub's templates-package vectors run without KubeLabelCheck.
         return v.runtime_compat(t, vec["runtime"], env=env, port_start=vec["port_start"], labels=False)
@@ -4911,8 +4918,9 @@ networks:
             "esphome": ("degraded", None),
             "motioneye": ("degraded", None),
             "zigbee2mqtt": ("degraded", None),
-            "samba": ("ok", None),
-            "timemachine": ("ok", None),
+            # R-POD2: per-person passwords need Docker for now.
+            "samba": ("refused", "option share_password is a per-person password: per-person passwords need Docker for now"),
+            "timemachine": ("refused", "option share_password is a per-person password: per-person passwords need Docker for now"),
         }
 
         for app_id, (want_status, reason_substr) in expected.items():
@@ -4947,6 +4955,17 @@ networks:
                                     f"{app_id} should have reason containing '{reason_substr}', got {reasons}")
 
 
+    def test_person_secret_refused_on_podman(self) -> None:
+        """R-POD2: a person_secret option needs Docker (the first one is
+        named); Kubernetes is unaffected."""
+        t = v.Template("test")
+        t.manifest = {"settings": {"options": [{"key": "a", "type": "string"}, {"key": "pw", "type": "person_secret"},
+                                               {"key": "pw2", "type": "person_secret"}]}}
+        t.compose = {"services": {"s": {"image": "x"}}}
+        self.assertEqual(v.runtime_compat(t, "podman", port_start=80),
+                         ("refused", ["option pw is a per-person password: per-person passwords need Docker for now"]))
+        self.assertNotIn("per-person", " ".join(v.runtime_compat(t, "kubernetes", port_start=80, labels=False)[1]))
+
 
 VPN_BLOCK = """\
 hooks:
@@ -4974,6 +4993,7 @@ def load_app_signin(app: str) -> Any:
     with mock.patch.object(sys, "argv", ["app_signin.py", app]):
         spec.loader.exec_module(mod)
     return mod
+
 
 
 class VPNTests(Case):

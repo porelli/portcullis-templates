@@ -1384,5 +1384,22 @@
    "status": "ok",
    "reasons": []
   }
+ },
+ {
+  "name": "podman: a per-person password refused",
+  "runtime": "podman",
+  "compose": "services:\n  smb:\n    image: docker.io/library/samba:1\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "person_secrets": [
+   "smb_password"
+  ],
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "option smb_password is a per-person password: per-person passwords need Docker for now"
+   ]
+  }
  }
 ]
