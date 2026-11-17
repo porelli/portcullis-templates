@@ -24,11 +24,11 @@ services:
       - timemachine-data:/opt
     # Passdb and Samba's state on tmpfs: no hash reaches a volume or a backup.
     tmpfs:
-      - /run/portcullis:mode=0700
-      - /run/samba:mode=0755
-      - /var/lib/samba:mode=0755
-      - /var/cache/samba:mode=0755
-      - /var/log/samba:mode=0755
+      - /run/portcullis:mode=0700,size=16m
+      - /run/samba:mode=0755,size=16m
+      - /var/lib/samba:mode=0755,size=64m
+      - /var/cache/samba:mode=0755,size=64m
+      - /var/log/samba:mode=0755,size=64m
     ulimits:
       nofile: {soft: 65536, hard: 65536}
     cap_drop: [ALL]

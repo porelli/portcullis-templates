@@ -793,6 +793,42 @@ vpn:
   shell should expand.
 - **No** `ports:`, `build:`, `container_name:` or `env_file:`.
 
+## Running on a worker
+
+Most templates can run on either the primary server or a worker. The
+validator (`placement_reasons()`) and the Hub detect a primary-only template
+from its compose file and manifest; each rule below is one of those
+detections (contract §3, "Worker-placeable templates"):
+
+- No core volume mounts (e.g. `hub_data`, `postgres_data`).
+- No Traefik TCP or UDP routers (HTTP routers are fine).
+- No backend scheme other than `http` (`loadbalancer.server.scheme`): a relay
+  carries plain HTTP.
+- No per-person secret options (`type: person_secret`).
+- No secret options with file delivery (a settings secrets file is uid
+  10001's `0600` on the primary, an owner a worker's agent can't give).
+- No AI companions (`ai.mcp`) and no AI page (`ai.chat`); `ai.unsupported` alone is fine.
+- No VPN provider (`vpn:` block).
+- No `host-gateway` in `extra_hosts`: on a worker the host would be the
+  worker, not the primary.
+- No host devices (`devices`, other than `/dev/null`).
+- No `cap_add` beyond the baseline set (contract §3.4).
+- No binds outside the server's folder roots: absolute paths only under the
+  worker's `PORTCULLIS_WORKER_BIND_ROOTS` (default `/srv`, `/mnt`, `/media`;
+  the worker's operator sets them, `--placement` checks the defaults), and
+  relative paths only inside `./templates/<app-id>/`.
+
+Detection can't see everything: an app that needs a cookie for its parent or
+a sibling domain must set `placement: primary_only` in its manifest (a
+worker-placed app's cookies are host-only: the relay strips `Domain`).
+
+A worker-placeable template also sizes every `tmpfs` (`/tmp:size=64m`, at
+most `2g`; a worker's agent refuses an unsized one), and uses images pinned by
+digest (a worker refuses an unpinned image). The validator checks the tmpfs
+rule.
+
+Check with `python3 tests/validate.py --placement`.
+
 ## Security rules
 
 - **Identity headers only from Traefik.** A header-auth app must accept

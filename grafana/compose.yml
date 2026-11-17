@@ -81,7 +81,7 @@ services:
       MCP_GRAFANA_SERVER_TOKEN: ${MCP_GRAFANA_SERVER_TOKEN:?MCP_GRAFANA_SERVER_TOKEN must be set}
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=256m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 256m

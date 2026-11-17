@@ -756,6 +756,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         if k.startswith(VAR_VPN_PREFIX):
             r.error(t.m_where, f"{section} key {k} is reserved (VPN-only access: PORTCULLIS_VPN_* are core's and the Hub's)",
                     VPN_HINT)
+        if ms_reserved_var(k):
+            r.error(t.m_where, f"{section} key {k} is reserved (multiple servers: PORTCULLIS_LINK*, PORTCULLIS_WORKER_*, "
+                               "PORTCULLIS_ROLE, AGENT_IMAGE and RELAY_IMAGE are core's settings)", MS_HINT)
         if k == VAR_COMPOSE_PROFILES:
             r.error(t.m_where, f"{k} is an instance variable the Hub sets — a manifest may not declare it", SETUP_HINT)
         if is_instance_var(k):
@@ -1126,12 +1129,94 @@ def check_compose(t: Template, r: Report) -> None:
     check_mosquitto(t, services, r)
     check_signin_test(t, r)
     check_hub_rules(t, r)
+    check_worker_tmpfs(t, services, r)
     check_traefik_routes(t, services, r)
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
     check_vpn(t, services, r)
     check_mail(t, services, r)
     check_setup(t, services, routers, r)
+
+
+# A worker's agent (Hub agentapi scope.go) refuses a tmpfs without a size,
+# over MaxTmpfsSize, or with other short-form options: a worker-placeable
+# template's tmpfs must pass, else its first start on a worker is a 400.
+WORKER_MAX_TMPFS = 2 << 30
+WORKER_TMPFS_OPTIONS = {"size", "mode", "uid", "gid", "noexec", "nosuid", "nodev", "exec", "suid", "dev", "ro", "rw"}
+_RAM_RE = re.compile(r"^(\d+(?:\.\d+)*) ?([kKmMgGtTpP])?[iI]?[bB]?$")
+
+
+def ram_in_bytes(s: str) -> int:
+    """docker/go-units RAMInBytes (binary units); -1 when not a size."""
+    m = _RAM_RE.fullmatch(s.strip())
+    if not m:
+        return -1
+    mult = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40, "p": 1 << 50}[(m.group(2) or "").lower()]
+    return int(float(m.group(1)) * mult)
+
+
+def worker_tmpfs_problems(services: Dict[str, Any]) -> List[str]:
+    """What a worker's agent would refuse in the services' tmpfs mounts
+    (short service tmpfs: entries and long-form type: tmpfs volumes);
+    interpolated sizes are skipped (resolved per instance)."""
+    out: List[str] = []
+
+    def size_problem(where: str, n: int) -> None:
+        if n <= 0:
+            out.append(f"{where}: a size is required on a worker (size=…, at most 2g)")
+        elif n > WORKER_MAX_TMPFS:
+            out.append(f"{where}: size over {WORKER_MAX_TMPFS} bytes (2g, a worker's cap)")
+
+    for name, svc in sorted((services or {}).items()):
+        if not isinstance(svc, dict):
+            continue
+        short = svc.get("tmpfs")
+        for e in ([short] if isinstance(short, str) else short if isinstance(short, list) else []):
+            if not isinstance(e, str) or _interpolated(e):
+                continue
+            target, _, opts = e.partition(":")
+            where, size, seen = f"service {name}: tmpfs {target}", 0, set()
+            bad = False
+            for o in (x.strip() for x in opts.split(",")):
+                if not o:
+                    continue
+                k, _, val = o.partition("=")
+                if k not in WORKER_TMPFS_OPTIONS or k in seen:
+                    out.append(f"{where}: option {k!r} {'given twice' if k in seen else 'is not allowed'} on a worker")
+                    bad = True
+                    break
+                seen.add(k)
+                if k == "size":
+                    size = ram_in_bytes(val)
+                    if size <= 0:
+                        out.append(f"{where}: size {val!r} isn't a size")
+                        bad = True
+                        break
+            if not bad:
+                size_problem(where, size)
+        for vol in svc.get("volumes") or []:
+            if not isinstance(vol, dict) or vol.get("type") != "tmpfs":
+                continue
+            where = f"service {name}: tmpfs {vol.get('target')}"
+            sz = (vol.get("tmpfs") or {}).get("size") if isinstance(vol.get("tmpfs"), dict) else None
+            if isinstance(sz, str) and _interpolated(sz):
+                continue
+            n = sz if isinstance(sz, int) and not isinstance(sz, bool) else ram_in_bytes(sz) if isinstance(sz, str) else 0
+            size_problem(where, n)
+    return out
+
+
+def check_worker_tmpfs(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """A worker-placeable template (no placement reason) sizes every tmpfs
+    the way a worker's agent requires (L2)."""
+    if not isinstance(t.manifest, dict) or not t.compose_text:
+        return
+    primary_only, _ = placement_reasons(t.compose_text.encode("utf-8"), t.manifest, env=None, bind_roots=[])
+    if primary_only:
+        return
+    for p in worker_tmpfs_problems(services):
+        r.error(t.c_where, f"{p} (the template is worker-placeable: a worker's agent refuses it)",
+                "size every tmpfs, e.g. /tmp:size=64m (at most 2g), or mark the template placement: primary_only")
 
 
 _NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
@@ -2389,7 +2474,7 @@ CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgre
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
                 "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
-                "mailctl_data",
+                "mailctl_data", "link_doc",
                 # The mail slot (mail provider, plan P9; the removed mail core
                 # names stay until core has merged).
                 "mail_slot"}
@@ -2406,6 +2491,7 @@ CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portculli
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
                  "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
                  "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress",
+                 "portcullis-link", "portcullis-link-data",
                  # The mail slot's Hub ⇄ provider network (mail provider).
                  "portcullis-mail-api"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
@@ -2418,7 +2504,22 @@ MCP_NAME_PREFIX = "portcullis-mcp-"
 # MCP_NAME_PREFIX, no exception (the forwarder image is
 # ghcr.io/porelli/portcullis-forwarder).
 VPN_NAME_PREFIX = "portcullis-vpn"
-RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX)
+# LINK_NAME_PREFIX (multiple servers, §17.2): the link role's networks
+# portcullis-link and portcullis-link-data, refused anywhere in compose.yml
+# like VPN_NAME_PREFIX (Hub templates.LinkReservedPrefix).
+LINK_NAME_PREFIX = "portcullis-link"
+RESERVED_REFS = ("forward-auth-ext", "portcullis-auth-ext", "portcullis-oauth2-", MCP_NAME_PREFIX, VPN_NAME_PREFIX,
+                 LINK_NAME_PREFIX)
+# Multiple servers (contract §2): core's settings, never template
+# variables: no compose interpolation, no manifest env / settings / ports key.
+MS_RESERVED_PREFIXES = ("PORTCULLIS_LINK_", "PORTCULLIS_WORKER_")
+MS_RESERVED_NAMES = {"PORTCULLIS_LINK", "PORTCULLIS_ROLE", "AGENT_IMAGE", "RELAY_IMAGE"}
+MS_HINT = f"see {DOCS_URL}/integration-contracts/ (§2, multiple servers: core's settings, not template variables)"
+
+
+def ms_reserved_var(k: str) -> bool:
+    """A multiple-servers core setting (contract §2)."""
+    return k in MS_RESERVED_NAMES or k.startswith(MS_RESERVED_PREFIXES)
 CORE_CONTAINER_RE = re.compile(r"^portcullis[-_](.+)[-_][0-9]+$")
 HUB_TOP_KEYS = {"services", "volumes", "networks", "name"}
 HUB_SERVICE_KEYS = {
@@ -2557,9 +2658,20 @@ def check_hub_rules(t: Template, r: Report) -> None:
                 elif ref == VPN_NAME_PREFIX:
                     r.error(where, f"references \"{VPN_NAME_PREFIX}\": names starting {VPN_NAME_PREFIX} (the VPN network, "
                                    "middlewares and routers) are rendered by the Hub only (contract §3.3)", VPN_HINT)
+                elif ref == LINK_NAME_PREFIX:
+                    r.error(where, f"references \"{LINK_NAME_PREFIX}\": names starting {LINK_NAME_PREFIX} are the link role's "
+                                   "networks (contract §17)", HUB_HINT)
                 else:
                     r.error(where, f"references {ref.rstrip('-')!r}: the extra-domain sign-in is rendered by the Hub only", HUB_HINT)
                 break
+
+    ms_seen: Set[str] = set()
+    for s in _walk_strings(data):
+        for name, _ in go_var_refs(s):
+            if ms_reserved_var(name) and name not in ms_seen:
+                ms_seen.add(name)
+                r.error(where, f"${{{name}}} is reserved: PORTCULLIS_LINK*, PORTCULLIS_WORKER_*, PORTCULLIS_ROLE, AGENT_IMAGE and "
+                               "RELAY_IMAGE are core's settings, not template variables (contract §2)", MS_HINT)
 
     def literal(what: str, val: Any) -> bool:
         if isinstance(val, str) and _interpolated(val):
@@ -8671,6 +8783,382 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
     return c.verdict()
 
 
+# ── Placement (server placement: primary vs worker) ────────────────
+
+def _core_volume_name(n: str) -> str:
+    """CoreVolumeName: the core volume name n stands for ("" = none): a core
+    volume key (portcullis_<key> too), link_doc, or the Hub's secrets volume key.
+    Matches Hub's placement.go CoreVolumeName."""
+    f = fold_key(n.strip())
+    # Hub's secrets volume (NamesSecretsVolumeKey)
+    if f == "hub_secrets" or f == "portcullis-hub-secrets":
+        return SECRETS_VOLUME_KEY
+    # Direct core volume key
+    if f in CORE_VOLUMES:
+        return f
+    # portcullis_<key> prefix
+    if f.startswith("portcullis_"):
+        key = f[len("portcullis_"):]
+        if key in CORE_VOLUMES:
+            return key
+    return ""
+
+
+def _is_path_source(s: str) -> bool:
+    """isPathSource: compose reads a short-syntax source as a host path when
+    it starts with ".", "/" or "~" (else it is a volume name).
+    Matches Hub's placement.go isPathSource."""
+    return s.startswith(("/", ".", "~"))
+
+
+def _bind_outside(src: str, roots: List[str]) -> Tuple[str, bool]:
+    """bindOutside: whether bind source src (resolved) lies outside every root
+    (absolute) or outside ./templates/ (relative; ~ always), and the path as
+    a reason shows it. Returns (shown_path, is_outside).
+    Matches Hub's placement.go bindOutside."""
+    if not src:
+        return "", False  # compose itself refuses an empty source
+
+    if src.startswith("~"):
+        return src, True
+
+    if src.startswith("/"):
+        # Absolute path: clean and check against roots
+        p = go_clean(src)
+        for r in roots:
+            if r and _path_under_root(p, go_clean(r)):
+                return p, False
+        return p, True
+
+    # Relative path: clean first
+    p = go_clean(src)
+    if p.startswith("templates/") or p == "certs/ca-bundle.crt":
+        return "./" + p, False
+    return "./" + p, True
+
+
+def _path_under_root(p: str, root: str) -> bool:
+    """pathUnderRoot: clean absolute p is root or inside it (root "/" never
+    counts: it would admit the whole host).
+    Matches Hub's placement.go pathUnderRoot."""
+    if root == "/" or not root.startswith("/"):
+        return False
+    return p == root or p.startswith(root + "/")
+
+
+def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str]] = None,
+                      bind_roots: Optional[List[str]] = None) -> Tuple[bool, List[str]]:
+    """Placement detection (Hub's Placement, contracts §3): returns
+    (primary_only, reasons). Reason strings match Hub placement.go exactly."""
+    if not isinstance(manifest, dict):
+        return False, []
+
+    # Parse compose
+    try:
+        c = yaml.load(compose.decode("utf-8"), Loader=_UniqueKeyLoader)  # noqa: S506
+    except (yaml.YAMLError, UnicodeDecodeError):
+        return True, ["compose.yml can't be read"]
+
+    if not isinstance(c, dict):
+        return True, ["compose.yml can't be read"]
+
+    services = c.get("services")
+    if not isinstance(services, dict):
+        return True, ["compose.yml can't be read"]
+
+    env = env or {}
+    bind_roots = bind_roots or []
+
+    # Collect reasons in buckets per Hub's placementReasons struct, then output in §3 order
+    core_volume_reasons = []
+    router_reasons = []
+    person_secret_reasons = []
+    secret_file_reasons = []
+    ai_mcp_reasons = []
+    ai_chat_reasons = []
+    vpn_reasons = []
+    host_gateway_reasons = []
+    device_reasons = []
+    capability_reasons = []
+    bind_reasons = []
+    scheme_reasons = []
+
+    volumes = c.get("volumes")
+
+    # Build core_of map: volume key → core volume name (checking key, name, external.name)
+    # Matches Hub's Placement lines 73-90
+    core_of = {}
+    if isinstance(volumes, dict):
+        for vol_key in volumes:
+            vol_key_str = str(vol_key).strip()
+            vol_def = volumes[vol_key]
+
+            # Check volume key itself
+            c_name = _core_volume_name(vol_key_str)
+            if c_name:
+                core_of[vol_key_str] = c_name
+
+            # Check name: and external.name: fields
+            if isinstance(vol_def, dict):
+                # Check name: field
+                if "name" in vol_def:
+                    name_val = _rootless_resolve(str(vol_def["name"]), env)
+                    c_name = _core_volume_name(name_val)
+                    if c_name:
+                        core_of[vol_key_str] = c_name
+
+                # Check external.name: field
+                external = vol_def.get("external")
+                if isinstance(external, dict) and "name" in external:
+                    ext_name = _rootless_resolve(str(external["name"]), env)
+                    c_name = _core_volume_name(ext_name)
+                    if c_name:
+                        core_of[vol_key_str] = c_name
+
+    # Check service volumes for core volumes and binds
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+
+        svc_vols = svc.get("volumes")
+        if isinstance(svc_vols, list):
+            for v in svc_vols:
+                src = ""
+                vol_type = ""
+
+                if isinstance(v, str):
+                    # Short syntax: split outside ${...}
+                    parts = _rootless_split(v)
+                    if len(parts) < 2:
+                        continue  # anonymous volume
+                    src = _rootless_resolve(parts[0], env)
+                    # Determine type: path source → bind, else volume
+                    if _is_path_source(src):
+                        vol_type = "bind"
+                    else:
+                        vol_type = "volume"
+                elif isinstance(v, dict):
+                    vol_type = v.get("type", "volume")
+                    src = _rootless_resolve(str(v.get("source", "")), env)
+
+                # Handle by type
+                if vol_type == "volume" and src:
+                    # Check if this volume key is a core volume
+                    if src in core_of:
+                        reason = f"mounts the core volume {core_of[src]}"
+                        if reason not in core_volume_reasons:
+                            core_volume_reasons.append(reason)
+                    else:
+                        # Check source directly as core volume name
+                        c_name = _core_volume_name(src)
+                        if c_name:
+                            reason = f"mounts the core volume {c_name}"
+                            if reason not in core_volume_reasons:
+                                core_volume_reasons.append(reason)
+                elif vol_type == "bind" and src:
+                    # Check if bind is outside roots
+                    shown, outside = _bind_outside(src, bind_roots)
+                    if outside:
+                        reason = f"binds {shown} outside the server's folder roots"
+                        if reason not in bind_reasons:
+                            bind_reasons.append(reason)
+
+    # Add declared-but-unmounted core volumes
+    for vol_key in sorted(core_of.keys()):
+        reason = f"mounts the core volume {core_of[vol_key]}"
+        if reason not in core_volume_reasons:
+            core_volume_reasons.append(reason)
+
+    # Check for Traefik TCP/UDP routers (second bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        labels = labels_of(svc)  # Use labels_of to handle list-form labels
+        for key, val in labels.items():
+            key_lower = fold_key(str(key))
+            parts = key_lower.split(".")
+            if len(parts) >= 4 and parts[0] == "traefik" and (parts[1] == "tcp" or parts[1] == "udp"):
+                reason = f"has a Traefik TCP/UDP router ({parts[3]})"
+                if reason not in router_reasons:
+                    router_reasons.append(reason)
+
+    # Check for per-person secret options (third bucket)
+    settings = manifest.get("settings")
+    if isinstance(settings, dict):
+        options = settings.get("options", [])
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict):
+                    if opt.get("type") == "person_secret":
+                        key = opt.get("key", "")
+                        reason = f"has a per-person secret option ({key})"
+                        if reason not in person_secret_reasons:
+                            person_secret_reasons.append(reason)
+
+    # Check for secret options with file delivery (fourth bucket)
+    if isinstance(settings, dict):
+        options = settings.get("options", [])
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict):
+                    if opt.get("type") == "secret":
+                        delivery = opt.get("delivery", [])
+                        if isinstance(delivery, list):
+                            for d in delivery:
+                                if isinstance(d, dict) and d.get("file") is not None:
+                                    reason = "delivers a settings secrets file (only the primary can hand it to the app's reader)"
+                                    if reason not in secret_file_reasons:
+                                        secret_file_reasons.append(reason)
+
+    # Check for AI integration (fifth and sixth buckets)
+    ai = manifest.get("ai")
+    if isinstance(ai, dict):
+        # ai.mcp: companions reason
+        if ai.get("mcp"):
+            ai_mcp_reasons.append("has AI companions (mcp-gate reaches them on the primary)")
+        # ai.chat: AI page reason
+        if ai.get("chat"):
+            ai_chat_reasons.append("is an AI page (model-provider secrets stay on the primary)")
+
+    # Check for VPN provider (sixth bucket)
+    vpn = manifest.get("vpn")
+    if isinstance(vpn, dict):
+        vpn_reasons.append("is a VPN provider (vpn: block)")
+
+    # Check for host-gateway usage (seventh bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        extra_hosts = svc.get("extra_hosts")
+        if isinstance(extra_hosts, (list, dict)):
+            hosts_list = extra_hosts if isinstance(extra_hosts, list) else [f"{k}:{v}" for k, v in extra_hosts.items()]
+            for host in hosts_list:
+                host_str = _rootless_resolve(str(host), env) if isinstance(host, str) else ""
+                if host_str.endswith(":host-gateway") or host_str.endswith("=host-gateway"):
+                    reason = f"uses host-gateway ({svc_name})"
+                    if reason not in host_gateway_reasons:
+                        host_gateway_reasons.append(reason)
+
+    # Check for host devices (eighth bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        devices = svc.get("devices")
+        if isinstance(devices, list):
+            for d in devices:
+                if isinstance(d, dict):
+                    # Long-syntax device: always primary-only (not a string, Hub logic)
+                    reason = f"passes a host device ({svc_name})"
+                    if reason not in device_reasons:
+                        device_reasons.append(reason)
+                elif isinstance(d, str):
+                    # Short-syntax: split outside ${...} and take first part (source)
+                    parts = _rootless_split(d)
+                    if parts:
+                        src = _rootless_resolve(parts[0], env).strip()
+                        # /dev/null is allowed (travels with the template)
+                        if src and src != "/dev/null":
+                            reason = f"passes a host device ({svc_name})"
+                            if reason not in device_reasons:
+                                device_reasons.append(reason)
+
+    # Check for capabilities (ninth bucket)
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        cap_add = svc.get("cap_add")
+        if isinstance(cap_add, list):
+            for c in cap_add:
+                if isinstance(c, str):
+                    # Resolve, strip CAP_ prefix, uppercase, trim
+                    cap_str = _rootless_resolve(c, env).strip().upper()
+                    cap_str = cap_str.removeprefix("CAP_")
+                    # Skip if in baseline
+                    if cap_str in KUBE_BASELINE_CAPS:
+                        continue
+                    # Check if it's ALL
+                    if cap_str == "ALL":
+                        reason = f"adds the capability ALL ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+                    # Check if it's a known Linux capability
+                    elif cap_str in LINUX_CAPS:
+                        reason = f"adds the capability {cap_str} ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+                    # Unknown capability
+                    else:
+                        reason = f"adds an unknown capability ({svc_name})"
+                        if reason not in capability_reasons:
+                            capability_reasons.append(reason)
+
+    # Check for non-HTTP backend scheme (eleventh bucket) - after binds per Hub order
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        labels = labels_of(svc)  # Use labels_of to handle list-form labels
+        for key, val in labels.items():
+            key_lower = fold_key(str(key))
+            parts = key_lower.split(".")
+            # traefik.http.services.<name>.loadbalancer.server.scheme
+            if len(parts) == 7 and parts[0] == "traefik" and parts[1] == "http" and parts[2] == "services" and parts[4] == "loadbalancer" and parts[5] == "server" and parts[6] == "scheme":
+                scheme_val = _rootless_resolve(str(val), env).strip().lower()
+                if scheme_val and scheme_val != "http":
+                    # Report the full label key, not the service name
+                    reason = f"uses a non-HTTP backend scheme ({key})"
+                    if reason not in scheme_reasons:
+                        scheme_reasons.append(reason)
+
+    # Assemble reasons in §3 contract order
+    reasons = []
+    reasons.extend(core_volume_reasons)
+    reasons.extend(router_reasons)
+    reasons.extend(person_secret_reasons)
+    reasons.extend(secret_file_reasons)
+    reasons.extend(ai_mcp_reasons)
+    reasons.extend(ai_chat_reasons)
+    reasons.extend(vpn_reasons)
+    reasons.extend(host_gateway_reasons)
+    reasons.extend(device_reasons)
+    reasons.extend(capability_reasons)
+    reasons.extend(bind_reasons)
+    reasons.extend(scheme_reasons)
+
+    # Check for marked placement: primary_only (last in order)
+    if str(manifest.get("placement", "")).strip() == "primary_only":
+        reasons.append("is marked placement: primary_only")
+
+    primary_only = len(reasons) > 0
+    return primary_only, reasons
+
+
+def placement_classification(apps: Optional[List[str]] = None) -> str:
+    """Output for --placement: one line per template,
+    <id>\tworker-placeable or <id>\tprimary-only: <reasons joined "; ">"""
+    lines = []
+    for app_id in apps or discover():
+        t = Template(app_id)
+        if not os.path.isfile(t.manifest_path):
+            continue
+        if not os.path.isfile(t.compose_path):
+            continue
+        try:
+            with open(t.manifest_path, encoding="utf-8") as f:
+                t.manifest = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # noqa: S506
+            with open(t.compose_path, "rb") as f:
+                compose_bytes = f.read()
+        except (OSError, yaml.YAMLError):
+            continue
+
+        primary_only, reasons = placement_reasons(compose_bytes, t.manifest, env=None, bind_roots=[])
+        if primary_only:
+            lines.append(f"{app_id}\tprimary-only: {'; '.join(reasons)}")
+        else:
+            lines.append(f"{app_id}\tworker-placeable")
+
+    return "".join(line + "\n" for line in sorted(lines))
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def runtime_classification(apps: Optional[List[str]] = None) -> str:
@@ -8713,10 +9201,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
     ap.add_argument("--runtime", action="store_true",
                     help="output the runtime compatibility classification (tests/runtime.txt)")
+    ap.add_argument("--placement", action="store_true",
+                    help="output the placement classification (worker-placeable or primary-only with reasons)")
     args = ap.parse_args(argv)
 
     if args.runtime:
         print(runtime_classification(args.apps), end="")
+        return 0
+
+    if args.placement:
+        print(placement_classification(args.apps), end="")
         return 0
 
     with open(SCHEMA_PATH, encoding="utf-8") as f:

@@ -895,6 +895,87 @@ class TestCoreNamesComplete(unittest.TestCase):
         self.assertIn("strip-client-forwarded", v.FILE_MIDDLEWARES)
 
 
+class TestMultiServerReserved(Case):
+    """Contract §2 (multiple servers): PORTCULLIS_LINK*, PORTCULLIS_WORKER_*,
+    PORTCULLIS_ROLE, AGENT_IMAGE and RELAY_IMAGE are core's settings (no
+    compose interpolation, no manifest env / settings / ports key), and the
+    link networks and link_doc volume are core's names (Hub coreref.go)."""
+
+    def compose_case(self, old: str, new: str) -> List[str]:
+        self.run_template()
+        self.rewrite_compose(old, new)
+        return self.recheck()
+
+    def test_interpolation_refused(self) -> None:
+        for ref in ("${PORTCULLIS_LINK_PORT:-1}", "${PORTCULLIS_LINK}", "$PORTCULLIS_ROLE", "${PORTCULLIS_WORKER_DATA:?x}",
+                    "${AGENT_IMAGE}", "${RELAY_IMAGE:-x}"):
+            with self.subTest(ref=ref):
+                name = ref.lstrip("${").split(":")[0].rstrip("}")
+                self.assertError(self.compose_case("      DEMO_URL:", f"      X: {ref}\n      DEMO_URL:"), f"${{{name}}} is reserved")
+        # $$ is a literal (a container shell reads it), not interpolation.
+        self.assertClean(self.compose_case("      DEMO_URL:", "      X: $$PORTCULLIS_ROLE\n      DEMO_URL:"))
+
+    def test_manifest_keys_refused(self) -> None:
+        for key in ("PORTCULLIS_WORKER_X", "AGENT_IMAGE", "RELAY_IMAGE", "PORTCULLIS_ROLE", "PORTCULLIS_LINK_PORT"):
+            with self.subTest(key=key):
+                self.run_template()
+                self.rewrite_manifest("env:\n", f"env:\n  - key: {key}\n    description: x\n    generate: random\n")
+                self.assertError(self.recheck(), f"env key {key} is reserved (multiple servers")
+
+    def test_link_names_refused(self) -> None:
+        self.assertError(self.compose_case("networks:\n  portcullis-proxy:\n    external: true\n",
+                                           "networks:\n  portcullis-proxy:\n    external: true\n  data:\n    name: portcullis-link-data\n"),
+                         'references "portcullis-link"')
+        self.assertError(self.compose_case("volumes:\n  demo-data: {}", "volumes:\n  demo-data:\n    name: portcullis_link_doc"),
+                         "core's volume")
+        self.assertError(self.compose_case("volumes:\n  demo-data: {}", "volumes:\n  demo-data: {}\n  link_doc: {}"),
+                         "volumes.link_doc is core's")
+        self.assertIn("portcullis-link", v.CORE_NETWORKS)
+        self.assertIn("link_doc", v.CORE_VOLUMES)
+
+
+class TestWorkerTmpfs(Case):
+    """A worker-placeable template sizes every tmpfs as a worker's agent
+    requires (size, at most 2g, the short form's option allowlist)."""
+
+    NET = "    networks:\n      - default\n      - portcullis-proxy"
+
+    def tmpfs_case(self, block: str) -> List[str]:
+        self.run_template()
+        self.rewrite_compose(self.NET, block + self.NET)
+        return self.recheck()
+
+    def test_placeable_by_default(self) -> None:
+        self.run_template()
+        primary_only, reasons = v.placement_reasons(self.template.compose_text.encode(), self.template.manifest)
+        self.assertFalse(primary_only, reasons)
+
+    def test_refused(self) -> None:
+        for block, needle in (
+            ("    tmpfs: /tmp\n", "tmpfs /tmp: a size is required on a worker"),
+            ("    tmpfs: [/tmp, \"/run:size=64m\"]\n", "tmpfs /tmp: a size is required on a worker"),
+            ("    tmpfs: [\"/tmp:size=3g\"]\n", "tmpfs /tmp: size over"),
+            ("    tmpfs: [\"/tmp:size=64m,nr_inodes=1k\"]\n", "option 'nr_inodes' is not allowed"),
+            ("    tmpfs: [\"/tmp:size=lots\"]\n", "size 'lots' isn't a size"),
+        ):
+            with self.subTest(block=block):
+                self.assertError(self.tmpfs_case(block), needle)
+        self.run_template()
+        self.rewrite_compose("      - demo-data:/data\n", "      - demo-data:/data\n      - type: tmpfs\n        target: /cache\n")
+        self.assertError(self.recheck(), "tmpfs /cache: a size is required on a worker")
+
+    def test_sized_clean(self) -> None:
+        self.assertClean(self.tmpfs_case("    tmpfs: [\"/tmp:size=64m,mode=1777\", \"/run:size=2g\"]\n"))
+        self.run_template()
+        self.rewrite_compose("      - demo-data:/data\n",
+                             "      - demo-data:/data\n      - type: tmpfs\n        target: /cache\n        tmpfs:\n          size: 67108864\n")
+        self.assertClean(self.recheck())
+
+    def test_ram_in_bytes(self) -> None:
+        for s, n in (("64m", 64 << 20), ("2g", 2 << 30), ("1GiB", 1 << 30), ("512", 512), ("1.5k", 1536), ("x", -1)):
+            self.assertEqual(v.ram_in_bytes(s), n, s)
+
+
 class TestHubRules(Case):
     def test_strip_client_forwarded_allowed(self) -> None:
         """Core's strip-client-forwarded@file may be named like the other
@@ -5493,6 +5574,74 @@ class MailTests(Case):
         # The removed mail core names stay until core has merged (P9).
         for n in ("mail", "mailctl", "mail-resolver"):
             self.assertIn(n, v.CORE_SERVICES)
+
+
+class TestPlacementVectors(unittest.TestCase):
+    """tests/placement_vectors.json is a byte copy of the Hub's
+    internal/templates/testdata/placement_vectors.json (same as runtime and
+    VPN vectors)."""
+
+    def test_byte_copy(self) -> None:
+        hub = os.environ.get("PORTCULLIS_HUB_DIR") or os.path.join(os.path.dirname(v.ROOT), "portcullis-hub")
+        path = os.path.join(hub, "internal", "templates", "testdata", "placement_vectors.json")
+        if not os.path.isfile(path):
+            self.skipTest(f"no Hub placement_vectors.json at {hub}")
+        with open(path, "rb") as f:
+            want = f.read()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "placement_vectors.json"), "rb") as f:
+            self.assertEqual(f.read(), want)
+
+
+class PlacementTests(unittest.TestCase):
+    """Placement detection (contracts §3): primary-only vs worker-placeable.
+    Shared vectors tests/placement_vectors.json."""
+
+    @staticmethod
+    def vectors() -> List[Dict[str, Any]]:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "placement_vectors.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_placement_vectors(self) -> None:
+        """Each vector: same verdict and reasons as the Hub's Placement."""
+        for vec in self.vectors():
+            name = vec.get("name", "")
+            compose_str = vec.get("compose", "")
+            manifest = vec.get("manifest", {})
+            env = vec.get("env", {})
+            bind_roots = vec.get("bind_roots", [])
+            want = vec.get("want", {})
+            want_primary_only = want.get("primary_only", False)
+            want_reasons = want.get("reasons", [])
+
+            with self.subTest(name):
+                primary_only, reasons = v.placement_reasons(
+                    compose_str.encode("utf-8"),
+                    manifest,
+                    env=env,
+                    bind_roots=bind_roots
+                )
+                self.assertEqual(primary_only, want_primary_only,
+                                f"placement mismatch: got {primary_only}, want {want_primary_only}")
+                self.assertEqual(reasons, want_reasons,
+                                f"reasons mismatch: got {reasons}, want {want_reasons}")
+
+    def test_placement_field_enum(self) -> None:
+        """The placement field accepts 'any' and 'primary_only'."""
+        for val in ["any", "primary_only"]:
+            with self.subTest(val):
+                manifest = {
+                    "name": "Test",
+                    "auth": {"method": "forward-auth"},
+                    "placement": val
+                }
+                compose = b"services:\n  app:\n    image: test:latest\n"
+                primary_only, reasons = v.placement_reasons(compose, manifest)
+                if val == "primary_only":
+                    self.assertTrue(primary_only)
+                    self.assertEqual(reasons, ["is marked placement: primary_only"])
+                else:
+                    self.assertFalse(primary_only)
+                    self.assertEqual(reasons, [])
 
 
 if __name__ == "__main__":

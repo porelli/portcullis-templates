@@ -8,6 +8,9 @@ links:
   website: https://stalw.art/
   source: https://github.com/stalwartlabs/stalwart
 instances: single
+# The wired provider joins core networks and mounts core volumes (contract
+# §3.5 "Primary only").
+placement: primary_only
 
 auth:
   # No web page: mail clients sign in with per-device mail passwords the Hub

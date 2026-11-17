@@ -35,11 +35,11 @@ services:
     # /shares (the image's VOLUME) is a small tmpfs: only a slot's assigned
     # shared folder, mounted at /shares/<n>, is ever served.
     tmpfs:
-      - /run/portcullis:mode=0700
-      - /run/samba:mode=0755
-      - /var/lib/samba:mode=0755
-      - /var/cache/samba:mode=0755
-      - /var/log/samba:mode=0755
+      - /run/portcullis:mode=0700,size=16m
+      - /run/samba:mode=0755,size=16m
+      - /var/lib/samba:mode=0755,size=64m
+      - /var/cache/samba:mode=0755,size=64m
+      - /var/log/samba:mode=0755,size=64m
       - /shares:mode=0755,size=64k
     ulimits:
       nofile: {soft: 65536, hard: 65536}

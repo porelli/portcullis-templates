@@ -1,0 +1,1549 @@
+[
+ {
+  "name": "plain web app worker-placeable",
+  "compose": "services:\n  web:\n    image: nginx:alpine\n    networks: [portcullis-proxy]\nnetworks:\n  portcullis-proxy:\n    external: true\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "own named volume is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - data:/data\nvolumes:\n  data: {}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "bind under a folder root is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /srv/photos:/photos:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "bind of a folder root itself is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /media:/media\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "bind under templates is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./templates/myapp/config.yml:/config.yml:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "the CA bundle bind is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "another certs file",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./certs/ca.key:/k:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds ./certs/ca.key outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "anonymous volume and tmpfs are ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /cache\n      - type: tmpfs\n        target: /tmp\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "variable default under a root is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ${PHOTOS:-/srv/photos}:/photos\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "http backend scheme is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.http.routers.app.rule: Host(`app.example.org`)\n      traefik.http.services.app.loadbalancer.server.scheme: http\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "extra_hosts without host-gateway is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      - \"db.internal:192.0.2.10\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "placement any is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "placement": "any"
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "ai unsupported is worker-placeable",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "mounts core volume hub_data",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - hub_data:/data\nvolumes:\n  hub_data: {}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume hub_data"
+   ]
+  }
+ },
+ {
+  "name": "core volume by long syntax",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - type: volume\n        source: postgres_data\n        target: /data\nvolumes:\n  postgres_data: {}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume postgres_data"
+   ]
+  }
+ },
+ {
+  "name": "core volume by external name",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - keys:/keys\nvolumes:\n  keys:\n    external: true\n    name: portcullis_hub_secrets\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume hub_secrets"
+   ]
+  }
+ },
+ {
+  "name": "core volume link_doc",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - link_doc:/l:ro\nvolumes:\n  link_doc: {}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume link_doc"
+   ]
+  }
+ },
+ {
+  "name": "the Hub's secrets volume",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - portcullis-hub-secrets:/s:ro\nvolumes:\n  portcullis-hub-secrets:\n    external: true\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume portcullis-hub-secrets"
+   ]
+  }
+ },
+ {
+  "name": "has TCP router",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.tcp.routers.myrouter.rule: \"HostSNI(`*`)\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a Traefik TCP/UDP router (myrouter)"
+   ]
+  }
+ },
+ {
+  "name": "has UDP router",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.udp.routers.myrouter.entrypoints: \"dns\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a Traefik TCP/UDP router (myrouter)"
+   ]
+  }
+ },
+ {
+  "name": "TCP router in list-form labels, upper case",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      - \"Traefik.TCP.Routers.Git.entrypoints=ssh\"\n      - \"traefik.tcp.services.git.loadbalancer.server.port=22\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a Traefik TCP/UDP router (git)"
+   ]
+  }
+ },
+ {
+  "name": "TCP service label only",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.tcp.services.ssh.loadbalancer.server.port: \"22\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a Traefik TCP/UDP router (ssh)"
+   ]
+  }
+ },
+ {
+  "name": "h2c backend scheme",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.http.services.grpc.loadbalancer.server.scheme: h2c\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "uses a non-HTTP backend scheme (traefik.http.services.grpc.loadbalancer.server.scheme)"
+   ]
+  }
+ },
+ {
+  "name": "https backend scheme from a variable",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.http.services.app.loadbalancer.server.scheme: ${APP_SCHEME:-https}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "uses a non-HTTP backend scheme (traefik.http.services.app.loadbalancer.server.scheme)"
+   ]
+  }
+ },
+ {
+  "name": "HTTP scheme in upper case is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    labels:\n      traefik.http.services.app.loadbalancer.server.scheme: HTTP\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "has person_secret option",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "settings": {
+    "options": [
+     {
+      "key": "smb_password",
+      "label": "SMB password",
+      "type": "person_secret",
+      "scope": "person"
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a per-person secret option (smb_password)"
+   ]
+  }
+ },
+ {
+  "name": "delivers a settings secrets file",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "files": [
+    {
+     "name": "cfg",
+     "service": "app",
+     "mount": "/cfg"
+    }
+   ],
+   "settings": {
+    "options": [
+     {
+      "key": "api_key",
+      "label": "API key",
+      "type": "secret",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     },
+     {
+      "key": "theme",
+      "label": "Theme",
+      "type": "string",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "delivers a settings secrets file (only the primary can hand it to the app's reader)"
+   ]
+  }
+ },
+ {
+  "name": "a data file without a secret stays worker-placeable",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "files": [
+    {
+     "name": "cfg",
+     "service": "app",
+     "mount": "/cfg"
+    }
+   ],
+   "settings": {
+    "options": [
+     {
+      "key": "theme",
+      "label": "Theme",
+      "type": "string",
+      "scope": "instance",
+      "delivery": [
+       {
+        "file": {
+         "name": "cfg"
+        }
+       }
+      ]
+     },
+     {
+      "key": "token",
+      "label": "Token",
+      "type": "secret",
+      "scope": "instance",
+      "delivery": [
+       {
+        "env": "TOKEN"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "has AI companions",
+  "compose": "services:\n  app:\n    image: test:latest\n  companion:\n    image: mcp-server:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "mcp": [
+     {
+      "name": "app",
+      "label": "App",
+      "kind": "official",
+      "service": "companion",
+      "port": 8000,
+      "router": "app",
+      "identity": {
+       "mode": "app_token"
+      },
+      "modes": [
+       "read"
+      ],
+      "tools": {},
+      "upstream": "x",
+      "source": "x",
+      "protocol": [
+       "2025-06-18"
+      ]
+     }
+    ]
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has AI companions (mcp-gate reaches them on the primary)"
+   ]
+  }
+ },
+ {
+  "name": "is an AI page",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "chat": {
+     "provider_kinds": {
+      "openai": "one"
+     },
+     "file": {
+      "service": "app",
+      "mount": "/p"
+     },
+     "env": {
+      "service": "app"
+     }
+    }
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "is an AI page (model-provider secrets stay on the primary)"
+   ]
+  }
+ },
+ {
+  "name": "is a VPN provider",
+  "compose": "services:\n  gateway:\n    image: tailscale:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "vpn": {
+    "label": "My VPN",
+    "ranges": [
+     "100.64.0.0/10"
+    ],
+    "ingress": {
+     "service": "gateway"
+    },
+    "identity": {
+     "source": "static"
+    },
+    "dns": {}
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "is a VPN provider (vpn: block)"
+   ]
+  }
+ },
+ {
+  "name": "marked placement primary_only",
+  "compose": "services:\n  app:\n    image: test:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "placement": "primary_only"
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "is marked placement: primary_only"
+   ]
+  }
+ },
+ {
+  "name": "uses host-gateway",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      - \"auth.example.com:host-gateway\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "uses host-gateway (app)"
+   ]
+  }
+ },
+ {
+  "name": "extra_hosts equals form with host-gateway",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      - \"auth.example.com=host-gateway\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "uses host-gateway (app)"
+   ]
+  }
+ },
+ {
+  "name": "extra_hosts dict format with host-gateway",
+  "compose": "services:\n  app:\n    image: test:latest\n    extra_hosts:\n      host.example.com: host-gateway\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "uses host-gateway (app)"
+   ]
+  }
+ },
+ {
+  "name": "a /dev/null device slot is ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    devices:\n      - ${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "passes a host device",
+  "compose": "services:\n  app:\n    image: test:latest\n    devices:\n      - /dev/ttyUSB0:/dev/zigbee\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "passes a host device (app)"
+   ]
+  }
+ },
+ {
+  "name": "a device from the instance env",
+  "compose": "services:\n  app:\n    image: test:latest\n    devices:\n      - ${Z2M_SERIAL_DEVICE:-/dev/null}:/dev/zigbee\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {
+   "Z2M_SERIAL_DEVICE": "/dev/ttyACM0"
+  },
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "passes a host device (app)"
+   ]
+  }
+ },
+ {
+  "name": "long-syntax device",
+  "compose": "services:\n  app:\n    image: test:latest\n    devices:\n      - source: /dev/dri\n        target: /dev/dri\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "passes a host device (app)"
+   ]
+  }
+ },
+ {
+  "name": "default capabilities are ok",
+  "compose": "services:\n  app:\n    image: test:latest\n    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, CAP_DAC_OVERRIDE]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": false,
+   "reasons": []
+  }
+ },
+ {
+  "name": "adds a capability",
+  "compose": "services:\n  app:\n    image: test:latest\n    cap_add: [SYS_RAWIO, cap_net_admin]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "adds the capability SYS_RAWIO (app)",
+    "adds the capability NET_ADMIN (app)"
+   ]
+  }
+ },
+ {
+  "name": "adds ALL capabilities",
+  "compose": "services:\n  app:\n    image: test:latest\n    cap_add: [ALL]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "adds the capability ALL (app)"
+   ]
+  }
+ },
+ {
+  "name": "a capability from a variable",
+  "compose": "services:\n  app:\n    image: test:latest\n    cap_add: [\"${NVME_CAP:-SYS_ADMIN}\"]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "adds the capability SYS_ADMIN (app)"
+   ]
+  }
+ },
+ {
+  "name": "an unknown capability",
+  "compose": "services:\n  app:\n    image: test:latest\n    cap_add: [MAKE_COFFEE]\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "adds an unknown capability (app)"
+   ]
+  }
+ },
+ {
+  "name": "binds outside folder roots (absolute)",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /data/external:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /data/external outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "binds outside folder roots (relative)",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./data:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds ./data outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "binds the home directory",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ~/notes:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds ~/notes outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "long syntax bind outside roots",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - type: bind\n        source: /data/external\n        target: /x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /data/external outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "variable in bind",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - \"${DATA_DIR}:/x\"\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {
+   "DATA_DIR": "/external/data"
+  },
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /external/data outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "dot-dot out of a root",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /srv/../etc:/x:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /etc outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "a root's sibling prefix",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /srvx/data:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /srvx/data outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "the engine socket",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /var/run/docker.sock outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "templates escape by dot-dot",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - ./templates/../secrets:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds ./secrets outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "no folder roots at all",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /srv/photos:/x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "binds /srv/photos outside the server's folder roots"
+   ]
+  }
+ },
+ {
+  "name": "scheme comes after binds",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - /etc:/e:ro\n    labels:\n      traefik.http.services.s.loadbalancer.server.scheme: h2c\n      traefik.tcp.routers.t.rule: x\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "has a Traefik TCP/UDP router (t)",
+    "binds /etc outside the server's folder roots",
+    "uses a non-HTTP backend scheme (traefik.http.services.s.loadbalancer.server.scheme)"
+   ]
+  }
+ },
+ {
+  "name": "multiple reasons in rule order",
+  "compose": "services:\n  app:\n    image: test:latest\n    volumes:\n      - hub_data:/data\n      - /etc:/host-etc:ro\n    extra_hosts:\n      - \"host:host-gateway\"\n    labels:\n      traefik.udp.routers.dns.entrypoints: dns\n    cap_add: [SYS_ADMIN]\n  other:\n    image: test:latest\n    devices: [\"/dev/sda:/dev/sda\"]\n    extra_hosts:\n      - \"host:host-gateway\"\n      - \"host2:host-gateway\"\nvolumes:\n  hub_data: {}\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "placement": "primary_only",
+   "vpn": {
+    "label": "V",
+    "ranges": [
+     "100.64.0.0/10"
+    ],
+    "ingress": {
+     "service": "app"
+    },
+    "identity": {
+     "source": "static"
+    },
+    "dns": {}
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "mounts the core volume hub_data",
+    "has a Traefik TCP/UDP router (dns)",
+    "is a VPN provider (vpn: block)",
+    "uses host-gateway (app)",
+    "uses host-gateway (other)",
+    "passes a host device (other)",
+    "adds the capability SYS_ADMIN (app)",
+    "binds /etc outside the server's folder roots",
+    "is marked placement: primary_only"
+   ]
+  }
+ },
+ {
+  "name": "compose that can't be read",
+  "compose": "services: [\n",
+  "manifest": {
+   "name": "Test App",
+   "auth": {
+    "method": "forward-auth"
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "compose.yml can't be read"
+   ]
+  }
+ }
+]
