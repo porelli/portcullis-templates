@@ -5360,6 +5360,45 @@ class MailTests(Case):
         errors, _ = self.run_raw(vec["manifest"], c, self.VECTOR_ID)
         self.assertError(errors, "networks.egress: a mail template's networks are its project's own (no name:, no external:)")
 
+    def test_mail_network_keys(self) -> None:
+        """A mail template's networks set only internal, ipam
+        config[].subnet / ip_range and enable_ipv6: false (security review,
+        T17); every other key is refused, one test per key."""
+        vec = self.ok_vector()
+        text = "a mail template's networks set only internal, ipam.config[].subnet / ip_range and enable_ipv6: false"
+        cases = [
+            ("ipam subnet + ip_range", "{internal: true, ipam: {config: [{subnet: 172.31.255.0/28, ip_range: 172.31.255.8/29}]}}", ""),
+            ("internal false", "{internal: false}", ""),
+            ("enable_ipv6 false", "{internal: true, enable_ipv6: false}", ""),
+            ("null", "null", ""),
+            ("driver", "{internal: true, driver: macvlan}", "driver"),
+            ("driver_opts", "{internal: true, driver_opts: {parent: eth0}}", "driver_opts"),
+            ("attachable", "{internal: true, attachable: true}", "attachable"),
+            ("labels", "{internal: true, labels: {a: b}}", "labels"),
+            ("name", "{internal: true, name: portcullis-mail-api}", "name"),
+            ("external", "{external: true}", "external"),
+            ("internal not a boolean", "{internal: \"true\"}", "internal"),
+            ("ipam not a mapping", "{ipam: x}", "ipam"),
+            ("ipam.driver", "{ipam: {driver: default}}", "ipam.driver"),
+            ("ipam.options", "{ipam: {options: {a: b}}}", "ipam.options"),
+            ("ipam.config not a list", "{ipam: {config: {subnet: 10.0.0.0/24}}}", "ipam.config"),
+            ("ipam.config entry not a mapping", "{ipam: {config: [10.0.0.0/24]}}", "ipam.config[0]"),
+            ("ipam gateway", "{ipam: {config: [{subnet: 10.0.0.0/24, gateway: 10.0.0.1}]}}", "ipam.config[0].gateway"),
+            ("ipam aux_addresses", "{ipam: {config: [{subnet: 10.0.0.0/24, aux_addresses: {a: 10.0.0.5}}]}}", "ipam.config[0].aux_addresses"),
+            ("ipam subnet not a string", "{ipam: {config: [{subnet: 1}]}}", "ipam.config[0].subnet"),
+            ("not a mapping", "[a]", "(not a mapping)"),
+        ]
+        for name, decl, key in cases:
+            with self.subTest(name):
+                self.assertIn("  internal: {internal: true}\n", vec["compose"])
+                c = vec["compose"].replace("  internal: {internal: true}\n", f"  internal: {decl}\n", 1)
+                got = v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c)
+                self.assertEqual(got[:1], [f"mail: network internal sets {key}: {text}"] if key else [], got)
+        # The IPv6 refusal comes first.
+        c = vec["compose"].replace("  egress: {}\n", "  egress: {enable_ipv6: true, driver: macvlan}\n", 1)
+        self.assertEqual(v.mail_errors(v.yaml.safe_load(vec["manifest"]), v.yaml.safe_load(c), self.VECTOR_ID, c),
+                         ["mail: network egress enables IPv6"])
+
     def test_reserved_slot_names(self) -> None:
         """The mail slot's names (contract §3 "Mail slot names", plan P9)."""
         self.assertIn("mail_slot", v.CORE_VOLUMES)

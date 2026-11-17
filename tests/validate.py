@@ -7235,6 +7235,50 @@ def _mail_get(v: Any, key: str) -> Any:
     return v.get(key) if isinstance(v, dict) else None
 
 
+# A mail template's networks are its project's own bridges (security
+# review, T17): only these keys; a driver (macvlan onto the host LAN),
+# driver_opts, attachable, labels, name, external, ipam.driver / options,
+# a gateway or aux_addresses are refused.
+MAIL_NETWORK_KEYS = ("internal", "ipam", "enable_ipv6")
+MAIL_IPAM_CONFIG_KEYS = ("subnet", "ip_range")
+MAIL_NETWORK_TEXT = "a mail template's networks set only internal, ipam.config[].subnet / ip_range and enable_ipv6: false"
+
+
+def mail_network_key(decl: Any) -> str:
+    """The first key (document order) of a mail template's network outside
+    MAIL_NETWORK_KEYS, as its path ("" = none): internal must be a boolean,
+    ipam only {config: [{subnet, ip_range}]} with string values (a value of
+    another shape is named like an unknown key). null / {} is a plain
+    bridge. enable_ipv6 is judged before, by the IPv6 refusal."""
+    if decl is None:
+        return ""
+    if not isinstance(decl, dict):
+        return "(not a mapping)"
+    for key, val in decl.items():
+        key = scalar_text(key)
+        if key not in MAIL_NETWORK_KEYS:
+            return key
+        if key == "internal" and not isinstance(val, bool):
+            return "internal"
+        if key == "ipam":
+            if not isinstance(val, dict):
+                return "ipam"
+            for ik, iv in val.items():
+                ik = scalar_text(ik)
+                if ik != "config":
+                    return f"ipam.{ik}"
+                if not isinstance(iv, list):
+                    return "ipam.config"
+                for i, entry in enumerate(iv):
+                    if not isinstance(entry, dict):
+                        return f"ipam.config[{i}]"
+                    for ck, cv in entry.items():
+                        ck = scalar_text(ck)
+                        if ck not in MAIL_IPAM_CONFIG_KEYS or not isinstance(cv, str):
+                            return f"ipam.config[{i}].{ck}"
+    return ""
+
+
 def mail_unknown_key(b: Any) -> str:
     """mailUnknownKey: the first key (document order) outside the block's
     shape, as its path inside the block ("" = none)."""
@@ -7429,6 +7473,10 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             val = decl["enable_ipv6"]
             if not (val is False or val in ("false", "False", "FALSE")):
                 return [f"mail: network {k} enables IPv6"]
+    for k, decl in (nets.items() if isinstance(nets, dict) else []):
+        bad = mail_network_key(decl)
+        if bad:
+            return [f"mail: network {k} sets {bad}: {MAIL_NETWORK_TEXT}"]
     if compose_text is not None and vpn_yaml_indirection(compose_text):
         return ["compose.yml: a mail template uses no YAML anchors, aliases or merge keys"]
     return []
