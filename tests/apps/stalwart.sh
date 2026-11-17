@@ -66,9 +66,10 @@ for s in $SERVICES; do
   [[ "$(y ".services.\"$s\".pids_limit")" =~ ^[1-9][0-9]*$ ]] || bad+=" pids_limit"
   [ "$(y ".services.\"$s\" | has(\"ports\")")" = false ] || bad+=" ports"
   [ "$(y ".services.\"$s\".labels // {} | length")" = 0 ] || bad+=" labels"
-  [ "$(y ".services.\"$s\".user // \"\"")" != "" ] && [[ "$(y ".services.\"$s\".user")" != 0* ]] || bad+=" user"
+  u=$(y ".services.\"$s\".user // \"\"")
+  { [ -n "$u" ] && { [[ "$u" != 0* ]] || [ "$s:$u" = "key-init:0:2010" ]; }; } || bad+=" user"
   [ "$(y ".services.\"$s\".depends_on // {} | to_entries | map(select(.value.restart == true)) | length")" = 0 ] || bad+=" depends_on.restart"
-  if [ -z "$bad" ]; then pass "$s: cap_drop ALL ($caps), read-only, no-new-privileges, pids_limit, no ports / labels, non-root"; else fail "$s:$bad"; fi
+  if [ -z "$bad" ]; then pass "$s: cap_drop ALL ($caps), read-only, no-new-privileges, pids_limit, no ports / labels, non-root (key-init: root without caps, T17-e)"; else fail "$s:$bad"; fi
 done
 if ! grep -qE '(^|[[:space:]])&[A-Za-z]|\*[A-Za-z]|<<:' "$COMPOSE"; then pass "no YAML anchors, aliases or merge keys"; else fail "anchors / aliases in compose.yml"; fi
 
@@ -77,8 +78,8 @@ if ! grep -qE '(^|[[:space:]])&[A-Za-z]|\*[A-Za-z]|<<:' "$COMPOSE"; then pass "n
   && [ "$(y '.services.adapter.user')" = "10010:10010" ] && [ "$(y '.services.adapter.group_add | join(",")')" = 2010 ] \
   && pass "bootstrap 2000:2010 (mailkey), stalwart 2000, adapter 10010 + mailkey" || fail "users / group_add"
 mounters=$(yq -r '.services | to_entries[] | .key as $s | .value.volumes[]? | select(test("^adapter_key:")) | $s + "=" + .' "$COMPOSE" | sort | tr '\n' ' ')
-if [ "$mounters" = "adapter=adapter_key:/run/portcullis/stalwart-key:ro bootstrap=adapter_key:/run/portcullis/stalwart-key key-init=adapter_key:/data " ]; then
-  pass "the key volume: key-init prepares it (at the mailctl image's /data), the job writes, the adapter reads, nobody else"
+if [ "$mounters" = "adapter=adapter_key:/run/portcullis/stalwart-key:ro bootstrap=adapter_key:/run/portcullis/stalwart-key key-init=adapter_key:/run/portcullis/key-init " ]; then
+  pass "the key volume: key-init prepares it, the job writes, the adapter reads, nobody else; never at an image path (T17-e)"
 else
   fail "adapter_key mounts: $mounters"
 fi

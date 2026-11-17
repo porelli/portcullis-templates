@@ -22,16 +22,19 @@
 #   - data (the RocksDB store) and job_data (the job's own files) are
 #     first mounted by the Stalwart image at its 2000-owned
 #     /var/lib/stalwart and /etc/stalwart;
-#   - adapter_data, mailctl_bin and adapter_key by the mailctl image at its
-#     10010-owned /data; key-init then makes adapter_key 2770 10010:2010
-#     (the owner may, without CHOWN), and the job and the adapter mount it
-#     at a path neither image has (nothing is copied again). adapter_key
-#     holds the API key alone.
+#   - adapter_data and mailctl_bin by the mailctl image at its 10010-owned
+#     /data (one writer each, filled before any other mount);
+#   - adapter_key (the API key alone; Ruling T17-e) at a path no image has,
+#     in every service that mounts it, so no image owner is copied in: a
+#     fresh volume is root's (Docker) or the first mounter's (rootless
+#     Podman chowns an empty volume to its mounter); key-init, root with no
+#     capability, makes it root:2010 2770 and accepts an already-prepared
+#     one (gate/key-init.sh).
 services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
   adapter-bin:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0505573@sha256:b486d19cdea544cf04293fac98f8a72f319837083618dc9e37debbc0e07e31a6
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-040a95d@sha256:893f2a2696ee9d01c5ab2ebc90f8697c7dd6a7ae6f40064f0cd13a8b7a8de043
     user: "10010:10010"
     entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
     read_only: true
@@ -45,19 +48,19 @@ services:
     pids_limit: 32
     restart: "no"
 
-  # Prepares the key volume (gate/key-init.sh): 2770 10010:2010, only
-  # api-key in it. No network.
+  # Prepares the key volume (gate/key-init.sh, Ruling T17-e): root:2010
+  # 2770, only api-key in it, idempotent. Root with no capability, no
+  # network, read-only root.
   key-init:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0505573@sha256:b486d19cdea544cf04293fac98f8a72f319837083618dc9e37debbc0e07e31a6
-    user: "10010:10010"
-    group_add: ["2010"]
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-040a95d@sha256:893f2a2696ee9d01c5ab2ebc90f8697c7dd6a7ae6f40064f0cd13a8b7a8de043
+    user: "0:2010"
     entrypoint: ["/bin/sh", "/portcullis/gate/key-init.sh"]
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     network_mode: none
     volumes:
-      - adapter_key:/data
+      - adapter_key:/run/portcullis/key-init
       - ./templates/stalwart/gate:/portcullis/gate:ro
     mem_limit: 64m
     pids_limit: 32
@@ -105,7 +108,7 @@ services:
       - data:/var/lib/stalwart
       # The job's own volume at the image's 2000-owned /etc/stalwart.
       - job_data:/etc/stalwart
-      # The key volume (key-init: 2770 10010:2010).
+      # The key volume (key-init: root:2010 2770; a path the image lacks).
       - adapter_key:/run/portcullis/stalwart-key
       - mailctl_bin:/portcullis/bin:ro
       - ./templates/stalwart/gate:/portcullis/gate:ro
@@ -163,7 +166,7 @@ services:
   # the spam rules 8082 (internal), metrics 9100. The only holder of
   # Stalwart's API key besides the job.
   adapter:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0505573@sha256:b486d19cdea544cf04293fac98f8a72f319837083618dc9e37debbc0e07e31a6
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-040a95d@sha256:893f2a2696ee9d01c5ab2ebc90f8697c7dd6a7ae6f40064f0cd13a8b7a8de043
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]
