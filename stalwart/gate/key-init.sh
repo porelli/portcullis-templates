@@ -28,14 +28,16 @@ for f in "$K"/* "$K"/.[!.]* "$K"/..?*; do
   echo "key-init: the key volume holds $(basename "$f"): refused (it carries only api-key)" >&2
   exit 1
 done
-set -- $(stat -c '%u %g %a' "$K")
-if [ "$2" = 2010 ] && [ "$3" = 2770 ]; then
+read -r owner group mode <<EOF
+$(stat -c '%u %g %a' "$K")
+EOF
+if [ "$group" = 2010 ] && [ "$mode" = 2770 ]; then
   exit 0
 fi
-if [ "$1" = 0 ]; then
+if [ "$owner" = 0 ]; then
   chgrp 2010 "$K"
   chmod 2770 "$K"
   exit 0
 fi
-echo "key-init: the key volume is $1:$2 mode $3 (want group 2010, mode 2770): refused" >&2
+echo "key-init: the key volume is $owner:$group mode $mode (want group 2010, mode 2770): refused" >&2
 exit 1
