@@ -7521,7 +7521,6 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
     # Service by service, in compose order.
     top_vols = (compose or {}).get("volumes") if isinstance(compose, dict) else None
     top_vols = top_vols if isinstance(top_vols, dict) else {}
-    tid = app_id.lower()
     for n, sv in services.items():
         if "ports" in sv:
             return [f"mail: service {n} publishes ports: the Hub publishes a mail provider's ports"]
@@ -7544,8 +7543,10 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             if kind == "bind":
                 if vpn_bind_outside(src):
                     return [f"mail: {n} mounts {entry}: a mail template's binds start with ./ and have no .. segment"]
-                if not (src.lower().startswith(f"./templates/{tid}/")
-                        and posixpath.normpath(src).lower().startswith(f"templates/{tid}/")) or not ro:
+                # Case-sensitive (Hub L12): ./templates/STALWART/ is another
+                # directory on Linux.
+                if not (src.startswith(f"./templates/{app_id}/")
+                        and posixpath.normpath(src).startswith(f"templates/{app_id}/")) or not ro:
                     return [f"mail: {n} mounts {entry}: a mail provider binds only the template's own files "
                             f"(./templates/{app_id}/…), read-only"]
                 continue
