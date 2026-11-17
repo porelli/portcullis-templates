@@ -797,14 +797,14 @@ vpn:
 
 Most templates can run on either the primary server or a worker. A template
 that sets parent-domain cookies, uses core volumes or TCP/UDP routers, depends
-on VPN integration or AI companions, or binds paths outside the shared-folder
+on VPN integration, AI companions or the AI page, or binds paths outside the shared-folder
 roots is primary-only.
 
 Worker rules (validated):
 - No core volume mounts (e.g. `hub_data`, `postgres_data`).
 - No Traefik TCP or UDP routers (HTTP routers are fine).
 - No per-person secret options (`type: person_secret`).
-- No AI companions (`ai.mcp`; `ai.unsupported` is fine).
+- No AI companions (`ai.mcp`) and no AI page (`ai.chat`); `ai.unsupported` alone is fine.
 - No VPN provider (`vpn:` block).
 - No `host-gateway` in `extra_hosts` (the relay strips cookies Portcullis sets;
   domain-level cookies like `_oauth2_proxy` wouldn't work).
