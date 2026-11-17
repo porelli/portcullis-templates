@@ -5563,6 +5563,29 @@ class MailTests(Case):
             c = vec["compose"].replace("  egress: {}\n", f"  egress: {decl}\n", 1)
             self.assertEqual(self.errors(vec["manifest"], c), [want])
 
+    def test_core_network_keys(self) -> None:
+        """A mail template declares no core network (Hub final review
+        FH-H1): any key equal to a core network's, case-folded and
+        trimmed, right after the allowlist."""
+        vec = self.ok_vector()
+        text = "mail: network {n} is one of core's networks: a mail template declares only its own"
+        for key in ("portcullis-mail-api", "portcullis-metrics-mail", "portcullis-proxy", "portcullis", "PORTCULLIS-AUTH", "portcullis-vpn", "monitoring"):
+            with self.subTest(key):
+                c = vec["compose"].replace("  egress: {}\n", f"  egress: {{}}\n  {key}: {{internal: true}}\n", 1)
+                self.assertEqual(self.errors(vec["manifest"], c)[:1], [text.format(n=key)])
+        # The allowlist comes first; a non-core key passes.
+        c = vec["compose"].replace("  egress: {}\n", "  egress: {}\n  portcullis-mail-api: {driver: macvlan}\n", 1)
+        self.assertEqual(self.errors(vec["manifest"], c)[:1],
+                         [f"mail: network portcullis-mail-api sets driver: {v.MAIL_NETWORK_TEXT}"])
+        c = vec["compose"].replace("  egress: {}\n", "  egress: {}\n  mail-backend: {internal: true}\n", 1)
+        self.assertEqual(self.errors(vec["manifest"], c), [])
+
+    def test_mail_provider_placement(self) -> None:
+        """A mail: block makes the template primary-only (Hub placement)."""
+        po, reasons = v.placement_reasons(b"services:\n  a:\n    image: x\n", {"name": "M", "mail": {"label": "x"}})
+        self.assertTrue(po)
+        self.assertIn("is a mail provider (mail: block)", reasons)
+
     def test_reserved_slot_names(self) -> None:
         """The mail slot's names (contract §3 "Mail slot names", plan P9)."""
         self.assertIn("mail_slot", v.CORE_VOLUMES)

@@ -7441,6 +7441,32 @@ def go_ipv4_prefix(text: str) -> bool:
     return bool(m) and all(int(o) <= 255 for o in m.groups()[:4]) and int(m.group(5)) <= 32
 
 
+# The core networks a mail template may never declare (Hub final review
+# FH-H1, contract §3.5): every core network, and the two a wired provider
+# joins through the Hub's override.
+MAIL_CORE_NETWORKS = CORE_NETWORKS | {PROXY_NET, "portcullis-mail-api", "portcullis-metrics-mail"}
+
+
+def mail_core_network(nets: Any) -> str:
+    """The first top-level network (file order) whose key or name is a core
+    network's (case-folded, trimmed), as the refusal ("" = none). A name
+    never gets here (the allowlist refuses name: first); kept as the
+    contract reads."""
+    if not isinstance(nets, dict):
+        return ""
+    core = {n.lower() for n in MAIL_CORE_NETWORKS}
+
+    def is_core(x: Any) -> bool:
+        t = scalar_text(x).strip().lower()
+        return t in core
+
+    for n, body in nets.items():
+        name = body.get("name") if isinstance(body, dict) else None
+        if is_core(n) or (name is not None and is_core(name)):
+            return f"mail: network {n} is one of core's networks: a mail template declares only its own"
+    return ""
+
+
 def mail_network_refusal(nets: Any) -> str:
     """mailNetworkRefusal: per top-level network (file order), its keys in
     file order; enable_ipv6 anything but false is the IPv6 refusal at its
@@ -7677,7 +7703,7 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
             if isinstance(decl, dict) and key in decl:
                 return [f"mail: volume {k} sets {key}: a mail template's volumes are plain <project>_<key> volumes"]
     nets = (compose or {}).get("networks") if isinstance(compose, dict) else None
-    e = mail_network_refusal(nets)
+    e = mail_network_refusal(nets) or mail_core_network(nets)
     if e:
         return [e]
     if compose_text is not None and vpn_yaml_indirection(compose_text):
@@ -9024,6 +9050,11 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     vpn = manifest.get("vpn")
     if isinstance(vpn, dict):
         vpn_reasons.append("is a VPN provider (vpn: block)")
+    # A mail provider (contract §3, §19; Hub final review M2): the Hub's
+    # override mounts core volumes into it and joins core networks. Any
+    # present, non-null mail: (the Hub's m.Mail != nil).
+    if manifest.get("mail") is not None:
+        vpn_reasons.append("is a mail provider (mail: block)")
 
     # Check for host-gateway usage (seventh bucket)
     for svc_name, svc in services.items():
