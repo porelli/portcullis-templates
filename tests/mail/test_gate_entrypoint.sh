@@ -11,7 +11,7 @@ SH="${GATE_SH:-sh}"   # the image's /bin/sh is dash
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 FAILS=0
-S="$T/slot"           # the Hub's _mail/ files
+S="$T/slot"           # the slot volume's root (the Hub's gate files, R-POD2)
 J="$T/job/session"    # the bootstrap job's tmpfs session file
 K="$T/job/job"        # the job's mark (bootstrap.sh), same tmpfs
 L="$T/store/.portcullis.lock"

@@ -2,8 +2,10 @@
 # The Hub wires one instance into the mail slot: its override (never this
 # file) publishes 25/465/587/993 onto the listener ports, attaches the
 # adapter to portcullis-mail-api (+ the metrics network) and Traefik's
-# well-known router, mounts the slot files and the mail certificate into the
-# gated services and sets their PORTCULLIS_MAIL_* environment. Unwired, the
+# well-known router, mounts the mail certificate and the slot volume (core's
+# portcullis_mail_provider_slot, whole and read-only at
+# /run/portcullis/mail/slot, Ruling R-POD2; never a hub_secrets subpath) into
+# the gated services and sets their PORTCULLIS_MAIL_* environment. Unwired, the
 # gated services refuse to start (stalwart: gate/entrypoint.sh; adapter:
 # mailctl's own start check).
 #
