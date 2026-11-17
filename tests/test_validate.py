@@ -5387,6 +5387,26 @@ class MailTests(Case):
                 got = self.errors(vec["manifest"], c)
                 self.assertEqual(got[:1], [want] if want else [], got)
 
+    def test_images_are_literal(self) -> None:
+        """Contract §3.5 (Hub M14): every service's image is a literal
+        reference, refused after every other mail refusal."""
+        vec = self.ok_vector()
+        text = "mail: {s} image must be a literal reference: a mail template's images are hashed (no ${{…}})"
+        for name, svc, image, want in [
+            ("interpolated", "resolver", "${RESOLVER_IMAGE:-x}", text.format(s="resolver")),
+            ("a variable tag", "adapter", "x:$TAG", text.format(s="adapter")),
+            ("escaped dollar", "bootstrap", "x$$y", text.format(s="bootstrap")),
+            ("literal", "adapter", "ghcr.io/a/b:1.0@sha256:" + "0" * 64, ""),
+        ]:
+            with self.subTest(name):
+                old = f"  {svc}:\n    image: x\n"
+                self.assertIn(old, vec["compose"])
+                c = vec["compose"].replace(old, f"  {svc}:\n    image: \"{image}\"\n", 1)
+                self.assertEqual(self.errors(vec["manifest"], c)[:1], [want] if want else [])
+        # The anchors refusal comes first (the contract's order).
+        c = vec["compose"].replace("  resolver:\n    image: x\n", "  resolver:\n    image: \"${I}\"\n", 1) + "x-a: &a 1\nx-b: *a\n"
+        self.assertEqual(self.errors(vec["manifest"], c), ["compose.yml: a mail template uses no YAML anchors, aliases or merge keys"])
+
     def test_bind_symlink_escape(self) -> None:
         """A bind under ./templates/<id>/ resolving outside it (Hub
         bindEscapes, the text the vectors can't carry)."""

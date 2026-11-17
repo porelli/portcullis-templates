@@ -7569,6 +7569,12 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
         return [e]
     if compose_text is not None and vpn_yaml_indirection(compose_text):
         return ["compose.yml: a mail template uses no YAML anchors, aliases or merge keys"]
+    # The images are literal references (contract §3.5, Hub M14): the
+    # block hash covers compose.yml's bytes, so an interpolated image could
+    # change what runs without a template change.
+    for n, sv in services.items():
+        if "image" in sv and (not isinstance(sv["image"], str) or "$" in sv["image"]):
+            return [f"mail: {n} image must be a literal reference: a mail template's images are hashed (no ${{…}})"]
     return []
 
 
