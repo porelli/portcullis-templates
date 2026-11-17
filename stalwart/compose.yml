@@ -29,7 +29,7 @@ services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
   adapter-bin:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0d9efa1@sha256:9c306ebc7cfc1d6dcc297839f357735de57a2c21805f9b1292746d69d5af546d
     user: "10010:10010"
     entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
     read_only: true
@@ -46,7 +46,7 @@ services:
   # Prepares the key volume (gate/key-init.sh): 2770 10010:2010, only
   # api-key in it. No network.
   key-init:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0d9efa1@sha256:9c306ebc7cfc1d6dcc297839f357735de57a2c21805f9b1292746d69d5af546d
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/key-init.sh"]
@@ -161,7 +161,7 @@ services:
   # the spam rules 8082 (internal), metrics 9100. The only holder of
   # Stalwart's API key besides the job.
   adapter:
-    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-bada215@sha256:12675e8c92c47f54e24d91944b0e18ca8d1e4fcd2da7ab091cd46ca92de441aa
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-0d9efa1@sha256:9c306ebc7cfc1d6dcc297839f357735de57a2c21805f9b1292746d69d5af546d
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]

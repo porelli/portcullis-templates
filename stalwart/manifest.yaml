@@ -37,12 +37,14 @@ auth:
     volume (it holds the API key alone), and bootstrap runs Stalwart in
     recovery mode inside its own container only (a random recovery password
     made in the job, a job-only session nonce), applies the base plan once
-    per store, writes the API key (0640, group mailkey, in the key volume
+    per store (only on an empty store; a store with data but no marker fails
+    closed), writes the API key (0640, group mailkey, in the key volume
     only the job and the adapter mount) and exits 0 only once the recovery
     login is refused. It runs as Stalwart's uid, adds only NET_BIND_SERVICE
     (the Stalwart binary's file capability; no other), is gated like the
-    server, re-runs on every cold start and does nothing while the server
-    holds the store lock.
+    server, re-runs on every cold start (one normal start testing the API
+    key; a lost key gets a new key only, the settings untouched) and does
+    nothing while the server holds the store lock.
     Start gate: stalwart starts only when the Hub's slot files say so
     (.present, or the Hub's void mode with its session nonce); a raw compose
     up after a core restore stays stopped. A recovery-mode start outside the

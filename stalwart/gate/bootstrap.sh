@@ -16,14 +16,17 @@
 #    gate).
 # 3. `mailctl bootstrap --job` (the binary adapter-bin copied from the
 #    pinned adapter image) takes its own lock in the store
-#    ($MAILCTL_STORE_DIR) and runs the base plan once per store: the server
-#    as its own child through the gate wrapper, in recovery mode with a
-#    password made inside the job, the plan, the API key written 0640
-#    (group mailkey) to $MAILCTL_API_KEY_FILE in the key volume (its own
-#    files, .server-image, in job_data at $MAILCTL_DATA), a normal
-#    start that must refuse the recovery login, then the store's marker. A
-#    marked store with its key starts nothing (after a server image change,
-#    one start with the role-permission update).
+#    ($MAILCTL_STORE_DIR). An unmarked store gets the base plan only when
+#    it is empty (Ruling R-H2b: any account but mailctl's or any foreign
+#    domain fails the job, and the adapter never starts): the server as its
+#    own child through the gate wrapper, in recovery mode with a password
+#    made inside the job, the plan, the API key written 0640 (group
+#    mailkey) to $MAILCTL_API_KEY_FILE in the key volume (its own files,
+#    .server-image, in job_data at $MAILCTL_DATA), a normal start that must
+#    refuse the recovery login, then the store's marker. A marked store
+#    gets one normal start that tests the key (with the role-permission
+#    update after a server image change); a missing or refused key gets a
+#    new key only, the settings untouched (Ruling R-H2).
 set -eu
 # The job is gated too (it gets the slot files: the base plan reads the
 # metrics secret there): the P3 predicate before anything else.

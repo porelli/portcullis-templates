@@ -7573,7 +7573,8 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
     # block hash covers compose.yml's bytes, so an interpolated image could
     # change what runs without a template change.
     for n, sv in services.items():
-        if "image" in sv and (not isinstance(sv["image"], str) or "$" in sv["image"]):
+        img = sv.get("image")
+        if "$" in _mail_str(img):   # the Hub's mailInterpolatedImage (a scalar's text)
             return [f"mail: {n} image must be a literal reference: a mail template's images are hashed (no ${{…}})"]
     return []
 
