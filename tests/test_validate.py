@@ -1078,7 +1078,7 @@ class TestHubRules(Case):
                                     f"networks:\n  {net}: {{}}\n  portcullis-proxy:")
                 self.assertError(self.recheck(), f"networks.{net}: templates may only use")
         # Aliases
-        for alias in ("mailctl-metrics", "mail-metrics"):
+        for alias in ("mailctl-metrics", "mail-metrics", "hub-metrics"):
             with self.subTest(alias=alias):
                 self.run_template()
                 self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy",
