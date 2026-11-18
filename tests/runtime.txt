@@ -84,7 +84,7 @@ scrutiny	kubernetes	refused	service scrutiny adds SYS_RAWIO, outside the Kuberne
 scrutiny	podman	refused	service scrutiny needs SYS_RAWIO (raw device access needs host root)
 soundcraft	kubernetes	refused	service soundcraft mounts a volume but has no numeric user
 soundcraft	podman	ok	
-stalwart	kubernetes	ok	
+stalwart	kubernetes	refused	the template is a mail provider: mail isn't available on Kubernetes yet
 stalwart	podman	ok	
 texturecraft	kubernetes	refused	service texturecraft mounts a volume but has no numeric user
 texturecraft	podman	ok	

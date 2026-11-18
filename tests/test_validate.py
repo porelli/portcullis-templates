@@ -4665,6 +4665,10 @@ class RuntimeCompatTests(unittest.TestCase):
         if vec.get("settings"):
             opts += [{"key": k, "type": "path"} for k in vec["settings"]]
             env.update(vec["settings"])
+        # mail: true gives the manifest a mail: block (the Hub's vectorVerdict,
+        # final review L11).
+        if vec.get("mail"):
+            t.manifest["mail"] = {}
         # person_secrets: [<option key>] builds person_secret options (the
         # Hub's vectorVerdict, R-POD2).
         opts += [{"key": k, "type": "person_secret"} for k in vec.get("person_secrets") or []]
@@ -4964,6 +4968,17 @@ networks:
                     self.assertTrue(any(reason_substr in r for r in reasons),
                                     f"{app_id} should have reason containing '{reason_substr}', got {reasons}")
 
+
+    def test_mail_provider_refused_on_kubernetes(self) -> None:
+        """L11: a mail: block is refused on Kubernetes, first; Podman and
+        Docker are unaffected."""
+        t = v.Template("test")
+        t.manifest = {"mail": {"label": "x"}}
+        t.compose = {"services": {"s": {"image": "x", "privileged": True}}}
+        st, reasons = v.runtime_compat(t, "kubernetes", port_start=80, labels=False)
+        self.assertEqual((st, reasons[:1]), ("refused", [v.KUBE_MAIL_REFUSAL]))
+        t.compose = {"services": {"s": {"image": "x"}}}
+        self.assertEqual(v.runtime_compat(t, "podman", port_start=80), ("ok", []))
 
     def test_person_secret_refused_on_podman(self) -> None:
         """R-POD2: a person_secret option needs Docker (the first one is

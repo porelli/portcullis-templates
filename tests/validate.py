@@ -8720,6 +8720,9 @@ def kube_label_check(labels: Dict[str, Dict[str, str]]) -> str:
     return ""
 
 
+KUBE_MAIL_REFUSAL = "the template is a mail provider: mail isn't available on Kubernetes yet"
+
+
 def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
@@ -8730,6 +8733,11 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
     if bad is not None or services is None:
         return bad or ("refused", [])
     c = _Reasons()
+    # The mail slot is Docker / Podman only (contract §19.12; core refuses it
+    # on Kubernetes): a mail provider is refused, first (Hub KubeMailRefusal,
+    # final review L11).
+    if isinstance(t.manifest, dict) and t.manifest.get("mail") is not None:
+        c.refuse(KUBE_MAIL_REFUSAL)
     roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
     jobs = kube_job_services(t.manifest if isinstance(t.manifest, dict) else {}, services)
     pod_of: Dict[str, str] = {}
