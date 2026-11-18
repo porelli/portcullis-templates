@@ -885,11 +885,14 @@ class TestCoreNamesComplete(unittest.TestCase):
         for k in doc.get("networks") or {}:
             if k != "portcullis-proxy":
                 self.assertIn(k, v.CORE_NETWORKS)
-        # The @file middlewares a template may name: exactly core's.
+        # Core's @file middlewares: the ones a template may name plus the
+        # core-only ones (the Hub's coreOnlyFileMiddlewares), no overlap.
         mw = os.path.join(core, "traefik", "dynamic", "middlewares.yml")
         if os.path.isfile(mw):
             with open(mw, encoding="utf-8") as f:
-                self.assertEqual(set(v.yaml.safe_load(f)["http"]["middlewares"]), v.FILE_MIDDLEWARES)
+                self.assertEqual(set(v.yaml.safe_load(f)["http"]["middlewares"]),
+                                 v.FILE_MIDDLEWARES | v.CORE_ONLY_FILE_MIDDLEWARES)
+        self.assertFalse(v.FILE_MIDDLEWARES & v.CORE_ONLY_FILE_MIDDLEWARES)
 
     def test_strip_client_forwarded_file_middleware(self) -> None:
         self.assertIn("strip-client-forwarded", v.FILE_MIDDLEWARES)
@@ -986,6 +989,14 @@ class TestHubRules(Case):
         self.assertClean(self.recheck())
         self.rewrite_compose("strip-client-forwarded@file", "strip-client-forwarded-x@file")
         self.assertError(self.recheck(), "strip-client-forwarded-x@file")
+
+    def test_core_only_file_middleware_refused(self) -> None:
+        """strip-identity@file is core's CLI router's (the Hub's
+        coreOnlyFileMiddlewares): a template naming it is refused."""
+        errors, _ = self.run_template()
+        self.assertClean(errors)
+        self.rewrite_compose("security-headers@file", "strip-identity@file,security-headers@file")
+        self.assertError(self.recheck(), "strip-identity@file")
 
     """The Hub's discovery refusals (templates/coreref.go), mirrored statically."""
 

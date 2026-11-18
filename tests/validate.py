@@ -2560,6 +2560,11 @@ APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 # entrypoint, so naming it again is harmless.
 FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers",
                     "strip-client-forwarded"}
+# Core @file middlewares no template may name (the Hub's
+# coreOnlyFileMiddlewares): strip-identity is the CLI router's (contract
+# §18.3). Never in FILE_MIDDLEWARES; TestCoreNamesComplete checks core's
+# middlewares.yml = FILE_MIDDLEWARES ∪ CORE_ONLY_FILE_MIDDLEWARES.
+CORE_ONLY_FILE_MIDDLEWARES = {"strip-identity"}
 LABEL_SEG_RE = re.compile(r"^[A-Za-z0-9_-]+(\[[0-9]+\])?$")
 LABEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ROUTER_ATTR_RE = re.compile(r"^(rule|entrypoints|middlewares|service|priority|tls|tls\.options|observability\.(accesslogs|metrics|tracing))$")
