@@ -18,6 +18,8 @@
 #     share it), mongo and getmeili/meilisearch are tracked; MongoDB majors
 #     (7.0 for now: 8.x refuses Linux kernels 6.19 to 7.0.13) and
 #     Meilisearch minors (its data format changes) move by hand;
+#   - stalwart (the mail provider) moves by hand: an update holds the wired
+#     provider until re-confirmed (ignore rules below);
 #   - no pre-releases (pip, Go and Actions skip them by default; docker
 #     needs the explicit ranges below).
 #
@@ -118,6 +120,15 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "*cbcoutinho/nextcloud-mcp-server"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # The stalwart mail provider moves by hand (final review L12): any
+      # change to its files changes the wired provider's block hash and
+      # holds the server's mail until an admin re-confirms it, and a Stalwart
+      # bump must also move bootstrap's MAILCTL_SERVER_IMAGE (which
+      # tests/apps/stalwart.sh checks). The adapter's pin follows core's
+      # mailctl releases.
+      - dependency-name: "*stalwartlabs/stalwart"
+      - dependency-name: "*porelli/portcullis-mailctl"
+      - dependency-name: "*klutchell/unbound"
       # No pre-releases. Dependabot's own pre-release filter let
       # python 3.16.0a1-alpine through (PR #2). Docker `versions` use Ruby Gem
       # requirement syntax: ">= X.Y.0.a, < X.Y.0" is exactly X.Y.0's alphas,

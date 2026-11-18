@@ -2470,18 +2470,16 @@ HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
-                 "wg", "mail", "mailctl", "mail-resolver", "mail-cert"}
+                 "wg", "mail-cert"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
-                "mailctl_data", "link_doc",
-                # The mail slot (mail provider, plan P9; the removed mail core
-                # names stay until core has merged) and the provider's slot
-                # volume (Ruling R-POD2: mounted whole into the provider).
+                "group_gate_data", "wg_data", "vpn_doc", "mail_tls", "mail_acme", "link_doc",
+                # The mail slot (mail provider) and the provider's slot volume
+                # (Ruling R-POD2: mounted whole into the provider).
                 "mail_slot", "mail_provider_slot"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg, the Hub's usage metrics on portcullis-metrics-hub): reserved DNS names too (Hub coreAliases).
-CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics", "hub-metrics",
+CORE_ALIASES = {"wg-metrics", "hub-metrics",
                 # The wired mail provider's aliases on portcullis-mail-api and
                 # portcullis-metrics-mail (the Hub's override sets them).
                 "mail-api", "mail-provider-metrics", "mail-provider-server-metrics"}
@@ -2491,7 +2489,7 @@ SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
                  "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
-                 "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress",
+                 "portcullis-metrics-mail",
                  "portcullis-link", "portcullis-link-data", "portcullis-metrics-hub",
                  # The mail slot's Hub ⇄ provider network (mail provider).
                  "portcullis-mail-api"}
@@ -2540,16 +2538,16 @@ CORE_TRAEFIK_NAMES = {
                 # through group-gate and the /vpn-required routers.
                 "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
                 "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn",
-                # Mail (core mail1): the well-known router; the mail provider
-                # slot's (the Hub's override renders it on the wired provider).
-                "mail-wellknown", "portcullis-mail-wellknown",
+                # The mail provider slot's well-known router (the Hub's override
+                # renders it on the wired provider).
+                "portcullis-mail-wellknown",
                 # core cli: the CLI API router on people.<domain> (Hub main reserves it).
                 "people-cli"},
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
                     "directory-redirect", "hub-proxy-secret", "hub-cli-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people", "hub-cli",
-                 "keycloak", "lldap", "mcp-gate", "mailctl", "mailctl-wellknown",
+                 "keycloak", "lldap", "mcp-gate",
                  # The mail provider slot's well-known service (the Hub's).
                  "portcullis-mail-wellknown"},
 }

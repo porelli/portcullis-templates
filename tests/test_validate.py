@@ -1069,42 +1069,41 @@ class TestHubRules(Case):
         self.assertEqual([e for e in errors if "Hub refuses" in e], [], "\n".join(errors))
 
     def test_reserved_mail_names(self) -> None:
-        # Service names
-        for svc in ("mailctl", "mail", "mail-resolver", "mail-cert"):
+        """The mail names core keeps (mail-cert, mail_tls, mail_acme,
+        portcullis-metrics-mail, the slot's) stay core's; the former core
+        mail profile's names are free again (plan P9, removed in T29 with
+        the Hub's coreref)."""
+        for svc in ("mail-cert",):
             with self.subTest(service=svc):
                 self.run_template()
                 self.rewrite_compose("services:\n  demo:", f"services:\n  {svc}:")
                 self.assertError(self.recheck(), f"DNS name {svc!r} is core's")
-        # Volume names
-        for vol in ("mail_data", "mail_etc", "mail_tls", "mail_acme", "mailctl_data"):
+        for vol in ("mail_tls", "mail_acme", "mail_slot", "mail_provider_slot"):
             with self.subTest(volume=vol):
                 self.run_template()
                 self.rewrite_compose("volumes:\n  demo-data: {}", f"volumes:\n  demo-data: {{}}\n  {vol}: {{}}")
                 self.assertError(self.recheck(), f"volumes.{vol} is core's")
-        # Network names
-        for net in ("portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress"):
-            with self.subTest(network=net):
-                self.run_template()
-                self.rewrite_compose("networks:\n  portcullis-proxy:",
-                                    f"networks:\n  {net}: {{}}\n  portcullis-proxy:")
-                self.assertError(self.recheck(), f"networks.{net}: templates may only use")
-        # Aliases
-        for alias in ("mailctl-metrics", "mail-metrics", "hub-metrics"):
+        for alias in ("hub-metrics", "mail-api", "mail-provider-metrics"):
             with self.subTest(alias=alias):
                 self.run_template()
                 self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy",
                                     f"    networks:\n      default:\n        aliases: [{alias}]\n      portcullis-proxy: {{}}")
                 self.assertError(self.recheck(), f"network alias {alias!r} is core's DNS name")
-        # Traefik router
         self.run_template()
-        self.rewrite_compose("      traefik.http.routers.demo.",
-                            "      traefik.http.routers.mail-wellknown.")
-        self.assertError(self.recheck(), "router 'mail-wellknown' is core's")
-        # Traefik service
-        self.run_template()
-        self.rewrite_compose("      traefik.http.services.demo.",
-                            "      traefik.http.services.mailctl.")
-        self.assertError(self.recheck(), "service 'mailctl' is core's")
+        self.rewrite_compose("      traefik.http.routers.demo.", "      traefik.http.routers.portcullis-mail-wellknown.")
+        self.assertTrue([e for e in self.recheck() if "portcullis-mail-wellknown" in e])
+        # The former core mail profile's names (P9): no longer core's.
+        for name in ("mail", "mailctl", "mail-resolver"):
+            self.assertNotIn(name, v.CORE_SERVICES)
+        for name in ("mail_data", "mail_etc", "mailctl_data"):
+            self.assertNotIn(name, v.CORE_VOLUMES)
+        for name in ("portcullis-mail", "portcullis-mailctl", "mail-egress"):
+            self.assertNotIn(name, v.CORE_NETWORKS)
+        for name in ("mail-metrics", "mailctl-metrics"):
+            self.assertNotIn(name, v.CORE_ALIASES)
+        self.assertNotIn("mail-wellknown", v.CORE_TRAEFIK_NAMES["routers"])
+        for name in ("mailctl", "mailctl-wellknown"):
+            self.assertNotIn(name, v.CORE_TRAEFIK_NAMES["services"])
 
     def test_reserved_mail_vars(self) -> None:
         for name, var in [
@@ -5656,9 +5655,6 @@ class MailTests(Case):
             self.assertIn(a, v.CORE_ALIASES)
         self.assertIn("portcullis-mail-wellknown", v.CORE_TRAEFIK_NAMES["routers"])
         self.assertIn("portcullis-mail-wellknown", v.CORE_TRAEFIK_NAMES["services"])
-        # The removed mail core names stay until core has merged (P9).
-        for n in ("mail", "mailctl", "mail-resolver"):
-            self.assertIn(n, v.CORE_SERVICES)
 
 
 class TestPlacementVectors(unittest.TestCase):
