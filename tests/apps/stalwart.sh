@@ -45,12 +45,12 @@ else
   fail "the Stalwart image / the job's image / MAILCTL_SERVER_IMAGE differ or are unpinned"
 fi
 # Core's CI rewrites exactly this line shape to its locally built adapter (plan P2).
-if [[ "$ADAPTER_IMAGE" =~ ^ghcr\.io/porelli/portcullis-mailctl:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
+if [[ "$ADAPTER_IMAGE" =~ ^ghcr\.io/porelli/portcullis-mailctl:(main-[0-9a-f]{7}|[0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}$ ]] \
     && [ "$(y '.services.adapter-bin.image')" = "$ADAPTER_IMAGE" ] && [ "$(y '.services.key-init.image')" = "$ADAPTER_IMAGE" ] \
     && [ "$(grep -c "image: ghcr.io/porelli/portcullis-mailctl:" "$COMPOSE")" = 3 ]; then
   pass "adapter pinned, adapter-bin and key-init run the same mailctl image: $ADAPTER_IMAGE"
 else
-  fail "adapter image must be ghcr.io/porelli/portcullis-mailctl:<tag>@sha256:<digest>, the same in adapter-bin"
+  fail "adapter image must be ghcr.io/porelli/portcullis-mailctl:main-<sha7> or :X.Y.Z @sha256:<digest> (never a dev- tag), the same in adapter-bin and key-init"
 fi
 
 # ── hardening, every service ──────────────────────────────────
