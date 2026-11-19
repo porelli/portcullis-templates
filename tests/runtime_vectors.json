@@ -1384,5 +1384,50 @@
    "status": "ok",
    "reasons": []
   }
+ },
+ {
+  "name": "podman: a per-person password refused",
+  "runtime": "podman",
+  "compose": "services:\n  smb:\n    image: docker.io/library/samba:1\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "person_secrets": [
+   "smb_password"
+  ],
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "option smb_password is a per-person password: per-person passwords need Docker for now"
+   ]
+  }
+ },
+ {
+  "name": "kubernetes: a mail provider refused",
+  "runtime": "kubernetes",
+  "compose": "services:\n  stalwart:\n    image: docker.io/stalwartlabs/stalwart:v0.13\n    networks: [internal]\nnetworks:\n  internal:\n    internal: true\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "mail": true,
+  "want": {
+   "status": "refused",
+   "reasons": [
+    "the template is a mail provider: mail isn't available on Kubernetes yet"
+   ]
+  }
+ },
+ {
+  "name": "podman: a mail provider ok",
+  "runtime": "podman",
+  "compose": "services:\n  stalwart:\n    image: docker.io/stalwartlabs/stalwart:v0.13\n    networks: [internal]\nnetworks:\n  internal:\n    internal: true\n",
+  "ports": [],
+  "env": {},
+  "port_start": 80,
+  "mail": true,
+  "want": {
+   "status": "ok",
+   "reasons": []
+  }
  }
 ]

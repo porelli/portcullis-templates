@@ -952,9 +952,15 @@ def check_compose(t: Template, r: Report) -> None:
     if "portcullis" in top_nets:
         r.error(t.c_where, "network 'portcullis' is wrong; frontends join the external network 'portcullis-proxy'")
     trust_nets = trust_networks(t, services)
+    # A mail provider (contracts §3.5, §19.1) keeps its server on its own
+    # networks (an internal one, an egress one): check_mail judges every
+    # one of them by the Hub's allowlist (mail_network_refusal).
+    mail_provider = isinstance(m.get("mail"), dict)
     for name, spec in top_nets.items():
         if name in trust_nets:
             continue  # check_ai's check_trust_network judges it
+        if mail_provider and name not in ("default", PROXY_NET):
+            continue
         if name == PROXY_NET:
             if not (isinstance(spec, dict) and spec.get("external") is True):
                 r.error(t.c_where, f"networks.{PROXY_NET} must be declared 'external: true'",
@@ -975,6 +981,12 @@ def check_compose(t: Template, r: Report) -> None:
         if isinstance(spec, dict) and spec.get("external"):
             r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
         vol_name = spec.get("name") if isinstance(spec, dict) else None
+        if mail_provider:
+            # A mail template's volumes are plain <project>_<key> volumes
+            # (check_mail refuses name:); its one instance's project is
+            # portcullis-<template id>.
+            t.volume_names[f"portcullis-{t.id}_{vname}"] = vname
+            continue
         if t.multi:
             if vol_name is not None:
                 r.error(t.c_where, f"volumes.{vname}: an instances: multi template must not declare name:",
@@ -1122,6 +1134,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_settings(t, services, routers, r)
     check_ai(t, services, routers, r)
     check_vpn(t, services, r)
+    check_mail(t, services, r)
     check_setup(t, services, routers, r)
 
 
@@ -2457,22 +2470,29 @@ HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
                  "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
-                 "wg", "mail", "mailctl", "mail-resolver", "mail-cert"}
+                 "wg", "mail-cert"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
                 "prometheus_data", "alertmanager_data", "grafana_data", "hub_secrets", "mcp_gate_data",
-                "group_gate_data", "wg_data", "vpn_doc", "mail_data", "mail_etc", "mail_tls", "mail_acme",
-                "mailctl_data", "link_doc"}
+                "group_gate_data", "wg_data", "vpn_doc", "mail_tls", "mail_acme", "link_doc",
+                # The mail slot (mail provider) and the provider's slot volume
+                # (Ruling R-POD2: mounted whole into the provider).
+                "mail_slot", "mail_provider_slot"}
 # Core's network aliases that aren't service names (wg's metrics address
 # on portcullis-metrics-wg, the Hub's usage metrics on portcullis-metrics-hub): reserved DNS names too (Hub coreAliases).
-CORE_ALIASES = {"wg-metrics", "mailctl-metrics", "mail-metrics", "hub-metrics"}
+CORE_ALIASES = {"wg-metrics", "hub-metrics",
+                # The wired mail provider's aliases on portcullis-mail-api and
+                # portcullis-metrics-mail (the Hub's override sets them).
+                "mail-api", "mail-provider-metrics", "mail-provider-server-metrics"}
 # The Hub override's top-level key for its secrets volume (F15,
 # templates.SecretsVolumeKey): no template names it (folded, embedded).
 SECRETS_VOLUME_KEY = "portcullis-hub-secrets"
 CORE_NETWORKS = {"portcullis", "portcullis-auth", "portcullis-certs", "portcullis-domains", "domains-egress",
                  "socket-proxy-traefik", "socket-proxy-hub", "monitoring", "alerting", "portcullis-mcp",
                  "portcullis-sessions", "portcullis-vpn", "portcullis-vpn-edge", "portcullis-metrics-wg", "wg-egress",
-                 "portcullis-mail", "portcullis-mailctl", "portcullis-metrics-mail", "mail-egress",
-                 "portcullis-link", "portcullis-link-data", "portcullis-metrics-hub"}
+                 "portcullis-metrics-mail",
+                 "portcullis-link", "portcullis-link-data", "portcullis-metrics-hub",
+                 # The mail slot's Hub ⇄ provider network (mail provider).
+                 "portcullis-mail-api"}
 # MCP_NAME_PREFIX (AI support, §3.2): the Hub's companion aliases and
 # routers portcullis-mcp-<instance-id>--<companion>, refused anywhere in
 # compose.yml (any key or value, folded, also split by an interpolation).
@@ -2518,13 +2538,18 @@ CORE_TRAEFIK_NAMES = {
                 # through group-gate and the /vpn-required routers.
                 "core-vpn-required", "dashboard-vpn", "grafana-metrics-vpn", "hub-vpn", "keycloak-admin-vpn",
                 "keycloak-admin-vpn-required", "people-vpn", "people-vpn-enrol-vpn", "portal-vpn",
-                # Mail (core mail1): the well-known router.
-                "mail-wellknown"},
+                # The mail provider slot's well-known router (the Hub's override
+                # renders it on the wired provider).
+                "portcullis-mail-wellknown",
+                # core cli: the CLI API router on people.<domain> (Hub main reserves it).
+                "people-cli"},
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
-                    "directory-redirect", "hub-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
+                    "directory-redirect", "hub-proxy-secret", "hub-cli-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
-    "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people",
-                 "keycloak", "lldap", "mcp-gate", "mailctl"},
+    "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people", "hub-cli",
+                 "keycloak", "lldap", "mcp-gate",
+                 # The mail provider slot's well-known service (the Hub's).
+                 "portcullis-mail-wellknown"},
 }
 APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 # Exactly core's traefik/dynamic/middlewares.yml (Hub fileMiddlewares;
@@ -2533,6 +2558,11 @@ APP_MIDDLEWARES = {"portcullis-auth", "portcullis-groups"}
 # entrypoint, so naming it again is harmless.
 FILE_MIDDLEWARES = {"client-headers", "client-cert-pem", "rate-limit", "rate-limit-auth", "security-headers",
                     "strip-client-forwarded"}
+# Core @file middlewares no template may name (the Hub's
+# coreOnlyFileMiddlewares): strip-identity is the CLI router's (contract
+# §18.3). Never in FILE_MIDDLEWARES; TestCoreNamesComplete checks core's
+# middlewares.yml = FILE_MIDDLEWARES ∪ CORE_ONLY_FILE_MIDDLEWARES.
+CORE_ONLY_FILE_MIDDLEWARES = {"strip-identity"}
 LABEL_SEG_RE = re.compile(r"^[A-Za-z0-9_-]+(\[[0-9]+\])?$")
 LABEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ROUTER_ATTR_RE = re.compile(r"^(rule|entrypoints|middlewares|service|priority|tls|tls\.options|observability\.(accesslogs|metrics|tracing))$")
@@ -7134,23 +7164,32 @@ def _cap_name(c: Any) -> str:
     return t[4:] if t.startswith("CAP_") else t
 
 
-def vpn_privilege_problem(n: str, sv: Dict[str, Any]) -> str:
+# A block's privilege texts (the Hub's capWords): the refusal's location,
+# who may add only NET_BIND_SERVICE, the devices refusal.
+VPN_CAP_WORDS = ("vpn.ingress.service: ", "a VPN gateway", "a VPN gateway runs userspace (no devices)")
+MAIL_CAP_WORDS = ("mail: ", "a mail provider", "a mail provider has no devices")
+
+
+def vpn_privilege_problem(n: str, sv: Dict[str, Any], words: Tuple[str, str, str] = VPN_CAP_WORDS) -> str:
     """Ruling (Task 19, security review): a VPN gateway and every service in
     its namespace run userspace, by allowlist: privileged absent or literally
     false, cap_drop includes ALL, cap_add only NET_BIND_SERVICE (anything
     else, interpolation included, refused), no devices, no
     device_cgroup_rules. With NET_ADMIN a gateway could take another
-    gateway's address on portcullis-vpn (final review I6)."""
+    gateway's address on portcullis-vpn (final review I6). words are the
+    block's texts (Hub namespaceCaps' capWords: VPN_CAP_WORDS,
+    MAIL_CAP_WORDS)."""
+    loc, who, devices = words
     if "privileged" in sv and not (sv["privileged"] is False or sv["privileged"] == "false"):
-        return f"vpn.ingress.service: {n} is privileged"
+        return f"{loc}{n} is privileged"
     if "ALL" not in {_cap_name(c) for c in as_list(sv.get("cap_drop"))}:
-        return f"vpn.ingress.service: {n} must set cap_drop: [ALL]"
+        return f"{loc}{n} must set cap_drop: [ALL]"
     for c in as_list(sv.get("cap_add")):
         if _cap_name(c) not in VPN_ALLOWED_CAPS:
-            return f"vpn.ingress.service: {n} adds {scalar_text(c).strip()}: a VPN gateway may add only NET_BIND_SERVICE"
+            return f"{loc}{n} adds {scalar_text(c).strip()}: {who} may add only NET_BIND_SERVICE"
     for key in ("devices", "device_cgroup_rules"):
         if key in sv:
-            return f"vpn.ingress.service: {n} has {key}: a VPN gateway runs userspace (no devices)"
+            return f"{loc}{n} has {key}: {devices}"
     return ""
 
 
@@ -7233,16 +7272,22 @@ def vpn_bind_escapes(t: Template, services: Dict[str, Any]) -> List[str]:
     template) resolves, symlinks followed, inside the real templates/<id>/
     (the repo's <id>/): the Hub's SyncFiles skips symlinks, but a link that
     leaves the directory must never be a gateway's file."""
-    base = os.path.realpath(os.path.join(ROOT, t.id))
+    return bind_escapes(os.path.join(ROOT, t.id), t.id, services, "vpn.ingress.service: ")
+
+
+def bind_escapes(tdir: str, tid: str, services: Dict[str, Any], loc: str) -> List[str]:
+    """The Hub's bindEscapes: vpn_bind_escapes for the template directory
+    tdir (the repo's <id>/) with the refusal's location loc."""
+    base = os.path.realpath(tdir)
     for n in sorted(str(k) for k in services):
         mounts, _ = vpn_mounts(services[n] if isinstance(services[n], dict) else {})
         for kind, src, _, entry in mounts:
             norm = posixpath.normpath(src)
-            if kind != "bind" or not (norm == f"templates/{t.id}" or norm.startswith(f"templates/{t.id}/")):
+            if kind != "bind" or not (norm == f"templates/{tid}" or norm.startswith(f"templates/{tid}/")):
                 continue
-            real = os.path.realpath(os.path.join(ROOT, t.id, norm[len(f"templates/{t.id}"):].lstrip("/")))
+            real = os.path.realpath(os.path.join(tdir, norm[len(f"templates/{tid}"):].lstrip("/")))
             if real != base and not real.startswith(base + os.sep):
-                return [f"vpn.ingress.service: {n} mounts {entry}: it resolves outside templates/{t.id}/ (a symlink)"]
+                return [f"{loc}{n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
     return []
 
 
@@ -7264,6 +7309,490 @@ def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
             errs += vpn_bind_escapes(t, services)
     for e in errs:
         r.error(t.m_where, e, VPN_HINT)
+
+
+# ── Mail providers: the mail: block (contracts §3.5) ───────────────
+# Mirrors portcullis-hub internal/templates/mail.go (ValidateMail) with the
+# same texts in the same order; shared vectors tests/mail_vectors.json =
+# Hub internal/templates/testdata/mail_vectors.json.
+
+MAIL_BLOCK_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.5, the mail: block)"
+MAIL_LABEL_MAX = 64
+MAIL_FORMER_ID_ARG = "{former_id}"
+MAIL_TOP_KEYS = ("label", "api_version", "api", "listeners", "wellknown", "metrics", "server_metrics", "tls", "gated",
+                 "sessions", "export")
+MAIL_FIELD_KEYS = {
+    "api": ("service", "port"), "wellknown": ("service", "port"), "metrics": ("service", "port"),
+    "server_metrics": ("service", "port", "path"),
+    "listeners": ("service", "smtp", "submissions", "submission", "imaps"),
+    "sessions": ("restart",), "export": ("service", "argv"),
+}
+MAIL_LISTENER_PORTS = ("smtp", "submissions", "submission", "imaps")
+MAIL_LETTER_TEXT = "a mail template's volume names are longer than one letter"
+_MAIL_PATH_RE = re.compile(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*")
+
+
+def _mail_scalar(v: Any) -> bool:
+    """A YAML scalar node (null included): neither a mapping nor a list."""
+    return not isinstance(v, (dict, list))
+
+
+def _mail_str(v: Any) -> str:
+    """scalarString: a scalar's text, "" for a mapping or a list."""
+    return scalar_text(v) if _mail_scalar(v) else ""
+
+
+def _mail_int(v: Any) -> Optional[int]:
+    """scalarInt: a plain YAML integer (never a quoted or boolean one).
+    With the manifest's text, mail_errors first replaces every integer
+    field by mail_int_view's reading (the Hub's)."""
+    if isinstance(v, _MailNotInt):
+        return None
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+class _MailNotInt(str):
+    """A scalar the Hub's scalarInt doesn't read as an integer (its YAML
+    tag isn't !!int, or its text fails strconv.Atoi: 0x1F90, 0b1, 0o17,
+    8_080)."""
+
+
+_GO_ATOI_RE = re.compile(r"[+-]?[0-9]+")
+MAIL_INT_FIELDS = {"api_version": None, "api": ("port",), "wellknown": ("port",), "metrics": ("port",),
+                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS}
+
+
+def go_atoi(text: str) -> Optional[int]:
+    """strconv.Atoi: an optional sign and decimal digits only (leading
+    zeros read as decimal, no underscores, no 0x / 0o / 0b), int64."""
+    if not _GO_ATOI_RE.fullmatch(text):
+        return None
+    n = int(text, 10)
+    return n if INT64_MIN <= n <= INT64_MAX else None
+
+
+def _mail_scalar_int(node: yaml.Node) -> Any:
+    """scalarInt over a node: the Hub's integer (yaml.v3 tag !!int, then
+    Atoi of the text as written), else _MailNotInt."""
+    if v3_tag(node) == "!!int":
+        n = go_atoi(node.value)
+        if n is not None:
+            return n
+    return _MailNotInt(node.value)
+
+
+def mail_int_view(b: Dict[str, Any], manifest_text: str) -> Dict[str, Any]:
+    """The mail: block with its integer fields (api_version and every
+    port) read as the Hub's scalarInt reads them from the manifest's node
+    graph: 017620 is 17620 (not octal 8080), 0x1F90 / 0b1 / 8_080 aren't
+    integers. Other values stay as parsed; on a YAML error, b itself."""
+    try:
+        root = yaml.compose(manifest_text, Loader=_IDNodeLoader)
+    except yaml.YAMLError:
+        return b
+    if not isinstance(root, yaml.MappingNode):
+        return b
+    mail = next((v for k, v in root.value if isinstance(k, yaml.ScalarNode) and k.value == "mail"), None)
+    if not isinstance(mail, yaml.MappingNode):
+        return b
+    out = dict(b)
+    for k, v in mail.value:
+        key = k.value if isinstance(k, yaml.ScalarNode) else None
+        if key not in MAIL_INT_FIELDS or key not in out:
+            continue
+        subs = MAIL_INT_FIELDS[key]
+        if subs is None:
+            if isinstance(v, yaml.ScalarNode):
+                out[key] = _mail_scalar_int(v)
+            continue
+        if not isinstance(v, yaml.MappingNode) or not isinstance(out[key], dict):
+            continue
+        sub = dict(out[key])
+        for sk, sv in v.value:
+            if isinstance(sk, yaml.ScalarNode) and sk.value in subs and sk.value in sub and isinstance(sv, yaml.ScalarNode):
+                sub[sk.value] = _mail_scalar_int(sv)
+        out[key] = sub
+    return out
+
+
+def _mail_strings(v: Any) -> Optional[List[str]]:
+    """stringList: a list of string scalars, else None."""
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        return None
+    return list(v)
+
+
+def _mail_get(v: Any, key: str) -> Any:
+    """mapValue: key's value in a mapping (None: absent or not a mapping)."""
+    return v.get(key) if isinstance(v, dict) else None
+
+
+# A mail template's networks are plain project networks (security review,
+# T17; Hub mailNetworkRefusal, c919f6b): only internal, ipam with only
+# config entries of subnet / ip_range, and enable_ipv6: false. A driver
+# (macvlan onto the host LAN), driver_opts, attachable, labels, name,
+# external, ipam.driver / options, a gateway or aux_addresses are refused.
+MAIL_NETWORK_TEXT = ("a mail template's networks are plain project networks (internal, ipam subnets and IP ranges, "
+                     "enable_ipv6: false)")
+
+
+_GO_IPV4_PREFIX_RE = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/(0|[1-9][0-9]?)")
+
+
+def go_ipv4_prefix(text: str) -> bool:
+    """netip.ParsePrefix(text) succeeds and its address Is4: dotted
+    decimal, each octet 0-255 without a leading zero, bits 0-32 without a
+    leading zero, no zone (an IPv4-mapped IPv6 form isn't Is4)."""
+    m = _GO_IPV4_PREFIX_RE.fullmatch(text)
+    return bool(m) and all(int(o) <= 255 for o in m.groups()[:4]) and int(m.group(5)) <= 32
+
+
+# The core networks a mail template may never declare (Hub final review
+# FH-H1, contract §3.5): every core network, and the two a wired provider
+# joins through the Hub's override.
+MAIL_CORE_NETWORKS = CORE_NETWORKS | {PROXY_NET, "portcullis-mail-api", "portcullis-metrics-mail"}
+
+
+def mail_core_network(nets: Any) -> str:
+    """The first top-level network (file order) whose key or name is a core
+    network's (case-folded, trimmed), as the refusal ("" = none). A name
+    never gets here (the allowlist refuses name: first); kept as the
+    contract reads."""
+    if not isinstance(nets, dict):
+        return ""
+    core = {n.lower() for n in MAIL_CORE_NETWORKS}
+
+    def is_core(x: Any) -> bool:
+        t = scalar_text(x).strip().lower()
+        return t in core
+
+    for n, body in nets.items():
+        name = body.get("name") if isinstance(body, dict) else None
+        if is_core(n) or (name is not None and is_core(name)):
+            return f"mail: network {n} is one of core's networks: a mail template declares only its own"
+    return ""
+
+
+_GO_IPV4_RE = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})")
+
+
+def _service_nets(sv: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    """A service's networks in file order: (name, its config or None)."""
+    nets = sv.get("networks")
+    if isinstance(nets, dict):
+        return [(scalar_text(k), v) for k, v in nets.items()]
+    if isinstance(nets, list):
+        return [(scalar_text(n), None) for n in nets]
+    return []
+
+
+def mail_service_networks(services: Dict[str, Dict[str, Any]], nets: Any) -> str:
+    """Hub RR2-H1 (contract §3.5): every service joins only networks the
+    template declares at the top level (list or mapping form), then a
+    fixed address is an ipv4_address inside a declared ipam subnet of that
+    network (ipv6_address and link_local_ips always refused). Services in
+    compose order, their networks in file order; "" = none."""
+    top = nets if isinstance(nets, dict) else {}
+    declared = {scalar_text(k) for k in top}
+    for s, sv in services.items():
+        for n, _ in _service_nets(sv):
+            if n not in declared:
+                return f"mail: service {s} joins network {n}: a mail template's services join only networks it declares at the top level"
+    text = "a mail template's fixed addresses are IPv4 inside that network's own declared subnet"
+    for s, sv in services.items():
+        for n, cfg in _service_nets(sv):
+            if not isinstance(cfg, dict):
+                continue
+            for key, val in cfg.items():
+                key = scalar_text(key)
+                if key in ("ipv6_address", "link_local_ips"):
+                    return f"mail: service {s} sets {key} on network {n}: {text}"
+                if key != "ipv4_address":
+                    continue
+                addr = scalar_text(val) if not isinstance(val, (dict, list)) else ""
+                m = _GO_IPV4_RE.fullmatch(addr)
+                ok = bool(m) and all(int(o) <= 255 for o in m.groups())
+                if ok:
+                    ip = ipaddress.IPv4Address(addr)
+                    decl = top.get(n) if isinstance(top.get(n), dict) else {}
+                    ipam = decl.get("ipam") if isinstance(decl.get("ipam"), dict) else {}
+                    subnets = [scalar_text(c.get("subnet")) for c in as_list(ipam.get("config")) if isinstance(c, dict)]
+                    ok = any(go_ipv4_prefix(sn) and ip in ipaddress.IPv4Network(sn, strict=False) for sn in subnets)
+                if not ok:
+                    return f"mail: service {s} sets {key} on network {n}: {text}"
+    return ""
+
+
+def mail_network_refusal(nets: Any) -> str:
+    """mailNetworkRefusal: per top-level network (file order), its keys in
+    file order; enable_ipv6 anything but false is the IPv6 refusal at its
+    own position; a network that isn't a mapping (null) is a plain one;
+    "" = none."""
+    if not isinstance(nets, dict):
+        return ""
+    for n, body in nets.items():
+        if not isinstance(body, dict):
+            continue
+
+        def sets(key: str) -> str:
+            return f"mail: network {n} sets {key}: {MAIL_NETWORK_TEXT}"
+
+        for k, val in body.items():
+            k = scalar_text(k)
+            if k == "enable_ipv6":
+                if not (val is False or val in ("false", "False", "FALSE")):
+                    return f"mail: network {n} enables IPv6"
+            elif k == "internal":
+                continue
+            elif k == "ipam":
+                if not isinstance(val, dict):
+                    return sets("ipam")
+                for ik, iv in val.items():
+                    ik = scalar_text(ik)
+                    if ik != "config":
+                        return sets("ipam." + ik)
+                    if not isinstance(iv, list):
+                        return sets("ipam.config")
+                    for c in iv:
+                        if not isinstance(c, dict):
+                            return sets("ipam.config")
+                        for ck, cv in c.items():
+                            ck = scalar_text(ck)
+                            if ck not in ("subnet", "ip_range"):
+                                return sets("ipam.config." + ck)
+                            # IPv4 only (enable_ipv6 is false): an IPv6 or
+                            # unparsable range is refused (Hub f2a8b6b).
+                            if isinstance(cv, (dict, list)) or not go_ipv4_prefix(scalar_text(cv)):
+                                return sets("ipam.config." + ck)
+            else:
+                return sets(k)
+    return ""
+
+
+def mail_unknown_key(b: Any) -> str:
+    """mailUnknownKey: the first key (document order) outside the block's
+    shape, as its path inside the block ("" = none)."""
+    if not isinstance(b, dict):
+        return ""
+    for k, val in b.items():
+        k = scalar_text(k)
+        if k not in MAIL_TOP_KEYS:
+            return k
+        if k in MAIL_FIELD_KEYS and isinstance(val, dict):
+            for sk in val:
+                if scalar_text(sk) not in MAIL_FIELD_KEYS[k]:
+                    return f"{k}.{scalar_text(sk)}"
+    return ""
+
+
+def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[str] = None,
+                tdir: Optional[str] = None, manifest_text: Optional[str] = None) -> List[str]:
+    """ValidateMail: the mail: block of manifest m against compose file
+    compose (template id app_id, compose_text its text, tdir the template
+    directory for the symlink check, none without one), the Hub's first
+    refusal in the Hub's order ([] for no block or a valid one; the Hub
+    reports one refusal, so this lists at most one)."""
+    m = m if isinstance(m, dict) else {}
+    if "mail" not in m:
+        return []
+    b = m.get("mail")
+    k = mail_unknown_key(b)
+    if k:
+        return [f"mail: unknown key {k}"]
+    b = b if isinstance(b, dict) else {}
+    if manifest_text is not None:
+        b = mail_int_view(b, manifest_text)
+    services = (compose or {}).get("services") if isinstance(compose, dict) else None
+    services = {str(n): (sv if isinstance(sv, dict) else {}) for n, sv in services.items()} \
+        if isinstance(services, dict) else {}
+    jobs = job_services(m, services)
+    ai = m.get("ai") if isinstance(m.get("ai"), dict) else {}
+    companions = {_str(c, "service") for c in as_list(ai.get("mcp")) if isinstance(c, dict) and _str(c, "kind") == "companion"}
+
+    def service(field: str, s: str, port: Optional[int], has_port: bool) -> str:
+        if s == "" or s not in services:
+            return f"mail.{field}: service {s} is not a service of this template"
+        if has_port and not (port is not None and 1024 <= port <= 65535):
+            return f"mail.{field}: port must be 1024–65535"
+        if s in jobs:
+            return f"mail.{field}: {s} is a job"
+        if s in companions:
+            return f"mail.{field}: {s} is an AI companion"
+        if "network_mode" in services[s]:
+            return f"mail.{field}: {s} has network_mode"
+        return ""
+
+    def endpoint(field: str) -> str:
+        if field not in b:
+            return f"mail.{field}: required"
+        v = b[field]
+        return service(field, _mail_str(_mail_get(v, "service")), _mail_int(_mail_get(v, "port")), True)
+
+    # label, api_version, api
+    if "label" not in b:
+        return ["mail.label: required"]
+    lv = b["label"]
+    if not _mail_scalar(lv) or not single_line(scalar_text(lv), MAIL_LABEL_MAX):
+        return [f"mail.label: 1–{MAIL_LABEL_MAX} characters, one line"]
+    if "api_version" not in b:
+        return ["mail.api_version: required"]
+    if _mail_int(b["api_version"]) != 1:
+        return ["mail.api_version: only 1"]
+    e = endpoint("api")
+    if e:
+        return [e]
+    # listeners: exactly the five keys, a scalar service, four scalar ports.
+    if "listeners" not in b:
+        return ["mail.listeners: required"]
+    ln = b["listeners"]
+    listeners_text = "mail.listeners: exactly smtp, submissions, submission and imaps, on one service"
+    if not isinstance(ln, dict) or len(ln) != len(MAIL_FIELD_KEYS["listeners"]) or "service" not in ln \
+            or not _mail_scalar(ln["service"]):
+        return [listeners_text]
+    ports: List[Optional[int]] = []
+    for key in MAIL_LISTENER_PORTS:
+        if key not in ln or not _mail_scalar(ln[key]):
+            return [listeners_text]
+        ports.append(_mail_int(ln[key]))
+    listener = scalar_text(ln["service"])
+    # The service's checks, with the first port out of range (if any).
+    lp = next((p for p in ports if p is None or not 1024 <= p <= 65535), ports[0])
+    e = service("listeners", listener, lp, True)
+    if e:
+        return [e]
+    for f in ("wellknown", "metrics"):
+        e = endpoint(f)
+        if e:
+            return [e]
+    if "server_metrics" in b:
+        p = _mail_str(_mail_get(b["server_metrics"], "path"))
+        if not _MAIL_PATH_RE.fullmatch(p) or ".." in p.split("/"):
+            return ["mail.server_metrics.path: an absolute URL path"]
+        e = endpoint("server_metrics")
+        if e:
+            return [e]
+    # tls, gated: lists of services holding listeners' and api's.
+    api_service = _mail_str(_mail_get(b.get("api"), "service"))
+    for f in ("tls", "gated"):
+        if f not in b:
+            return [f"mail.{f}: required"]
+        lst = _mail_strings(b[f])
+        if lst is None:
+            return [f"mail.{f}: service {_mail_str(b[f])} is not a service of this template"]
+        for s in lst:
+            if s not in services:
+                return [f"mail.{f}: service {s} is not a service of this template"]
+        for s in (listener, api_service):
+            if s not in lst:
+                return [f"mail.{f}: {s} serves mail and must be listed"]
+    rs = _mail_str(_mail_get(b.get("sessions"), "restart"))
+    if rs == "":
+        return ["mail.sessions.restart: required"]
+    e = service("sessions.restart", rs, None, False)
+    if e:
+        return [e]
+    if "export" in b:
+        ex = b["export"]
+        argv = _mail_strings(_mail_get(ex, "argv"))
+        if not argv or argv.count(MAIL_FORMER_ID_ARG) != 1 \
+                or any(a != MAIL_FORMER_ID_ARG and MAIL_FORMER_ID_ARG in a for a in argv):
+            return [f"mail.export.argv: exactly one {MAIL_FORMER_ID_ARG}"]
+        e = service("export", _mail_str(_mail_get(ex, "service")), None, False)
+        if e:
+            return [e]
+    # The manifest.
+    if m.get("instances") == "multi":
+        return ["mail: instances must be single"]
+    auth = m.get("auth") if isinstance(m.get("auth"), dict) else {}
+    routers = {(n, mm.group(1)) for n, sv in services.items() for k in labels_of(sv)
+               for mm in [_HTTP_ROUTER_RE.match(fold_key(k))] if mm}
+    if _str(auth, "method") != "custom" or auth.get("group_access") is True or routers:
+        return ["mail: auth must be method custom with no routers and group_access false"]
+    if as_list(m.get("ports")):
+        return ["mail: manifest ports are not allowed"]
+    if any(o.get("type") in ("person_secret", "person_id") for o in setting_options(m)):
+        return ["mail: person_secret options are not allowed: mail passwords go through the provider API"]
+    # Service by service, in compose order.
+    top_vols = (compose or {}).get("volumes") if isinstance(compose, dict) else None
+    top_vols = top_vols if isinstance(top_vols, dict) else {}
+    for n, sv in services.items():
+        if "ports" in sv:
+            return [f"mail: service {n} publishes ports: the Hub publishes a mail provider's ports"]
+        if any(fold_key(k).startswith("traefik.") for k in labels_of(sv)):
+            return [f"mail: service {n} has a Traefik router: a mail provider's only router is the Hub's well-known router"]
+        why = vpn_privilege_problem(n, sv, MAIL_CAP_WORDS)
+        if why:
+            return [why]
+        for key in ("pid", "ipc"):
+            if key in sv:
+                return [f"mail: {n} sets {key}: a mail provider keeps its own pid and ipc namespaces"]
+        if sv.get("network_mode") == "host":
+            return [f"mail: service {n} uses network_mode: host"]
+        if "volumes_from" in sv:
+            return [f"mail: {n} uses volumes_from: a mail provider mounts no other service's volumes"]
+        mounts, bad = vpn_mounts(sv)
+        if bad:
+            return [f"mail: {n} mounts {bad}: unresolvable (a mail template's mounts are literal)"]
+        for kind, src, ro, entry in mounts:
+            if kind == "bind":
+                if vpn_bind_outside(src):
+                    return [f"mail: {n} mounts {entry}: a mail template's binds start with ./ and have no .. segment"]
+                # Case-sensitive (Hub L12): ./templates/STALWART/ is another
+                # directory on Linux.
+                if not (src.startswith(f"./templates/{app_id}/")
+                        and posixpath.normpath(src).startswith(f"templates/{app_id}/")) or not ro:
+                    return [f"mail: {n} mounts {entry}: a mail provider binds only the template's own files "
+                            f"(./templates/{app_id}/…), read-only"]
+                continue
+            if len(src) == 1:
+                return [f"mail: {n} mounts {entry}: {MAIL_LETTER_TEXT}"]
+            if src not in top_vols and entry != src:
+                return [f"mail: {n} mounts {entry}: a mail template's short-syntax sources are ./ binds or declared volumes"]
+    if tdir is not None:
+        e = bind_escapes(tdir, app_id, services, "mail: ")
+        if e:
+            return e
+    for k, decl in sorted(top_vols.items(), key=lambda kv: str(kv[0])):
+        if len(str(k)) == 1:
+            return [f"mail: volume {k}: {MAIL_LETTER_TEXT}"]
+        for key in ("name", "external", "driver", "driver_opts"):
+            if isinstance(decl, dict) and key in decl:
+                return [f"mail: volume {k} sets {key}: a mail template's volumes are plain <project>_<key> volumes"]
+    nets = (compose or {}).get("networks") if isinstance(compose, dict) else None
+    e = mail_network_refusal(nets) or mail_core_network(nets) or mail_service_networks(services, nets)
+    if e:
+        return [e]
+    if compose_text is not None and vpn_yaml_indirection(compose_text):
+        return ["compose.yml: a mail template uses no YAML anchors, aliases or merge keys"]
+    # The images are literal references (contract §3.5, Hub M14): the
+    # block hash covers compose.yml's bytes, so an interpolated image could
+    # change what runs without a template change.
+    for n, sv in services.items():
+        img = sv.get("image")
+        if "$" in _mail_str(img):   # the Hub's mailInterpolatedImage (a scalar's text)
+            return [f"mail: {n} image must be a literal reference: a mail template's images are hashed (no ${{…}})"]
+    return []
+
+
+def check_mail(t: Template, services: Dict[str, Any], r: Report) -> None:
+    """The mail: block (contracts §3.5), as the Hub's ValidateMail checks
+    it (the schema checks the shapes too)."""
+    m = t.manifest or {}
+    if "mail" not in m:
+        return
+    try:
+        with open(t.compose_path, encoding="utf-8") as f:
+            text: Optional[str] = f.read()
+    except OSError:
+        text = None
+    try:
+        with open(t.manifest_path, encoding="utf-8") as f:
+            mtext: Optional[str] = f.read()
+    except OSError:
+        mtext = None
+    compose = dict(t.compose or {}, services=services)
+    for e in mail_errors(m, compose, t.id, text, os.path.join(ROOT, t.id), mtext):
+        r.error(t.m_where, e, MAIL_BLOCK_HINT)
 
 
 # ── One-off jobs and setup options (contracts §3, §13.18) ──────────
@@ -7668,6 +8197,13 @@ def _podman_compat(t: Template, env: Optional[Dict[str, str]], port_start: int) 
             i = runs_as.get(k)
             if isinstance(i, int) and not isinstance(i, bool) and (i < 0 or i > ROOTLESS_MAX_ID):
                 refuse(f"service {svc_name} runs as id {i}, outside the rootless id range (0–65535)")
+
+    # Per-person passwords need the hub_secrets subpath mount, which
+    # Podman's compat API ignores (Ruling R-POD2): only the first such
+    # option is named.
+    ps = next((o for o in setting_options(manifest) if o.get("type") == "person_secret"), None)
+    if ps is not None:
+        refuse(f"option {_str(ps, 'key')} is a per-person password: per-person passwords need Docker for now")
 
     if refused:
         return ("refused", refused)
@@ -8184,6 +8720,9 @@ def kube_label_check(labels: Dict[str, Dict[str, str]]) -> str:
     return ""
 
 
+KUBE_MAIL_REFUSAL = "the template is a mail provider: mail isn't available on Kubernetes yet"
+
+
 def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True) -> Tuple[str, List[str]]:
     """The Hub's kubeCompat: per service in compose order its devices,
     cap_add, user, network_mode, privileged, pid / ipc, binds, ports published on
@@ -8194,6 +8733,11 @@ def _kube_compat(t: Template, env: Optional[Dict[str, str]], labels: bool = True
     if bad is not None or services is None:
         return bad or ("refused", [])
     c = _Reasons()
+    # The mail slot is Docker / Podman only (contract §19.12; core refuses it
+    # on Kubernetes): a mail provider is refused, first (Hub KubeMailRefusal,
+    # final review L11).
+    if isinstance(t.manifest, dict) and t.manifest.get("mail") is not None:
+        c.refuse(KUBE_MAIL_REFUSAL)
     roots = env[KUBE_ENV_BIND_ROOTS].split(":") if KUBE_ENV_BIND_ROOTS in env else KUBE_DEFAULT_BIND_ROOTS
     jobs = kube_job_services(t.manifest if isinstance(t.manifest, dict) else {}, services)
     pod_of: Dict[str, str] = {}
@@ -8577,6 +9121,11 @@ def placement_reasons(compose: bytes, manifest: Any, env: Optional[Dict[str, str
     vpn = manifest.get("vpn")
     if isinstance(vpn, dict):
         vpn_reasons.append("is a VPN provider (vpn: block)")
+    # A mail provider (contract §3, §19; Hub final review M2): the Hub's
+    # override mounts core volumes into it and joins core networks. Any
+    # present, non-null mail: (the Hub's m.Mail != nil).
+    if manifest.get("mail") is not None:
+        vpn_reasons.append("is a mail provider (mail: block)")
 
     # Check for host-gateway usage (seventh bucket)
     for svc_name, svc in services.items():

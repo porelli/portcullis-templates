@@ -1545,5 +1545,66 @@
     "compose.yml can't be read"
    ]
   }
+ },
+ {
+  "name": "is a mail provider",
+  "compose": "services:\n  stalwart:\n    image: stalwart:latest\n  adapter:\n    image: adapter:latest\n",
+  "manifest": {
+   "name": "Test App",
+   "instances": "single",
+   "auth": {
+    "method": "custom",
+    "group_access": false
+   },
+   "ai": {
+    "unsupported": "test fixture"
+   },
+   "mail": {
+    "label": "Stalwart",
+    "api_version": 1,
+    "api": {
+     "service": "adapter",
+     "port": 8080
+    },
+    "listeners": {
+     "service": "stalwart",
+     "smtp": 10025,
+     "submissions": 10465,
+     "submission": 10587,
+     "imaps": 10993
+    },
+    "wellknown": {
+     "service": "adapter",
+     "port": 8081
+    },
+    "metrics": {
+     "service": "adapter",
+     "port": 9100
+    },
+    "tls": [
+     "stalwart",
+     "adapter"
+    ],
+    "gated": [
+     "stalwart",
+     "adapter"
+    ],
+    "sessions": {
+     "restart": "stalwart"
+    }
+   }
+  },
+  "env": {},
+  "bind_roots": [
+   "/srv",
+   "/mnt",
+   "/media"
+  ],
+  "want": {
+   "primary_only": true,
+   "reasons": [
+    "is a mail provider (mail: block)"
+   ]
+  }
  }
 ]

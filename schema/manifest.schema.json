@@ -104,6 +104,7 @@
       "default": "any"
     },
     "vpn": {"$ref": "#/$defs/vpn"},
+    "mail": {"$ref": "#/$defs/mail"},
     "jobs": {
       "description": "Contracts §3 (NEW, apps): compose services that run once and exit (a setup or migration container). The Hub counts a job's container done when it exited 0 and failed when it exited non-zero. A service another one depends on with condition: service_completed_successfully is a job without being listed. Each entry is a compose service, listed once, with no Traefik router (tests/validate.py check_setup).",
       "type": "array",
@@ -120,6 +121,71 @@
     }
   ],
   "$defs": {
+    "mail": {
+      "description": "Mail provider (contracts §3.5): the template is a mail server the Hub can wire into the mail slot; only the wired instance gets the slot's powers. Field shapes here; tests/validate.py check_mail checks the rest (services, ports 1024-65535, the stricter rules for every service), as the Hub's ValidateMail does (shared vectors tests/mail_vectors.json).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "api_version", "api", "listeners", "wellknown", "metrics", "tls", "gated", "sessions"],
+      "properties": {
+        "label": {"description": "One line, 1-64 characters, shown on Settings → Mail and the instance's Mail tab.", "type": "string"},
+        "api_version": {"description": "Exactly 1: the provider API v1 (contracts §19.5).", "type": "integer"},
+        "api": {"$ref": "#/$defs/mailEndpoint", "description": "The service and container port the Hub dials on portcullis-mail-api."},
+        "listeners": {
+          "description": "The four container ports, all on one service; the Hub publishes host ports 25, 465, 587 and 993 onto them.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["service", "smtp", "submissions", "submission", "imaps"],
+          "properties": {
+            "service": {"$ref": "#/$defs/serviceName"},
+            "smtp": {"type": "integer"},
+            "submissions": {"type": "integer"},
+            "submission": {"type": "integer"},
+            "imaps": {"type": "integer"}
+          }
+        },
+        "wellknown": {"$ref": "#/$defs/mailEndpoint", "description": "MTA-STS, autoconfig and autodiscover: the Hub's portcullis-mail-wellknown router routes to it."},
+        "metrics": {"$ref": "#/$defs/mailEndpoint", "description": "The provider's metrics, scraped by core's Prometheus."},
+        "server_metrics": {
+          "description": "Optional: the mail server's own metrics and their absolute URL path.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["service", "port", "path"],
+          "properties": {
+            "service": {"$ref": "#/$defs/serviceName"},
+            "port": {"type": "integer"},
+            "path": {"type": "string"}
+          }
+        },
+        "tls": {"description": "Services that get the mail certificate, read-only; the listener and api services must be listed.", "type": "array", "items": {"$ref": "#/$defs/serviceName"}},
+        "gated": {"description": "Services that get the gate files and must honour them: every service that serves mail or holds credentials; the listener and api services must be listed.", "type": "array", "items": {"$ref": "#/$defs/serviceName"}},
+        "sessions": {
+          "description": "The service the Hub restarts after every removal and every revoked mail password.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["restart"],
+          "properties": {"restart": {"$ref": "#/$defs/serviceName"}}
+        },
+        "export": {
+          "description": "Optional: the former-account export, a literal argv with exactly one {former_id} element, run as an exec in service (stdout is the mbox).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["service", "argv"],
+          "properties": {
+            "service": {"$ref": "#/$defs/serviceName"},
+            "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "mailEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "port"],
+      "properties": {
+        "service": {"$ref": "#/$defs/serviceName"},
+        "port": {"description": "A container port, 1024-65535.", "type": "integer"}
+      }
+    },
     "vpn": {
       "description": "VPN provider (contracts §3.3): the template is a VPN the Hub can wire as a provider for VPN-only access. Field shapes here; tests/validate.py check_vpn checks the rest, as the Hub's ValidateVPN does (shared vectors tests/vpn_vectors.json).",
       "type": "object",

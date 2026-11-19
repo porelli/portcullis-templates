@@ -1,0 +1,256 @@
+# Stalwart mail server as a Portcullis mail provider (contract §3.5, §19).
+# The Hub wires one instance into the mail slot: its override (never this
+# file) publishes 25/465/587/993 onto the listener ports, attaches the
+# adapter to portcullis-mail-api (+ the metrics network) and Traefik's
+# well-known router, mounts the mail certificate and the slot volume (core's
+# portcullis_mail_provider_slot, whole and read-only at
+# /run/portcullis/mail/slot, Ruling R-POD2; never a hub_secrets subpath) into
+# the gated services and sets their PORTCULLIS_MAIL_* environment. Unwired, the
+# gated services refuse to start (stalwart: gate/entrypoint.sh; adapter:
+# mailctl's own start check).
+#
+# Every service: cap_drop ALL (stalwart and the bootstrap job add only
+# NET_BIND_SERVICE, the one capability contract §3.5 allows, Ruling T17-a
+# amended: the Stalwart binary carries it as a file capability and can't be
+# exec'd without it in the bounding set), no-new-privileges, read-only root, an explicit
+# pids_limit (rootless Podman through the Docker CLI otherwise gives
+# pids.max = 1), no ports, no Traefik labels, no anchors.
+#
+# Volume ownership without CHOWN (Ruling T17-a, checked on Docker 29 and
+# rootless Podman 4.9): a volume takes the owner of the image directory it
+# is first mounted on (Docker's copy-up, Podman's first-mount chown), so
+#   - data (the RocksDB store) and job_data (the job's own files) are
+#     first mounted by the Stalwart image at its 2000-owned
+#     /var/lib/stalwart and /etc/stalwart;
+#   - adapter_data and mailctl_bin by the mailctl image at its 10010-owned
+#     /data (one writer each, filled before any other mount);
+#   - adapter_key (the API key alone; Ruling T17-e) at a path no image has,
+#     in every service that mounts it, so no image owner is copied in: a
+#     fresh volume is root's (Docker) or the first mounter's (rootless
+#     Podman chowns an empty volume to its mounter); key-init, root with no
+#     capability, makes it root:2010 2770 and accepts an already-prepared
+#     one (gate/key-init.sh).
+services:
+  # Copies the pinned adapter image's static mailctl into mailctl_bin for
+  # the bootstrap job (gate/copy-mailctl.sh). No network.
+  adapter-bin:
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-9c0da3a@sha256:267395d1c35e937930022e503e7505486dd2dc387a4bcd6a3ccc5c82ca0694fa
+    user: "10010:10010"
+    entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    network_mode: none
+    volumes:
+      - mailctl_bin:/data
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+    mem_limit: 64m
+    pids_limit: 32
+    restart: "no"
+
+  # Prepares the key volume (gate/key-init.sh, Ruling T17-e): root:2010
+  # 2770, only api-key in it, idempotent. Root with no capability, no
+  # network, read-only root.
+  key-init:
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-9c0da3a@sha256:267395d1c35e937930022e503e7505486dd2dc387a4bcd6a3ccc5c82ca0694fa
+    user: "0:2010"
+    entrypoint: ["/bin/sh", "/portcullis/gate/key-init.sh"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    network_mode: none
+    volumes:
+      - adapter_key:/run/portcullis/key-init
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+    mem_limit: 64m
+    pids_limit: 32
+    restart: "no"
+
+  # The one-off bootstrap (gate/bootstrap.sh): Stalwart in recovery mode
+  # inside this container only, the base plan, the API key, the recovery
+  # login refused. Never depends_on ... restart: true (it would chain
+  # restarts); a later `up` re-runs it and it exits 0 while the server holds
+  # the store lock.
+  bootstrap:
+    image: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
+    # Stalwart's uid; primary gid 2010 = mailkey (the API key's group).
+    user: "2000:2010"
+    entrypoint: ["/bin/sh", "/portcullis/gate/bootstrap.sh"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    environment:
+      # The job dials its own server child over loopback; the plan's
+      # management address is the stalwart service's pinned one.
+      MAILCTL_JOB_LOCAL_URL: http://127.0.0.1:8080
+      MAILCTL_STALWART_URL: http://172.31.255.2:8080
+      MAILCTL_RULES_ADDR: 172.31.255.3:8082
+      MAILCTL_LOCAL_RESOLVER: 172.31.255.4:5353
+      MAILCTL_RESOLVERS: 172.31.255.4:5353
+      # The job's own files (job_data; .server-image).
+      MAILCTL_DATA: /etc/stalwart
+      MAILCTL_API_KEY_FILE: /run/portcullis/stalwart-key/api-key
+      # The store volume: mailctl's lock and the base plan's marker.
+      MAILCTL_STORE_DIR: /var/lib/stalwart
+      MAILCTL_JOB_SESSION_FILE: /run/portcullis/bootstrap/session
+      MAILCTL_SERVER_IMAGE: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
+    tmpfs:
+      - /tmp:size=64m
+      # The default Tracer's path before the base plan logs to stdout.
+      - /var/log/stalwart:size=16m
+      # The job-only session nonce and the job's mark (no other service
+      # has this tmpfs).
+      - /run/portcullis/bootstrap:size=1m,mode=1777
+    volumes:
+      - data:/var/lib/stalwart
+      # The job's own volume at the image's 2000-owned /etc/stalwart.
+      - job_data:/etc/stalwart
+      # The key volume (key-init: root:2010 2770; a path the image lacks).
+      - adapter_key:/run/portcullis/stalwart-key
+      - mailctl_bin:/portcullis/bin:ro
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+      - ./templates/stalwart/config:/portcullis/config:ro
+    networks: [internal]
+    depends_on:
+      adapter-bin: {condition: service_completed_successfully}
+      key-init: {condition: service_completed_successfully}
+      resolver: {condition: service_started}
+    mem_limit: 1g
+    pids_limit: 512
+    restart: "no"
+
+  # The mail server: SMTP 10025, submissions 10465, submission 10587, IMAPS
+  # 10993, management 8080 (the adapter only), metrics 9180.
+  stalwart:
+    image: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
+    user: "2000:2000"
+    entrypoint: ["/bin/sh", "/portcullis/gate/entrypoint.sh"]
+    command: ["/usr/local/bin/stalwart", "--config", "/portcullis/config/config.json"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    tmpfs:
+      - /tmp:size=64m
+      - /var/log/stalwart:size=16m
+      # The image declares /etc/stalwart a volume: a tmpfs instead of an
+      # anonymous volume (the config is the template's file).
+      - /etc/stalwart:size=1m,mode=0755
+    volumes:
+      - data:/var/lib/stalwart
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+      - ./templates/stalwart/config:/portcullis/config:ro
+    networks:
+      internal:
+        ipv4_address: 172.31.255.2
+      egress: {}
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      resolver: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/healthz/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1g
+    pids_limit: 256
+    restart: unless-stopped
+
+  # The adapter (mailctl): the provider API 8080, the well-known files 8081,
+  # the spam rules 8082 (internal), metrics 9100. The only holder of
+  # Stalwart's API key besides the job.
+  adapter:
+    image: ghcr.io/porelli/portcullis-mailctl:dev-mailprov-9c0da3a@sha256:267395d1c35e937930022e503e7505486dd2dc387a4bcd6a3ccc5c82ca0694fa
+    user: "10010:10010"
+    group_add: ["2010"]
+    entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]
+    command: ["serve"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      MAILCTL_API_ADDR: ":8080"
+      MAILCTL_WELLKNOWN_ADDR: ":8081"
+      MAILCTL_STALWART_URL: http://172.31.255.2:8080
+      MAILCTL_RULES_ADDR: 172.31.255.3:8082
+      MAILCTL_LOCAL_RESOLVER: 172.31.255.4:5353
+      MAILCTL_RESOLVERS: 172.31.255.4:5353
+      MAILCTL_DATA: /data
+      MAILCTL_API_KEY_FILE: /run/portcullis/stalwart-key/api-key
+      GOMEMLIMIT: 200MiB
+      STALWART_DQS_KEY: ${STALWART_DQS_KEY:-}
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    volumes:
+      - adapter_data:/data
+      - adapter_key:/run/portcullis/stalwart-key:ro
+      - ./templates/stalwart/gate:/portcullis/gate:ro
+    networks:
+      internal:
+        ipv4_address: 172.31.255.3
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "mailctl", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped
+
+  # A validating recursive resolver for stalwart and the adapter only
+  # (unbound/unbound.conf): from the root servers, DNSSEC with the image's
+  # trust anchor, on 5353. The image has no shell: exec-form check.
+  resolver:
+    image: docker.io/klutchell/unbound:v1.26.2@sha256:50cbeb32b5838a829a7226b19cb151f9535bd7f9f3190f950780f452fe807478
+    user: "101:102"
+    command: ["-d", "-c", "/etc/unbound/custom.conf"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./templates/stalwart/unbound/unbound.conf:/etc/unbound/custom.conf:ro
+    networks:
+      internal:
+        ipv4_address: 172.31.255.4
+      egress: {}
+    healthcheck:
+      # -p before the server operand (drill stops at the first operand).
+      test: ["CMD", "drill-hc", "-p", "5353", "@127.0.0.1", "dnssec.works"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    pids_limit: 64
+    restart: unless-stopped
+
+networks:
+  # The server, the adapter and the resolver at pinned addresses (the base
+  # plan, mailctl and unbound.conf name them); the bootstrap job takes a
+  # dynamic one from ip_range, which excludes the pins.
+  internal:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.255.0/28
+          ip_range: 172.31.255.8/29
+  # Outbound mail and DNS: stalwart and the resolver only.
+  egress: {}
+
+volumes:
+  data: {}
+  adapter_data: {}
+  adapter_key: {}
+  job_data: {}
+  mailctl_bin: {}

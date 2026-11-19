@@ -1,0 +1,106 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Stalwart
+description: Mail server for every person and mail domain (SMTP, IMAP, spam filter, DKIM, MTA-STS), wired as the server's mail provider
+icon: "\U0001F4EC"
+category: mail
+tags: [mail, smtp, imap, email, stalwart]
+links:
+  website: https://stalw.art/
+  source: https://github.com/stalwartlabs/stalwart
+instances: single
+# The wired provider joins core networks and mounts core volumes (contract
+# §3.5 "Primary only").
+placement: primary_only
+
+auth:
+  # No web page: mail clients sign in with per-device mail passwords the Hub
+  # creates through the provider API (contract §19.6).
+  method: custom
+  sso: false
+  group_access: false
+  group_admin: false
+  notes: >-
+    A mail provider (contract §3.5, §19): installing it grants nothing.
+    A full administrator wires it into the server's one mail slot (Settings
+    -> Mail), and only then does the Hub publish host ports 25, 465, 587 and
+    993 onto its listeners, attach its adapter to the provider API network,
+    route the MTA-STS / autoconfig / autodiscover hosts to it and hand it the
+    mail certificate and its secrets. instances: single because of those
+    host ports and the one mail slot. The mailbox population is the Hub's
+    mail_users group, never this template's; mail passwords go through the
+    provider API only (no person_secret here).
+    Services: stalwart (Stalwart mail server, uid 2000, read-only, cap_drop
+    ALL plus NET_BIND_SERVICE, which the image's binary carries as a file
+    capability; listeners 10025 / 10465 / 10587 / 10993 behind the Hub's
+    published ports), adapter (Portcullis' mailctl, uid 10010: the provider
+    API, the well-known files, the spam rules, the checks and metrics; the
+    only holder of Stalwart's API key), resolver (Unbound, a validating
+    recursive resolver for the two), and two one-off jobs: adapter-bin
+    copies the pinned mailctl into a volume, key-init prepares the key
+    volume (it holds the API key alone), and bootstrap runs Stalwart in
+    recovery mode inside its own container only (a random recovery password
+    made in the job, a job-only session nonce), applies the base plan once
+    per store (only on an empty store; a store with data but no marker fails
+    closed), writes the API key (0640, group mailkey, in the key volume
+    only the job and the adapter mount) and exits 0 only once the recovery
+    login is refused. It runs as Stalwart's uid, adds only NET_BIND_SERVICE
+    (the Stalwart binary's file capability; no other), is gated like the
+    server, re-runs on every cold start (a recovery start that checks the
+    API key, then a normal start; a lost key gets a new key only, the
+    settings untouched) and does
+    nothing while the server holds the store lock.
+    Start gate: stalwart starts only when the Hub's slot files say so
+    (.present, or the Hub's void mode with its session nonce); a raw compose
+    up after a core restore stays stopped. A recovery-mode start outside the
+    bootstrap job is refused.
+    Networks: internal (no internet; pinned 172.31.255.2 / .3 / .4 in the
+    fixed subnet 172.31.255.0/28: an existing network on that range stops
+    the start) and egress (stalwart and the resolver only). Mail over IPv6
+    isn't supported.
+    The dqs_key setting reaches the adapter as an environment variable (the
+    adapter moves it to a file before mailctl starts), so it shows in the
+    adapter container's configuration (docker inspect): a third-party lookup
+    key, not a Portcullis credential.
+    Updates: Stalwart is pinned; any change to this template (an image bump
+    included) holds the wired provider until an admin re-confirms it on the
+    instance's Mail tab.
+
+tests:
+  signin:
+    skip: router-less mail provider, no web page (tests/apps/stalwart.sh checks the template)
+
+jobs: [adapter-bin, key-init, bootstrap]
+
+mail:
+  label: Stalwart
+  api_version: 1
+  api:       {service: adapter, port: 8080}
+  listeners: {service: stalwart, smtp: 10025, submissions: 10465, submission: 10587, imaps: 10993}
+  wellknown: {service: adapter, port: 8081}
+  metrics:   {service: adapter, port: 9100}
+  server_metrics: {service: stalwart, port: 9180, path: /metrics/prometheus}   # optional
+  tls:       [stalwart, adapter, bootstrap]   # services that get the mail certificate, read-only (the job's base plan reads it)
+  gated:     [stalwart, adapter, bootstrap]   # services that get the gate files and must honour them (the job's base plan reads the metrics secret)
+  sessions:  {restart: stalwart}        # restarted after every removal and revoke
+  export:    {service: adapter, argv: ["mailctl", "export", "--former", "{former_id}"]}   # optional
+
+settings:
+  options:
+    - key: dqs_key
+      label: Spamhaus DQS key
+      description: >-
+        Optional free Spamhaus Data Query Service key (8-64 letters and
+        digits). Spamhaus refuses blocklist queries from large public
+        resolvers; with a key the spam filter and the blocklist check use
+        the DQS zones instead.
+      type: secret
+      applies: restart
+      delivery: [{env: STALWART_DQS_KEY}]
+
+env: []
+
+keycloak_clients: []
+config_files: []
+
+ai:
+  unsupported: "A mail server reached only by mail clients and the Hub's provider API; mailboxes stay out of AI reach (surveyed 2026-11-17)"

@@ -74,6 +74,22 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/vpn_vectors.json" -o /tmp/hub_vpn_vectors.json
           cmp tests/vpn_vectors.json /tmp/hub_vpn_vectors.json
 
+      # Mail vectors (the mail: block refusals) must match the Hub's copy
+      # (shared contract §3.5). Same-named branch if it exists, else main.
+      - name: Mail vectors match the Hub
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads https://github.com/porelli/portcullis-hub.git "refs/heads/$REF" >/dev/null 2>&1; then
+            hub_ref="$REF"
+          else
+            hub_ref="main"
+          fi
+          echo "Checking mail_vectors.json against portcullis-hub branch: $hub_ref"
+          curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/mail_vectors.json" -o /tmp/hub_mail_vectors.json
+          cmp tests/mail_vectors.json /tmp/hub_mail_vectors.json
+
       # Placement vectors (worker-placeable vs primary-only) must match the
       # Hub's copy (contract §3, multiple servers). Same-named branch if it
       # exists, else main.
@@ -102,12 +118,17 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh ./*/bin/* ./*/vpn/*.sh
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh tests/mail/*.sh ./*/bin/* ./*/vpn/*.sh ./*/gate/*.sh
 
       # portcullis-sync (the file-sharing templates' converge script) with
       # stubbed Samba / account tools: no root, no Docker.
       - name: portcullis-sync unit tests
         run: bash tests/sync/test_portcullis_sync.sh
+
+      # stalwart's start gate (mail provider plan P3, the recovery-mode
+      # refusal, the store lock) with a stub server under dash.
+      - name: stalwart gate unit tests
+        run: GATE_SH=dash bash tests/mail/test_gate_entrypoint.sh
 
       # grafana's trust.sh (Traefik's CIDR + the AI trust network allowlist)
       # with a stubbed ip.
