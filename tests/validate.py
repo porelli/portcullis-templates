@@ -2623,7 +2623,7 @@ def _interpolated(s: str) -> bool:
 def reserved_dns_name(name: str) -> bool:
     n = fold_key(name.strip()).rstrip(".")
     for c in (n, n.split(".", 1)[0]):
-        if c in CORE_SERVICES or c in CORE_ALIASES:
+        if c in CORE_SERVICES or c in CORE_ALIASES or c in KUBE_HA_CORE_NAMES:
             return True
         m = CORE_CONTAINER_RE.match(c)
         if m and m.group(1) in CORE_SERVICES:
@@ -8551,6 +8551,11 @@ KUBE_FILE_MIDDLEWARES = ["client-headers", "client-cert-pem", "rate-limit", "rat
 KUBE_FILE_SERVICES = ["group-gate", "forward-auth-ext", "mcp-gate"]
 KUBE_CORE_NAMES = ["hub", "keycloak", "hub-proxy-secret", "portcullis-auth-console", "strip-forwarded", "api", "noop",
                    "group-gate", "forward-auth-ext", "mcp-gate", "dashboard"]
+# HA-specific core names (Task 34): services, routers, and PVCs added by the HA plan that templates must not use.
+# Includes Kubernetes-only Services (like wg-people, traefik-metrics) that don't exist in Docker but could collide on k8s.
+KUBE_HA_CORE_NAMES = ["nodeadm", "frontdoor", "cnpg-operator", "keycloak-pods", "keycloak-internal", "alertmanager-peers",
+                      "portcullis-pg", "hub-state", "hub-backups", "portcullis-node", "portcullis-hub",
+                      "traefik-metrics", "traefik-vpn", "wg-edge", "wg-metrics", "wg-people"]
 KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
 KUBE_MAX_APP_PRIORITY = 1000
 _HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
