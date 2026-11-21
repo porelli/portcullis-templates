@@ -88,6 +88,30 @@ Reference docs:
      `http`, `https` (without a `user@` part) and `mailto` links.
    - At most 16 KiB, lists and quotes nested at most 16 deep, and no
      control, bidi or zero-width characters.
+
+   Then the Marketplace listing (all optional; [Catalog
+   fields](https://porelli.github.io/portcullis-docs/guides/manifest-reference/#catalog-fields)):
+   ```yaml
+   category: storage        # one of the 16 slugs in the schema's enum
+   long_description: |
+     What the app is and what it is good for, in a short paragraph.
+
+     What Portcullis wires: sign-in, groups, AI, VPN or mail.
+   resources:
+     min_memory_mib: 2048   # only what the project's own docs state
+   logo: logo.svg
+   ```
+   - `long_description` follows the `auth.notes` rules above and never
+     repeats them: the Marketplace's detail drawer shows both.
+   - Add a `logo.svg` only when the project publishes an SVG logo under
+     terms that allow redistribution, and its trademark terms allow showing
+     it to identify the app. Copy it unchanged from the project's
+     repository at a commit; write CSS styles as presentation attributes
+     (`fill="…"`) if `tests/svgsafe.py` refuses them. Next to it, add a
+     REUSE sidecar `logo.svg.license` (`SPDX-FileCopyrightText`,
+     `SPDX-License-Identifier`, `Source:` with the commit URL, and what you
+     changed), the licence text in `LICENSES/<identifier>.txt`, and a line
+     in `CHANGELOG.md`. Without a logo the emoji `icon` is shown.
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose

@@ -107,6 +107,22 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/templates/testdata/placement_vectors.json" -o /tmp/hub_placement_vectors.json
           cmp tests/placement_vectors.json /tmp/hub_placement_vectors.json
 
+      # tests/svg_vectors.json is the Hub's internal/svgsafe/testdata/vectors.json
+      # byte for byte (the logo lint, contract §3): both lints refuse the same logos.
+      - name: SVG vectors match the Hub
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads https://github.com/porelli/portcullis-hub.git "refs/heads/$REF" >/dev/null 2>&1; then
+            hub_ref="$REF"
+          else
+            hub_ref="main"
+          fi
+          echo "Checking svg_vectors.json against portcullis-hub branch: $hub_ref"
+          curl -fsSL "https://raw.githubusercontent.com/porelli/portcullis-hub/$hub_ref/internal/svgsafe/testdata/vectors.json" -o /tmp/hub_svg_vectors.json
+          cmp tests/svg_vectors.json /tmp/hub_svg_vectors.json
+
       # headscale/vpn/glue.py against a fake Headscale REST API (stdlib).
       - name: headscale VPN glue unit tests
         run: python -m unittest discover -s tests/vpn -p 'test_*.py'

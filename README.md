@@ -17,7 +17,7 @@ The [Portcullis Hub](https://github.com/porelli/portcullis-hub) automatically cl
 
 The Hub auto-loads this repo. To add it manually or re-add after removal:
 
-1. Open the Hub UI → Template Sources tab
+1. Open the Hub UI → Settings → Template sources
 2. Add source:
    - **Name:** `portcullis`
    - **URL:** `https://github.com/porelli/portcullis-templates.git`
