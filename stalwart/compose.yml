@@ -30,7 +30,9 @@
 #     fresh volume is root's (Docker) or the first mounter's (rootless
 #     Podman chowns an empty volume to its mounter); key-init, root with no
 #     capability, makes it root:2010 2770 and accepts an already-prepared
-#     one (gate/key-init.sh).
+#     one (gate/key-init.sh); viewer_key it leaves non-empty (an empty
+#     viewer-password placeholder), so the bootstrap job's mount never
+#     re-chowns it to 2000:2010.
 services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
