@@ -336,6 +336,11 @@ class TestV2Refuses(Case):
                           (["~/x:/y:ro"], "can't start with ~"), ([{"type": "bind", "source": "~/x", "target": "/y"}], "can't start with ~"),
                           (["./certs/ca-bundle.crt:/ca.crt"], "must be bound read-only"),
                           ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt"}], "must be bound read-only"),
+                          (["./certs/ca-bundle.crt:/ca.crt:rw"], "must be bound read-only"),
+                          (["./certs/ca-bundle.crt:/ca.crt:ro,rw"], "both ro and rw"), (["./certs/ca-bundle.crt:/ca.crt:rw,ro"], "both ro and rw"),
+                          (["./templates/app/conf:/c:ro,rw"], "both ro and rw"), (["data:/d:rw,ro"], "both ro and rw"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": "true"}], "must be bound read-only"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": "yes"}], "must be bound read-only"),
                           (["a:b:c:d"], "not source:target"), ([{"type": "npipe", "source": "x", "target": "/y"}], "isn't supported"),
                           ([{"type": "bind", "target": "/y"}], "needs a source"), ([{"type": "volume", "source": "a/b", "target": "/y"}], "volume name"),
                           (["bad name!:/y"], "neither a path nor a volume name"), (["relative"], "anonymous volume"), ([42], "string or a mapping")):
@@ -2298,6 +2303,12 @@ class TestSettingsV3(Case):
         for mount, what in ((bind, "shared by every instance"), (ca, "must be read-only")):
             for val, ok in (("true", True), ("yes", True), ("ON", True), ("y", True), ("\"True\"", True),
                             ("false", False), ("no", False), ("off", False), ("n", False), ("\"No\"", False)):
+                if mount is ca and val != "true":
+                    # The CA bundle binds read-only only with a real boolean
+                    # true (ux2 round 4): every other spelling is refused.
+                    ok, what_now = False, "must be bound read-only"
+                else:
+                    what_now = what
                 with self.subTest(mount=what, val=val):
                     c = s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val)
                     self.run_raw(S_HDR, c)
@@ -2307,7 +2318,7 @@ class TestSettingsV3(Case):
                     if ok:
                         self.assertClean(errors)
                     else:
-                        self.assertError(errors, what)
+                        self.assertError(errors, what_now)
             for val in ("maybe", "1", "\" yes\""):
                 with self.subTest(mount=what, val=val):
                     errors, _ = self.run_raw(S_HDR, s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val))

@@ -7624,7 +7624,7 @@ def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
         if typ == "bind":
             if not src:
                 return None, f"{shown}: a bind needs a source"
-            ro = compose_bool(v.get("read_only")) is True
+            ro = v.get("read_only") is True   # a real boolean only (ux2 round 4)
             return (src.startswith("/") or bool(_VPN_DRIVE_RE.match(src)), ro, src, src), ""
         return None, f"{shown}: mount type {typ} isn't supported (bind, volume or tmpfs)"
     if not isinstance(v, str):
@@ -7640,7 +7640,10 @@ def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
     src = parts[0]
     if len(parts) > 3 or not src or not parts[1]:
         return None, f"{entry}: not source:target[:options]"
-    ro = len(parts) == 3 and "ro" in parts[2].split(",")
+    opts = parts[2].split(",") if len(parts) == 3 else []
+    ro = "ro" in opts
+    if ro and "rw" in opts:   # Compose takes the last one: never guess (ux2 round 4)
+        return None, f"{entry}: the options carry both ro and rw"
     if src.startswith((".", "/", "~")) or "/" in src:
         return (src.startswith("/"), ro, src, entry), ""
     if not _VPN_VOLUME_NAME_RE.fullmatch(src):
