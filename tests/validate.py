@@ -7605,34 +7605,108 @@ def mount_interpolated(v: Any) -> Tuple[str, bool]:
     return s, "$" in s
 
 
-def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any]) -> List[str]:
+def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
+    """The Hub's templateMount: one volume entry as Compose reads it, as
+    (absolute, read-only, source, entry) for a bind, None otherwise; the
+    second value (the entry and why) when it can't be read — never skipped
+    (fail closed, ux2 round 4). Short syntax: a source with a "/" or
+    starting with "." or "~" is a bind, a bare name a named volume."""
+    if isinstance(v, dict):
+        typ = scalar_text(v.get("type")) if v.get("type") not in (None, "") else "volume"
+        src = scalar_text(v.get("source")).strip() if v.get("source") is not None else ""
+        shown = src or json.dumps(v, sort_keys=True)
+        if typ == "tmpfs":
+            return None, ""
+        if typ == "volume":
+            if src and not _VPN_VOLUME_NAME_RE.fullmatch(src):
+                return None, f"{shown}: a volume source must be a volume name"
+            return None, ""
+        if typ == "bind":
+            if not src:
+                return None, f"{shown}: a bind needs a source"
+            ro = compose_bool(v.get("read_only")) is True
+            return (src.startswith("/") or bool(_VPN_DRIVE_RE.match(src)), ro, src, src), ""
+        return None, f"{shown}: mount type {typ} isn't supported (bind, volume or tmpfs)"
+    if not isinstance(v, str):
+        return None, f"{scalar_text(v)}: a volume entry is a string or a mapping"
+    entry = v.strip()
+    if _VPN_DRIVE_RE.match(entry):
+        return (True, False, entry, entry), ""
+    parts = entry.split(":")
+    if len(parts) == 1:
+        if not entry.startswith("/"):
+            return None, f"{entry}: an anonymous volume is an absolute container path"
+        return None, ""
+    src = parts[0]
+    if len(parts) > 3 or not src or not parts[1]:
+        return None, f"{entry}: not source:target[:options]"
+    ro = len(parts) == 3 and "ro" in parts[2].split(",")
+    if src.startswith((".", "/", "~")) or "/" in src:
+        return (src.startswith("/"), ro, src, entry), ""
+    if not _VPN_VOLUME_NAME_RE.fullmatch(src):
+        return None, f"{entry}: the source is neither a path nor a volume name"
+    return None, ""
+
+
+def volume_driver_errors(compose: Any) -> List[str]:
+    """The Hub's checkVolumeDrivers (every template, ux2 round 4): a
+    top-level volume with driver / driver_opts is refused (the local driver
+    with o=bind and a device mounts any host path)."""
+    vols = compose.get("volumes") if isinstance(compose, dict) else None
+    if not isinstance(vols, dict):
+        return []
+    for k in sorted(str(x) for x in vols):
+        val = vols.get(k)
+        if isinstance(val, dict):
+            for key in ("driver", "driver_opts"):
+                if key in val:
+                    return [f"volume {k} sets {key}: a template's volumes use the default driver (driver options can bind host paths)"]
+    return []
+
+
+def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any], compose: Any = None) -> List[str]:
     """The Hub's CheckRelativeBinds (every template, contract §3 "Limits"):
-    a relative bind source (Compose resolves it against the core checkout)
-    is only the template's own files, ./templates/<id>/… (cleaned, no ..
-    out of it, symlinks inside the template directory resolved), or
-    ./certs/ca-bundle.crt; any interpolated mount is refused."""
+    every bind source that isn't absolute is relative (Compose resolves it
+    against the core checkout) and is only the template's own files,
+    ./templates/<id>/… (cleaned, no .. out of it, symlinks inside the
+    template directory resolved), or ./certs/ca-bundle.crt read-only; a ~
+    source, any interpolated mount, an entry that can't be read and a
+    top-level volume driver are refused."""
+    errs = volume_driver_errors(compose)
+    if errs:
+        return errs
+    base = os.path.realpath(tdir) if tdir else ""
     for n in sorted(str(k) for k in services):
         sv = services[n] if isinstance(services[n], dict) else {}
-        mounts: List[Tuple[str, str, bool, str]] = []
-        for v in as_list(sv.get("volumes")):   # entry by entry: one bad entry never hides the next
+        for v in as_list(sv.get("volumes")):   # entry by entry: one entry never hides the next
             shown, interp = mount_interpolated(v)
             if interp:
                 return [f"service {n} mounts {shown}: a mount source can't be interpolated (no $ in a volume entry)"]
-            got, _ = vpn_mounts({"volumes": [v]})
-            mounts += got
-        for kind, src, _, entry in mounts:
-            if kind != "bind" or not src.startswith("."):
+            m, bad = template_mount(v)
+            if bad:
+                return [f"service {n} mounts {bad}"]
+            if m is None or m[0]:
                 continue
+            _, ro, src, entry = m
+            if src.startswith("~"):
+                return [f"service {n} mounts {entry}: a bind source can't start with ~ (a home directory)"]
             norm = posixpath.normpath(src)
             if norm == CA_BUNDLE_PATH:
+                if not ro:
+                    return [f"service {n} mounts {entry}: ./{CA_BUNDLE_PATH} must be bound read-only"]
                 continue
             if not (norm == f"templates/{tid}" or norm.startswith(f"templates/{tid}/")):
                 return [f"service {n} mounts {entry}: a template binds only its own files (./templates/{tid}/…) or ./{CA_BUNDLE_PATH}"]
-    return bind_escapes(tdir, tid, services, "")
+            if base:
+                rest = norm[len(f"templates/{tid}"):].lstrip("/")
+                real = os.path.realpath(os.path.join(tdir, rest))
+                if real != base and not real.startswith(base + os.sep):
+                    return [f"{n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
+    return []
 
 
 def check_relative_binds(t: Template, services: Dict[str, Any], r: Report) -> None:
-    for e in relative_bind_errors(os.path.join(ROOT, t.id), t.id, services):
+    for e in relative_bind_errors(os.path.join(ROOT, t.id), t.id, services, t.compose):
         r.error(t.c_where, e, "bind only the template's own files (./templates/<id>/…), or ./certs/ca-bundle.crt read-only; "
                 "never another instance's data (./appfiles/…), ./secrets or the core checkout")
 

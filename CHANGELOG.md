@@ -11,7 +11,10 @@ A template's relative bind sources are now only `./templates/<id>/…` and
 `./certs/ca-bundle.crt` (contract §3; `tests/validate.py` and the Hub agree):
 the core checkout holds every instance's data, so `./appfiles/…`, `./secrets`,
 `..` and symlinked escapes are refused, and no volume entry may use `$`
-interpolation in any form (no shipped template did). The data-file name
+interpolation in any form (no shipped template did). Round 4: a bind source without `./` is
+relative too, `~` sources are refused, the CA bundle binds read-only only,
+an unreadable volume entry is refused, and top-level volumes may not set
+`driver` / `driver_opts` (none of the 52 did). The data-file name
 `mail-admin` is reserved. **docs** no longer serves core's `./docs` directory: it serves its
 own placeholder page (`docs/docs/index.md`), pointing at the published
 documentation.

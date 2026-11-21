@@ -328,6 +328,27 @@ class TestV2Refuses(Case):
             self.assertTrue(e and "can't be interpolated" in e[0], (vol, e))
         self.assertEqual(errs([{"type": "bind", "source": "${X}", "target": "/x"}]),
                          ["service web mounts ${X}: a mount source can't be interpolated (no $ in a volume entry)"])
+        # Round 4: not-absolute is relative, ~ refused, the CA bundle only
+        # read-only, an unreadable entry fails closed, no volume driver.
+        for vol, want in (([{"type": "bind", "source": "appfiles/stalwart/mail-admin", "target": "/x", "read_only": True}], "its own files"),
+                          (["appfiles/x:/y:ro"], "its own files"), (["secrets/a:/y:ro"], "its own files"),
+                          ([{"type": "bind", "source": "templates/app/../other", "target": "/x"}], "its own files"),
+                          (["~/x:/y:ro"], "can't start with ~"), ([{"type": "bind", "source": "~/x", "target": "/y"}], "can't start with ~"),
+                          (["./certs/ca-bundle.crt:/ca.crt"], "must be bound read-only"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt"}], "must be bound read-only"),
+                          (["a:b:c:d"], "not source:target"), ([{"type": "npipe", "source": "x", "target": "/y"}], "isn't supported"),
+                          ([{"type": "bind", "target": "/y"}], "needs a source"), ([{"type": "volume", "source": "a/b", "target": "/y"}], "volume name"),
+                          (["bad name!:/y"], "neither a path nor a volume name"), (["relative"], "anonymous volume"), ([42], "string or a mapping")):
+            e = errs(vol)
+            self.assertTrue(e and want in e[0], (vol, e))
+        for ok in (["templates/app/conf:/c:ro"], [{"type": "bind", "source": "templates/app", "target": "/t", "read_only": True}],
+                   [{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": True}],
+                   ["/data"], [{"type": "tmpfs", "target": "/tmp"}], [{"type": "volume", "source": "data", "target": "/d"}]):
+            self.assertEqual(errs(ok), [], ok)
+        for drv in ({"driver": "local"}, {"driver_opts": {"type": "none", "o": "bind", "device": "/etc"}}):
+            e = v.relative_bind_errors(d, "app", {"web": {"image": "x", "volumes": ["data:/d"]}}, {"volumes": {"data": drv}})
+            self.assertTrue(e and e[0].startswith("volume data sets driver"), (drv, e))
+        self.assertEqual(v.relative_bind_errors(d, "app", {"web": {"image": "x"}}, {"volumes": {"data": {"labels": {"a": "b"}}, "o": None}}), [])
 
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)
