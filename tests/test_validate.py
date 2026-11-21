@@ -5838,5 +5838,175 @@ class PlacementTests(unittest.TestCase):
                     self.assertEqual(reasons, [])
 
 
+SVG_OK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="#369"/></svg>'
+
+
+def png_bytes(w: int = 2, h: int = 2, pad: int = 0) -> bytes:
+    import struct
+    import zlib
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    return b"\x89PNG\r\n\x1a\n" + chunk + b"\0" * pad
+
+
+def jpeg_bytes(w: int = 3, h: int = 2) -> bytes:
+    import struct
+    app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"
+    sof = b"\xff\xc0" + struct.pack(">HBHHB", 11, 8, h, w, 1) + b"\x01\x11\x00"
+    return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
+
+
+class CatalogCase(Case):
+    """Helpers for the catalog fields (contract §3 "Catalog fields")."""
+
+    def manifest_with(self, extra: str, files: Tuple[Tuple[str, bytes], ...] = ()) -> List[str]:
+        self.assertClean(self.run_template()[0])
+        for name, data in files:
+            with open(os.path.join(self.tmp.name, "demo", name), "wb") as f:
+                f.write(data)
+        self.rewrite_manifest("instances: multi\n", extra.rstrip("\n") + "\ninstances: multi\n")
+        return self.recheck()
+
+
+class TestLongDescription(CatalogCase):
+    """long_description: the auth.notes cases, each error naming the field."""
+
+    def block(self, text: str) -> str:
+        return "long_description: " + json.dumps(text)
+
+    def test_refused(self) -> None:
+        for name, text, needle in [
+            ("html_block", "Intro.\n\n<script>alert(1)</script>\n", "long_description has raw HTML"),
+            ("image", "![alt](https://i.example/p.png)", "long_description has an image"),
+            ("16 KiB + 1", "x" * (16384 + 1), "long_description is 16385 bytes"),
+            ("depth 17", "- " * 17 + "x", "long_description nests blocks deeper than 16"),
+            ("U+200B", "a\u200bb", "long_description has the hidden character U+200B"),
+            ("link with userinfo", "[x](https://bank.example@evil.example/)", "long_description has a link the Hub turns into text"),
+        ]:
+            with self.subTest(name=name):
+                errors = self.manifest_with(self.block(text))
+                self.assertError(errors, needle)
+                self.assertFalse(any("auth.notes" in e for e in errors), errors)
+
+    def test_javascript_link_stays_text(self) -> None:
+        # As for auth.notes: markdown-it (like goldmark) never makes it a link.
+        self.assertEqual(v.markdown_problems("[x](javascript:alert(1))", "long_description"), [])
+        tokens = v.NOTES_MD.parseInline("[x](javascript:alert(1))")
+        self.assertFalse(any(c.type == "link_open" for t in tokens for c in t.children or []))
+
+    def test_accepted(self) -> None:
+        text = "Demo is an app.\n\nIt does **things** — see <https://demo.example.org>.\n"
+        self.assertClean(self.manifest_with(self.block(text)))
+
+
+class TestLogo(CatalogCase):
+    def test_clean_logo(self) -> None:
+        self.assertClean(self.manifest_with("logo: logo.svg", (("logo.svg", SVG_OK.encode()),)))
+
+    def test_file_not_found(self) -> None:
+        os.makedirs(os.path.join(self.tmp.name, "demo", "sub"), exist_ok=True)
+        with open(os.path.join(self.tmp.name, "x.svg"), "w", encoding="utf-8") as f:
+            f.write(SVG_OK)
+        for logo, files in [("../x.svg", ()), ("sub/logo.svg", (("sub/logo.svg", SVG_OK.encode()),)),
+                            ("logo.png", (("logo.png", png_bytes()),)), ("missing.svg", ())]:
+            with self.subTest(logo=logo):
+                self.tearDown_dir()
+                self.assertError(self.manifest_with(f"logo: {logo}", files), "logo: file not found")
+
+    def tearDown_dir(self) -> None:
+        import shutil
+        shutil.rmtree(os.path.join(self.tmp.name, "demo"), ignore_errors=True)
+        os.makedirs(os.path.join(self.tmp.name, "demo", "sub"))
+
+    def test_symlink_refused(self) -> None:
+        target = os.path.join(self.tmp.name, "real.svg")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(SVG_OK)
+        self.assertClean(self.run_template()[0])
+        os.symlink(target, os.path.join(self.tmp.name, "demo", "logo.svg"))
+        self.rewrite_manifest("instances: multi\n", "logo: logo.svg\ninstances: multi\n")
+        self.assertError(self.recheck(), "logo: file not found")
+
+    def test_over_64k(self) -> None:
+        big = SVG_OK.replace("</svg>", "<desc>" + "x" * (64 << 10) + "</desc></svg>").encode()
+        self.assertError(self.manifest_with("logo: logo.svg", (("logo.svg", big),)), "logo: over 64 KiB")
+
+    def test_vectors(self) -> None:
+        import base64
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "svg_vectors.json"), encoding="utf-8") as f:
+            vectors = json.load(f)
+        self.assertGreaterEqual(len(vectors), 20)
+        for vec in vectors:
+            data = base64.b64decode(vec["svg_b64"]) if "svg_b64" in vec else vec["svg"].encode("utf-8")
+            with self.subTest(name=vec["name"]):
+                self.assertEqual(v.svgsafe.check(data), None if vec["ok"] else vec["reason"])
+                self.tearDown_dir()
+                errors = self.manifest_with("logo: logo.svg", (("logo.svg", data),))
+                if vec["ok"]:
+                    self.assertClean(errors)
+                else:
+                    self.assertError(errors, "logo: " + vec["reason"])
+
+
+class TestScreenshots(CatalogCase):
+    def shots(self, entries: List[Tuple[str, str]]) -> str:
+        return "screenshots:\n" + "".join(f"  - file: {f}\n    caption: {json.dumps(c)}\n" for f, c in entries)
+
+    def test_accepted(self) -> None:
+        self.assertClean(self.manifest_with(self.shots([("a.png", "The dashboard"), ("b.jpg", "Settings")]),
+                                            (("a.png", png_bytes()), ("b.jpg", jpeg_bytes()))))
+        self.assertEqual(v.image_size(jpeg_bytes(3, 2), "jpg"), (3, 2))
+        self.assertEqual(v.image_size(png_bytes(5, 7), "png"), (5, 7))
+
+    def test_seven_refused(self) -> None:
+        entries = [(f"s{i}.png", "x") for i in range(7)]
+        errors = self.manifest_with(self.shots(entries), tuple((f, png_bytes()) for f, _ in entries))
+        self.assertError(errors, "screenshots: 7 entries, at most 6 allowed")
+
+    def test_gif_refused(self) -> None:
+        errors = self.manifest_with(self.shots([("a.gif", "x")]), (("a.gif", b"GIF89a"),))
+        self.assertError(errors, "screenshots[0]: file not found")
+
+    def test_too_big(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", png_bytes(pad=1 << 20)),))
+        self.assertError(errors, "screenshots[0]: over 512 KiB")
+
+    def test_magic_mismatch(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", jpeg_bytes()),))
+        self.assertError(errors, "screenshots[0]: not a PNG")
+
+    def test_too_many_pixels(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", png_bytes(4097, 10)),))
+        self.assertError(errors, "screenshots[0]: 4097x10 pixels")
+
+    def test_caption_newline(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "one\ntwo")]), (("a.png", png_bytes()),))
+        self.assertError(errors, "screenshots.0.caption")
+
+
+class TestResources(CatalogCase):
+    def test_bounds(self) -> None:
+        self.assertError(self.manifest_with("resources: {min_memory_mib: 0}"), "resources.min_memory_mib")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertError(self.manifest_with("resources: {min_disk_gib: 70000}"), "resources.min_disk_gib")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertClean(self.manifest_with("resources: {}"))
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertError(self.manifest_with("resources: {min_cpus: 2}"), "Additional properties are not allowed")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertClean(self.manifest_with("resources: {min_memory_mib: 512, min_disk_gib: 10}"))
+
+
+class TestCategoryEnum(Case):
+    def test_other_refused(self) -> None:
+        self.assertClean(self.run_template()[0])
+        self.rewrite_manifest("category: monitoring", "category: other")
+        errors = self.recheck()
+        self.assertError(errors, "category: 'other' is not one of")
+        for slug in ("productivity", "communication", "mail", "storage", "media", "creative", "home-automation",
+                     "ai", "finance", "devops", "monitoring", "networking", "vpn", "remote-access", "security", "public"):
+            self.assertError(errors, f"'{slug}'")
+
+
 if __name__ == "__main__":
     unittest.main()

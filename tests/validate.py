@@ -46,6 +46,11 @@ try:
     import re2  # google-re2: setting patterns are RE2, as in the Hub (Go regexp)
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs google-re2: pip install -r tests/requirements.txt")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import svgsafe  # logo lint (contract §3), defusedxml
+except ImportError:  # pragma: no cover
+    sys.exit("validate.py needs defusedxml: pip install -r tests/requirements.txt")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(ROOT, "schema", "manifest.schema.json")
@@ -826,6 +831,9 @@ def check_manifest_rules(t: Template, r: Report) -> None:
                "set group_access: true and access_group: users_<app> unless that is intended")
 
     check_notes(t, r)
+    check_long_description(t, r)
+    check_logo(t, r)
+    check_screenshots(t, r)
 
 
 NOTES_HINT = ("auth.notes is Markdown and the Hub never shows raw HTML (contract §3): use Markdown, put "
@@ -877,18 +885,23 @@ def notes_marker_depth(line: str) -> int:
 
 
 def notes_problems(notes: str) -> List[Tuple[str, str]]:
-    """What auth.notes breaks (contract §3), as (message, hint): over the
-    size or depth limit, a hidden character, raw HTML (CommonMark
-    html_block / html_inline tokens, parsed by markdown-it-py), an image or
-    a link the Hub wouldn't keep."""
+    """What auth.notes breaks (contract §3), as (message, hint)."""
+    return markdown_problems(notes, "auth.notes")
+
+
+def markdown_problems(notes: str, field: str) -> List[Tuple[str, str]]:
+    """What a Markdown field (auth.notes, long_description) breaks
+    (contract §3), as (message, hint): over the size or depth limit, a
+    hidden character, raw HTML (CommonMark html_block / html_inline tokens,
+    parsed by markdown-it-py), an image or a link the Hub wouldn't keep."""
     size = len(notes.encode("utf-8"))
     if size > NOTES_MAX_BYTES:
-        return [(f"auth.notes is {size} bytes, at most {NOTES_MAX_BYTES} allowed", NOTES_LIMITS_HINT)]
+        return [(f"{field} is {size} bytes, at most {NOTES_MAX_BYTES} allowed", NOTES_LIMITS_HINT)]
     hidden = notes_hidden_char(notes)
     if hidden:
-        return [(f"auth.notes has the hidden character {hidden[1]} at character {hidden[0]}", NOTES_LIMITS_HINT)]
+        return [(f"{field} has the hidden character {hidden[1]} at character {hidden[0]}", NOTES_LIMITS_HINT)]
     if any(notes_marker_depth(line) > NOTES_MAX_DEPTH for line in notes.split("\n")):
-        return [(f"auth.notes nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT)]
+        return [(f"{field} nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT)]
     tokens = NOTES_MD.parse(notes)
     depth = deepest = 0
     out: List[Tuple[str, str]] = []
@@ -899,17 +912,17 @@ def notes_problems(notes: str) -> List[Tuple[str, str]]:
         elif tok.type in ("blockquote_close", "list_item_close"):
             depth -= 1
         elif tok.type == "html_block":
-            out.append((f"auth.notes has raw HTML: {tok.content.strip()[:24]!r}", NOTES_HINT))
+            out.append((f"{field} has raw HTML: {tok.content.strip()[:24]!r}", NOTES_HINT))
         for child in tok.children or []:
             if child.type == "html_inline":
-                out.append((f"auth.notes has raw HTML: {child.content[:24]!r}", NOTES_HINT))
+                out.append((f"{field} has raw HTML: {child.content[:24]!r}", NOTES_HINT))
             elif child.type == "image":
-                out.append((f"auth.notes has an image: {str(child.attrs.get('src', ''))[:40]!r}", NOTES_LINK_HINT))
+                out.append((f"{field} has an image: {str(child.attrs.get('src', ''))[:40]!r}", NOTES_LINK_HINT))
             elif child.type == "link_open" and not notes_link_ok(str(child.attrs.get("href", ""))):
-                out.append((f"auth.notes has a link the Hub turns into text: {str(child.attrs.get('href', ''))[:40]!r}",
+                out.append((f"{field} has a link the Hub turns into text: {str(child.attrs.get('href', ''))[:40]!r}",
                             NOTES_LINK_HINT))
     if deepest > NOTES_MAX_DEPTH:
-        out.insert(0, (f"auth.notes nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT))
+        out.insert(0, (f"{field} nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT))
     return out
 
 
@@ -932,12 +945,143 @@ def notes_raw_html(notes: str) -> List[str]:
     return [msg.split(": ", 1)[1] for msg, hint in notes_problems(notes) if hint == NOTES_HINT]
 
 
-def check_notes(t: Template, r: Report) -> None:
-    notes = ((t.manifest or {}).get("auth") or {}).get("notes")
-    if not isinstance(notes, str):
+def check_markdown(t: Template, r: Report, field: str, text: Any) -> None:
+    """auth.notes and long_description: the same Markdown rules (contract §3)."""
+    if not isinstance(text, str):
         return
-    for msg, hint in notes_problems(notes):
-        r.error(t.m_where, msg, hint)
+    for msg, hint in markdown_problems(text, field):
+        r.error(t.m_where, msg, hint.replace("auth.notes", field))
+
+
+def check_notes(t: Template, r: Report) -> None:
+    check_markdown(t, r, "auth.notes", ((t.manifest or {}).get("auth") or {}).get("notes"))
+
+
+def check_long_description(t: Template, r: Report) -> None:
+    check_markdown(t, r, "long_description", (t.manifest or {}).get("long_description"))
+
+
+ASSET_HINT = ("contract §3 \"Catalog fields\": a file in the template folder itself (no directory part), named "
+              "^[a-z0-9][a-z0-9_-]{0,62}\\.<ext>$")
+LOGO_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\.svg")
+LOGO_HINT = ("contract §3 \"Logo lint\": only svg g path circle ellipse rect line polyline polygon defs gradients stop "
+             "clipPath mask use symbol title desc, geometry and presentation attributes, href and url() only as #id; "
+             "no style, script, events, DOCTYPE or entities; strip editor metadata and inline the paint")
+SHOT_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\.(png|jpg|webp)")
+SHOT_MAX_BYTES = 512 << 10
+SHOT_MAX_PIXELS = 4096
+
+
+def _asset_path(t: Template, name: str) -> Optional[str]:
+    """The regular file name in the template folder, or None."""
+    path = os.path.join(t.dir, name)
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    return path
+
+
+def check_logo(t: Template, r: Report) -> None:
+    """logo: an SVG in the template folder, at most 64 KiB, passing the lint
+    (tests/svgsafe.py = the Hub's rules, shared vectors)."""
+    logo = (t.manifest or {}).get("logo")
+    if logo is None:
+        return
+    path = _asset_path(t, logo) if isinstance(logo, str) and LOGO_RE.fullmatch(logo) else None
+    if path is None:
+        r.error(t.m_where, f"logo: file not found: {str(logo)[:80]!r}", ASSET_HINT.replace("<ext>", "svg"))
+        return
+    if os.path.getsize(path) > svgsafe.MAX_BYTES:
+        r.error(t.m_where, "logo: over 64 KiB", LOGO_HINT)
+        return
+    with open(path, "rb") as f:
+        reason = svgsafe.check(f.read())
+    if reason:
+        r.error(t.m_where, f"logo: {reason}", LOGO_HINT)
+
+
+def image_size(data: bytes, kind: str) -> Optional[Tuple[int, int]]:
+    """(width, height) from the PNG IHDR, the JPEG SOF or the WebP header;
+    None when the leading bytes aren't that format's."""
+    if kind == "png":
+        if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR" or len(data) < 24:
+            return None
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if kind == "jpg":
+        if data[:3] != b"\xff\xd8\xff":
+            return None
+        i = 2
+        while i + 4 <= len(data):
+            if data[i] != 0xFF:
+                return None
+            marker = data[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg = int.from_bytes(data[i + 2:i + 4], "big")
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if i + 9 > len(data):
+                    return None
+                return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+            if seg < 2:
+                return None
+            i += 2 + seg
+        return None
+    if kind == "webp":
+        if data[:4] != b"RIFF" or data[8:12] != b"WEBP" or len(data) < 30:
+            return None
+        chunk = data[12:16]
+        if chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            return int.from_bytes(data[26:28], "little") & 0x3FFF, int.from_bytes(data[28:30], "little") & 0x3FFF
+        if chunk == b"VP8L" and data[20] == 0x2F:
+            b = int.from_bytes(data[21:25], "little")
+            return (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+        if chunk == b"VP8X":
+            return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+        return None
+    return None
+
+
+SHOT_KIND_NAME = {"png": "PNG", "jpg": "JPEG", "webp": "WebP"}
+
+
+def check_screenshots(t: Template, r: Report) -> None:
+    """screenshots: at most 6 {file, caption}; each file in the template
+    folder, png / jpg / webp by its leading bytes, at most 512 KiB and
+    4096 x 4096; the caption one line of at most 120 characters (the
+    schema also has these; the file checks are this function's)."""
+    shots = (t.manifest or {}).get("screenshots")
+    if shots is None:
+        return
+    if not isinstance(shots, list):
+        return  # the schema reports it
+    if len(shots) > 6:
+        r.error(t.m_where, f"screenshots: {len(shots)} entries, at most 6 allowed", ASSET_HINT)
+    for i, shot in enumerate(shots[:6]):
+        if not isinstance(shot, dict):
+            continue
+        name, caption = shot.get("file"), shot.get("caption")
+        if not isinstance(caption, str) or not caption.strip() or len(caption) > 120 or has_control(caption):
+            r.error(t.m_where, f"screenshots[{i}]: the caption must be one line of 1-120 characters", ASSET_HINT)
+        m = SHOT_RE.fullmatch(name) if isinstance(name, str) else None
+        path = _asset_path(t, name) if m else None
+        if path is None:
+            r.error(t.m_where, f"screenshots[{i}]: file not found: {str(name)[:80]!r}",
+                    ASSET_HINT.replace("<ext>", "(png|jpg|webp)"))
+            continue
+        if os.path.getsize(path) > SHOT_MAX_BYTES:
+            r.error(t.m_where, f"screenshots[{i}]: over 512 KiB", ASSET_HINT)
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        size = image_size(data, m.group(1))
+        if size is None:
+            r.error(t.m_where, f"screenshots[{i}]: not a {SHOT_KIND_NAME[m.group(1)]}",
+                    "the file's leading bytes must match its extension")
+        elif not (1 <= size[0] <= SHOT_MAX_PIXELS and 1 <= size[1] <= SHOT_MAX_PIXELS):
+            r.error(t.m_where, f"screenshots[{i}]: {size[0]}x{size[1]} pixels, at most 4096x4096", ASSET_HINT)
 
 
 LINKS_HINT = "see CONTRIBUTING.md, \"Adding an app\" (links): the project's own homepage and its canonical upstream repository"

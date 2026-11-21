@@ -26,9 +26,44 @@
       "maxLength": 16
     },
     "category": {
-      "description": "Catalog category (lowercase, e.g. monitoring, media, productivity, security, networking, ai, devops, finance, vpn, remote-access, public).",
+      "description": "Catalog category (contract §3 \"Catalog fields\"): one of the 16 slugs, in the Marketplace's order. The Hub labels a slug outside the list from the slug and sorts it last; this repo accepts only these.",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+      "enum": ["productivity", "communication", "mail", "storage", "media", "creative", "home-automation", "ai",
+               "finance", "devops", "monitoring", "networking", "vpn", "remote-access", "security", "public"]
+    },
+    "long_description": {
+      "description": "Markdown for the Marketplace's detail drawer (contract §3 \"Catalog fields\"): the auth.notes pipeline and limits (at most 16 KiB, nesting 16, no hidden characters, no raw HTML, images or links the Hub turns into text). A YAML literal block of 2-5 short paragraphs: what the app is, what it is good for, what Portcullis wires. Never a copy of auth.notes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "logo": {
+      "description": "An SVG logo file in the template folder itself (no directory part), at most 64 KiB, UTF-8, passing the logo lint (contract §3; tests/svgsafe.py). Only a logo the project publishes under terms that allow redistribution; record its source URL and licence in a comment next to this key and in CHANGELOG.md. Without one the emoji icon is shown.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}\\.svg$"
+    },
+    "resources": {
+      "description": "The minimum resources the project's own documentation states (contract §3). Leave a figure out when upstream documents none.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_memory_mib": {"description": "Minimum RAM in MiB.", "type": "integer", "minimum": 16, "maximum": 1048576},
+        "min_disk_gib": {"description": "Minimum disk in GiB.", "type": "integer", "minimum": 1, "maximum": 65536}
+      }
+    },
+    "screenshots": {
+      "description": "Up to 6 screenshots in the template folder itself (contract §3): png, jpg or webp, at most 512 KiB and 4096 x 4096 each, leading bytes matching the extension; a one-line caption of at most 120 characters.",
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "caption"],
+        "properties": {
+          "file": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}\\.(png|jpg|webp)$"},
+          "caption": {"$ref": "#/$defs/singleLine", "minLength": 1, "maxLength": 120}
+        }
+      }
     },
     "tags": {
       "description": "Searchable tags (lowercase).",

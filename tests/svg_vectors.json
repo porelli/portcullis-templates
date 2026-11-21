@@ -1,0 +1,225 @@
+[
+ {
+  "name": "minimal path",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0h24v24H0z\" fill=\"#336699\"/></svg>",
+  "ok": true
+ },
+ {
+  "name": "xml declaration, comment, title and desc",
+  "svg": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- logo -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>Demo</title><desc>The Demo logo</desc>\n  <circle cx=\"12\" cy=\"12\" r=\"10\" stroke=\"#000\" stroke-width=\"2\" stroke-linecap=\"round\" fill=\"none\"/>\n</svg>",
+  "ok": true
+ },
+ {
+  "name": "linear gradient by url(#g)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\" gradientUnits=\"objectBoundingBox\"><stop offset=\"0\" stop-color=\"#f00\" stop-opacity=\"1\"/><stop offset=\"1\" stop-color=\"#00f\"/></linearGradient></defs><rect width=\"24\" height=\"24\" rx=\"4\" fill=\"url(#g)\"/></svg>",
+  "ok": true
+ },
+ {
+  "name": "use href=\"#a\" and xlink:href=\"#a\"",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 24 24\"><defs><symbol id=\"a\" viewBox=\"0 0 10 10\"><polygon points=\"0,0 10,0 5,10\"/></symbol></defs><use href=\"#a\" width=\"10\" height=\"10\"/><use xlink:href=\"#a\" x=\"12\" width=\"10\" height=\"10\"/></svg>",
+  "ok": true
+ },
+ {
+  "name": "clipPath and mask",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" preserveAspectRatio=\"xMidYMid meet\"><defs><clipPath id=\"c\"><ellipse cx=\"12\" cy=\"12\" rx=\"10\" ry=\"8\"/></clipPath><mask id=\"m\"><rect width=\"24\" height=\"24\" fill=\"#fff\"/></mask><radialGradient id=\"r\" gradientTransform=\"scale(1)\"><stop offset=\"0\" stop-color=\"#fff\"/></radialGradient></defs><g clip-path=\"url(#c)\" mask=\"url(#m)\" transform=\"rotate(45 12 12)\" opacity=\"0.9\"><path d=\"M0 0L24 24\" fill-rule=\"evenodd\" clip-rule=\"evenodd\" fill=\"url(#r)\" fill-opacity=\"0.5\"/><line x1=\"0\" y1=\"24\" x2=\"24\" y2=\"0\" stroke=\"#000\"/><polyline points=\"0,0 1,1\"/></g></svg>",
+  "ok": true
+ },
+ {
+  "name": "script element",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><script>alert(1)</script><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "element script refused"
+ },
+ {
+  "name": "foreignObject",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><foreignObject width=\"10\" height=\"10\"><div xmlns=\"http://www.w3.org/1999/xhtml\">x</div></foreignObject></svg>",
+  "ok": false,
+  "reason": "element foreignObject refused"
+ },
+ {
+  "name": "onload on the root",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" onload=\"alert(1)\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "event attribute onload refused"
+ },
+ {
+  "name": "onclick in any case",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><rect width=\"1\" height=\"1\" ONCLICK=\"alert(1)\"/></svg>",
+  "ok": false,
+  "reason": "event attribute ONCLICK refused"
+ },
+ {
+  "name": "href javascript:",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><use href=\"javascript:alert(1)\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "xlink:href javascript:",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 24 24\"><use xlink:href=\"javascript:alert(1)\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "external href",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><use href=\"https://evil.example/x.svg#a\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "xlink:href data:",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 24 24\"><use xlink:href=\"data:image/svg+xml;base64,PHN2Zz4=\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "a element",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><a href=\"#x\"><path d=\"M0 0\"/></a></svg>",
+  "ok": false,
+  "reason": "element a refused"
+ },
+ {
+  "name": "image element",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><image href=\"#x\" width=\"1\" height=\"1\"/></svg>",
+  "ok": false,
+  "reason": "element image refused"
+ },
+ {
+  "name": "text element",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><text x=\"0\" y=\"10\">hi</text></svg>",
+  "ok": false,
+  "reason": "element text refused"
+ },
+ {
+  "name": "animate sets an href",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><use href=\"#a\"><set attributeName=\"href\" to=\"javascript:alert(1)\"/></use></svg>",
+  "ok": false,
+  "reason": "element set refused"
+ },
+ {
+  "name": "DOCTYPE",
+  "svg": "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "DOCTYPE refused"
+ },
+ {
+  "name": "entity bomb",
+  "svg": "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY a \"aaaaaaaaaa\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\">]><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>&b;</title></svg>",
+  "ok": false,
+  "reason": "entity refused"
+ },
+ {
+  "name": "style element with url(http)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><style>path{fill:url(http://evil.example/x)}</style><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "style refused"
+ },
+ {
+  "name": "style attribute with url(http)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" style=\"fill:url(http://evil.example/x)\"/></svg>",
+  "ok": false,
+  "reason": "style refused"
+ },
+ {
+  "name": "fill url(https://x)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"url(https://x)\"/></svg>",
+  "ok": false,
+  "reason": "url() must be a local #id reference"
+ },
+ {
+  "name": "URL( in upper case",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"URL(https://x)\"/></svg>",
+  "ok": false,
+  "reason": "url() must be a local #id reference"
+ },
+ {
+  "name": "65 nested g",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><g><path d=\"M0 0\"/></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></g></svg>",
+  "ok": false,
+  "reason": "nested deeper than 64"
+ },
+ {
+  "name": "UTF-16 file",
+  "svg_b64": "//48AD8AeABtAGwAIAB2AGUAcgBzAGkAbwBuAD0AIgAxAC4AMAAiACAAZQBuAGMAbwBkAGkAbgBnAD0AIgBVAFQARgAtADEANgAiAD8APgA8AHMAdgBnACAAeABtAGwAbgBzAD0AIgBoAHQAdABwADoALwAvAHcAdwB3AC4AdwAzAC4AbwByAGcALwAyADAAMAAwAC8AcwB2AGcAIgAgAHYAaQBlAHcAQgBvAHgAPQAiADAAIAAwACAAMgA0ACAAMgA0ACIAPgA8AHAAYQB0AGgAIABkAD0AIgBNADAAIAAwACIALwA+ADwALwBzAHYAZwA+AA==",
+  "ok": false,
+  "reason": "not UTF-8"
+ },
+ {
+  "name": "UTF-8 byte order mark",
+  "svg_b64": "77u/PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTAgMCIvPjwvc3ZnPg==",
+  "ok": false,
+  "reason": "not UTF-8"
+ },
+ {
+  "name": "Latin-1 declared",
+  "svg": "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "encoding must be UTF-8"
+ },
+ {
+  "name": "processing instruction",
+  "svg": "<?xml version=\"1.0\"?><?xml-stylesheet href=\"https://evil.example/x.css\"?><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "processing instruction refused"
+ },
+ {
+  "name": "CDATA",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title><![CDATA[x]]></title></svg>",
+  "ok": false,
+  "reason": "CDATA refused"
+ },
+ {
+  "name": "foreign namespace",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:html=\"http://www.w3.org/1999/xhtml\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "namespace http://www.w3.org/1999/xhtml refused"
+ },
+ {
+  "name": "editor namespace",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" inkscape:label=\"x\"/></svg>",
+  "ok": false,
+  "reason": "namespace http://www.inkscape.org/namespaces/inkscape refused"
+ },
+ {
+  "name": "no SVG namespace",
+  "svg": "<svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "element svg is not in the SVG namespace"
+ },
+ {
+  "name": "root not svg",
+  "svg": "<g xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0\"/></g>",
+  "ok": false,
+  "reason": "root must be svg"
+ },
+ {
+  "name": "no viewBox",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "svg has no viewBox"
+ },
+ {
+  "name": "unknown attribute",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" class=\"x\"/></svg>",
+  "ok": false,
+  "reason": "attribute class refused"
+ },
+ {
+  "name": "xml:space",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" xml:space=\"preserve\"/></svg>",
+  "ok": false,
+  "reason": "attribute xml:space refused"
+ },
+ {
+  "name": "text outside title and desc",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><g>hello<path d=\"M0 0\"/></g></svg>",
+  "ok": false,
+  "reason": "text outside title and desc refused"
+ },
+ {
+  "name": "not well-formed",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"></svg>",
+  "ok": false,
+  "reason": "not well-formed XML"
+ }
+]
