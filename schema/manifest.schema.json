@@ -400,7 +400,8 @@
           "type": "boolean"
         },
         "notes": {
-          "description": "Markdown for admins (contract §3): CommonMark plus GitHub tables and autolinks, rendered and sanitised by the Hub (notes_html). Write it as a YAML literal block (|) and open with a one- or two-sentence summary paragraph; it is also the portal note of an app without a web page (its plain text, at most 300 runes). Raw HTML is never shown and tests/validate.py refuses it; images are not shown; only http, https and mailto links stay links.",
+          "description": "Markdown for admins (contract §3): CommonMark plus GitHub tables and autolinks, rendered and sanitised by the Hub (notes_html). Write it as a YAML literal block (|) and open with a one- or two-sentence summary paragraph; it is also the portal note of an app without a web page (its plain text, at most 300 runes). At most 16 KiB (also maxLength here, in characters), block nesting at most 16, no control, bidi or zero-width characters. Raw HTML is never shown and tests/validate.py refuses it, images and links the Hub would turn into text too; only http/https (no userinfo) and mailto links stay links.",
+          "maxLength": 16384,
           "type": "string"
         },
         "public_access": {"$ref": "#/$defs/publicAccess"},

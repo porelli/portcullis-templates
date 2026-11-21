@@ -84,8 +84,10 @@ Reference docs:
    - Keep every fact a maintainer needs (pins, uids, capabilities, upgrade
      paths), grouped under bold lead-ins such as `**Upgrades:**`.
    - No raw HTML: validate.py refuses it (the Hub would drop it). Put tags
-     and placeholders such as `<instance-id>` in backticks. Images are not
-     shown; only `http`, `https` and `mailto` links stay links.
+     and placeholders such as `<instance-id>` in backticks. No images; only
+     `http`, `https` (without a `user@` part) and `mailto` links.
+   - At most 16 KiB, lists and quotes nested at most 16 deep, and no
+     control, bidi or zero-width characters.
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose

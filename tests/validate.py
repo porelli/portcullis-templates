@@ -39,6 +39,10 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs jsonschema: pip install pyyaml jsonschema")
 try:
+    from markdown_it import MarkdownIt  # auth.notes: CommonMark tokens, as the Hub's goldmark parses them
+except ImportError:  # pragma: no cover
+    sys.exit("validate.py needs markdown-it-py: pip install -r tests/requirements.txt")
+try:
     import re2  # google-re2: setting patterns are RE2, as in the Hub (Go regexp)
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs google-re2: pip install -r tests/requirements.txt")
@@ -826,37 +830,114 @@ def check_manifest_rules(t: Template, r: Report) -> None:
 
 NOTES_HINT = ("auth.notes is Markdown and the Hub never shows raw HTML (contract §3): use Markdown, put "
               "tags and placeholders such as <instance-id> in backticks, or write &lt; for a literal <")
-# Code the notes may hold verbatim: fenced blocks, then code spans (a run of
-# N backticks up to the next run of exactly N, CommonMark).
-NOTES_FENCE_RE = re.compile(r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)")
-NOTES_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
-# What may follow "<" outside code: an autolink (<scheme:…>, <user@host>).
-NOTES_AUTOLINK_RE = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+)>")
+NOTES_LIMITS_HINT = ("contract §3: auth.notes is at most 16 KiB, nests block quotes and list items at most 16 deep "
+                     "and holds no control, bidi or zero-width character (only newline and tab)")
+NOTES_LINK_HINT = ("contract §3: the Hub keeps only absolute http/https links with a host and no user@ part, and "
+                   "mailto: links (anything else becomes text); images are never shown")
+# The Hub's limits (internal/notes MaxBytes, MaxDepth): rendering Markdown
+# is superlinear in the nesting depth.
+NOTES_MAX_BYTES = 16 << 10
+NOTES_MAX_DEPTH = 16
+# CommonMark (as goldmark, the Hub's parser) plus GitHub tables; html stays
+# on so raw HTML shows up as html_block / html_inline tokens to refuse.
+# maxNesting (commonmark preset: 20 block tokens, about 10 list levels)
+# raised so a depth over NOTES_MAX_DEPTH is seen, not cut off.
+NOTES_MD = MarkdownIt("commonmark", {"maxNesting": 4 * NOTES_MAX_DEPTH + 8}).enable("table")
+# Default-ignorable and variation-selector code points (the Hub's
+# templates.HiddenRune; Cc, Cf, Zl, Zp, Co, Cs and non-ASCII Zs come from
+# the category).
+NOTES_IGNORABLE = ({0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0} | set(range(0x180B, 0x1810))
+                   | set(range(0xFE00, 0xFE10)) | set(range(0xE0100, 0xE01F0)) | set(range(0xE0000, 0xE1000)))
+
+
+def notes_hidden_char(notes: str) -> Optional[Tuple[int, str]]:
+    """The first character of notes a person can't see as written (the
+    Hub's HiddenRune, newline and tab allowed), as (index, U+XXXX)."""
+    for i, c in enumerate(notes):
+        if c in "\n\t":
+            continue
+        cat = unicodedata.category(c)
+        if cat in ("Cc", "Cf", "Zl", "Zp", "Co", "Cs") or (cat == "Zs" and c != " ") or ord(c) in NOTES_IGNORABLE:
+            return i, f"U+{ord(c):04X}"
+    return None
+
+
+def notes_marker_depth(line: str) -> int:
+    """The block quote and list markers a line opens with (the Hub's
+    notes.markerDepth): a cheap bound before parsing."""
+    d, s = 0, line
+    while d <= NOTES_MAX_DEPTH:
+        s = s.lstrip(" \t")
+        m = re.match(r">|[-*+][ \t]|[0-9]{1,9}[.)][ \t]", s)
+        if not m:
+            break
+        s = s[m.end():]
+        d += 1
+    return d
+
+
+def notes_problems(notes: str) -> List[Tuple[str, str]]:
+    """What auth.notes breaks (contract §3), as (message, hint): over the
+    size or depth limit, a hidden character, raw HTML (CommonMark
+    html_block / html_inline tokens, parsed by markdown-it-py), an image or
+    a link the Hub wouldn't keep."""
+    size = len(notes.encode("utf-8"))
+    if size > NOTES_MAX_BYTES:
+        return [(f"auth.notes is {size} bytes, at most {NOTES_MAX_BYTES} allowed", NOTES_LIMITS_HINT)]
+    hidden = notes_hidden_char(notes)
+    if hidden:
+        return [(f"auth.notes has the hidden character {hidden[1]} at character {hidden[0]}", NOTES_LIMITS_HINT)]
+    if any(notes_marker_depth(line) > NOTES_MAX_DEPTH for line in notes.split("\n")):
+        return [(f"auth.notes nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT)]
+    tokens = NOTES_MD.parse(notes)
+    depth = deepest = 0
+    out: List[Tuple[str, str]] = []
+    for tok in tokens:
+        if tok.type in ("blockquote_open", "list_item_open"):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif tok.type in ("blockquote_close", "list_item_close"):
+            depth -= 1
+        elif tok.type == "html_block":
+            out.append((f"auth.notes has raw HTML: {tok.content.strip()[:24]!r}", NOTES_HINT))
+        for child in tok.children or []:
+            if child.type == "html_inline":
+                out.append((f"auth.notes has raw HTML: {child.content[:24]!r}", NOTES_HINT))
+            elif child.type == "image":
+                out.append((f"auth.notes has an image: {str(child.attrs.get('src', ''))[:40]!r}", NOTES_LINK_HINT))
+            elif child.type == "link_open" and not notes_link_ok(str(child.attrs.get("href", ""))):
+                out.append((f"auth.notes has a link the Hub turns into text: {str(child.attrs.get('href', ''))[:40]!r}",
+                            NOTES_LINK_HINT))
+    if deepest > NOTES_MAX_DEPTH:
+        out.insert(0, (f"auth.notes nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT))
+    return out
+
+
+def notes_link_ok(href: str) -> bool:
+    """The Hub's notes.allowedURL: absolute http/https with a host and no
+    userinfo, or mailto with an address."""
+    try:
+        u = urlsplit(href.strip())
+    except ValueError:
+        return False
+    if u.scheme.lower() in ("http", "https"):
+        return bool(u.hostname) and "@" not in u.netloc
+    if u.scheme.lower() == "mailto":
+        return bool(u.path)
+    return False
 
 
 def notes_raw_html(notes: str) -> List[str]:
-    """The raw-HTML-looking snippets of Markdown notes, outside code: every
-    "<" followed by a letter, "/", "!" or "?" that doesn't start an autolink
-    (CommonMark open/closing tags, comments, declarations, processing
-    instructions and HTML block starts all begin so). Stricter than
-    CommonMark on purpose: "a <b" is refused too."""
-    text = NOTES_FENCE_RE.sub("", notes)
-    text = NOTES_CODE_SPAN_RE.sub("", text)
-    text = re.sub(r"\\[\\<]", "", text)  # \< is a literal <
-    found = []
-    for mt in re.finditer(r"<[A-Za-z/!?]", text):
-        if NOTES_AUTOLINK_RE.match(text, mt.start()):
-            continue
-        found.append(text[mt.start():mt.start() + 24].split("\n")[0])
-    return found
+    """The raw HTML snippets in Markdown notes (html_block / html_inline)."""
+    return [msg.split(": ", 1)[1] for msg, hint in notes_problems(notes) if hint == NOTES_HINT]
 
 
 def check_notes(t: Template, r: Report) -> None:
     notes = ((t.manifest or {}).get("auth") or {}).get("notes")
     if not isinstance(notes, str):
         return
-    for snippet in notes_raw_html(notes):
-        r.error(t.m_where, f"auth.notes has raw HTML: {snippet!r}", NOTES_HINT)
+    for msg, hint in notes_problems(notes):
+        r.error(t.m_where, msg, hint)
 
 
 LINKS_HINT = "see CONTRIBUTING.md, \"Adding an app\" (links): the project's own homepage and its canonical upstream repository"

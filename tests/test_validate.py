@@ -984,17 +984,20 @@ class TestNotesMarkdown(Case):
 
     def test_raw_html_refused(self) -> None:
         for snippet in ["<script>alert(1)</script>", "<b>bold</b>", "<img src=x onerror=alert(1)>", "</div>",
-                        "<!-- hidden -->", "<?php ?>", "<!DOCTYPE html>", "see <instance-id> here", "a <b"]:
+                        "<!-- hidden -->", "<?php ?>", "<!DOCTYPE html>", "see <instance-id> here",
+                        # The regex validator's bypasses (review M1): backticks in two paragraphs make no
+                        # code span; a fence indented 4 spaces is an indented code block, not a fence.
+                        "`a\n\n<script>alert(1)</script>\n\n`", "\n\n    ```\n    x\n<img src=x>\n```"]:
             with self.subTest(snippet=snippet):
                 self.assertEqual(len(v.notes_raw_html("Text " + snippet)) > 0, True, snippet)
         errors, _ = self.run_template(notes=" <script>alert(1)</script>")
-        self.assertError(errors, "auth.notes has raw HTML: '<script>alert(1)</script'")
+        self.assertError(errors, "auth.notes has raw HTML: '<script>'")
 
     def test_markdown_allowed(self) -> None:
         for ok in ["Plain **bold** `code` [link](https://x.example).",
                    "Code span `<instance-id>` and ``a `<b>` c``.",
                    "Autolinks <https://x.example/a?b=1> and <me@x.example>.",
-                   "Escaped \\<b> and &lt;b&gt; and a < b > c and 1<2.",
+                   "Escaped \\<b> and &lt;b&gt; and a < b > c and 1<2 and a <b.",
                    "Fenced:\n\n```\n<script>alert(1)</script>\n```\n\nafter.",
                    "~~~html\n<div>\n~~~",
                    "- list\n- `docker exec <container>`\n\n| a | b |\n|---|---|\n| `<x>` | 2 |"]:
@@ -1007,6 +1010,49 @@ class TestNotesMarkdown(Case):
         self.assertEqual(v.notes_raw_html("```\n<b>"), [])
         # A code span needs its closing run; a lone backtick is text.
         self.assertNotEqual(v.notes_raw_html("` <b>x</b>"), [])
+
+
+class TestNotesLimits(Case):
+    """auth.notes is bounded like the Hub's ValidateManifest (contract §3)."""
+
+    def test_size_depth_and_hidden(self) -> None:
+        import time
+        for name, notes, needle in [
+            ("120 KB nested", "- " * 60000 + "x", "at most 16384 allowed"),
+            ("17 markers", "- " * 17 + "x", "deeper than 16"),
+            ("17 mixed", "> - " * 9 + "x", "deeper than 16"),
+            ("17 by indentation", "".join("  " * i + "- x\n" for i in range(17)), "deeper than 16"),
+            ("bidi override", "see \u202egnp.exe", "U+202E"),
+            ("zero width", "a\u200bb", "U+200B"),
+            ("isolate", "a\u2066b", "U+2066"),
+            ("bom", "\ufeffa", "U+FEFF"),
+            ("nbsp", "a\u00a0b", "U+00A0"),
+            ("variation selector", "a\ufe0fb", "U+FE0F"),
+            ("nul", "a\x00b", "U+0000"),
+        ]:
+            with self.subTest(name=name):
+                start = time.monotonic()
+                problems = v.notes_problems(notes)
+                self.assertLess(time.monotonic() - start, 1.0)
+                self.assertTrue(any(needle in m for m, _ in problems), problems)
+        for ok in ["- " * 16 + "x", "x" * 16384, "".join("  " * i + "- x\n" for i in range(16)),
+                   "tabs\tand\nnewlines, arrows \u2192 and \u2713"]:
+            self.assertEqual(v.notes_problems(ok), [], ok[:20])
+
+    def test_links_and_images(self) -> None:
+        for bad, needle in [("[x](https://bank.example@evil.example/)", "turns into text"),
+                            ("<https://u:p@evil.example>", "turns into text"),
+                            ("[x](/relative)", "turns into text"),
+                            ("[x](//evil.example)", "turns into text"),
+                            ("![alt](https://i.example/p.png)", "an image")]:
+            with self.subTest(notes=bad):
+                self.assertTrue(any(needle in m for m, _ in v.notes_problems(bad)), v.notes_problems(bad))
+        # markdown-it (like goldmark) never makes javascript: a link: it stays text.
+        self.assertEqual(v.notes_problems("[x](javascript:alert(1))"), [])
+        for ok in ["[x](https://ok.example/a?b=1)", "<https://ok.example>", "[m](mailto:a@b.example)", "<a@b.example>"]:
+            self.assertEqual(v.notes_problems(ok), [], ok)
+        errors, _ = self.run_template(notes=" [x](https://bank.example@evil.example)")
+        self.assertError(errors, "auth.notes has a link the Hub turns into text")
 
 
 class TestHubRules(Case):
