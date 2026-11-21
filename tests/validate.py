@@ -7438,12 +7438,12 @@ MAIL_BLOCK_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.5, the mail: bloc
 MAIL_LABEL_MAX = 64
 MAIL_FORMER_ID_ARG = "{former_id}"
 MAIL_TOP_KEYS = ("label", "api_version", "api", "listeners", "wellknown", "metrics", "server_metrics", "tls", "gated",
-                 "sessions", "export")
+                 "sessions", "export", "admin_view")
 MAIL_FIELD_KEYS = {
     "api": ("service", "port"), "wellknown": ("service", "port"), "metrics": ("service", "port"),
     "server_metrics": ("service", "port", "path"),
     "listeners": ("service", "smtp", "submissions", "submission", "imaps"),
-    "sessions": ("restart",), "export": ("service", "argv"),
+    "sessions": ("restart",), "export": ("service", "argv"), "admin_view": ("service", "port"),
 }
 MAIL_LISTENER_PORTS = ("smtp", "submissions", "submission", "imaps")
 MAIL_LETTER_TEXT = "a mail template's volume names are longer than one letter"
@@ -7477,7 +7477,7 @@ class _MailNotInt(str):
 
 _GO_ATOI_RE = re.compile(r"[+-]?[0-9]+")
 MAIL_INT_FIELDS = {"api_version": None, "api": ("port",), "wellknown": ("port",), "metrics": ("port",),
-                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS}
+                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS, "admin_view": ("port",)}
 
 
 def go_atoi(text: str) -> Optional[int]:
@@ -7818,6 +7818,21 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
         e = service("export", _mail_str(_mail_get(ex, "service")), None, False)
         if e:
             return [e]
+    if "admin_view" in b:
+        # The read-only admin view (contract §19.13): a service of its own,
+        # never handed the certificate or the slot files.
+        e = endpoint("admin_view")
+        if e:
+            return [e]
+        av = _mail_str(_mail_get(b["admin_view"], "service"))
+        own = {api_service, listener, _mail_str(_mail_get(b.get("wellknown"), "service")),
+               _mail_str(_mail_get(b.get("metrics"), "service"))}
+        if "server_metrics" in b:
+            own.add(_mail_str(_mail_get(b["server_metrics"], "service")))
+        if av in own:
+            return [f"mail.admin_view: {av} must be a service of its own (not api, listeners, wellknown or metrics)"]
+        if av in (_mail_strings(b.get("tls")) or []) or av in (_mail_strings(b.get("gated")) or []):
+            return [f"mail.admin_view: {av} is in tls or gated: the admin view gets no mail certificate and no slot file"]
     # The manifest.
     if m.get("instances") == "multi":
         return ["mail: instances must be single"]

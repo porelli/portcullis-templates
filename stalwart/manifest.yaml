@@ -74,6 +74,7 @@ mail:
   gated:     [stalwart, adapter, bootstrap]   # services that get the gate files and must honour them (the job's base plan reads the metrics secret)
   sessions:  {restart: stalwart}        # restarted after every removal and revoke
   export:    {service: adapter, argv: ["mailctl", "export", "--former", "{former_id}"]}   # optional
+  admin_view: {service: admin-view, port: 8090}   # optional: the read-only mail admin view (contract §19.13)
 
 settings:
   options:

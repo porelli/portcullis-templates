@@ -1,8 +1,9 @@
 #!/bin/sh
 # The key-init job: prepares adapter_key, the volume that holds Stalwart's
-# API key and nothing else (Rulings T17-a, T17-e; review L10). Runs in the
-# pinned adapter image as root with primary gid 2010 (mailkey), no
-# capability, no network, a read-only root.
+# API key and nothing else (Rulings T17-a, T17-e; review L10), and
+# viewer_key, the read-only admin view's password alone (contract §19.13).
+# Runs in the pinned adapter image as root with primary gid 2010 (mailkey)
+# and 2011 (mailview) added, no capability, no network, a read-only root.
 #
 # No service mounts adapter_key at a path its image contains (key-init at
 # /run/portcullis/key-init, bootstrap and the adapter at
@@ -19,25 +20,35 @@
 #     CHOWN or FOWNER needed);
 #   - anything else: refused (fail closed).
 # The bootstrap job (uid 2000, primary gid 2010) then writes the key there
-# (0640, group mailkey) and the adapter reads it read-only.
+# (0640, group mailkey) and the adapter reads it read-only. viewer_key gets
+# the same treatment with group 2011 (below).
 set -eu
-K=/run/portcullis/key-init
-for f in "$K"/* "$K"/.[!.]* "$K"/..?*; do
-  [ -e "$f" ] || [ -L "$f" ] || continue
-  [ "$f" = "$K/api-key" ] && [ -f "$f" ] && [ ! -L "$f" ] && continue
-  echo "key-init: the key volume holds $(basename "$f"): refused (it carries only api-key)" >&2
-  exit 1
-done
-read -r owner group mode <<EOF
+# prepare <dir> <file> <gid>: the volume at dir carries file alone, group
+# gid, mode 2770.
+prepare() {
+  K=$1 F=$2 G=$3
+  for f in "$K"/* "$K"/.[!.]* "$K"/..?*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    [ "$f" = "$K/$F" ] && [ -f "$f" ] && [ ! -L "$f" ] && continue
+    echo "key-init: the key volume $K holds $(basename "$f"): refused (it carries only $F)" >&2
+    exit 1
+  done
+  read -r owner group mode <<EOF
 $(stat -c '%u %g %a' "$K")
 EOF
-if [ "$group" = 2010 ] && [ "$mode" = 2770 ]; then
-  exit 0
-fi
-if [ "$owner" = 0 ]; then
-  chgrp 2010 "$K"
-  chmod 2770 "$K"
-  exit 0
-fi
-echo "key-init: the key volume is $owner:$group mode $mode (want group 2010, mode 2770): refused" >&2
-exit 1
+  if [ "$group" = "$G" ] && [ "$mode" = 2770 ]; then
+    return 0
+  fi
+  if [ "$owner" = 0 ]; then
+    chgrp "$G" "$K"
+    chmod 2770 "$K"
+    return 0
+  fi
+  echo "key-init: the key volume $K is $owner:$group mode $mode (want group $G, mode 2770): refused" >&2
+  exit 1
+}
+prepare /run/portcullis/key-init api-key 2010
+# The viewer key volume (contract §19.13): the read-only admin view's
+# password alone, group 2011 (mailview: the bootstrap job writes it, the
+# admin-view service reads it; the adapter never mounts it).
+prepare /run/portcullis/viewer-init viewer-password 2011

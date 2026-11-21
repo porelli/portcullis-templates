@@ -5,6 +5,18 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ## Unreleased (app instances and extra domains)
 
+### stalwart: the read-only mail admin view
+
+The `stalwart` template gets the optional `mail.admin_view` (contracts
+§3.5, §19.13): a new `admin-view` service (`mailctl admin-view`, the adapter
+image) that the Hub routes `mail-admin.<main domain>` to, full
+administrators only. The bootstrap job makes the read-only role
+`portcullis-viewer` and its account and writes its password to the new
+`viewer_key` volume (group 2011, mailview); Stalwart serves its web admin
+(the bundle pinned in the mailctl image) at `/admin` on a TLS listener
+answered only to `admin-view`. Every write is refused by Stalwart itself.
+Needs a mailctl image with `admin-view` (the pin is bumped separately).
+
 ### Template contract v3 settings (breaking)
 
 Every template declares its settings in the contract v3 form (`settings:

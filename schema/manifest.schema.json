@@ -145,6 +145,7 @@
         },
         "wellknown": {"$ref": "#/$defs/mailEndpoint", "description": "MTA-STS, autoconfig and autodiscover: the Hub's portcullis-mail-wellknown router routes to it."},
         "metrics": {"$ref": "#/$defs/mailEndpoint", "description": "The provider's metrics, scraped by core's Prometheus."},
+        "admin_view": {"$ref": "#/$defs/mailEndpoint", "description": "Optional: the read-only mail admin view (contracts §19.13), a service of its own (never in tls or gated, not the api, listeners, wellknown or metrics service). The Hub routes mail-admin.<main domain> to it behind an admin-only router."},
         "server_metrics": {
           "description": "Optional: the mail server's own metrics and their absolute URL path.",
           "type": "object",
