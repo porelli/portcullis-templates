@@ -21,7 +21,8 @@
 #   - anything else: refused (fail closed).
 # The bootstrap job (uid 2000, primary gid 2010) then writes the key there
 # (0640, group mailkey) and the adapter reads it read-only. viewer_key gets
-# the same treatment with group 2011 (below).
+# the same treatment with group 2011, and is never left empty (below: the
+# rootless Podman chown).
 set -eu
 # prepare <dir> <file> <gid>: the volume at dir carries file alone, group
 # gid, mode 2770.
@@ -52,3 +53,16 @@ prepare /run/portcullis/key-init api-key 2010
 # password alone, group 2011 (mailview: the bootstrap job writes it, the
 # admin-view service reads it; the adapter never mounts it).
 prepare /run/portcullis/viewer-init viewer-password 2011
+# Rootless Podman chowns an EMPTY volume to every container that mounts
+# it, to that container's uid and PRIMARY gid: the bootstrap job (2000:2010)
+# would turn viewer_key into 2000:2010, a group the admin view isn't in and
+# one this job can't chgrp back (it isn't the owner), so the next start is
+# refused. adapter_key survives that (its group is the job's primary gid);
+# viewer_key must never be empty after this job: an empty viewer-password
+# placeholder (root:2011 0640 through the setgid directory). The job reads
+# an empty file as "no password" (it sets one and renames it over the
+# placeholder); admin-view starts only after the job.
+if [ ! -e /run/portcullis/viewer-init/viewer-password ]; then
+  ( umask 0027; : > /run/portcullis/viewer-init/viewer-password )
+  chmod 0640 /run/portcullis/viewer-init/viewer-password
+fi
