@@ -431,12 +431,18 @@ def _construct_key(loader: yaml.SafeLoader, key_node: yaml.Node, deep: bool) -> 
 
 def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> Dict[Any, Any]:
     seen: Set[Any] = set()
+    texts: Set[str] = set()
     for key_node, _ in node.value:
         key = _construct_key(loader, key_node, deep)
-        if key in seen:
+        # yaml.v3 compares a scalar key by its text, whatever its tag or
+        # quoting (N6): 1 and "1", true and "true" are the same key there.
+        text = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+        if key in seen or (text is not None and text in texts):
             raise yaml.constructor.ConstructorError(
                 None, None, f"duplicate key {key!r}", key_node.start_mark)
         seen.add(key)
+        if text is not None:
+            texts.add(text)
     loader.flatten_mapping(node)   # merge keys (<<), as SafeLoader.construct_mapping
     mapping: Dict[Any, Any] = {}
     for key_node, value_node in node.value:
@@ -1270,8 +1276,6 @@ def check_compose(t: Template, r: Report) -> None:
     # names) and portcullis_<instance-id>-<key> for the others (§11.2).
     top_vols = data.get("volumes") or {}
     for vname, spec in top_vols.items():
-        if isinstance(spec, dict) and spec.get("external"):
-            r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
         vol_name = spec.get("name") if isinstance(spec, dict) else None
         if mail_provider:
             # A mail template's volumes are plain <project>_<key> volumes
@@ -7605,7 +7609,40 @@ def mount_interpolated(v: Any) -> Tuple[str, bool]:
     return s, "$" in s
 
 
-def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
+MOUNT_TEXT_WHY = ": a mount source or target can't start or end with whitespace or hold a control character"
+
+
+def mount_text_bad(s: str) -> bool:
+    """The Hub's mountTextBad (R3-I1): leading or trailing whitespace, or a
+    control character anywhere. compose-go never trims: " /../secrets" is
+    relative to the project directory."""
+    return s != s.strip() or any(unicodedata.category(c) == "Cc" for c in s)
+
+
+def go_quote(s: str) -> str:
+    """Go's strconv.Quote for the texts the mount errors show (ASCII
+    escapes; printable non-ASCII kept)."""
+    out = []
+    for c in s:
+        if c in ('"', "\\"):
+            out.append("\\" + c)
+        elif c == "\n":
+            out.append("\\n")
+        elif c == "\t":
+            out.append("\\t")
+        elif c == "\r":
+            out.append("\\r")
+        elif c in "\a\b\f\v":
+            out.append("\\" + "abfv"["\a\b\f\v".index(c)])
+        elif unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") or (unicodedata.category(c) == "Zs" and c != " "):
+            o = ord(c)
+            out.append(f"\\x{o:02x}" if o < 0x80 else (f"\\u{o:04x}" if o <= 0xFFFF else f"\\U{o:08x}"))
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
+
+
+def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str, bool]], str]:
     """The Hub's templateMount: one volume entry as Compose reads it, as
     (absolute, read-only, source, entry) for a bind, None otherwise; the
     second value (the entry and why) when it can't be read — never skipped
@@ -7613,8 +7650,11 @@ def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
     starting with "." or "~" is a bind, a bare name a named volume."""
     if isinstance(v, dict):
         typ = scalar_text(v.get("type")) if v.get("type") not in (None, "") else "volume"
-        src = scalar_text(v.get("source")).strip() if v.get("source") is not None else ""
+        src = scalar_text(v.get("source")) if v.get("source") is not None else ""   # never trimmed (R3-I1)
         shown = src or json.dumps(v, sort_keys=True)
+        tgt = scalar_text(v.get("target")) if v.get("target") is not None else ""
+        if mount_text_bad(src) or mount_text_bad(tgt) or mount_text_bad(typ):
+            return None, go_quote(shown) + MOUNT_TEXT_WHY
         if typ == "tmpfs":
             return None, ""
         if typ == "volume":
@@ -7625,13 +7665,16 @@ def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
             if not src:
                 return None, f"{shown}: a bind needs a source"
             ro = v.get("read_only") is True   # a real boolean only (ux2 round 4)
-            return (src.startswith("/") or bool(_VPN_DRIVE_RE.match(src)), ro, src, src), ""
+            extra = any(str(k) not in ("type", "source", "target", "read_only") for k in v)
+            return (src.startswith("/") or bool(_VPN_DRIVE_RE.match(src)), ro, src, src, extra), ""
         return None, f"{shown}: mount type {typ} isn't supported (bind, volume or tmpfs)"
     if not isinstance(v, str):
         return None, f"{scalar_text(v)}: a volume entry is a string or a mapping"
-    entry = v.strip()
+    entry = v   # never trimmed (R3-I1)
+    if mount_text_bad(entry):
+        return None, go_quote(entry) + MOUNT_TEXT_WHY
     if _VPN_DRIVE_RE.match(entry):
-        return (True, False, entry, entry), ""
+        return (True, False, entry, entry, False), ""
     parts = entry.split(":")
     if len(parts) == 1:
         if not entry.startswith("/"):
@@ -7640,12 +7683,15 @@ def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str]], str]:
     src = parts[0]
     if len(parts) > 3 or not src or not parts[1]:
         return None, f"{entry}: not source:target[:options]"
+    if mount_text_bad(src) or mount_text_bad(parts[1]):
+        return None, go_quote(entry) + MOUNT_TEXT_WHY
     opts = parts[2].split(",") if len(parts) == 3 else []
     ro = "ro" in opts
     if ro and "rw" in opts:   # Compose takes the last one: never guess (ux2 round 4)
         return None, f"{entry}: the options carry both ro and rw"
+    extra = bool(opts) and opts != ["ro"]
     if src.startswith((".", "/", "~")) or "/" in src:
-        return (src.startswith("/"), ro, src, entry), ""
+        return (src.startswith("/"), ro, src, entry, extra), ""
     if not _VPN_VOLUME_NAME_RE.fullmatch(src):
         return None, f"{entry}: the source is neither a path nor a volume name"
     return None, ""
@@ -7661,6 +7707,9 @@ def volume_driver_errors(compose: Any) -> List[str]:
     for k in sorted(str(x) for x in vols):
         val = vols.get(k)
         if isinstance(val, dict):
+            # Every external volume is another workload's data (ux2 N1, the Hub's rule).
+            if val.get("external") not in (None, False):
+                return [f"volumes.{k}: external volumes are not allowed in templates"]
             for key in ("driver", "driver_opts"):
                 if key in val:
                     return [f"volume {k} sets {key}: a template's volumes use the default driver (driver options can bind host paths)"]
@@ -7680,7 +7729,9 @@ def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any], compose:
         return errs
     base = os.path.realpath(tdir) if tdir else ""
     for n in sorted(str(k) for k in services):
-        sv = services[n] if isinstance(services[n], dict) else {}
+        if services[n] is not None and not isinstance(services[n], dict):
+            return [f"compose.yml: service {n} is not a mapping"]   # fail closed standalone (N2)
+        sv = services[n] or {}
         for v in as_list(sv.get("volumes")):   # entry by entry: one entry never hides the next
             shown, interp = mount_interpolated(v)
             if interp:
@@ -7690,13 +7741,16 @@ def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any], compose:
                 return [f"service {n} mounts {bad}"]
             if m is None or m[0]:
                 continue
-            _, ro, src, entry = m
+            _, ro, src, entry, extra = m
             if src.startswith("~"):
                 return [f"service {n} mounts {entry}: a bind source can't start with ~ (a home directory)"]
             norm = posixpath.normpath(src)
             if norm == CA_BUNDLE_PATH:
                 if not ro:
                     return [f"service {n} mounts {entry}: ./{CA_BUNDLE_PATH} must be bound read-only"]
+                if extra:   # no SELinux relabel or other option on core's shared file (R3-M1)
+                    return [f"service {n} mounts {entry}: ./{CA_BUNDLE_PATH} takes no option but read-only "
+                            "(it is core's shared file: no z, Z or bind.*)"]
                 continue
             if not (norm == f"templates/{tid}" or norm.startswith(f"templates/{tid}/")):
                 return [f"service {n} mounts {entry}: a template binds only its own files (./templates/{tid}/…) or ./{CA_BUNDLE_PATH}"]
@@ -7704,7 +7758,7 @@ def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any], compose:
                 rest = norm[len(f"templates/{tid}"):].lstrip("/")
                 real = os.path.realpath(os.path.join(tdir, rest))
                 if real != base and not real.startswith(base + os.sep):
-                    return [f"{n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
+                    return [f"service {n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
     return []
 
 

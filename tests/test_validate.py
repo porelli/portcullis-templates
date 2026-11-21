@@ -355,6 +355,28 @@ class TestV2Refuses(Case):
             self.assertTrue(e and e[0].startswith("volume data sets driver"), (drv, e))
         self.assertEqual(v.relative_bind_errors(d, "app", {"web": {"image": "x"}}, {"volumes": {"data": {"labels": {"a": "b"}}, "o": None}}), [])
 
+    def test_relbind_vectors(self) -> None:
+        """The shared vectors (tests/relbind_vectors.json = Hub
+        internal/templates/testdata/relbind_vectors.json, byte for byte):
+        R3-I1, R3-M1, N1, N2, N6."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "relbind_vectors.json")
+        with open(path, encoding="utf-8") as f:
+            vectors = json.load(f)
+        self.assertGreaterEqual(len(vectors), 20)
+        for vec in vectors:
+            with self.subTest(vec["name"]):
+                want = vec.get("want_py", vec["want"])
+                try:
+                    data = v.yaml.load(vec["compose"], Loader=v._UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+                except v.yaml.YAMLError as e:
+                    self.assertTrue(want and want in str(e), (vec["name"], str(e)))
+                    continue
+                errs = v.relative_bind_errors("", "app", data.get("services") or {}, data)
+                if want:
+                    self.assertTrue(errs and want in errs[0], (vec["name"], errs))
+                else:
+                    self.assertEqual(errs, [], vec["name"])
+
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)
         self.assertError(errors, "names its own host demo.${PORTCULLIS_DOMAIN}")

@@ -1,0 +1,118 @@
+[
+  {
+    "name": "long source with a leading space",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: \" /../appfiles/x/mail-admin\", target: /x, read_only: true}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "long source with a leading tab",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: \"\\t/../secrets\", target: /x}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "long source with a leading NBSP",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: \"\\u00a0/../.env\", target: /x}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "long source with a trailing newline",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: \"./templates/app/x\\n\", target: /x, read_only: true}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "long source with a control character",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: \"./templates/app/\\u0001x\", target: /x}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "long target with a leading space",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: ./templates/app/x, target: \" /x\"}\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "short entry with a leading space",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - \" ./templates/app/x:/y\"\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "short target with a leading space",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - \"./templates/app/x: /y\"\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "short entry with a control character",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - \"./templates/app/x\\u0007:/y\"\n",
+    "want": "can't start or end with whitespace"
+  },
+  {
+    "name": "untrimmed own files ok",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./templates/app/x:/y:ro\n      - {type: bind, source: ./templates/app/x, target: /x}\n",
+    "want": ""
+  },
+  {
+    "name": "CA bundle ro,Z",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./certs/ca-bundle.crt:/ca.crt:ro,Z\n",
+    "want": "takes no option but read-only"
+  },
+  {
+    "name": "CA bundle ro,z",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./certs/ca-bundle.crt:/ca.crt:ro,z\n",
+    "want": "takes no option but read-only"
+  },
+  {
+    "name": "CA bundle bind.selinux",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: ./certs/ca-bundle.crt, target: /ca.crt, read_only: true, bind: {selinux: Z}}\n",
+    "want": "takes no option but read-only"
+  },
+  {
+    "name": "CA bundle ro ok",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./certs/ca-bundle.crt:/ca.crt:ro\n      - {type: bind, source: ./certs/ca-bundle.crt, target: /c2.crt, read_only: true}\n",
+    "want": ""
+  },
+  {
+    "name": "own files keep their own relabel ok",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./templates/app/x:/y:ro,z\n",
+    "want": ""
+  },
+  {
+    "name": "ro and rw",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - ./templates/app/x:/y:ro,rw\n",
+    "want": "both ro and rw"
+  },
+  {
+    "name": "rw and ro",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - data:/y:rw,ro\n",
+    "want": "both ro and rw"
+  },
+  {
+    "name": "CA bundle read_only string",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - {type: bind, source: ./certs/ca-bundle.crt, target: /ca.crt, read_only: \"true\"}\n",
+    "want": "must be bound read-only"
+  },
+  {
+    "name": "relative without ./",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - appfiles/stalwart/mail-admin:/x:ro\n",
+    "want": "its own files"
+  },
+  {
+    "name": "external volume",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - shared:/s\nvolumes:\n  shared:\n    external: true\n    name: foreign_vol\n",
+    "want": "external volumes are not allowed"
+  },
+  {
+    "name": "external false ok",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - shared:/s\nvolumes:\n  shared:\n    external: false\n",
+    "want": ""
+  },
+  {
+    "name": "a service that isn't a mapping",
+    "compose": "services:\n  web: [a, b]\n",
+    "want": "compose.yml:"
+  },
+  {
+    "name": "duplicate key by text",
+    "compose": "services:\n  web:\n    image: x\n    volumes:\n      - data:/d\nx-a: 1\n\"x-a\": 2\n",
+    "want": "already defined",
+    "want_py": "duplicate key"
+  }
+]
