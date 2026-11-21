@@ -8555,7 +8555,9 @@ KUBE_CORE_NAMES = ["hub", "keycloak", "hub-proxy-secret", "portcullis-auth-conso
 # Includes Kubernetes-only Services (like wg-people, traefik-metrics) that don't exist in Docker but could collide on k8s.
 KUBE_HA_CORE_NAMES = ["nodeadm", "frontdoor", "cnpg-operator", "keycloak-pods", "keycloak-internal", "alertmanager-peers",
                       "portcullis-pg", "hub-state", "hub-backups", "portcullis-node", "portcullis-hub",
-                      "traefik-metrics", "traefik-vpn", "wg-edge", "wg-metrics", "wg-people"]
+                      "traefik-metrics", "traefik-vpn", "wg-edge", "wg-metrics", "wg-people",
+                      # Task 25: Vault's raft peers, the session store's pods and Sentinels, our CoreDNS DaemonSet.
+                      "vault-internal", "sessions-pods", "sessions-sentinel", "portcullis-dns-small"]
 KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
 KUBE_MAX_APP_PRIORITY = 1000
 _HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
