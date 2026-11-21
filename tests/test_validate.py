@@ -277,6 +277,17 @@ class TestV2Refuses(Case):
                                       manifest_url="https://{{HOST_PORTCULLIS_DEMO}}")
         self.assertError(errors, "router name portcullis-demo starts with 'portcullis-'")
 
+    def test_portcullis_prefix_in_single_names(self) -> None:
+        """Contract §3: core's and the Hub's names (portcullis-mail-admin…)
+        are refused in every template, single included, in any case."""
+        for name in ("portcullis-mail-admin", "Portcullis-Groups"):
+            var = name.upper().replace("-", "_")
+            errors, _ = self.run_template(instances="single",
+                                          rules=((name, f"Host(`${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}`)"),),
+                                          url=f"https://${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}",
+                                          manifest_url=f"https://{{{{HOST_{var}}}}}")
+            self.assertError(errors, f"router name {name} starts with 'portcullis-'")
+
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)
         self.assertError(errors, "names its own host demo.${PORTCULLIS_DOMAIN}")

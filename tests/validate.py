@@ -1337,7 +1337,7 @@ def check_worker_tmpfs(t: Template, services: Dict[str, Any], r: Report) -> None
                 "size every tmpfs, e.g. /tmp:size=64m (at most 2g), or mark the template placement: primary_only")
 
 
-_NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
+_NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.", re.IGNORECASE)
 
 
 def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Report) -> None:
@@ -1352,7 +1352,10 @@ def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Repo
         if "_" in name:
             r.error(where, f"{kind} name {name} contains '_'",
                     "use '-': the Hub prefixes names with <instance-id>_ for every instance but the default; " + V2_HINT)
-        if t.multi and name.startswith("portcullis-") and not name.startswith(PUBLIC_RESERVED):
+        # Every template, single or multi, in any case: core's and the Hub's
+        # routers, services and middlewares (e.g. portcullis-mail-admin)
+        # carry the prefix (contract §3).
+        if name.lower().startswith("portcullis-") and not name.lower().startswith(PUBLIC_RESERVED):
             r.error(where, f"{kind} name {name} starts with 'portcullis-'", "that prefix is reserved for core and the Hub")
 
 
