@@ -229,8 +229,9 @@ services:
   # SPKI; it signs in as the viewer (a role with reads only), forwards only
   # JMAP reads and the web admin's own paths, and dials Stalwart's
   # admin-view listener pinned to that SPKI. It holds the viewer's password
-  # (viewer_key, group 2011) and nothing else: no API key, no slot file, no
-  # certificate key.
+  # (viewer_key, group 2011), its spent tickets (admin_view_data) and,
+  # through the Hub's override, the ticket key (a read-only file): no API
+  # key, no slot file, no certificate key.
   admin-view:
     image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
     user: "10010:10010"
@@ -243,8 +244,12 @@ services:
       MAILCTL_ADMINVIEW_ADDR: ":8090"
       MAILCTL_ADMINVIEW_UPSTREAM: https://172.31.255.2:8443
       MAILCTL_VIEWER_SECRET_FILE: /run/portcullis/viewer-key/viewer-password
+      # The spent tickets (kept until they expire, across restarts) in the
+      # view's own volume, first mounted at the image's 10010-owned /data.
+      MAILCTL_ADMINVIEW_USED_FILE: /data/used-tickets.json
     volumes:
       - viewer_key:/run/portcullis/viewer-key:ro
+      - admin_view_data:/data
     networks:
       internal:
         ipv4_address: 172.31.255.5
@@ -308,5 +313,6 @@ volumes:
   adapter_data: {}
   adapter_key: {}
   viewer_key: {}
+  admin_view_data: {}
   job_data: {}
   mailctl_bin: {}

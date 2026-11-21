@@ -94,7 +94,9 @@ if [ "$mounters" = "admin-view=viewer_key:/run/portcullis/viewer-key:ro bootstra
     && [ "$(y '.services.admin-view.environment.MAILCTL_VIEWER_SECRET_FILE')" = /run/portcullis/viewer-key/viewer-password ] \
     && [ "$(y '.services.bootstrap.environment.MAILCTL_ADMINVIEW_IP')" = 172.31.255.5 ] \
     && [ "$(y '.services.admin-view.environment.MAILCTL_ADMINVIEW_UPSTREAM')" = https://172.31.255.2:8443 ] \
-    && [ "$(y '.services.admin-view.volumes | length')" = 1 ] && [ "$(y '.services.admin-view.command | join(" ")')" = admin-view ]; then
+    && [ "$(y '.services.admin-view.volumes | join(" ")')" = "viewer_key:/run/portcullis/viewer-key:ro admin_view_data:/data" ] \
+    && [ "$(y '.services.admin-view.environment.MAILCTL_ADMINVIEW_USED_FILE')" = /data/used-tickets.json ] \
+    && [ "$(y '.services.admin-view.command | join(" ")')" = admin-view ]; then
   pass "the viewer key volume: key-init prepares it, the job writes, admin-view (its only mount) reads; the adapter never (contract §19.13)"
 else
   fail "viewer_key mounts / admin-view: $mounters"

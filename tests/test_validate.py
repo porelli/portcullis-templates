@@ -280,13 +280,24 @@ class TestV2Refuses(Case):
     def test_portcullis_prefix_in_single_names(self) -> None:
         """Contract §3: core's and the Hub's names (portcullis-mail-admin…)
         are refused in every template, single included, in any case."""
-        for name in ("portcullis-mail-admin", "Portcullis-Groups"):
+        for name in ("portcullis-mail-admin", "Portcullis-Groups", "portcullis-public-x", "Portcullis-Public-X"):
             var = name.upper().replace("-", "_")
             errors, _ = self.run_template(instances="single",
                                           rules=((name, f"Host(`${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}`)"),),
                                           url=f"https://${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}",
                                           manifest_url=f"https://{{{{HOST_{var}}}}}")
             self.assertError(errors, f"router name {name} starts with 'portcullis-'")
+
+    def test_portcullis_prefix_every_kind(self) -> None:
+        """The Hub's rule exactly: services, middlewares and tcp / udp names
+        too, in any case."""
+        for label in ("traefik.http.services.portcullis-public-x.loadbalancer.server.port",
+                      "traefik.http.middlewares.Portcullis-Mail-Admin-Key.headers.customrequestheaders.X-A",
+                      "traefik.udp.services.portcullis-x.loadbalancer.server.port",
+                      "TRAEFIK.TCP.ROUTERS.portcullis-y.rule"):
+            r = v.Report()
+            v.check_traefik_names(v.Template.__new__(v.Template), {label: "1"}, "here", r)
+            self.assertTrue(any("starts with 'portcullis-'" in e for e in r.errors), (label, r.errors))
 
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)

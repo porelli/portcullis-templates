@@ -1355,7 +1355,7 @@ def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Repo
         # Every template, single or multi, in any case: core's and the Hub's
         # routers, services and middlewares (e.g. portcullis-mail-admin)
         # carry the prefix (contract §3).
-        if name.lower().startswith("portcullis-") and not name.lower().startswith(PUBLIC_RESERVED):
+        if name.lower().startswith("portcullis-"):
             r.error(where, f"{kind} name {name} starts with 'portcullis-'", "that prefix is reserved for core and the Hub")
 
 
@@ -2312,12 +2312,9 @@ def check_rule_forms(t: Template, routers: Dict[str, Dict[str, str]], r: Report)
 
 
 def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
-    for sname, svc in services.items():
-        for k in labels_of(svc if isinstance(svc, dict) else {}):
-            mm = re.match(r"^traefik\.(?:http|tcp)\.(routers|middlewares)\.([^.]+)\.", k)
-            if mm and mm.group(2).startswith(PUBLIC_RESERVED):
-                r.error(f"{t.c_where}: services.{sname}", f"{mm.group(1)[:-1]} name {mm.group(2)} uses the prefix {PUBLIC_RESERVED}",
-                        "that prefix is reserved for the router the Hub generates from auth.public_access")
+    # portcullis-public-* (the Hub's public router) is refused, like every
+    # portcullis- name, by check_traefik_names (the Hub's rule: any kind,
+    # any case).
     auth = (t.manifest or {}).get("auth") or {}
     pa = auth.get("public_access")
     if not isinstance(pa, dict):
