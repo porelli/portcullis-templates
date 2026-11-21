@@ -5,6 +5,17 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ## Unreleased (app instances and extra domains)
 
+### Relative binds stay in the template's own files (ux2)
+
+A template's relative bind sources are now only `./templates/<id>/…` and
+`./certs/ca-bundle.crt` (contract §3; `tests/validate.py` and the Hub agree):
+the core checkout holds every instance's data, so `./appfiles/…`, `./secrets`,
+`..` and symlinked escapes are refused, and no volume entry may use `$`
+interpolation in any form (no shipped template did). The data-file name
+`mail-admin` is reserved. **docs** no longer serves core's `./docs` directory: it serves its
+own placeholder page (`docs/docs/index.md`), pointing at the published
+documentation.
+
 ### Marketplace fields: long descriptions, logos, minimum resources (ux3)
 
 Every template gets a `long_description` (Markdown, the `auth.notes` rules; contract §3

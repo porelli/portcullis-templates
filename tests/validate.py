@@ -1397,6 +1397,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_ai(t, services, routers, r)
     check_vpn(t, services, r)
     check_mail(t, services, r)
+    check_relative_binds(t, services, r)
     check_setup(t, services, routers, r)
 
 
@@ -6480,6 +6481,7 @@ def check_settings(t: Template, services: Dict[str, Any], routers: Dict[str, Dic
 
 AI_CLIENT_PREFIX = "portcullis-ai-"
 AI_PROVIDERS_FILE = "ai-providers"
+MAIL_ADMIN_FILE = "mail-admin"   # the mail admin view's ticket key directory (Hub templates.MailAdminFile)
 DEFAULT_MCP_PATH = "/mcp"
 MAX_ALIAS_LEN = 63
 MCP_PROTOCOLS = ("2025-06-18", "2025-11-25", "2026-07-28")
@@ -6608,6 +6610,8 @@ class _AICheck:
         for f in m.get("files") or []:
             if isinstance(f, dict) and _str(f, "name") == AI_PROVIDERS_FILE:
                 self.err(f"files[{AI_PROVIDERS_FILE}]: the data file name {AI_PROVIDERS_FILE} is reserved for the AI page (contract §3.2)")
+            if isinstance(f, dict) and _str(f, "name").lower() == MAIL_ADMIN_FILE:
+                self.err(f"files[{_str(f, 'name')}]: the data file name {MAIL_ADMIN_FILE} is reserved for the mail admin view's ticket key (contract §19.13)")
         # A core subdomain (mcp included) as a default subdomain:
         # check_rule_forms ("subdomain ... belongs to core").
         a = m.get("ai")
@@ -7551,6 +7555,56 @@ def bind_escapes(tdir: str, tid: str, services: Dict[str, Any], loc: str) -> Lis
             if real != base and not real.startswith(base + os.sep):
                 return [f"{loc}{n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
     return []
+
+
+CA_BUNDLE_PATH = "certs/ca-bundle.crt"
+
+
+def mount_interpolated(v: Any) -> Tuple[str, bool]:
+    """The Hub's mountInterpolated (every template, R2-M2 follow-up): a
+    volume entry that uses `$` in any form ($X, ${X}, ${X:-default},
+    ${X-alt}, $$) is refused: short syntax anywhere in the entry, long
+    syntax in source or type. Compose would resolve it after the checks."""
+    if isinstance(v, dict):
+        for k in ("source", "type"):
+            if v.get(k) is not None and "$" in scalar_text(v.get(k)):
+                src = scalar_text(v.get("source")).strip() if v.get("source") is not None else ""
+                return (src or json.dumps(v, sort_keys=True)), True
+        return "", False
+    s = scalar_text(v).strip()
+    return s, "$" in s
+
+
+def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any]) -> List[str]:
+    """The Hub's CheckRelativeBinds (every template, contract §3 "Limits"):
+    a relative bind source (Compose resolves it against the core checkout)
+    is only the template's own files, ./templates/<id>/… (cleaned, no ..
+    out of it, symlinks inside the template directory resolved), or
+    ./certs/ca-bundle.crt; any interpolated mount is refused."""
+    for n in sorted(str(k) for k in services):
+        sv = services[n] if isinstance(services[n], dict) else {}
+        mounts: List[Tuple[str, str, bool, str]] = []
+        for v in as_list(sv.get("volumes")):   # entry by entry: one bad entry never hides the next
+            shown, interp = mount_interpolated(v)
+            if interp:
+                return [f"service {n} mounts {shown}: a mount source can't be interpolated (no $ in a volume entry)"]
+            got, _ = vpn_mounts({"volumes": [v]})
+            mounts += got
+        for kind, src, _, entry in mounts:
+            if kind != "bind" or not src.startswith("."):
+                continue
+            norm = posixpath.normpath(src)
+            if norm == CA_BUNDLE_PATH:
+                continue
+            if not (norm == f"templates/{tid}" or norm.startswith(f"templates/{tid}/")):
+                return [f"service {n} mounts {entry}: a template binds only its own files (./templates/{tid}/…) or ./{CA_BUNDLE_PATH}"]
+    return bind_escapes(tdir, tid, services, "")
+
+
+def check_relative_binds(t: Template, services: Dict[str, Any], r: Report) -> None:
+    for e in relative_bind_errors(os.path.join(ROOT, t.id), t.id, services):
+        r.error(t.c_where, e, "bind only the template's own files (./templates/<id>/…), or ./certs/ca-bundle.crt read-only; "
+                "never another instance's data (./appfiles/…), ./secrets or the core checkout")
 
 
 def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:

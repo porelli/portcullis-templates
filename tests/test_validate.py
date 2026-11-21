@@ -299,6 +299,36 @@ class TestV2Refuses(Case):
             v.check_traefik_names(v.Template.__new__(v.Template), {label: "1"}, "here", r)
             self.assertTrue(any("starts with 'portcullis-'" in e for e in r.errors), (label, r.errors))
 
+    def test_relative_binds_only_own_files(self) -> None:
+        """The Hub's CheckRelativeBinds (ux2 R2-M2): .., another instance's
+        appfiles (the mail admin view's ticket key), secrets, another
+        template's files and a symlink out of the template are refused."""
+        import tempfile as _tf
+        d = _tf.mkdtemp()
+        os.makedirs(os.path.join(d, "conf"))
+        os.symlink(_tf.mkdtemp(), os.path.join(d, "escape"))
+        def errs(vol):
+            return v.relative_bind_errors(d, "app", {"web": {"image": "x", "volumes": vol}})
+        for ok in (["./templates/app/conf:/c:ro"], ["./certs/ca-bundle.crt:/ca.crt:ro"], ["data:/data"], ["/srv/x:/x:ro"]):
+            self.assertEqual(errs(ok), [], ok)
+        for bad in (["./appfiles/stalwart/mail-admin:/x:ro"], ["./appfiles/other/f:/f:ro"], ["./secrets:/s:ro"], ["../etc:/e:ro"],
+                    ["./templates/app/../other:/o:ro"], ["./templates/other/gate:/g"], ["./templates/app/escape/y:/y:ro"],
+                    ["./templates/${X}:/x:ro"], ["~/a:/a", "./secrets:/s:ro"],
+                    [{"type": "bind", "source": "./appfiles/stalwart/mail-admin", "target": "/x", "read_only": True}]):
+            self.assertTrue(errs(bad), bad)
+        # No interpolation in any mount (R2-M2 follow-up ruling), as the Hub.
+        for src in ("$X", "${X}", "${X:-./appfiles/other}", "${X-./secrets}", "${X:?err}", "$X/..", "./templates/app/$X",
+                    "./templates/app/${X:-../../secrets}", "/srv/${X}", "$$X", "${X:-/srv/media}"):
+            for vol in ([f"{src}:/x:ro"], [{"type": "bind", "source": src, "target": "/x"}]):
+                e = errs(vol)
+                self.assertTrue(e and "can't be interpolated" in e[0], (vol, e))
+        for vol in (["data:/x/${X}"], [{"type": "${T}", "source": "/etc", "target": "/x"}],
+                    [{"type": "volume", "source": "${V:-data}", "target": "/x"}]):
+            e = errs(vol)
+            self.assertTrue(e and "can't be interpolated" in e[0], (vol, e))
+        self.assertEqual(errs([{"type": "bind", "source": "${X}", "target": "/x"}]),
+                         ["service web mounts ${X}: a mount source can't be interpolated (no $ in a volume entry)"])
+
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)
         self.assertError(errors, "names its own host demo.${PORTCULLIS_DOMAIN}")
@@ -4302,6 +4332,8 @@ class AITests(Case):
             ("env list without provider vars", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n"], ""),
             ("ai-providers file", "companion", ["hooks:\n", "files:\n  - {name: ai-providers, service: demo, mount: /data}\nhooks:\n"], [],
              "files[ai-providers]: the data file name ai-providers is reserved"),
+            ("mail-admin file", "companion", ["hooks:\n", "files:\n  - {name: mail-admin, service: demo, mount: /data}\nhooks:\n"], [],
+             "files[mail-admin]: the data file name mail-admin is reserved"),
         ])
 
     def test_ai_client_flag(self) -> None:
