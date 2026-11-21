@@ -22,6 +22,9 @@ from defusedxml import ElementTree as DET
 
 MAX_BYTES = 64 << 10
 MAX_DEPTH = 64
+# At most this many use elements, and no use whose target is or contains
+# a use (fix round 1): references never chain or fan out at render time.
+MAX_USES = 32
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -42,6 +45,10 @@ LOCAL_REF = re.compile(r"#[A-Za-z_][A-Za-z0-9_.:-]*")
 URL_OPEN = re.compile(r"url\(", re.IGNORECASE)
 LOCAL_URL = re.compile(r"url\(#[A-Za-z_][A-Za-z0-9_.:-]*\)", re.IGNORECASE)
 XML_DECL = re.compile(r"<\?xml\s[^>]*?\bencoding\s*=\s*[\"']([^\"']*)[\"']")
+XML_VERSION = re.compile(r"<\?xml\s[^>]*?\bversion\s*=\s*[\"']([^\"']*)[\"']")
+# The CSS image functions other than url( (fix round 1; -webkit- forms
+# match too): a presentation attribute such as mask takes an <image>.
+IMAGE_FUNC = re.compile(r"(image-set|src|cross-fade)\(", re.IGNORECASE)
 
 
 def _split(name: str) -> tuple:
@@ -76,6 +83,12 @@ def _attr_problem(key: str, value: str) -> Optional[str]:
     for m in URL_OPEN.finditer(value):
         if not LOCAL_URL.match(value, m.start()):
             return "url() must be a local #id reference"
+    # No allowed attribute needs a CSS string (fix round 1).
+    if "'" in value or '"' in value:
+        return "quote refused"
+    m = IMAGE_FUNC.search(value)
+    if m:
+        return f"{m.group(1).lower()}() refused"
     return None
 
 
@@ -92,6 +105,9 @@ def check(data: bytes) -> Optional[str]:
     decl = XML_DECL.match(text)
     if decl and decl.group(1).lower() not in ("utf-8", "utf8"):
         return "encoding must be UTF-8"
+    version = XML_VERSION.match(text)
+    if version and version.group(1) != "1.0":
+        return "XML version must be 1.0"
     # Before parsing: what the parser would otherwise act on or hide.
     if "<!ENTITY" in text:
         return "entity refused"
@@ -102,6 +118,9 @@ def check(data: bytes) -> Optional[str]:
 
     stack: List[str] = []
     seen_root = False
+    uses = 0
+    use_targets: List[str] = []  # the ids use elements reference, in order
+    has_use = {}  # id -> the element is or contains a use
     try:
         events = DET.iterparse(io.BytesIO(data), events=("start", "end", "start-ns", "pi"),
                                forbid_dtd=True, forbid_entities=True, forbid_external=True)
@@ -133,8 +152,18 @@ def check(data: bytes) -> Optional[str]:
                     problem = _attr_problem(key, value)
                     if problem:
                         return problem
+                if local == "use":
+                    uses += 1
+                    if uses > MAX_USES:
+                        return f"more than {MAX_USES} use elements"
+                    for key in ("href", "{%s}href" % XLINK_NS):
+                        if key in item.attrib:
+                            use_targets.append(item.attrib[key][1:])
             elif event == "end":
                 local = stack.pop()
+                if "id" in item.attrib:
+                    i = item.attrib["id"]
+                    has_use[i] = has_use.get(i, False) or any(True for _ in item.iter("{%s}use" % SVG_NS))
                 if local not in TEXT_ELEMENTS:
                     if (item.text or "").strip() or any((c.tail or "").strip() for c in item):
                         return "text outside title and desc refused"
@@ -144,4 +173,7 @@ def check(data: bytes) -> Optional[str]:
         return "not well-formed XML"
     if not seen_root:
         return "not well-formed XML"
+    for target in use_targets:
+        if has_use.get(target):
+            return f"use target #{target} contains a use"
     return None

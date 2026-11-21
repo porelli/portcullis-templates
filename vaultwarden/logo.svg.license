@@ -3,5 +3,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 Source: https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg
 Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
-class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+class properties written as presentation attributes, and each use element replaced by the shape it references
+with the use's transform (the logo lint, contract §3). The drawing is unchanged (renders pixel-identical).
 Shown only to identify the app; any trademark stays its owner's.

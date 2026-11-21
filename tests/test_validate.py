@@ -5976,12 +5976,12 @@ class TestLongDescription(CatalogCase):
 
     def test_refused(self) -> None:
         for name, text, needle in [
-            ("html_block", "Intro.\n\n<script>alert(1)</script>\n", "long_description has raw HTML"),
-            ("image", "![alt](https://i.example/p.png)", "long_description has an image"),
-            ("16 KiB + 1", "x" * (16384 + 1), "long_description is 16385 bytes"),
-            ("depth 17", "- " * 17 + "x", "long_description nests blocks deeper than 16"),
-            ("U+200B", "a\u200bb", "long_description has the hidden character U+200B"),
-            ("link with userinfo", "[x](https://bank.example@evil.example/)", "long_description has a link the Hub turns into text"),
+            ("html_block", "Intro.\n\n<script>alert(1)</script>\n", "long_description: has raw HTML"),
+            ("image", "![alt](https://i.example/p.png)", "long_description: has an image"),
+            ("16 KiB + 1", "x" * (16384 + 1), "long_description: is 16385 bytes"),
+            ("depth 17", "- " * 17 + "x", "long_description: nests blocks deeper than 16"),
+            ("U+200B", "a\u200bb", "long_description: has the hidden character U+200B"),
+            ("link with userinfo", "[x](https://bank.example@evil.example/)", "long_description: has a link the Hub turns into text"),
         ]:
             with self.subTest(name=name):
                 errors = self.manifest_with(self.block(text))

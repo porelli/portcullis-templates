@@ -285,5 +285,82 @@
   "name": "id with _ . : -",
   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><linearGradient id=\"_g.1:a-b\"><stop offset=\"0\"/></linearGradient></defs><rect width=\"1\" height=\"1\" fill=\"url(#_g.1:a-b)\"/></svg>",
   "ok": true
+ },
+ {
+  "name": "mask image-set(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" mask=\"image-set(x 1x)\"/></svg>",
+  "ok": false,
+  "reason": "image-set() refused"
+ },
+ {
+  "name": "fill src(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"SRC(x)\"/></svg>",
+  "ok": false,
+  "reason": "src() refused"
+ },
+ {
+  "name": "-webkit-cross-fade(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" mask=\"-webkit-cross-fade(url(#a), url(#b), 50%)\"/></svg>",
+  "ok": false,
+  "reason": "cross-fade() refused"
+ },
+ {
+  "name": "single quote in a value",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" mask=\"x 'https://x'\"/></svg>",
+  "ok": false,
+  "reason": "quote refused"
+ },
+ {
+  "name": "&quot; in a value",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" mask=\"image-set(&quot;https://x&quot; 1x)\"/></svg>",
+  "ok": false,
+  "reason": "quote refused"
+ },
+ {
+  "name": "&#39; in a value",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"a&#39;b\"/></svg>",
+  "ok": false,
+  "reason": "quote refused"
+ },
+ {
+  "name": "32 use elements",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><symbol id=\"a\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></symbol></defs><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/></svg>",
+  "ok": true
+ },
+ {
+  "name": "33 use elements",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><symbol id=\"a\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></symbol></defs><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/><use href=\"#a\"/></svg>",
+  "ok": false,
+  "reason": "more than 32 use elements"
+ },
+ {
+  "name": "use of a group holding a use",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><symbol id=\"a\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></symbol><g id=\"b\"><use href=\"#a\"/><use href=\"#a\"/></g></defs><use href=\"#b\"/><use href=\"#b\"/></svg>",
+  "ok": false,
+  "reason": "use target #b contains a use"
+ },
+ {
+  "name": "use of a use (xlink:href)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 24 24\"><defs><symbol id=\"a\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></symbol></defs><use id=\"u\" xlink:href=\"#a\"/><use xlink:href=\"#u\"/></svg>",
+  "ok": false,
+  "reason": "use target #u contains a use"
+ },
+ {
+  "name": "use of its own ancestor",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><g id=\"g\"><use href=\"#g\"/></g></svg>",
+  "ok": false,
+  "reason": "use target #g contains a use"
+ },
+ {
+  "name": "XML version 1.1",
+  "svg": "<?xml version=\"1.1\" encoding=\"UTF-8\"?><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "XML version must be 1.0"
+ },
+ {
+  "name": "XML version 1",
+  "svg": "<?xml version='1'?><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "XML version must be 1.0"
  }
 ]

@@ -899,7 +899,16 @@ def markdown_problems(notes: str, field: str) -> List[Tuple[str, str]]:
     """What a Markdown field (auth.notes, long_description) breaks
     (contract §3), as (message, hint): over the size or depth limit, a
     hidden character, raw HTML (CommonMark html_block / html_inline tokens,
-    parsed by markdown-it-py), an image or a link the Hub wouldn't keep."""
+    parsed by markdown-it-py), an image or a link the Hub wouldn't keep.
+    auth.notes messages read "auth.notes is …", every other field's
+    "<field>: is …" (contract §3, fix round 1; the Hub's alike)."""
+    out = _markdown_problems(notes, field)
+    if field == "auth.notes":
+        return out
+    return [(f"{field}:{msg[len(field):]}", hint) for msg, hint in out]
+
+
+def _markdown_problems(notes: str, field: str) -> List[Tuple[str, str]]:
     size = len(notes.encode("utf-8"))
     if size > NOTES_MAX_BYTES:
         return [(f"{field} is {size} bytes, at most {NOTES_MAX_BYTES} allowed", NOTES_LIMITS_HINT)]
