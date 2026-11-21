@@ -7,6 +7,10 @@ tags: [artcraft, wasm, layout, publishing, design]
 links:
   website: https://getartcraft.com/apps/designcraft
   source: https://github.com/storytold/designcraft
+long_description: |
+  DesignCraft is ArtCraft's page layout and design editor. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: documents stay on the person's own device and the server only serves static files.
+
+  DesignCraft is in development. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

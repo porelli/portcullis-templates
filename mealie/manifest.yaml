@@ -7,6 +7,10 @@ tags: [recipes, cooking, meal-planning, shopping-list, food]
 links:
   website: https://mealie.io/
   source: https://github.com/mealie-recipes/mealie
+long_description: |
+  Mealie is a recipe manager and meal planner. It imports recipes from websites by URL, scales them, plans meals by week and builds shopping lists from them.
+
+  Portcullis signs people in through OpenID Connect, with no password login. Members of the access or admin group can sign in, and members of the admin group are Mealie administrators.
 instances: multi
 
 auth:

@@ -6,6 +6,12 @@ tags: [vpn, wireguard, mesh, zero-trust]
 links:
   website: https://netbird.io/
   source: https://github.com/netbirdio/netbird
+long_description: |
+  NetBird is a WireGuard-based mesh VPN with zero-trust access control. Devices connect peer to peer; the management service hands out keys and access policies, and a relay helps when a direct connection isn't possible.
+
+  Portcullis signs people in to the dashboard through OpenID Connect.
+resources:
+  min_memory_mib: 2048
 instances: multi
 
 auth:

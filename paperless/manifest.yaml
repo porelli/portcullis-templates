@@ -7,6 +7,13 @@ tags: [documents, ocr, scanning, archive, pdf]
 links:
   website: https://docs.paperless-ngx.com/
   source: https://github.com/paperless-ngx/paperless-ngx
+long_description: |
+  Paperless-ngx turns paper and PDF documents into a searchable archive. It runs OCR on scans, indexes the text for full-text search, and assigns tags, correspondents and document types automatically from what it learns.
+
+  Portcullis signs people in through OpenID Connect, with no password login, limited to the access group. Members of the admin group are Paperless superusers.
+# Logo: https://github.com/paperless-ngx/paperless-ngx/blob/fbadc2e1b8c34f80b48be0766cae7168e0e8ec24/docs/assets/logo_leaf.svg (GPL-3.0, the project's repository licence; editor metadata dropped and
+# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+logo: logo.svg
 instances: multi
 
 auth:

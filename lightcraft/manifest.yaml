@@ -7,6 +7,10 @@ tags: [artcraft, wasm, photo, raw, library]
 links:
   website: https://getartcraft.com/apps/lightcraft
   source: https://github.com/storytold/lightcraft
+long_description: |
+  LightCraft is ArtCraft's non-destructive photo editor and library. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: photos stay on the person's own device and the server only serves static files.
+
+  LightCraft is in development. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

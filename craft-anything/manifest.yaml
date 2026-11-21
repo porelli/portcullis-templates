@@ -7,6 +7,10 @@ tags: [artcraft, wasm, software, exploration, learning]
 links:
   website: https://getartcraft.com/apps/craft-anything
   source: https://github.com/storytold/craft-anything
+long_description: |
+  Craft Anything is ArtCraft's tool for exploring how software works and building your own. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: files stay on the person's own device and the server only serves static files.
+
+  Craft Anything is an early alpha. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

@@ -7,6 +7,10 @@ tags: [artcraft, wasm, pdf, documents, editor]
 links:
   website: https://getartcraft.com/apps/pdfcraft
   source: https://github.com/storytold/pdfcraft
+long_description: |
+  PdfCraft is ArtCraft's PDF reader and editor. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: documents stay on the person's own device and the server only serves static files.
+
+  PdfCraft is an early alpha. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

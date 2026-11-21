@@ -7,6 +7,10 @@ tags: [artcraft, wasm, motion-graphics, compositing, video]
 links:
   website: https://getartcraft.com/apps/effectcraft
   source: https://github.com/storytold/effectcraft
+long_description: |
+  EffectCraft is ArtCraft's motion graphics and compositing tool. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: projects stay on the person's own device and the server only serves static files.
+
+  EffectCraft is in development. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

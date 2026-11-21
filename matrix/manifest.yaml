@@ -7,6 +7,10 @@ tags: [chat, matrix, synapse, element, messaging, e2ee]
 links:
   website: https://element-hq.github.io/synapse/
   source: https://github.com/element-hq/synapse
+long_description: |
+  Matrix is an open standard for secure, decentralised chat. This template runs Synapse, the reference homeserver, and Element Web, its browser client: rooms, direct messages, end-to-end encryption and file sharing.
+
+  Portcullis signs people in through OpenID Connect, and only members of the access group get an account. Federation with other servers is off unless an admin lists peers.
 instances: multi
 
 auth:

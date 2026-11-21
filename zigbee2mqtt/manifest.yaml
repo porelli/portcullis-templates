@@ -7,6 +7,13 @@ tags: [home-automation, zigbee, mqtt, iot, smart-home]
 links:
   website: https://www.zigbee2mqtt.io/
   source: https://github.com/Koenkk/zigbee2mqtt
+long_description: |
+  Zigbee2MQTT connects Zigbee devices to MQTT through a Zigbee USB adapter, so you can use them without each vendor's hub. Its web frontend pairs devices, changes their settings and updates their firmware. Home Assistant picks the devices up through MQTT discovery.
+
+  This template bundles a Mosquitto broker that requires passwords. Portcullis sign-in and the access group protect the frontend, and every member has full control.
+# Logo: https://github.com/Koenkk/zigbee2mqtt/blob/9c505fd75f503a91a61244d6f0efa0e37d81a7b0/images/logo_vector.svg (GPL-3.0, the project's repository licence; editor metadata dropped and
+# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+logo: logo.svg
 instances: multi
 
 auth:

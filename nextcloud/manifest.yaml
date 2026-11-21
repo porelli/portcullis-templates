@@ -6,6 +6,12 @@ tags: [files, calendar, office, collaboration]
 links:
   website: https://nextcloud.com/
   source: https://github.com/nextcloud/server
+long_description: |
+  Nextcloud is a productivity platform: file storage and sync, sharing, calendars, contacts and many more apps, with desktop and mobile clients.
+
+  Portcullis signs people in through Nextcloud's official OpenID Connect app, with no password login. Only members of the access group can sign in, and members of the admin group are Nextcloud administrators. Files can be shared publicly through share links.
+
+  With AI support on, an MCP server lets people's AI assistants work with their files, calendars and contacts.
 instances: multi
 
 auth:

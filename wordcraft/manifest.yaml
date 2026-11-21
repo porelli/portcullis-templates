@@ -7,6 +7,10 @@ tags: [artcraft, wasm, word-processor, documents, office]
 links:
   website: https://getartcraft.com/apps/wordcraft
   source: https://github.com/storytold/wordcraft
+long_description: |
+  WordCraft is ArtCraft's word processor. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: documents stay on the person's own device and the server only serves static files.
+
+  WordCraft is in development. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

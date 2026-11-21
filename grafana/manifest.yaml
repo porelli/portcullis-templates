@@ -6,6 +6,14 @@ tags: [monitoring, dashboards, metrics]
 links:
   website: https://grafana.com/oss/grafana/
   source: https://github.com/grafana/grafana
+long_description: |
+  Grafana builds dashboards and alerts from metrics, logs and traces in many data sources, such as Prometheus, Loki and SQL databases.
+
+  Portcullis signs people in and tells Grafana who they are and which role they have, set per group in the instance's settings. Dashboards can be shared publicly through share links when an admin lists them.
+
+  With AI support on, the official Grafana MCP server lets people's AI assistants search dashboards and query data with their own permissions.
+resources:
+  min_memory_mib: 512
 instances: multi
 
 auth:

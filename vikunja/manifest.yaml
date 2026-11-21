@@ -7,6 +7,13 @@ tags: [tasks, todo, kanban, projects, caldav]
 links:
   website: https://vikunja.io/
   source: https://github.com/go-vikunja/vikunja
+long_description: |
+  Vikunja is a to-do and project planning app. Tasks live in projects, and each project can be viewed as a list, a Kanban board, a table or a Gantt chart. Tasks have labels, due dates, reminders and assignees.
+
+  Portcullis signs people in through OpenID Connect, limited to the access group. Every person is a regular user.
+# Logo: https://github.com/go-vikunja/vikunja/blob/5b9d4fcc720fe65548ab6c3f7c974c12b28d13af/frontend/originalMedia/images/logo.svg (AGPL-3.0, the project's repository licence; editor metadata dropped and
+# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+logo: logo.svg
 instances: multi
 
 auth:

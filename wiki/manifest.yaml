@@ -6,6 +6,12 @@ tags: [wiki, docs, knowledge-base]
 links:
   website: https://js.wiki/
   source: https://github.com/requarks/wiki
+long_description: |
+  Wiki.js is a wiki with a visual editor and a Markdown editor, page history, full-text search and fine-grained permissions.
+
+  Portcullis signs people in through OpenID Connect, with no password login. Members of the access group are editors, and members of the admin group are Wiki.js administrators.
+resources:
+  min_memory_mib: 1024
 instances: multi
 # One-off setup container nobody waits for (contracts §3 "One-off jobs"):
 # done when it exited 0, failed otherwise; never a stopped service.

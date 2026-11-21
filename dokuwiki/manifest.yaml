@@ -6,6 +6,10 @@ tags: [wiki, docs, knowledge-base, file-based]
 links:
   website: https://www.dokuwiki.org/
   source: https://github.com/dokuwiki/dokuwiki
+long_description: |
+  DokuWiki is a wiki that stores its pages as plain text files instead of in a database, so backups and moves are simple file copies. It has page history, access control lists and a large plugin collection.
+
+  Portcullis signs people in through OpenID Connect. Members of the access group can read, edit and upload; members of the admin group are DokuWiki superusers.
 instances: multi
 
 auth:

@@ -6,6 +6,10 @@ tags: [rdp, ssh, vnc, remote-desktop, browser]
 links:
   website: https://guacamole.apache.org/
   source: https://github.com/apache/guacamole-client
+long_description: |
+  Apache Guacamole is a clientless remote desktop gateway: it gives access to computers over RDP, VNC, SSH and Telnet from a web browser, with no plugin or client software.
+
+  Portcullis signs people in and passes their username to Guacamole, which creates their account with no permissions. Administrators grant connections in Guacamole's own interface.
 instances: multi
 
 auth:

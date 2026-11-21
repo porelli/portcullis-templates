@@ -7,6 +7,10 @@ tags: [artcraft, wasm, spreadsheet, office, data]
 links:
   website: https://getartcraft.com/apps/gridcraft
   source: https://github.com/storytold/gridcraft
+long_description: |
+  GridCraft is ArtCraft's spreadsheet. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: workbooks stay on the person's own device and the server only serves static files.
+
+  GridCraft is in development. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

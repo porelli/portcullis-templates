@@ -7,6 +7,12 @@ tags: [home-automation, esphome, iot, firmware, esp32, smart-home]
 links:
   website: https://esphome.io/
   source: https://github.com/esphome/esphome
+long_description: |
+  ESPHome turns a YAML description of a device into firmware for ESP32, ESP8266 and other microcontrollers. The Device Builder is its web interface: edit device configurations, compile them and flash boards over USB or over the network.
+
+  ESPHome devices integrate directly with Home Assistant.
+
+  Portcullis sign-in and the access group protect the whole web interface. ESPHome has no users of its own, so every member can edit, compile and flash every device.
 instances: multi
 
 auth:

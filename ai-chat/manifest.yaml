@@ -6,6 +6,13 @@ tags: [ai, chat, llm, mcp, librechat]
 links:
   website: https://www.librechat.ai/
   source: https://github.com/danny-avila/LibreChat
+long_description: |
+  AI Chat is LibreChat, a chat interface for large language models. People chat with the models the administrator has chosen on the instance's AI tab, keep their conversations, and can use presets and agents.
+
+  Portcullis signs people in through OpenID Connect, limited to the access group, and connects LibreChat to one MCP server, "All my apps": the AI can use the Portcullis apps the signed-in person may use, with that person's rights.
+# Logo: https://github.com/danny-avila/LibreChat/blob/8f20fb28e549949b05e8b164d8a504bc14c0951a/client/public/assets/logo.svg (MIT, the project's repository licence; editor metadata dropped and
+# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+logo: logo.svg
 instances: multi
 
 auth:

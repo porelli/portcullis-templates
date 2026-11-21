@@ -7,6 +7,12 @@ tags: [chat, messaging, team, collaboration, slack-alternative]
 links:
   website: https://mattermost.com/
   source: https://github.com/mattermost/mattermost
+long_description: |
+  Mattermost is team chat: channels, threads, direct messages, file sharing, search and integrations through webhooks, slash commands and plugins. This template runs the free Team Edition.
+
+  The whole site is behind Portcullis sign-in and the access group. Mattermost keeps its own accounts behind it.
+resources:
+  min_memory_mib: 2048
 instances: multi
 # One-off setup container nobody waits for (contracts §3 "One-off jobs"):
 # done when it exited 0, failed otherwise; never a stopped service.

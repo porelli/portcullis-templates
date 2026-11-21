@@ -6,6 +6,10 @@ tags: [kanban, projects, tasks, boards]
 links:
   website: https://kanboard.org/
   source: https://github.com/kanboard/kanboard
+long_description: |
+  Kanboard is a minimalist Kanban project management tool: boards with columns and swimlanes, tasks with subtasks, due dates and comments, and simple analytics.
+
+  Portcullis signs people in and passes their username to Kanboard, which creates their account on first sign-in.
 instances: multi
 
 auth:

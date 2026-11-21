@@ -7,6 +7,10 @@ tags: [artcraft, wasm, photo, image, editor]
 links:
   website: https://getartcraft.com/apps/photocraft
   source: https://github.com/storytold/photocraft
+long_description: |
+  PhotoCraft is ArtCraft's photo and image editor. It is written in Rust and compiled to WebAssembly, so it runs entirely in the browser: images stay on the person's own device and the server only serves static files.
+
+  PhotoCraft is an early alpha. Portcullis sign-in and the access group are its only login.
 instances: multi
 
 auth:

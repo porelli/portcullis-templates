@@ -7,6 +7,10 @@ tags: [mail, smtp, imap, email, stalwart]
 links:
   website: https://stalw.art/
   source: https://github.com/stalwartlabs/stalwart
+long_description: |
+  Stalwart is a mail server: SMTP for sending and receiving, IMAP for mail clients, a spam filter, DKIM signing and MTA-STS.
+
+  Here it is a mail provider. Installing it changes nothing until a full administrator wires it as the server's mail in Settings → Mail. Portcullis then manages every person's mailbox, address and mail password, the mail domains and their DNS records. Full administrators can open Stalwart's own admin screen read-only.
 instances: single
 # The wired provider joins core networks and mounts core volumes (contract
 # §3.5 "Primary only").

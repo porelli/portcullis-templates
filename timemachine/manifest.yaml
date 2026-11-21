@@ -7,6 +7,10 @@ tags: [backup, time-machine, macos, smb, samba]
 links:
   website: https://github.com/mbentley/docker-timemachine
   source: https://github.com/mbentley/docker-timemachine
+long_description: |
+  Time Machine is macOS's built-in backup. This template offers a network backup destination over SMB, so Macs back up to your server instead of a local disk.
+
+  There is no web page. Each member of the access group sets their own file-share password on My apps and gets one backup share in their own folder.
 instances: multi
 
 auth:

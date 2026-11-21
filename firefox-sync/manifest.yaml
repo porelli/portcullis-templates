@@ -7,6 +7,10 @@ tags: [firefox, sync, bookmarks, browser, mozilla]
 links:
   website: https://mozilla-services.github.io/syncstorage-rs/
   source: https://github.com/porelli/firefox-sync
+long_description: |
+  Firefox Sync keeps bookmarks, passwords, history, open tabs and add-ons in step across a person's Firefox browsers. This template runs the sync storage server yourself, so the synced data is stored on your server instead of Mozilla's.
+
+  People still sign in to Firefox with their Mozilla account. Each member of the access group enters their own account id on My apps, and only listed accounts can sync. Firefox can't pass a Portcullis sign-in, so the sync host is open to the internet.
 instances: multi
 
 auth:

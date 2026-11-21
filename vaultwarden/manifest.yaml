@@ -6,6 +6,13 @@ tags: [passwords, bitwarden, vault, secrets]
 links:
   website: https://github.com/dani-garcia/vaultwarden
   source: https://github.com/dani-garcia/vaultwarden
+long_description: |
+  Vaultwarden is a lightweight server compatible with the Bitwarden password manager clients: browser extensions, desktop and mobile apps. It stores encrypted vaults for passwords, notes and cards, and supports organisations for sharing.
+
+  Portcullis signs people in through OpenID Connect and nothing else, limited to the access group. Each person still sets a master password, which only decrypts their vault.
+# Logo: https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg (AGPL-3.0, the project's repository licence; editor metadata dropped and
+# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+logo: logo.svg
 instances: multi
 
 auth:
