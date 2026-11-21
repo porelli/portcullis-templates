@@ -19,41 +19,25 @@ auth:
   access_group: users_vaultwarden
   admin_group: admin_vaultwarden
   admin_paths: ["/admin"]
-  notes: >
-    No public exceptions: Bitwarden Send (1.37.4, web vault v2026.7.0) needs
-    the web vault at / with root-level hashed assets and the password-login
-    token endpoint /identity/connect/token (grant_type=send_access), which
-    no narrow path list can express.
-    Native SSO via OpenID Connect, and SSO only (SSO_ONLY): the email +
-    master password login is disabled in the web vault and for the clients,
-    so every sign-in goes through Keycloak. The master password never signs
-    anyone in; it only decrypts the vault after the SSO login (Bitwarden's
-    end-to-end encryption), so users still set one. The SSO start and callback paths (/identity/connect/authorize,
-    /identity/connect/oidc-signin) sit behind forward-auth + group-gate, so
-    only members of users_vaultwarden can sign in or get an account by SSO
-    (Vaultwarden has no OIDC group restriction); the API, the token exchange
-    and the Bitwarden clients are not gated. Removing a user from
-    users_vaultwarden blocks new SSO logins, not sessions or devices already
-    signed in (deactivate the user in /admin for that). The admin panel
-    (/admin) is also behind forward-auth + group-gate and, through
-    auth.admin_paths, requires admin_vaultwarden on top of users_vaultwarden;
-    Vaultwarden's ADMIN_TOKEN (VAULTWARDEN_ADMIN_TOKEN) is still required, keep
-    it secret. Identity: SSO accounts are keyed on the OIDC subject
-    (issuer + sub); SSO_SIGNUPS_MATCH_EMAIL stays false, so an SSO login is
-    never attached to an existing registered account by email (LLDAP emails
-    are user-editable). The Keycloak client uses email_verified_claim: false
-    (scope email-unverified: email claim, no email_verified), which
-    Vaultwarden accepts with SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION, so new
-    users sign up with SSO on their first login and then set the master
-    password that encrypts their vault. SIGNUPS_ALLOWED is false (accounts only via SSO) and
-    INVITATIONS_ALLOWED is false: an email invitation would create a
-    placeholder account that Vaultwarden hands to the first SSO user
-    presenting that email. Organisations can therefore only add users who
-    have already signed in; check the member's name (their LLDAP username)
-    before confirming them, since the email they were found by is
-    user-editable. Don't use the /admin "Invite user" button (it ignores
-    INVITATIONS_ALLOWED and creates such a placeholder). A user whose email
-    collides with an existing account is refused, never merged.
+  notes: |
+    Native SSO via OpenID Connect, and SSO only (`SSO_ONLY`): every sign-in goes through Keycloak, and only members of `users_vaultwarden` can sign in or get an account by SSO. Users still set a master password, which only decrypts their vault.
+
+    **SSO only:** the email + master password login is disabled in the web vault and for the clients. The master password never signs anyone in; it only decrypts the vault after the SSO login (Bitwarden's end-to-end encryption), so users still set one.
+
+    **What is gated:** the SSO start and callback paths (`/identity/connect/authorize`, `/identity/connect/oidc-signin`) sit behind forward-auth + group-gate, so only members of `users_vaultwarden` can sign in or get an account by SSO (Vaultwarden has no OIDC group restriction); the API, the token exchange and the Bitwarden clients are not gated.
+
+    - Removing a user from `users_vaultwarden` blocks new SSO logins, not sessions or devices already signed in (deactivate the user in `/admin` for that).
+    - The admin panel (`/admin`) is also behind forward-auth + group-gate and, through `auth.admin_paths`, requires `admin_vaultwarden` on top of `users_vaultwarden`; Vaultwarden's `ADMIN_TOKEN` (`VAULTWARDEN_ADMIN_TOKEN`) is still required, keep it secret.
+
+    **No public exceptions:** Bitwarden Send (1.37.4, web vault v2026.7.0) needs the web vault at `/` with root-level hashed assets and the password-login token endpoint `/identity/connect/token` (`grant_type=send_access`), which no narrow path list can express.
+
+    **Identity:** SSO accounts are keyed on the OIDC subject (issuer + `sub`); `SSO_SIGNUPS_MATCH_EMAIL` stays false, so an SSO login is never attached to an existing registered account by email (LLDAP emails are user-editable). The Keycloak client uses `email_verified_claim: false` (scope `email-unverified`: email claim, no `email_verified`), which Vaultwarden accepts with `SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION`, so new users sign up with SSO on their first login and then set the master password that encrypts their vault.
+
+    **Sign-ups and invitations:** `SIGNUPS_ALLOWED` is false (accounts only via SSO) and `INVITATIONS_ALLOWED` is false: an email invitation would create a placeholder account that Vaultwarden hands to the first SSO user presenting that email.
+
+    - Organisations can therefore only add users who have already signed in; check the member's name (their LLDAP username) before confirming them, since the email they were found by is user-editable.
+    - Don't use the `/admin` "Invite user" button (it ignores `INVITATIONS_ALLOWED` and creates such a placeholder).
+    - A user whose email collides with an existing account is refused, never merged.
 
 env:
   - key: VAULTWARDEN_ADMIN_TOKEN

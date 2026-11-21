@@ -93,33 +93,21 @@ auth:
         description: Zip download
         exact: true
         justification: Shared-link route (sharedLink auth)
-  notes: >
-    Full OIDC with auto-register and auto-launch; password login is disabled
-    while OIDC is configured. Storage quota and role come from the instance
-    settings as the token claims immich_quota (GiB, -1 = unlimited) and
-    immich_role: members of the admin group are Immich administrators
-    (privileged setting), and Immich re-reads both at every sign-in. Trash
-    days and machine learning are rendered into config.json at every start.
-    Identity: OAuth users are keyed on the OIDC sub. Immich also links a login
-    to an existing user with the same email and cannot be told not to, while
-    LLDAP emails are user-editable; so on every start a one-shot job
-    (immich-lock-local-users) gives local, unlinked users (such as the initial
-    admin@portcullis.local) a placeholder OAuth id, and Immich then refuses
-    the email link. Do not create local users in the Immich UI (they are only
-    locked at the next restart); let users sign in with SSO instead. A user
-    who unlinks OAuth in their settings is locked out of SSO until an admin
-    clears the placeholder.
-    Public exceptions (Hub, off by default): shared links still work for
-    signed-in users; turning them on only matters when the policy requires a
-    client certificate at the TLS handshake, which it then no longer does for
-    any path of photos.<domain> (mTLS stays enforced at login via the
-    Keycloak acr).
-    Upgrades: immich-server and immich-machine-learning are pinned to the same
-    release and must always move together; read the upstream release notes for
-    breaking changes and keep immich-db on the image upstream specifies.
-    Shared folders: immich-server runs as root (no compose user:), so
-    External photo library declares runs_as uid 0 / gid 0, read-only; on a
-    shared folder it joins the folder's group through group_add.
+  notes: |
+    Full OIDC with auto-register and auto-launch; password login is disabled while OIDC is configured. Members of the admin group are Immich administrators.
+
+    **Settings:** storage quota and role come from the instance settings as the token claims `immich_quota` (GiB, -1 = unlimited) and `immich_role`: members of the admin group are Immich administrators (privileged setting), and Immich re-reads both at every sign-in. Trash days and machine learning are rendered into `config.json` at every start.
+
+    **Identity:** OAuth users are keyed on the OIDC `sub`. Immich also links a login to an existing user with the same email and cannot be told not to, while LLDAP emails are user-editable. So on every start a one-shot job (`immich-lock-local-users`) gives local, unlinked users (such as the initial `admin@portcullis.local`) a placeholder OAuth id, and Immich then refuses the email link.
+
+    - Do not create local users in the Immich UI (they are only locked at the next restart); let users sign in with SSO instead.
+    - A user who unlinks OAuth in their settings is locked out of SSO until an admin clears the placeholder.
+
+    **Public exceptions** (Hub, off by default): shared links still work for signed-in users. Turning them on only matters when the policy requires a client certificate at the TLS handshake, which it then no longer does for any path of `photos.<domain>` (mTLS stays enforced at login via the Keycloak acr).
+
+    **Upgrades:** `immich-server` and `immich-machine-learning` are pinned to the same release and must always move together; read the upstream release notes for breaking changes and keep `immich-db` on the image upstream specifies.
+
+    **Shared folders:** `immich-server` runs as root (no compose `user:`), so **External photo library** declares `runs_as` uid 0 / gid 0, read-only; on a shared folder it joins the folder's group through `group_add`.
 
 settings:
   sections: [Storage, Accounts, Library]

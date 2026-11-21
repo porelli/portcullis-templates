@@ -979,6 +979,36 @@ class TestWorkerTmpfs(Case):
             self.assertEqual(v.ram_in_bytes(s), n, s)
 
 
+class TestNotesMarkdown(Case):
+    """auth.notes is Markdown and may hold no raw HTML (contract §3)."""
+
+    def test_raw_html_refused(self) -> None:
+        for snippet in ["<script>alert(1)</script>", "<b>bold</b>", "<img src=x onerror=alert(1)>", "</div>",
+                        "<!-- hidden -->", "<?php ?>", "<!DOCTYPE html>", "see <instance-id> here", "a <b"]:
+            with self.subTest(snippet=snippet):
+                self.assertEqual(len(v.notes_raw_html("Text " + snippet)) > 0, True, snippet)
+        errors, _ = self.run_template(notes=" <script>alert(1)</script>")
+        self.assertError(errors, "auth.notes has raw HTML: '<script>alert(1)</script'")
+
+    def test_markdown_allowed(self) -> None:
+        for ok in ["Plain **bold** `code` [link](https://x.example).",
+                   "Code span `<instance-id>` and ``a `<b>` c``.",
+                   "Autolinks <https://x.example/a?b=1> and <me@x.example>.",
+                   "Escaped \\<b> and &lt;b&gt; and a < b > c and 1<2.",
+                   "Fenced:\n\n```\n<script>alert(1)</script>\n```\n\nafter.",
+                   "~~~html\n<div>\n~~~",
+                   "- list\n- `docker exec <container>`\n\n| a | b |\n|---|---|\n| `<x>` | 2 |"]:
+            with self.subTest(notes=ok):
+                self.assertEqual(v.notes_raw_html(ok), [])
+        self.assertClean(self.run_template(notes=" `<instance-id>` <https://x.example>")[0])
+
+    def test_unclosed_fence_hides_nothing_after_it(self) -> None:
+        # An unclosed fence runs to the end (CommonMark): its content is code.
+        self.assertEqual(v.notes_raw_html("```\n<b>"), [])
+        # A code span needs its closing run; a lone backtick is text.
+        self.assertNotEqual(v.notes_raw_html("` <b>x</b>"), [])
+
+
 class TestHubRules(Case):
     def test_strip_client_forwarded_allowed(self) -> None:
         """Core's strip-client-forwarded@file may be named like the other

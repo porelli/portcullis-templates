@@ -821,6 +821,43 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         r.warn(t.m_where, f"auth.method {auth['method']} with group_access: false lets every Portcullis user in",
                "set group_access: true and access_group: users_<app> unless that is intended")
 
+    check_notes(t, r)
+
+
+NOTES_HINT = ("auth.notes is Markdown and the Hub never shows raw HTML (contract §3): use Markdown, put "
+              "tags and placeholders such as <instance-id> in backticks, or write &lt; for a literal <")
+# Code the notes may hold verbatim: fenced blocks, then code spans (a run of
+# N backticks up to the next run of exactly N, CommonMark).
+NOTES_FENCE_RE = re.compile(r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)")
+NOTES_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+# What may follow "<" outside code: an autolink (<scheme:…>, <user@host>).
+NOTES_AUTOLINK_RE = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+)>")
+
+
+def notes_raw_html(notes: str) -> List[str]:
+    """The raw-HTML-looking snippets of Markdown notes, outside code: every
+    "<" followed by a letter, "/", "!" or "?" that doesn't start an autolink
+    (CommonMark open/closing tags, comments, declarations, processing
+    instructions and HTML block starts all begin so). Stricter than
+    CommonMark on purpose: "a <b" is refused too."""
+    text = NOTES_FENCE_RE.sub("", notes)
+    text = NOTES_CODE_SPAN_RE.sub("", text)
+    text = re.sub(r"\\[\\<]", "", text)  # \< is a literal <
+    found = []
+    for mt in re.finditer(r"<[A-Za-z/!?]", text):
+        if NOTES_AUTOLINK_RE.match(text, mt.start()):
+            continue
+        found.append(text[mt.start():mt.start() + 24].split("\n")[0])
+    return found
+
+
+def check_notes(t: Template, r: Report) -> None:
+    notes = ((t.manifest or {}).get("auth") or {}).get("notes")
+    if not isinstance(notes, str):
+        return
+    for snippet in notes_raw_html(notes):
+        r.error(t.m_where, f"auth.notes has raw HTML: {snippet!r}", NOTES_HINT)
+
 
 LINKS_HINT = "see CONTRIBUTING.md, \"Adding an app\" (links): the project's own homepage and its canonical upstream repository"
 # links.source on a known code host must be the repository itself (no

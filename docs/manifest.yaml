@@ -13,7 +13,8 @@ auth:
   sso: false
   group_access: false
   group_admin: false
-  notes: Public documentation site — no authentication required.
+  notes: |
+    Public documentation site — no authentication required.
 
 env: []
 keycloak_clients: []

@@ -16,26 +16,20 @@ auth:
   group_admin: false
   access_group: users_pdfcraft
   admin_group: admin_pdfcraft
-  notes: >
-    Early alpha upstream (https://getartcraft.com/apps): expect missing
-    features and breaking changes between versions.
-    PdfCraft (https://github.com/storytold/pdfcraft, Apache-2.0 OR MIT) is a
-    static site: the app runs in the visitor's browser and has no user
-    system, no server-side code and no server-side storage. Open uses the
-    browser's file picker, Save/Export download files; preferences live in
-    the browser's storage for this hostname.
-    Portcullis sign-in (forward-auth + group-gate) is the only login; every
-    member of the access group gets the same app (there are no roles).
-    At every start the pdfcraft-fetch init container downloads the release's
-    pdfcraft-web-<version>.zip from GitHub, checks its SHA-256 against the pin
-    before unpacking, and swaps the unpacked site into the pdfcraft-site volume
-    by rename; on any error it exits non-zero and the web server doesn't
-    start (an unchanged pin skips the download). The host needs outbound
-    HTTPS to github.com. The web server (nginx-unprivileged, read-only,
-    no directory listing) answers only Traefik and itself.
-    Version: the Release version / Release SHA-256 settings default to the pin in compose.yml
-    (bumped with the template); set both together, from the release's
-    SHA256SUMS.txt, to pin another release.
+  notes: |
+    [PdfCraft](https://github.com/storytold/pdfcraft) (Apache-2.0 OR MIT) is a static site: the app runs in the visitor's browser and has no user system, no server-side code and no server-side storage. Portcullis sign-in (forward-auth + group-gate) is the only login.
+
+    **Early alpha upstream** (<https://getartcraft.com/apps>): expect missing features and breaking changes between versions.
+
+    - Every member of the access group gets the same app (there are no roles).
+    - Open uses the browser's file picker, Save/Export download files; preferences live in the browser's storage for this hostname.
+
+    **How it is served:** at every start the `pdfcraft-fetch` init container downloads the release's `pdfcraft-web-<version>.zip` from GitHub, checks its SHA-256 against the pin before unpacking, and swaps the unpacked site into the `pdfcraft-site` volume by rename. On any error it exits non-zero and the web server doesn't start (an unchanged pin skips the download).
+
+    - The host needs outbound HTTPS to github.com.
+    - The web server (nginx-unprivileged, read-only, no directory listing) answers only Traefik and itself.
+
+    **Version:** the **Release version** / **Release SHA-256** settings default to the pin in `compose.yml` (bumped with the template); set both together, from the release's `SHA256SUMS.txt`, to pin another release.
 
 env: []
 

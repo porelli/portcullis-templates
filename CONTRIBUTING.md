@@ -67,6 +67,25 @@ Reference docs:
    Open both URLs before you submit: validate.py checks their form (https,
    repository-root URLs on known code hosts, no registry pages), not that
    they are the official ones.
+
+   Write `auth.notes` in Markdown, for admins (the Hub renders it on the
+   instance's Overview; contract §3):
+   ```yaml
+   auth:
+     notes: |
+       One or two sentences: what the app is and how people sign in.
+
+       Then short paragraphs or lists. Commands and paths in backticks:
+       `docker compose -p portcullis-<instance> exec app ...`.
+   ```
+   - Use a literal block (`|`): a folded one (`>`) joins the paragraphs.
+   - The first paragraph is the summary; for an app without a web page it is
+     also the portal note (at most 300 characters as plain text).
+   - Keep every fact a maintainer needs (pins, uids, capabilities, upgrade
+     paths), grouped under bold lead-ins such as `**Upgrades:**`.
+   - No raw HTML: validate.py refuses it (the Hub would drop it). Put tags
+     and placeholders such as `<instance-id>` in backticks. Images are not
+     shown; only `http`, `https` and `mailto` links stay links.
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose
