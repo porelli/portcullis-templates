@@ -27,7 +27,7 @@ auth:
     **People and shares:**
 
     - Each member of `users_samba` creates their own file-share password on My apps (`people.<domain>`) after a fresh passkey sign-in, and gets the share **Home**: their own folder `<homes>/<username>` (owned by their Hub uid, mode 0700).
-    - Up to 8 shared folders (slots 1–8): the admin assigns a slot a shared folder (**Settings → Shared folders**), a share name and reader and writer groups. Readers can read, writers can also write, nobody else in the instance can open it.
+    - Up to 8 shared folders (slots 1–8): the admin assigns a slot a shared folder (**Settings → Storage**), a share name and reader and writer groups. Readers can read, writers can also write, nobody else in the instance can open it.
     - Files land as `<the person's uid>:<the folder's gid>` (force group), mode 0660, directories 2770.
     - To share a folder with everyone who has access, pick `users_samba` as its reader group.
 
@@ -131,8 +131,8 @@ settings:
     - key: share1_folder
       label: Share 1 folder
       description: >-
-        The shared folder slot 1 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 1 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/1}
@@ -172,8 +172,8 @@ settings:
     - key: share2_folder
       label: Share 2 folder
       description: >-
-        The shared folder slot 2 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 2 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/2}
@@ -213,8 +213,8 @@ settings:
     - key: share3_folder
       label: Share 3 folder
       description: >-
-        The shared folder slot 3 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 3 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/3}
@@ -254,8 +254,8 @@ settings:
     - key: share4_folder
       label: Share 4 folder
       description: >-
-        The shared folder slot 4 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 4 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/4}
@@ -295,8 +295,8 @@ settings:
     - key: share5_folder
       label: Share 5 folder
       description: >-
-        The shared folder slot 5 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 5 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/5}
@@ -336,8 +336,8 @@ settings:
     - key: share6_folder
       label: Share 6 folder
       description: >-
-        The shared folder slot 6 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 6 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/6}
@@ -377,8 +377,8 @@ settings:
     - key: share7_folder
       label: Share 7 folder
       description: >-
-        The shared folder slot 7 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 7 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/7}
@@ -418,8 +418,8 @@ settings:
     - key: share8_folder
       label: Share 8 folder
       description: >-
-        The shared folder slot 8 serves (assign it under Settings → Shared
-        folders). Files are written as each person's uid with the folder's
+        The shared folder slot 8 serves (assign it under Settings →
+        Storage). Files are written as each person's uid with the folder's
         group. Not served without a name and a reader or writer group.
       type: path
       target: {service: samba, mount: /shares/8}
