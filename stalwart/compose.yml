@@ -30,12 +30,14 @@
 #     fresh volume is root's (Docker) or the first mounter's (rootless
 #     Podman chowns an empty volume to its mounter); key-init, root with no
 #     capability, makes it root:2010 2770 and accepts an already-prepared
-#     one (gate/key-init.sh).
+#     one (gate/key-init.sh); viewer_key it leaves non-empty (an empty
+#     viewer-password placeholder), so the bootstrap job's mount never
+#     re-chowns it to 2000:2010.
 services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
   adapter-bin:
-    image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
+    image: ghcr.io/porelli/portcullis-mailctl:main-c2a49a6@sha256:1b26a87d20d0eb2c99b58fa2f817836964a08326b8790df29ca4b46e204fded8
     user: "10010:10010"
     entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
     read_only: true
@@ -54,7 +56,7 @@ services:
   # only viewer-password (contract §19.13), idempotent. Root with no
   # capability, no network, read-only root.
   key-init:
-    image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
+    image: ghcr.io/porelli/portcullis-mailctl:main-c2a49a6@sha256:1b26a87d20d0eb2c99b58fa2f817836964a08326b8790df29ca4b46e204fded8
     user: "0:2010"
     # 2011 (mailview): an owner without CHOWN can chgrp only to its own
     # groups (viewer_key, contract §19.13).
@@ -182,7 +184,7 @@ services:
   # the spam rules 8082 (internal), metrics 9100. The only holder of
   # Stalwart's API key besides the job.
   adapter:
-    image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
+    image: ghcr.io/porelli/portcullis-mailctl:main-c2a49a6@sha256:1b26a87d20d0eb2c99b58fa2f817836964a08326b8790df29ca4b46e204fded8
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]
@@ -233,7 +235,7 @@ services:
   # through the Hub's override, the ticket key (a read-only file): no API
   # key, no slot file, no certificate key.
   admin-view:
-    image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
+    image: ghcr.io/porelli/portcullis-mailctl:main-c2a49a6@sha256:1b26a87d20d0eb2c99b58fa2f817836964a08326b8790df29ca4b46e204fded8
     user: "10010:10010"
     group_add: ["2011"]
     command: ["admin-view"]
