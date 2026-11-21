@@ -165,6 +165,24 @@ chk "--check ignores recovery mode: 1" 1 STALWART_RECOVERY_MODE=1 MAILCTL_RECOVE
 reset; : > "$S/void-pending"; printf '%s' "$N" > "$S/void-session"
 chk "--check in the Hub's void mode: 0" 0 PORTCULLIS_MAIL_VOID_SESSION="$N"
 
+# The admin view's host (contract §19.13): STALWART_PUBLIC_URL from it,
+# a malformed one refused before the server starts.
+# shellcheck disable=SC2016 # the stub expands it, not this shell
+printf '#!/bin/sh\necho "URL=${STALWART_PUBLIC_URL:-}"\n' > "$T/urlserver"
+chmod +x "$T/urlserver"
+reset; printf 'portcullis-mail-gate' > "$S/.present"
+set +e
+out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" PORTCULLIS_MAIL_ADMIN_HOST=mail-admin.example.org "$SH" "$GATE" "$T/urlserver" 2>&1); rc=$?
+set -e
+if [ "$rc" = 0 ] && [ "$out" = "URL=https://mail-admin.example.org" ]; then echo "PASS admin host: STALWART_PUBLIC_URL set"; else echo "FAIL admin host: rc $rc $out"; FAILS=$((FAILS + 1)); fi
+set +e
+out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" "$SH" "$GATE" "$T/urlserver" 2>&1); rc=$?
+set -e
+if [ "$rc" = 0 ] && [ "$out" = "URL=" ]; then echo "PASS no admin host: no STALWART_PUBLIC_URL"; else echo "FAIL no admin host: rc $rc $out"; FAILS=$((FAILS + 1)); fi
+for bad in 'evil.example/x' 'Mail-Admin.example.org' '.example.org' 'mail-admin.example.org.' 'a b' 'x;y'; do
+  reset; printf 'portcullis-mail-gate' > "$S/.present"; run "admin host $bad" refused PORTCULLIS_MAIL_ADMIN_HOST="$bad"
+done
+
 # No server command at all.
 set +e
 out=$(env -i PATH="$PATH" PORTCULLIS_MAIL_SLOT_DIR="$S" "$SH" "$GATE" 2>&1); rc=$?

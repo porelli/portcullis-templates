@@ -277,6 +277,106 @@ class TestV2Refuses(Case):
                                       manifest_url="https://{{HOST_PORTCULLIS_DEMO}}")
         self.assertError(errors, "router name portcullis-demo starts with 'portcullis-'")
 
+    def test_portcullis_prefix_in_single_names(self) -> None:
+        """Contract §3: core's and the Hub's names (portcullis-mail-admin…)
+        are refused in every template, single included, in any case."""
+        for name in ("portcullis-mail-admin", "Portcullis-Groups", "portcullis-public-x", "Portcullis-Public-X"):
+            var = name.upper().replace("-", "_")
+            errors, _ = self.run_template(instances="single",
+                                          rules=((name, f"Host(`${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}`)"),),
+                                          url=f"https://${{PORTCULLIS_HOST_{var}:-demo.portcullis.local}}",
+                                          manifest_url=f"https://{{{{HOST_{var}}}}}")
+            self.assertError(errors, f"router name {name} starts with 'portcullis-'")
+
+    def test_portcullis_prefix_every_kind(self) -> None:
+        """The Hub's rule exactly: services, middlewares and tcp / udp names
+        too, in any case."""
+        for label in ("traefik.http.services.portcullis-public-x.loadbalancer.server.port",
+                      "traefik.http.middlewares.Portcullis-Mail-Admin-Key.headers.customrequestheaders.X-A",
+                      "traefik.udp.services.portcullis-x.loadbalancer.server.port",
+                      "TRAEFIK.TCP.ROUTERS.portcullis-y.rule"):
+            r = v.Report()
+            v.check_traefik_names(v.Template.__new__(v.Template), {label: "1"}, "here", r)
+            self.assertTrue(any("starts with 'portcullis-'" in e for e in r.errors), (label, r.errors))
+
+    def test_relative_binds_only_own_files(self) -> None:
+        """The Hub's CheckRelativeBinds (ux2 R2-M2): .., another instance's
+        appfiles (the mail admin view's ticket key), secrets, another
+        template's files and a symlink out of the template are refused."""
+        import tempfile as _tf
+        d = _tf.mkdtemp()
+        os.makedirs(os.path.join(d, "conf"))
+        os.symlink(_tf.mkdtemp(), os.path.join(d, "escape"))
+        def errs(vol):
+            return v.relative_bind_errors(d, "app", {"web": {"image": "x", "volumes": vol}})
+        for ok in (["./templates/app/conf:/c:ro"], ["./certs/ca-bundle.crt:/ca.crt:ro"], ["data:/data"], ["/srv/x:/x:ro"]):
+            self.assertEqual(errs(ok), [], ok)
+        for bad in (["./appfiles/stalwart/mail-admin:/x:ro"], ["./appfiles/other/f:/f:ro"], ["./secrets:/s:ro"], ["../etc:/e:ro"],
+                    ["./templates/app/../other:/o:ro"], ["./templates/other/gate:/g"], ["./templates/app/escape/y:/y:ro"],
+                    ["./templates/${X}:/x:ro"], ["~/a:/a", "./secrets:/s:ro"],
+                    [{"type": "bind", "source": "./appfiles/stalwart/mail-admin", "target": "/x", "read_only": True}]):
+            self.assertTrue(errs(bad), bad)
+        # No interpolation in any mount (R2-M2 follow-up ruling), as the Hub.
+        for src in ("$X", "${X}", "${X:-./appfiles/other}", "${X-./secrets}", "${X:?err}", "$X/..", "./templates/app/$X",
+                    "./templates/app/${X:-../../secrets}", "/srv/${X}", "$$X", "${X:-/srv/media}"):
+            for vol in ([f"{src}:/x:ro"], [{"type": "bind", "source": src, "target": "/x"}]):
+                e = errs(vol)
+                self.assertTrue(e and "can't be interpolated" in e[0], (vol, e))
+        for vol in (["data:/x/${X}"], [{"type": "${T}", "source": "/etc", "target": "/x"}],
+                    [{"type": "volume", "source": "${V:-data}", "target": "/x"}]):
+            e = errs(vol)
+            self.assertTrue(e and "can't be interpolated" in e[0], (vol, e))
+        self.assertEqual(errs([{"type": "bind", "source": "${X}", "target": "/x"}]),
+                         ["service web mounts ${X}: a mount source can't be interpolated (no $ in a volume entry)"])
+        # Round 4: not-absolute is relative, ~ refused, the CA bundle only
+        # read-only, an unreadable entry fails closed, no volume driver.
+        for vol, want in (([{"type": "bind", "source": "appfiles/stalwart/mail-admin", "target": "/x", "read_only": True}], "its own files"),
+                          (["appfiles/x:/y:ro"], "its own files"), (["secrets/a:/y:ro"], "its own files"),
+                          ([{"type": "bind", "source": "templates/app/../other", "target": "/x"}], "its own files"),
+                          (["~/x:/y:ro"], "can't start with ~"), ([{"type": "bind", "source": "~/x", "target": "/y"}], "can't start with ~"),
+                          (["./certs/ca-bundle.crt:/ca.crt"], "must be bound read-only"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt"}], "must be bound read-only"),
+                          (["./certs/ca-bundle.crt:/ca.crt:rw"], "must be bound read-only"),
+                          (["./certs/ca-bundle.crt:/ca.crt:ro,rw"], "both ro and rw"), (["./certs/ca-bundle.crt:/ca.crt:rw,ro"], "both ro and rw"),
+                          (["./templates/app/conf:/c:ro,rw"], "both ro and rw"), (["data:/d:rw,ro"], "both ro and rw"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": "true"}], "must be bound read-only"),
+                          ([{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": "yes"}], "must be bound read-only"),
+                          (["a:b:c:d"], "not source:target"), ([{"type": "npipe", "source": "x", "target": "/y"}], "isn't supported"),
+                          ([{"type": "bind", "target": "/y"}], "needs a source"), ([{"type": "volume", "source": "a/b", "target": "/y"}], "volume name"),
+                          (["bad name!:/y"], "neither a path nor a volume name"), (["relative"], "anonymous volume"), ([42], "string or a mapping")):
+            e = errs(vol)
+            self.assertTrue(e and want in e[0], (vol, e))
+        for ok in (["templates/app/conf:/c:ro"], [{"type": "bind", "source": "templates/app", "target": "/t", "read_only": True}],
+                   [{"type": "bind", "source": "./certs/ca-bundle.crt", "target": "/ca.crt", "read_only": True}],
+                   ["/data"], [{"type": "tmpfs", "target": "/tmp"}], [{"type": "volume", "source": "data", "target": "/d"}]):
+            self.assertEqual(errs(ok), [], ok)
+        for drv in ({"driver": "local"}, {"driver_opts": {"type": "none", "o": "bind", "device": "/etc"}}):
+            e = v.relative_bind_errors(d, "app", {"web": {"image": "x", "volumes": ["data:/d"]}}, {"volumes": {"data": drv}})
+            self.assertTrue(e and e[0].startswith("volume data sets driver"), (drv, e))
+        self.assertEqual(v.relative_bind_errors(d, "app", {"web": {"image": "x"}}, {"volumes": {"data": {"labels": {"a": "b"}}, "o": None}}), [])
+
+    def test_relbind_vectors(self) -> None:
+        """The shared vectors (tests/relbind_vectors.json = Hub
+        internal/templates/testdata/relbind_vectors.json, byte for byte):
+        R3-I1, R3-M1, N1, N2, N6."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "relbind_vectors.json")
+        with open(path, encoding="utf-8") as f:
+            vectors = json.load(f)
+        self.assertGreaterEqual(len(vectors), 20)
+        for vec in vectors:
+            with self.subTest(vec["name"]):
+                want = vec.get("want_py", vec["want"])
+                try:
+                    data = v.yaml.load(vec["compose"], Loader=v._UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+                except v.yaml.YAMLError as e:
+                    self.assertTrue(want and want in str(e), (vec["name"], str(e)))
+                    continue
+                errs = v.relative_bind_errors("", "app", data.get("services") or {}, data)
+                if want:
+                    self.assertTrue(errs and want in errs[0], (vec["name"], errs))
+                else:
+                    self.assertEqual(errs, [], vec["name"])
+
     def test_own_host_url_must_use_the_variable(self) -> None:
         errors, _ = self.run_template(url=V1_URL)
         self.assertError(errors, "names its own host demo.${PORTCULLIS_DOMAIN}")
@@ -979,6 +1079,82 @@ class TestWorkerTmpfs(Case):
             self.assertEqual(v.ram_in_bytes(s), n, s)
 
 
+class TestNotesMarkdown(Case):
+    """auth.notes is Markdown and may hold no raw HTML (contract §3)."""
+
+    def test_raw_html_refused(self) -> None:
+        for snippet in ["<script>alert(1)</script>", "<b>bold</b>", "<img src=x onerror=alert(1)>", "</div>",
+                        "<!-- hidden -->", "<?php ?>", "<!DOCTYPE html>", "see <instance-id> here",
+                        # The regex validator's bypasses (review M1): backticks in two paragraphs make no
+                        # code span; a fence indented 4 spaces is an indented code block, not a fence.
+                        "`a\n\n<script>alert(1)</script>\n\n`", "\n\n    ```\n    x\n<img src=x>\n```"]:
+            with self.subTest(snippet=snippet):
+                self.assertEqual(len(v.notes_raw_html("Text " + snippet)) > 0, True, snippet)
+        errors, _ = self.run_template(notes=" <script>alert(1)</script>")
+        self.assertError(errors, "auth.notes has raw HTML: '<script>'")
+
+    def test_markdown_allowed(self) -> None:
+        for ok in ["Plain **bold** `code` [link](https://x.example).",
+                   "Code span `<instance-id>` and ``a `<b>` c``.",
+                   "Autolinks <https://x.example/a?b=1> and <me@x.example>.",
+                   "Escaped \\<b> and &lt;b&gt; and a < b > c and 1<2 and a <b.",
+                   "Fenced:\n\n```\n<script>alert(1)</script>\n```\n\nafter.",
+                   "~~~html\n<div>\n~~~",
+                   "- list\n- `docker exec <container>`\n\n| a | b |\n|---|---|\n| `<x>` | 2 |"]:
+            with self.subTest(notes=ok):
+                self.assertEqual(v.notes_raw_html(ok), [])
+        self.assertClean(self.run_template(notes=" `<instance-id>` <https://x.example>")[0])
+
+    def test_unclosed_fence_hides_nothing_after_it(self) -> None:
+        # An unclosed fence runs to the end (CommonMark): its content is code.
+        self.assertEqual(v.notes_raw_html("```\n<b>"), [])
+        # A code span needs its closing run; a lone backtick is text.
+        self.assertNotEqual(v.notes_raw_html("` <b>x</b>"), [])
+
+
+class TestNotesLimits(Case):
+    """auth.notes is bounded like the Hub's ValidateManifest (contract §3)."""
+
+    def test_size_depth_and_hidden(self) -> None:
+        import time
+        for name, notes, needle in [
+            ("120 KB nested", "- " * 60000 + "x", "at most 16384 allowed"),
+            ("17 markers", "- " * 17 + "x", "deeper than 16"),
+            ("17 mixed", "> - " * 9 + "x", "deeper than 16"),
+            ("17 by indentation", "".join("  " * i + "- x\n" for i in range(17)), "deeper than 16"),
+            ("bidi override", "see \u202egnp.exe", "U+202E"),
+            ("zero width", "a\u200bb", "U+200B"),
+            ("isolate", "a\u2066b", "U+2066"),
+            ("bom", "\ufeffa", "U+FEFF"),
+            ("nbsp", "a\u00a0b", "U+00A0"),
+            ("variation selector", "a\ufe0fb", "U+FE0F"),
+            ("nul", "a\x00b", "U+0000"),
+        ]:
+            with self.subTest(name=name):
+                start = time.monotonic()
+                problems = v.notes_problems(notes)
+                self.assertLess(time.monotonic() - start, 1.0)
+                self.assertTrue(any(needle in m for m, _ in problems), problems)
+        for ok in ["- " * 16 + "x", "x" * 16384, "".join("  " * i + "- x\n" for i in range(16)),
+                   "tabs\tand\nnewlines, arrows \u2192 and \u2713"]:
+            self.assertEqual(v.notes_problems(ok), [], ok[:20])
+
+    def test_links_and_images(self) -> None:
+        for bad, needle in [("[x](https://bank.example@evil.example/)", "turns into text"),
+                            ("<https://u:p@evil.example>", "turns into text"),
+                            ("[x](/relative)", "turns into text"),
+                            ("[x](//evil.example)", "turns into text"),
+                            ("![alt](https://i.example/p.png)", "an image")]:
+            with self.subTest(notes=bad):
+                self.assertTrue(any(needle in m for m, _ in v.notes_problems(bad)), v.notes_problems(bad))
+        # markdown-it (like goldmark) never makes javascript: a link: it stays text.
+        self.assertEqual(v.notes_problems("[x](javascript:alert(1))"), [])
+        for ok in ["[x](https://ok.example/a?b=1)", "<https://ok.example>", "[m](mailto:a@b.example)", "<a@b.example>"]:
+            self.assertEqual(v.notes_problems(ok), [], ok)
+        errors, _ = self.run_template(notes=" [x](https://bank.example@evil.example)")
+        self.assertError(errors, "auth.notes has a link the Hub turns into text")
+
+
 class TestHubRules(Case):
     def test_strip_client_forwarded_allowed(self) -> None:
         """Core's strip-client-forwarded@file may be named like the other
@@ -1134,7 +1310,7 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = self.REPO
-        for app in self.APPS:
+        for app in self.APPS + ("LICENSES",):
             shutil.copytree(os.path.join(self.repo, app), os.path.join(self.tmp.name, app))
         v.ROOT = self.tmp.name
         self.addCleanup(setattr, v, "ROOT", self.REPO)
@@ -2149,6 +2325,12 @@ class TestSettingsV3(Case):
         for mount, what in ((bind, "shared by every instance"), (ca, "must be read-only")):
             for val, ok in (("true", True), ("yes", True), ("ON", True), ("y", True), ("\"True\"", True),
                             ("false", False), ("no", False), ("off", False), ("n", False), ("\"No\"", False)):
+                if mount is ca and val != "true":
+                    # The CA bundle binds read-only only with a real boolean
+                    # true (ux2 round 4): every other spelling is refused.
+                    ok, what_now = False, "must be bound read-only"
+                else:
+                    what_now = what
                 with self.subTest(mount=what, val=val):
                     c = s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val)
                     self.run_raw(S_HDR, c)
@@ -2158,7 +2340,7 @@ class TestSettingsV3(Case):
                     if ok:
                         self.assertClean(errors)
                     else:
-                        self.assertError(errors, what)
+                        self.assertError(errors, what_now)
             for val in ("maybe", "1", "\" yes\""):
                 with self.subTest(mount=what, val=val):
                     errors, _ = self.run_raw(S_HDR, s_compose().replace("      - demo-data:/data\n", "      - demo-data:/data\n" + mount % val))
@@ -4204,6 +4386,8 @@ class AITests(Case):
             ("env list without provider vars", chat, [], ["    environment:\n      DEMO_URL: https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      TRUSTED_PROXY: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      DEMO_SECRET: ${DEMO_SECRET:?DEMO_SECRET must be set}\n      MCP_SECRET: ${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n", "    environment:\n      - DEMO_URL=https://${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}\n      - TRUSTED_PROXY=${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}\n      - DEMO_SECRET=${DEMO_SECRET:?DEMO_SECRET must be set}\n      - MCP_SECRET=${DEMO_MCP_SECRET:?DEMO_MCP_SECRET must be set}\n"], ""),
             ("ai-providers file", "companion", ["hooks:\n", "files:\n  - {name: ai-providers, service: demo, mount: /data}\nhooks:\n"], [],
              "files[ai-providers]: the data file name ai-providers is reserved"),
+            ("mail-admin file", "companion", ["hooks:\n", "files:\n  - {name: mail-admin, service: demo, mount: /data}\nhooks:\n"], [],
+             "files[mail-admin]: the data file name mail-admin is reserved"),
         ])
 
     def test_ai_client_flag(self) -> None:
@@ -5738,6 +5922,236 @@ class PlacementTests(unittest.TestCase):
                 else:
                     self.assertFalse(primary_only)
                     self.assertEqual(reasons, [])
+
+
+SVG_OK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="#369"/></svg>'
+
+
+def png_bytes(w: int = 2, h: int = 2, pad: int = 0) -> bytes:
+    import struct
+    import zlib
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    return b"\x89PNG\r\n\x1a\n" + chunk + b"\0" * pad
+
+
+def jpeg_bytes(w: int = 3, h: int = 2) -> bytes:
+    import struct
+    app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"
+    sof = b"\xff\xc0" + struct.pack(">HBHHB", 11, 8, h, w, 1) + b"\x01\x11\x00"
+    return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
+
+
+def webp_bytes(chunk: str, w: int, h: int) -> bytes:
+    """A minimal RIFF/WEBP header of each kind (contract §3 screenshots)."""
+    import struct
+    if chunk == "VP8 ":
+        body = b"\x00\x00\x00" + b"\x9d\x01\x2a" + struct.pack("<HH", w, h)
+    elif chunk == "VP8L":
+        body = b"\x2f" + struct.pack("<I", (w - 1) | ((h - 1) << 14))
+    else:
+        body = b"\x00\x00\x00\x00" + (w - 1).to_bytes(3, "little") + (h - 1).to_bytes(3, "little")
+    body += b"\0" * 8
+    data = chunk.encode() + struct.pack("<I", len(body)) + body
+    return b"RIFF" + struct.pack("<I", 4 + len(data)) + b"WEBP" + data
+
+
+class CatalogCase(Case):
+    """Helpers for the catalog fields (contract §3 "Catalog fields")."""
+
+    def manifest_with(self, extra: str, files: Tuple[Tuple[str, bytes], ...] = ()) -> List[str]:
+        self.assertClean(self.run_template()[0])
+        for name, data in files:
+            with open(os.path.join(self.tmp.name, "demo", name), "wb") as f:
+                f.write(data)
+        self.rewrite_manifest("instances: multi\n", extra.rstrip("\n") + "\ninstances: multi\n")
+        return self.recheck()
+
+
+class TestLongDescription(CatalogCase):
+    """long_description: the auth.notes cases, each error naming the field."""
+
+    def block(self, text: str) -> str:
+        return "long_description: " + json.dumps(text)
+
+    def test_refused(self) -> None:
+        for name, text, needle in [
+            ("html_block", "Intro.\n\n<script>alert(1)</script>\n", "long_description: has raw HTML"),
+            ("image", "![alt](https://i.example/p.png)", "long_description: has an image"),
+            ("16 KiB + 1", "x" * (16384 + 1), "long_description: is 16385 bytes"),
+            ("depth 17", "- " * 17 + "x", "long_description: nests blocks deeper than 16"),
+            ("U+200B", "a\u200bb", "long_description: has the hidden character U+200B"),
+            ("link with userinfo", "[x](https://bank.example@evil.example/)", "long_description: has a link the Hub turns into text"),
+        ]:
+            with self.subTest(name=name):
+                errors = self.manifest_with(self.block(text))
+                self.assertError(errors, needle)
+                self.assertFalse(any("auth.notes" in e for e in errors), errors)
+
+    def test_javascript_link_stays_text(self) -> None:
+        # As for auth.notes: markdown-it (like goldmark) never makes it a link.
+        self.assertEqual(v.markdown_problems("[x](javascript:alert(1))", "long_description"), [])
+        tokens = v.NOTES_MD.parseInline("[x](javascript:alert(1))")
+        self.assertFalse(any(c.type == "link_open" for t in tokens for c in t.children or []))
+
+    def test_accepted(self) -> None:
+        text = "Demo is an app.\n\nIt does **things** — see <https://demo.example.org>.\n"
+        self.assertClean(self.manifest_with(self.block(text)))
+
+
+LOGO_LICENSE = b"SPDX-FileCopyrightText: 2026 Demo contributors\nSPDX-License-Identifier: MIT\n"
+
+
+def logo_files(data: bytes, license: bytes = LOGO_LICENSE) -> Tuple[Tuple[str, bytes], ...]:
+    return (("logo.svg", data), ("logo.svg.license", license))
+
+
+class TestLogo(CatalogCase):
+    def setUp(self) -> None:
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp.name, "LICENSES"))
+        with open(os.path.join(self.tmp.name, "LICENSES", "MIT.txt"), "w", encoding="utf-8") as f:
+            f.write("MIT License\n")
+
+    def test_clean_logo(self) -> None:
+        self.assertClean(self.manifest_with("logo: logo.svg", logo_files(SVG_OK.encode())))
+
+    def test_license_sidecar(self) -> None:
+        """Contract §3: <logo>.license (REUSE) with a holder, an SPDX id and its LICENSES/ text."""
+        for name, files, needle in [
+            ("no sidecar", (("logo.svg", SVG_OK.encode()),), "logo: logo.svg.license not found"),
+            ("no holder", logo_files(SVG_OK.encode(), b"SPDX-License-Identifier: MIT\n"), "has no SPDX-FileCopyrightText"),
+            ("no identifier", logo_files(SVG_OK.encode(), b"SPDX-FileCopyrightText: 2026 X\n"), "has no SPDX-License-Identifier"),
+            ("no licence text", logo_files(SVG_OK.encode(), LOGO_LICENSE.replace(b"MIT", b"Apache-2.0")),
+             "logo: LICENSES/Apache-2.0.txt not found"),
+        ]:
+            with self.subTest(name=name):
+                self.tearDown_dir()
+                self.assertError(self.manifest_with("logo: logo.svg", files), needle)
+
+    def test_file_not_found(self) -> None:
+        os.makedirs(os.path.join(self.tmp.name, "demo", "sub"), exist_ok=True)
+        with open(os.path.join(self.tmp.name, "x.svg"), "w", encoding="utf-8") as f:
+            f.write(SVG_OK)
+        for logo, files in [("../x.svg", ()), ("sub/logo.svg", (("sub/logo.svg", SVG_OK.encode()),)),
+                            ("logo.png", (("logo.png", png_bytes()),)), ("missing.svg", ())]:
+            with self.subTest(logo=logo):
+                self.tearDown_dir()
+                self.assertError(self.manifest_with(f"logo: {logo}", files), "logo: file not found")
+
+    def tearDown_dir(self) -> None:
+        import shutil
+        shutil.rmtree(os.path.join(self.tmp.name, "demo"), ignore_errors=True)
+        os.makedirs(os.path.join(self.tmp.name, "demo", "sub"))
+
+    def test_symlink_refused(self) -> None:
+        target = os.path.join(self.tmp.name, "real.svg")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(SVG_OK)
+        self.assertClean(self.run_template()[0])
+        os.symlink(target, os.path.join(self.tmp.name, "demo", "logo.svg"))
+        self.rewrite_manifest("instances: multi\n", "logo: logo.svg\ninstances: multi\n")
+        self.assertError(self.recheck(), "logo: file not found")
+
+    def test_over_64k(self) -> None:
+        big = SVG_OK.replace("</svg>", "<desc>" + "x" * (64 << 10) + "</desc></svg>").encode()
+        self.assertError(self.manifest_with("logo: logo.svg", logo_files(big)), "logo: over 64 KiB")
+
+    def test_vectors(self) -> None:
+        import base64
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "svg_vectors.json"), encoding="utf-8") as f:
+            vectors = json.load(f)
+        self.assertGreaterEqual(len(vectors), 40)
+        for vec in vectors:
+            data = base64.b64decode(vec["svg_b64"]) if "svg_b64" in vec else vec["svg"].encode("utf-8")
+            with self.subTest(name=vec["name"]):
+                self.assertEqual(v.svgsafe.check(data), None if vec["ok"] else vec["reason"])
+                self.tearDown_dir()
+                errors = self.manifest_with("logo: logo.svg", logo_files(data))
+                if vec["ok"]:
+                    self.assertClean(errors)
+                else:
+                    self.assertError(errors, "logo: " + vec["reason"])
+
+
+class TestScreenshots(CatalogCase):
+    def shots(self, entries: List[Tuple[str, str]]) -> str:
+        return "screenshots:\n" + "".join(f"  - file: {f}\n    caption: {json.dumps(c)}\n" for f, c in entries)
+
+    def test_accepted(self) -> None:
+        self.assertClean(self.manifest_with(self.shots([("a.png", "The dashboard"), ("b.jpg", "Settings")]),
+                                            (("a.png", png_bytes()), ("b.jpg", jpeg_bytes()))))
+        self.assertEqual(v.image_size(jpeg_bytes(3, 2), "jpg"), (3, 2))
+        self.assertEqual(v.image_size(png_bytes(5, 7), "png"), (5, 7))
+
+    def test_seven_refused(self) -> None:
+        entries = [(f"s{i}.png", "x") for i in range(7)]
+        errors = self.manifest_with(self.shots(entries), tuple((f, png_bytes()) for f, _ in entries))
+        self.assertError(errors, "screenshots: 7 entries, at most 6 allowed")
+
+    def test_gif_refused(self) -> None:
+        errors = self.manifest_with(self.shots([("a.gif", "x")]), (("a.gif", b"GIF89a"),))
+        self.assertError(errors, "screenshots[0]: file not found")
+
+    def test_too_big(self) -> None:
+        exact = png_bytes()
+        exact += b"\0" * ((512 << 10) - len(exact))
+        self.assertClean(self.manifest_with(self.shots([("a.png", "x")]), (("a.png", exact),)))
+        self.tearDown_dir()
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", exact + b"\0"),))
+        self.assertError(errors, "screenshots[0]: over 512 KiB")
+
+    def tearDown_dir(self) -> None:
+        import shutil
+        shutil.rmtree(os.path.join(self.tmp.name, "demo"), ignore_errors=True)
+
+    def test_webp(self) -> None:
+        for kind, data, size in [("VP8", webp_bytes("VP8 ", 300, 200), (300, 200)),
+                                 ("VP8L", webp_bytes("VP8L", 300, 200), (300, 200)),
+                                 ("VP8X", webp_bytes("VP8X", 300, 200), (300, 200))]:
+            with self.subTest(kind=kind):
+                self.assertEqual(v.image_size(data, "webp"), size)
+                self.tearDown_dir()
+                self.assertClean(self.manifest_with(self.shots([("a.webp", "x")]), (("a.webp", data),)))
+        self.tearDown_dir()
+        errors = self.manifest_with(self.shots([("a.webp", "x")]), (("a.webp", png_bytes()),))
+        self.assertError(errors, "screenshots[0]: not a WebP")
+
+    def test_magic_mismatch(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", jpeg_bytes()),))
+        self.assertError(errors, "screenshots[0]: not a PNG")
+
+    def test_too_many_pixels(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", png_bytes(4097, 10)),))
+        self.assertError(errors, "screenshots[0]: 4097x10 pixels")
+
+    def test_caption_newline(self) -> None:
+        errors = self.manifest_with(self.shots([("a.png", "one\ntwo")]), (("a.png", png_bytes()),))
+        self.assertError(errors, "screenshots.0.caption")
+
+
+class TestResources(CatalogCase):
+    def test_bounds(self) -> None:
+        self.assertError(self.manifest_with("resources: {min_memory_mib: 0}"), "resources.min_memory_mib")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertError(self.manifest_with("resources: {min_disk_gib: 70000}"), "resources.min_disk_gib")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertClean(self.manifest_with("resources: {}"))
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertError(self.manifest_with("resources: {min_cpus: 2}"), "Additional properties are not allowed")
+        self.tmp.cleanup(); os.makedirs(self.tmp.name)
+        self.assertClean(self.manifest_with("resources: {min_memory_mib: 512, min_disk_gib: 10}"))
+
+
+class TestCategoryEnum(Case):
+    def test_other_refused(self) -> None:
+        self.assertClean(self.run_template()[0])
+        self.rewrite_manifest("category: monitoring", "category: other")
+        errors = self.recheck()
+        self.assertError(errors, "category: 'other' is not one of")
+        for slug in ("productivity", "communication", "mail", "storage", "media", "creative", "home-automation",
+                     "ai", "finance", "devops", "monitoring", "networking", "vpn", "remote-access", "security", "public"):
+            self.assertError(errors, f"'{slug}'")
 
 
 if __name__ == "__main__":

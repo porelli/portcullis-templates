@@ -73,6 +73,16 @@ fi
 
 [ "$1" != --check ] || exit 0
 
+# The read-only mail admin view (contract §19.13): Stalwart serves its web
+# admin's sign-in only to its trusted host, the admin view's hostname the
+# Hub's override passes.
+if [ -n "${PORTCULLIS_MAIL_ADMIN_HOST:-}" ]; then
+  case "$PORTCULLIS_MAIL_ADMIN_HOST" in
+    *[!a-z0-9.-]* | .* | *. ) refuse "PORTCULLIS_MAIL_ADMIN_HOST isn't a hostname" ;;
+  esac
+  export STALWART_PUBLIC_URL="https://$PORTCULLIS_MAIL_ADMIN_HOST"
+fi
+
 if env | grep -q '^STALWART_RECOVERY_'; then
   read_exact "$JOB_SESSION" || refuse "a recovery-mode start outside the bootstrap job"
   if [ -z "$R" ] || [ -z "${MAILCTL_RECOVERY_SESSION:-}" ] || [ "$R" != "$MAILCTL_RECOVERY_SESSION" ]; then

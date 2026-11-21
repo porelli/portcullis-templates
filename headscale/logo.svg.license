@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2020 Juan Font
+SPDX-License-Identifier: BSD-3-Clause
+
+Source: https://github.com/juanfont/headscale/blob/f00c412cde4a000cc091037f926519b99ceb7626/docs/assets/logo/headscale3-dots.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

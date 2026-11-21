@@ -47,20 +47,21 @@ fi
 # Core's CI rewrites exactly this line shape to its locally built adapter (plan P2).
 if [[ "$ADAPTER_IMAGE" =~ ^ghcr\.io/porelli/portcullis-mailctl:(main-[0-9a-f]{7}|[0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}$ ]] \
     && [ "$(y '.services.adapter-bin.image')" = "$ADAPTER_IMAGE" ] && [ "$(y '.services.key-init.image')" = "$ADAPTER_IMAGE" ] \
-    && [ "$(grep -c "image: ghcr.io/porelli/portcullis-mailctl:" "$COMPOSE")" = 3 ]; then
-  pass "adapter pinned, adapter-bin and key-init run the same mailctl image: $ADAPTER_IMAGE"
+    && [ "$(y '.services.admin-view.image')" = "$ADAPTER_IMAGE" ] \
+    && [ "$(grep -c "image: ghcr.io/porelli/portcullis-mailctl:" "$COMPOSE")" = 4 ]; then
+  pass "adapter pinned, adapter-bin, key-init and admin-view run the same mailctl image: $ADAPTER_IMAGE"
 else
-  fail "adapter image must be ghcr.io/porelli/portcullis-mailctl:main-<sha7> or :X.Y.Z @sha256:<digest> (never a dev- tag), the same in adapter-bin and key-init"
+  fail "adapter image must be ghcr.io/porelli/portcullis-mailctl:main-<sha7> or :X.Y.Z @sha256:<digest> (never a dev- tag), the same in adapter-bin, key-init and admin-view"
 fi
 
 # ── hardening, every service ──────────────────────────────────
 SERVICES=$(y '.services | keys | .[]' | sort | tr '\n' ' ')
-[ "$SERVICES" = "adapter adapter-bin bootstrap key-init resolver stalwart " ] && pass "services: $SERVICES" || fail "services: $SERVICES"
+[ "$SERVICES" = "adapter adapter-bin admin-view bootstrap key-init resolver stalwart " ] && pass "services: $SERVICES" || fail "services: $SERVICES"
 for s in $SERVICES; do
   bad=""
   [ "$(y ".services.\"$s\".cap_drop | join(\",\")")" = ALL ] || bad+=" cap_drop"
   caps=$(y ".services.\"$s\".cap_add // [] | join(\",\")")
-  case "$s:$caps" in stalwart:NET_BIND_SERVICE|bootstrap:NET_BIND_SERVICE|adapter:|adapter-bin:|key-init:|resolver:) ;; *) bad+=" cap_add=$caps" ;; esac
+  case "$s:$caps" in stalwart:NET_BIND_SERVICE|bootstrap:NET_BIND_SERVICE|adapter:|adapter-bin:|admin-view:|key-init:|resolver:) ;; *) bad+=" cap_add=$caps" ;; esac
   [ "$(y ".services.\"$s\".read_only")" = true ] || bad+=" read_only"
   [ "$(y ".services.\"$s\".security_opt | join(\",\")")" = no-new-privileges:true ] || bad+=" security_opt"
   [[ "$(y ".services.\"$s\".pids_limit")" =~ ^[1-9][0-9]*$ ]] || bad+=" pids_limit"
@@ -76,12 +77,29 @@ if ! grep -qE '(^|[[:space:]])&[A-Za-z]|\*[A-Za-z]|<<:' "$COMPOSE"; then pass "n
 # ── users, the key volume (Ruling T17-a) ──────────────────────
 [ "$(y '.services.bootstrap.user')" = "2000:2010" ] && [ "$(y '.services.stalwart.user')" = "2000:2000" ] \
   && [ "$(y '.services.adapter.user')" = "10010:10010" ] && [ "$(y '.services.adapter.group_add | join(",")')" = 2010 ] \
-  && pass "bootstrap 2000:2010 (mailkey), stalwart 2000, adapter 10010 + mailkey" || fail "users / group_add"
+  && [ "$(y '.services.bootstrap.group_add | join(",")')" = 2011 ] && [ "$(y '.services.key-init.group_add | join(",")')" = 2011 ] \
+  && [ "$(y '.services.admin-view.user')" = "10010:10010" ] && [ "$(y '.services.admin-view.group_add | join(",")')" = 2011 ] \
+  && pass "bootstrap 2000:2010 (mailkey) + mailview, stalwart 2000, adapter 10010 + mailkey, admin-view 10010 + mailview" || fail "users / group_add"
 mounters=$(yq -r '.services | to_entries[] | .key as $s | .value.volumes[]? | select(test("^adapter_key:")) | $s + "=" + .' "$COMPOSE" | sort | tr '\n' ' ')
 if [ "$mounters" = "adapter=adapter_key:/run/portcullis/stalwart-key:ro bootstrap=adapter_key:/run/portcullis/stalwart-key key-init=adapter_key:/run/portcullis/key-init " ]; then
   pass "the key volume: key-init prepares it, the job writes, the adapter reads, nobody else; never at an image path (T17-e)"
 else
   fail "adapter_key mounts: $mounters"
+fi
+# The viewer key volume (contract §19.13): the admin view's password only;
+# the job writes it, admin-view reads it, the adapter never mounts it.
+mounters=$(yq -r '.services | to_entries[] | .key as $s | .value.volumes[]? | select(test("^viewer_key:")) | $s + "=" + .' "$COMPOSE" | sort | tr '\n' ' ')
+if [ "$mounters" = "admin-view=viewer_key:/run/portcullis/viewer-key:ro bootstrap=viewer_key:/run/portcullis/viewer-key key-init=viewer_key:/run/portcullis/viewer-init " ] \
+    && [ "$(y '.services.bootstrap.environment.MAILCTL_VIEWER_SECRET_FILE')" = /run/portcullis/viewer-key/viewer-password ] \
+    && [ "$(y '.services.admin-view.environment.MAILCTL_VIEWER_SECRET_FILE')" = /run/portcullis/viewer-key/viewer-password ] \
+    && [ "$(y '.services.bootstrap.environment.MAILCTL_ADMINVIEW_IP')" = 172.31.255.5 ] \
+    && [ "$(y '.services.admin-view.environment.MAILCTL_ADMINVIEW_UPSTREAM')" = https://172.31.255.2:8443 ] \
+    && [ "$(y '.services.admin-view.volumes | join(" ")')" = "viewer_key:/run/portcullis/viewer-key:ro admin_view_data:/data" ] \
+    && [ "$(y '.services.admin-view.environment.MAILCTL_ADMINVIEW_USED_FILE')" = /data/used-tickets.json ] \
+    && [ "$(y '.services.admin-view.command | join(" ")')" = admin-view ]; then
+  pass "the viewer key volume: key-init prepares it, the job writes, admin-view (its only mount) reads; the adapter never (contract §19.13)"
+else
+  fail "viewer_key mounts / admin-view: $mounters"
 fi
 mounters=$(yq -r '.services | to_entries[] | .key as $s | .value.volumes[]? | select(test("^data:")) | $s + "=" + .' "$COMPOSE" | sort | tr '\n' ' ')
 [ "$mounters" = "bootstrap=data:/var/lib/stalwart stalwart=data:/var/lib/stalwart " ] \
@@ -105,9 +123,10 @@ tmpfs_all=$(yq -r '[.services[].tmpfs[]? | select(test("^/run/portcullis/bootstr
 [ "$(y '.networks.internal.internal')" = true ] && [ "$(y '.networks.internal.ipam.config[0].subnet')" = 172.31.255.0/28 ] \
   && [ "$(y '.networks.internal.ipam.config[0].ip_range')" = 172.31.255.8/29 ] \
   && pass "internal: internal, 172.31.255.0/28, dynamic range .8/29" || fail "the internal network"
-pins="$(y '.services.stalwart.networks.internal.ipv4_address') $(y '.services.adapter.networks.internal.ipv4_address') $(y '.services.resolver.networks.internal.ipv4_address')"
-[ "$pins" = "172.31.255.2 172.31.255.3 172.31.255.4" ] && pass "pinned: stalwart .2, adapter .3, resolver .4 (outside the range)" || fail "pins: $pins"
+pins="$(y '.services.stalwart.networks.internal.ipv4_address') $(y '.services.adapter.networks.internal.ipv4_address') $(y '.services.resolver.networks.internal.ipv4_address') $(y '.services.admin-view.networks.internal.ipv4_address')"
+[ "$pins" = "172.31.255.2 172.31.255.3 172.31.255.4 172.31.255.5" ] && pass "pinned: stalwart .2, adapter .3, resolver .4, admin-view .5 (outside the range)" || fail "pins: $pins"
 [ "$(y '.services.bootstrap.networks | join(",")')" = internal ] && [ "$(y '.services.adapter.networks | keys | join(",")')" = internal ] \
+  && [ "$(y '.services.admin-view.networks | keys | join(",")')" = internal ] \
   && [ "$(y '.services.adapter-bin.network_mode')" = none ] && [ "$(y '.services.key-init.network_mode')" = none ] \
   && pass "egress only for stalwart and the resolver" || fail "networks of bootstrap / adapter / adapter-bin"
 grep -q 'access-control: 172.31.255.0/28 allow' "$DIR/unbound/unbound.conf" && pass "unbound allows the internal network" || fail "unbound access-control"

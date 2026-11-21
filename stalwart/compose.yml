@@ -24,7 +24,8 @@
 #     /var/lib/stalwart and /etc/stalwart;
 #   - adapter_data and mailctl_bin by the mailctl image at its 10010-owned
 #     /data (one writer each, filled before any other mount);
-#   - adapter_key (the API key alone; Ruling T17-e) at a path no image has,
+#   - adapter_key (the API key alone; Ruling T17-e) and viewer_key (the
+#     admin view's password alone, contract §19.13) at a path no image has,
 #     in every service that mounts it, so no image owner is copied in: a
 #     fresh volume is root's (Docker) or the first mounter's (rootless
 #     Podman chowns an empty volume to its mounter); key-init, root with no
@@ -48,12 +49,16 @@ services:
     pids_limit: 32
     restart: "no"
 
-  # Prepares the key volume (gate/key-init.sh, Ruling T17-e): root:2010
-  # 2770, only api-key in it, idempotent. Root with no capability, no
-  # network, read-only root.
+  # Prepares the key volumes (gate/key-init.sh, Ruling T17-e): adapter_key
+  # root:2010 2770 with only api-key in it, viewer_key root:2011 2770 with
+  # only viewer-password (contract §19.13), idempotent. Root with no
+  # capability, no network, read-only root.
   key-init:
     image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
     user: "0:2010"
+    # 2011 (mailview): an owner without CHOWN can chgrp only to its own
+    # groups (viewer_key, contract §19.13).
+    group_add: ["2011"]
     entrypoint: ["/bin/sh", "/portcullis/gate/key-init.sh"]
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -61,6 +66,7 @@ services:
     network_mode: none
     volumes:
       - adapter_key:/run/portcullis/key-init
+      - viewer_key:/run/portcullis/viewer-init
       - ./templates/stalwart/gate:/portcullis/gate:ro
     mem_limit: 64m
     pids_limit: 32
@@ -73,8 +79,10 @@ services:
   # the store lock.
   bootstrap:
     image: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
-    # Stalwart's uid; primary gid 2010 = mailkey (the API key's group).
+    # Stalwart's uid; primary gid 2010 = mailkey (the API key's group);
+    # 2011 = mailview (the admin view's password, contract §19.13).
     user: "2000:2010"
+    group_add: ["2011"]
     entrypoint: ["/bin/sh", "/portcullis/gate/bootstrap.sh"]
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -93,6 +101,10 @@ services:
       # The job's own files (job_data; .server-image).
       MAILCTL_DATA: /etc/stalwart
       MAILCTL_API_KEY_FILE: /run/portcullis/stalwart-key/api-key
+      # The read-only admin view (contract §19.13): the viewer's password
+      # (viewer_key) and the admin-view service's pinned address.
+      MAILCTL_VIEWER_SECRET_FILE: /run/portcullis/viewer-key/viewer-password
+      MAILCTL_ADMINVIEW_IP: 172.31.255.5
       # The store volume: mailctl's lock and the base plan's marker.
       MAILCTL_STORE_DIR: /var/lib/stalwart
       MAILCTL_JOB_SESSION_FILE: /run/portcullis/bootstrap/session
@@ -110,6 +122,7 @@ services:
       - job_data:/etc/stalwart
       # The key volume (key-init: root:2010 2770; a path the image lacks).
       - adapter_key:/run/portcullis/stalwart-key
+      - viewer_key:/run/portcullis/viewer-key
       - mailctl_bin:/portcullis/bin:ro
       - ./templates/stalwart/gate:/portcullis/gate:ro
       - ./templates/stalwart/config:/portcullis/config:ro
@@ -123,7 +136,9 @@ services:
     restart: "no"
 
   # The mail server: SMTP 10025, submissions 10465, submission 10587, IMAPS
-  # 10993, management 8080 (the adapter only), metrics 9180.
+  # 10993, management 8080 (the adapter only), metrics 9180, the read-only
+  # admin view 8443 (TLS, the admin-view service only; its web admin bundle
+  # from mailctl_bin).
   stalwart:
     image: docker.io/stalwartlabs/stalwart:v1.1.0@sha256:f772aa6ef8cd8018969fa491640f1436b0270eb14e2c219b5f37f1a77020837e
     user: "2000:2000"
@@ -143,6 +158,7 @@ services:
       - /etc/stalwart:size=1m,mode=0755
     volumes:
       - data:/var/lib/stalwart
+      - mailctl_bin:/portcullis/bin:ro
       - ./templates/stalwart/gate:/portcullis/gate:ro
       - ./templates/stalwart/config:/portcullis/config:ro
     networks:
@@ -206,6 +222,49 @@ services:
     pids_limit: 128
     restart: unless-stopped
 
+  # The read-only mail admin view (contract §19.13): mailctl's admin-view
+  # proxy in front of Stalwart's own web admin. The Hub's override attaches
+  # it to Traefik's network behind an admin-only router (full
+  # administrators) and passes the hostname and the mail certificate's
+  # SPKI; it signs in as the viewer (a role with reads only), forwards only
+  # JMAP reads and the web admin's own paths, and dials Stalwart's
+  # admin-view listener pinned to that SPKI. It holds the viewer's password
+  # (viewer_key, group 2011), its spent tickets (admin_view_data) and,
+  # through the Hub's override, the ticket key (a read-only file): no API
+  # key, no slot file, no certificate key.
+  admin-view:
+    image: ghcr.io/porelli/portcullis-mailctl:main-0134a52@sha256:267cd1087aec499d8a84797aed0f1bf6bed0173bbd9e6232b9ec52b9a0df7540
+    user: "10010:10010"
+    group_add: ["2011"]
+    command: ["admin-view"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      MAILCTL_ADMINVIEW_ADDR: ":8090"
+      MAILCTL_ADMINVIEW_UPSTREAM: https://172.31.255.2:8443
+      MAILCTL_VIEWER_SECRET_FILE: /run/portcullis/viewer-key/viewer-password
+      # The spent tickets (kept until they expire, across restarts) in the
+      # view's own volume, first mounted at the image's 10010-owned /data.
+      MAILCTL_ADMINVIEW_USED_FILE: /data/used-tickets.json
+    volumes:
+      - viewer_key:/run/portcullis/viewer-key:ro
+      - admin_view_data:/data
+    networks:
+      internal:
+        ipv4_address: 172.31.255.5
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "mailctl", "admin-view", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
+    pids_limit: 64
+    restart: unless-stopped
+
   # A validating recursive resolver for stalwart and the adapter only
   # (unbound/unbound.conf): from the root servers, DNSSEC with the image's
   # trust anchor, on 5353. The image has no shell: exec-form check.
@@ -236,9 +295,10 @@ services:
     restart: unless-stopped
 
 networks:
-  # The server, the adapter and the resolver at pinned addresses (the base
-  # plan, mailctl and unbound.conf name them); the bootstrap job takes a
-  # dynamic one from ip_range, which excludes the pins.
+  # The server, the adapter, the resolver and the admin view at pinned
+  # addresses (the base plan, mailctl and unbound.conf name them); the
+  # bootstrap job takes a dynamic one from ip_range, which excludes the
+  # pins.
   internal:
     internal: true
     ipam:
@@ -252,5 +312,7 @@ volumes:
   data: {}
   adapter_data: {}
   adapter_key: {}
+  viewer_key: {}
+  admin_view_data: {}
   job_data: {}
   mailctl_bin: {}

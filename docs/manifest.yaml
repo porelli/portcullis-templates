@@ -6,6 +6,10 @@ tags: [docs, static, nginx]
 links:
   website: https://squidfunk.github.io/mkdocs-material/
   source: https://github.com/squidfunk/mkdocs-material
+long_description: |
+  A static documentation site built with Material for MkDocs: Markdown pages turned into a searchable website with navigation.
+
+  It is public: anyone can read it, with no sign-in.
 instances: multi
 
 auth:
@@ -13,7 +17,8 @@ auth:
   sso: false
   group_access: false
   group_admin: false
-  notes: Public documentation site — no authentication required.
+  notes: |
+    Public documentation site — no authentication required.
 
 env: []
 keycloak_clients: []

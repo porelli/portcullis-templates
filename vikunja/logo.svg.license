@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2018-present Vikunja and contributors
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+Source: https://github.com/go-vikunja/vikunja/blob/5b9d4fcc720fe65548ab6c3f7c974c12b28d13af/frontend/originalMedia/images/logo.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

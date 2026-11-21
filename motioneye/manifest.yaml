@@ -7,6 +7,10 @@ tags: [home-automation, cameras, surveillance, cctv, motion-detection]
 links:
   website: https://github.com/motioneye-project/motioneye
   source: https://github.com/motioneye-project/motioneye
+long_description: |
+  motionEye is a web interface for the motion video surveillance software. It shows live views of network and USB cameras, detects motion, and records movies and still images with schedules.
+
+  Portcullis sign-in and the access group protect the whole web interface, and motionEye's own login stays as a second step.
 instances: multi
 
 auth:
@@ -16,47 +20,25 @@ auth:
   group_admin: false
   access_group: users_motioneye
   admin_group: admin_motioneye
-  notes: >
-    motionEye 0.44 (motioneye-project, maintained: 0.44.0 in June 2026)
-    has no SSO; its own login has two local accounts, "admin" (full
-    configuration) and "user" (view only), whose passwords are empty after
-    a fresh install. Access is gated by forward-auth + group-gate on the
-    whole host, and motionEye's login stays as a second step:
-    motioneye-init sets each account with an empty password to a generated
-    one before every start (MOTIONEYE_ADMIN_PASSWORD /
-    MOTIONEYE_USER_PASSWORD in this instance's .env, Hub data
-    env/<instance>.env; hashed by motionEye, argon2), so motionEye never
-    runs with its well-known empty default, and the healthcheck fails while
-    either is empty. Share the admin password with your camera
-    administrators and the user password with viewers; a password changed
-    in motionEye's settings is kept (clearing one sets the generated value
-    again at the next start). motionEye doesn't read any identity header,
-    so no LLDAP user name maps to these accounts. The admin account can do
-    everything motionEye can, including commands run on motion events
-    inside the container. The UI is on the instance's private network
-    only; the gate in front of it (nginx, the only container on
-    portcullis-proxy) answers Traefik's address alone, never forwards the
-    Portcullis session (Authorization, access-token headers, forward-auth
-    cookies), and is healthy (= routed) only while motionEye refuses an
-    empty password for the admin and user account names. Cameras: network
-    cameras by URL (RTSP, HTTP/MJPEG; added in motionEye, reached outbound
-    from the container) and up to four local V4L2 cameras listed in the
-    Local cameras setting (e.g. /dev/video0; only those are passed in, not
-    privileged, so several instances can each use their own; a path that
-    doesn't exist on the host stops the container from starting). Live
-    view goes through motionEye's own UI; motion's direct streaming ports
-    (8081+, "Video Streaming" in the camera settings) are not published,
-    so direct stream URLs only work inside the instance. Storage: set
-    "Storage folder" to a host path (e.g. /srv/cctv) to record there
-    instead of the instance's media volume; keep an eye on its size
-    (motionEye's own "Preserve" settings delete old media). Not available
-    in a container: shutdown/reboot, and SMB share mounts.
-    Shared folders: motionEye runs as root (uid 0 / gid 0, the image's
-    motion user; no compose user:) and writes the Storage folder, so it
-    declares access write with runs_as uid 0 / gid 0. Root is what lets it
-    write a shared folder: the entrypoint starts motionEye with su -g,
-    which drops supplementary groups, so the folder group the Hub adds
-    through group_add never reaches the process.
+  notes: |
+    motionEye 0.44 (motioneye-project, maintained: 0.44.0 in June 2026) has no SSO. Access is gated by forward-auth + group-gate on the whole host, and motionEye's own login (accounts `admin` and `user`) stays as a second step.
+
+    **Its two local accounts:** `admin` (full configuration) and `user` (view only), whose passwords are empty after a fresh install.
+
+    - `motioneye-init` sets each account with an empty password to a generated one before every start (`MOTIONEYE_ADMIN_PASSWORD` / `MOTIONEYE_USER_PASSWORD` in this instance's `.env`, Hub data `env/<instance>.env`; hashed by motionEye, argon2), so motionEye never runs with its well-known empty default, and the healthcheck fails while either is empty.
+    - Share the admin password with your camera administrators and the user password with viewers; a password changed in motionEye's settings is kept (clearing one sets the generated value again at the next start).
+    - motionEye doesn't read any identity header, so no LLDAP user name maps to these accounts.
+    - The admin account can do everything motionEye can, including commands run on motion events inside the container.
+
+    **The gate:** the UI is on the instance's private network only; the gate in front of it (nginx, the only container on `portcullis-proxy`) answers Traefik's address alone, never forwards the Portcullis session (`Authorization`, access-token headers, forward-auth cookies), and is healthy (= routed) only while motionEye refuses an empty password for the `admin` and `user` account names.
+
+    **Cameras:** network cameras by URL (RTSP, HTTP/MJPEG; added in motionEye, reached outbound from the container) and up to four local V4L2 cameras listed in the **Local cameras** setting (e.g. `/dev/video0`; only those are passed in, not privileged, so several instances can each use their own; a path that doesn't exist on the host stops the container from starting). Live view goes through motionEye's own UI; motion's direct streaming ports (8081+, "Video Streaming" in the camera settings) are not published, so direct stream URLs only work inside the instance.
+
+    **Storage:** set **Storage folder** to a host path (e.g. `/srv/cctv`) to record there instead of the instance's media volume; keep an eye on its size (motionEye's own "Preserve" settings delete old media).
+
+    Not available in a container: shutdown/reboot, and SMB share mounts.
+
+    **Shared folders:** motionEye runs as root (uid 0 / gid 0, the image's `motion` user; no compose `user:`) and writes the Storage folder, so it declares access `write` with `runs_as` uid 0 / gid 0. Root is what lets it write a shared folder: the entrypoint starts motionEye with `su -g`, which drops supplementary groups, so the folder group the Hub adds through `group_add` never reaches the process.
 
 settings:
   options:
