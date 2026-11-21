@@ -57,7 +57,7 @@ SCHEMA_PATH = os.path.join(ROOT, "schema", "manifest.schema.json")
 DOCS_URL = "https://porelli.github.io/portcullis-docs/guides"
 
 # Directories at the repo root that are not templates.
-NON_TEMPLATE_DIRS = {"tests", "schema"}
+NON_TEMPLATE_DIRS = {"tests", "schema", "LICENSES"}
 
 # Hub idRe (contracts §3).
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -997,6 +997,36 @@ def check_logo(t: Template, r: Report) -> None:
         reason = svgsafe.check(f.read())
     if reason:
         r.error(t.m_where, f"logo: {reason}", LOGO_HINT)
+    check_logo_license(t, logo, r)
+
+
+LOGO_LICENSE_HINT = ("contract §3: a logo ships with <logo>.license next to it (REUSE): SPDX-FileCopyrightText "
+                     "(the upstream holder), SPDX-License-Identifier, the source URL and what was modified; the "
+                     "licence text in LICENSES/<identifier>.txt")
+SPDX_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
+
+
+def check_logo_license(t: Template, logo: str, r: Report) -> None:
+    """The logo's REUSE sidecar <logo>.license and its LICENSES/ texts."""
+    name = logo + ".license"
+    path = _asset_path(t, name)
+    if path is None:
+        r.error(t.m_where, f"logo: {name} not found", LOGO_LICENSE_HINT)
+        return
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = [line.strip() for line in f.read(64 << 10).splitlines()]
+    holders = [line.split(":", 1)[1].strip() for line in lines if line.startswith("SPDX-FileCopyrightText:")]
+    ids = [line.split(":", 1)[1].strip() for line in lines if line.startswith("SPDX-License-Identifier:")]
+    if not any(holders):
+        r.error(t.m_where, f"logo: {name} has no SPDX-FileCopyrightText", LOGO_LICENSE_HINT)
+    if not any(ids):
+        r.error(t.m_where, f"logo: {name} has no SPDX-License-Identifier", LOGO_LICENSE_HINT)
+    for expr in ids:
+        for tok in expr.replace("(", " ").replace(")", " ").split():
+            if tok in ("AND", "OR", "WITH"):
+                continue
+            if not SPDX_ID_RE.fullmatch(tok) or not os.path.isfile(os.path.join(ROOT, "LICENSES", tok + ".txt")):
+                r.error(t.m_where, f"logo: LICENSES/{tok[:64]}.txt not found", LOGO_LICENSE_HINT)
 
 
 def image_size(data: bytes, kind: str) -> Optional[Tuple[int, int]]:

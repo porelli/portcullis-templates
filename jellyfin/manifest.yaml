@@ -10,8 +10,8 @@ long_description: |
   Jellyfin is a free media server for movies, TV shows, music, books and live TV. It organises libraries with artwork and metadata, streams to browsers, phones and TVs, and transcodes when a device needs it.
 
   Portcullis signs people in through Jellyfin's SSO plugin. Only members of the access group can sign in, and members of the admin group are Jellyfin administrators.
-# Logo: https://github.com/jellyfin/jellyfin-ux/blob/9e27258e873f64edaa9c5955e753978975ed5589/branding/SVG/icon-transparent.svg (CC-BY-SA-4.0, the project's repository licence; editor metadata dropped and
-# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
+# Logo: https://github.com/jellyfin/jellyfin-ux/blob/9e27258e873f64edaa9c5955e753978975ed5589/branding/SVG/icon-transparent.svg
+# Copyright, licence (CC-BY-SA-4.0) and changes: logo.svg.license; the licence text is in LICENSES/.
 logo: logo.svg
 instances: multi
 # One-off setup container nobody waits for (contracts §3 "One-off jobs"):

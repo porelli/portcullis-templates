@@ -10,9 +10,6 @@ long_description: |
   Scrutiny monitors hard drives and SSDs through their S.M.A.R.T. data. Its dashboard shows each disk's health, temperature and history, judged against failure rates seen in real drives, and it can send alerts.
 
   Portcullis sign-in and the access group protect the dashboard. Scrutiny has no users of its own, so every member has full access.
-# Logo: https://github.com/AnalogJ/scrutiny/blob/8482272d45aaf4a6a32a1585b03e07a3c79a0682/webapp/frontend/src/assets/images/logo/scrutiny-logo-dark.svg (MIT, the project's repository licence; editor metadata dropped and
-# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
-logo: logo.svg
 instances: multi
 
 auth:

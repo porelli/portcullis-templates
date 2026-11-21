@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2021 The Vaultwarden contributors
+SPDX-License-Identifier: AGPL-3.0-only
+
+Source: https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

@@ -20,32 +20,35 @@ documentation.
 
 Every template gets a `long_description` (Markdown, the `auth.notes` rules; contract §3
 "Catalog fields"), shown in the Hub's Marketplace drawer. `resources` is set only where the
-project's own documentation states a minimum: immich (6 GB RAM), gitlab (8 GB, its
-memory-constrained minimum), netbird (2 GB), mattermost (2 GB, its smallest single-server
+project's own documentation states a minimum: immich (6 GB RAM), gitlab (8 GB: its
+installation requirements say a single node "can run with at least 8 GB of memory" in
+memory-constrained environments, 16 GB being the baseline), netbird (2 GB), mattermost (2 GB, its smallest single-server
 size), wiki (1 GB), grafana (512 MB) and pihole (512 MB RAM, 2 GB disk). No template has
-`screenshots` yet. `category` is now one of 16 fixed slugs.
+`screenshots` yet. `category` is now one of 16 fixed slugs; mattermost moves from
+`productivity` to `communication`, next to matrix.
 
 `logo.svg` ships only where the project publishes an SVG logo in its own repository under a
-licence that allows redistribution. Each file is the upstream file with editor metadata,
-`version` / `xml:space` and hidden paths removed and `style` / CSS class properties written
-as presentation attributes (`tests/svgsafe.py`, the logo lint); the drawing is unchanged.
-The logos remain their projects' trademarks, used only to identify the apps. Sources:
+licence that allows redistribution and no company holds the mark without published terms.
+Each file is the upstream file with editor metadata, comments, `version` / `xml:space` and
+hidden paths removed and `style` / CSS class properties written as presentation attributes
+(`tests/svgsafe.py`, the logo lint); the drawing is unchanged. Each logo has a REUSE sidecar
+`logo.svg.license` (copyright holder, SPDX licence, source, changes; contract §3), and the
+licence texts are in `LICENSES/`. The logos identify their projects; any trademark stays its
+owner's. Sources:
 
-- `ai-chat`: <https://github.com/danny-avila/LibreChat/blob/8f20fb28e549949b05e8b164d8a504bc14c0951a/client/public/assets/logo.svg> (MIT)
-- `gitea`: <https://github.com/go-gitea/gitea/blob/f8a668ab0c098476a47b9d96fb061fa31fec78ef/assets/logo.svg> (MIT)
 - `headscale`: <https://github.com/juanfont/headscale/blob/f00c412cde4a000cc091037f926519b99ceb7626/docs/assets/logo/headscale3-dots.svg> (BSD-3-Clause)
-- `immich`: <https://github.com/immich-app/immich/blob/2de9a92fba52ee20795a4b03a9ffad5d129a5aa9/design/immich-logo.svg> (AGPL-3.0)
 - `jellyfin`: <https://github.com/jellyfin/jellyfin-ux/blob/9e27258e873f64edaa9c5955e753978975ed5589/branding/SVG/icon-transparent.svg> (CC-BY-SA-4.0)
-- `oxicloud`: <https://github.com/AtalayaLabs/OxiCloud/blob/54639d466af20334e1bab38d39133b3df14ab16e/frontend/static/logo/logo-plain.svg> (MIT)
-- `paperless`: <https://github.com/paperless-ngx/paperless-ngx/blob/fbadc2e1b8c34f80b48be0766cae7168e0e8ec24/docs/assets/logo_leaf.svg> (GPL-3.0)
-- `scrutiny`: <https://github.com/AnalogJ/scrutiny/blob/8482272d45aaf4a6a32a1585b03e07a3c79a0682/webapp/frontend/src/assets/images/logo/scrutiny-logo-dark.svg> (MIT)
-- `vaultwarden`: <https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg> (AGPL-3.0)
-- `vikunja`: <https://github.com/go-vikunja/vikunja/blob/5b9d4fcc720fe65548ab6c3f7c974c12b28d13af/frontend/originalMedia/images/logo.svg> (AGPL-3.0)
-- `zigbee2mqtt`: <https://github.com/Koenkk/zigbee2mqtt/blob/9c505fd75f503a91a61244d6f0efa0e37d81a7b0/images/logo_vector.svg> (GPL-3.0)
+- `paperless`: <https://github.com/paperless-ngx/paperless-ngx/blob/fbadc2e1b8c34f80b48be0766cae7168e0e8ec24/docs/assets/logo_leaf.svg> (GPL-3.0-only)
+- `vaultwarden`: <https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg> (AGPL-3.0-only)
+- `vikunja`: <https://github.com/go-vikunja/vikunja/blob/5b9d4fcc720fe65548ab6c3f7c974c12b28d13af/frontend/originalMedia/images/logo.svg> (AGPL-3.0-or-later)
+- `zigbee2mqtt`: <https://github.com/Koenkk/zigbee2mqtt/blob/9c505fd75f503a91a61244d6f0efa0e37d81a7b0/images/logo_vector.svg> (GPL-3.0-only)
 
-Not shipped: Nextcloud (its logo is `LicenseRef-NextcloudTrademarks`), Home Assistant
-(CC BY-NC-SA), Actual Budget (white-only mark), DokuWiki and Kanboard (CSS a plain lint
-can't keep), and projects whose logo terms are a trademark policy only.
+Not shipped (checked 2026-11-20): Gitea (mark held by CommitGo / Gitea Ltd, no published
+terms), Immich (FUTO, no published terms), OxiCloud (a trademark notice without terms),
+LibreChat (trademark terms not verified), Scrutiny (its glasses come from a Noun Project
+icon, terms not verified), Nextcloud (its logo is `LicenseRef-NextcloudTrademarks`), Home
+Assistant (CC BY-NC-SA), Actual Budget (white-only mark), DokuWiki and Kanboard (CSS a plain
+lint can't keep), and projects whose logo terms are a trademark policy only.
 
 ### stalwart: the read-only mail admin view
 

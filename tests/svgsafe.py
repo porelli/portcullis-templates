@@ -53,6 +53,10 @@ def _split(name: str) -> tuple:
 
 def _attr_problem(key: str, value: str) -> Optional[str]:
     ns, local = _split(key)
+    # A CSS escape (\75 rl(, u\rl() decodes to url( in a browser's CSS
+    # tokenizer: no logo needs a backslash anywhere.
+    if "\\" in value:
+        return "backslash refused"
     if local.lower().startswith("on"):
         return f"event attribute {local} refused"
     if local == "style" and ns == "":

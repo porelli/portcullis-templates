@@ -10,9 +10,6 @@ long_description: |
   Immich backs up photos and videos from phones and computers and organises them in a timeline. It recognises faces, finds pictures by what they show using machine learning, and has albums, shared albums, a map and partner sharing.
 
   Portcullis signs people in through OpenID Connect, with password login off. Members of the admin group are Immich administrators, and storage quotas can be set per group. Albums can be shared publicly through share links.
-# Logo: https://github.com/immich-app/immich/blob/2de9a92fba52ee20795a4b03a9ffad5d129a5aa9/design/immich-logo.svg (AGPL-3.0, the project's repository licence; editor metadata dropped and
-# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
-logo: logo.svg
 resources:
   min_memory_mib: 6144
 instances: multi

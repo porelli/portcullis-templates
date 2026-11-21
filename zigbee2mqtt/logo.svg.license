@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2019 The Zigbee2MQTT contributors
+SPDX-License-Identifier: GPL-3.0-only
+
+Source: https://github.com/Koenkk/zigbee2mqtt/blob/9c505fd75f503a91a61244d6f0efa0e37d81a7b0/images/logo_vector.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

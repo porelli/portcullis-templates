@@ -13,9 +13,6 @@ long_description: |
   Portcullis signs people in through OpenID Connect. Only members of the access group can sign in, and members of the admin group are site administrators.
 
   With AI support on, the official Gitea MCP server lets people's AI assistants work with their repositories and issues.
-# Logo: https://github.com/go-gitea/gitea/blob/f8a668ab0c098476a47b9d96fb061fa31fec78ef/assets/logo.svg (MIT, the project's repository licence; editor metadata dropped and
-# style properties written as attributes for the logo lint). It stays the project's trademark, shown only to identify the app.
-logo: logo.svg
 instances: multi
 
 auth:

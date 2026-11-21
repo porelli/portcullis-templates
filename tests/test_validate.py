@@ -1262,7 +1262,7 @@ class TestGatedHomeTemplates(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = self.REPO
-        for app in self.APPS:
+        for app in self.APPS + ("LICENSES",):
             shutil.copytree(os.path.join(self.repo, app), os.path.join(self.tmp.name, app))
         v.ROOT = self.tmp.name
         self.addCleanup(setattr, v, "ROOT", self.REPO)
@@ -5888,6 +5888,20 @@ def jpeg_bytes(w: int = 3, h: int = 2) -> bytes:
     return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
 
 
+def webp_bytes(chunk: str, w: int, h: int) -> bytes:
+    """A minimal RIFF/WEBP header of each kind (contract §3 screenshots)."""
+    import struct
+    if chunk == "VP8 ":
+        body = b"\x00\x00\x00" + b"\x9d\x01\x2a" + struct.pack("<HH", w, h)
+    elif chunk == "VP8L":
+        body = b"\x2f" + struct.pack("<I", (w - 1) | ((h - 1) << 14))
+    else:
+        body = b"\x00\x00\x00\x00" + (w - 1).to_bytes(3, "little") + (h - 1).to_bytes(3, "little")
+    body += b"\0" * 8
+    data = chunk.encode() + struct.pack("<I", len(body)) + body
+    return b"RIFF" + struct.pack("<I", 4 + len(data)) + b"WEBP" + data
+
+
 class CatalogCase(Case):
     """Helpers for the catalog fields (contract §3 "Catalog fields")."""
 
@@ -5931,9 +5945,35 @@ class TestLongDescription(CatalogCase):
         self.assertClean(self.manifest_with(self.block(text)))
 
 
+LOGO_LICENSE = b"SPDX-FileCopyrightText: 2026 Demo contributors\nSPDX-License-Identifier: MIT\n"
+
+
+def logo_files(data: bytes, license: bytes = LOGO_LICENSE) -> Tuple[Tuple[str, bytes], ...]:
+    return (("logo.svg", data), ("logo.svg.license", license))
+
+
 class TestLogo(CatalogCase):
+    def setUp(self) -> None:
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp.name, "LICENSES"))
+        with open(os.path.join(self.tmp.name, "LICENSES", "MIT.txt"), "w", encoding="utf-8") as f:
+            f.write("MIT License\n")
+
     def test_clean_logo(self) -> None:
-        self.assertClean(self.manifest_with("logo: logo.svg", (("logo.svg", SVG_OK.encode()),)))
+        self.assertClean(self.manifest_with("logo: logo.svg", logo_files(SVG_OK.encode())))
+
+    def test_license_sidecar(self) -> None:
+        """Contract §3: <logo>.license (REUSE) with a holder, an SPDX id and its LICENSES/ text."""
+        for name, files, needle in [
+            ("no sidecar", (("logo.svg", SVG_OK.encode()),), "logo: logo.svg.license not found"),
+            ("no holder", logo_files(SVG_OK.encode(), b"SPDX-License-Identifier: MIT\n"), "has no SPDX-FileCopyrightText"),
+            ("no identifier", logo_files(SVG_OK.encode(), b"SPDX-FileCopyrightText: 2026 X\n"), "has no SPDX-License-Identifier"),
+            ("no licence text", logo_files(SVG_OK.encode(), LOGO_LICENSE.replace(b"MIT", b"Apache-2.0")),
+             "logo: LICENSES/Apache-2.0.txt not found"),
+        ]:
+            with self.subTest(name=name):
+                self.tearDown_dir()
+                self.assertError(self.manifest_with("logo: logo.svg", files), needle)
 
     def test_file_not_found(self) -> None:
         os.makedirs(os.path.join(self.tmp.name, "demo", "sub"), exist_ok=True)
@@ -5961,19 +6001,19 @@ class TestLogo(CatalogCase):
 
     def test_over_64k(self) -> None:
         big = SVG_OK.replace("</svg>", "<desc>" + "x" * (64 << 10) + "</desc></svg>").encode()
-        self.assertError(self.manifest_with("logo: logo.svg", (("logo.svg", big),)), "logo: over 64 KiB")
+        self.assertError(self.manifest_with("logo: logo.svg", logo_files(big)), "logo: over 64 KiB")
 
     def test_vectors(self) -> None:
         import base64
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "svg_vectors.json"), encoding="utf-8") as f:
             vectors = json.load(f)
-        self.assertGreaterEqual(len(vectors), 20)
+        self.assertGreaterEqual(len(vectors), 40)
         for vec in vectors:
             data = base64.b64decode(vec["svg_b64"]) if "svg_b64" in vec else vec["svg"].encode("utf-8")
             with self.subTest(name=vec["name"]):
                 self.assertEqual(v.svgsafe.check(data), None if vec["ok"] else vec["reason"])
                 self.tearDown_dir()
-                errors = self.manifest_with("logo: logo.svg", (("logo.svg", data),))
+                errors = self.manifest_with("logo: logo.svg", logo_files(data))
                 if vec["ok"]:
                     self.assertClean(errors)
                 else:
@@ -6000,8 +6040,28 @@ class TestScreenshots(CatalogCase):
         self.assertError(errors, "screenshots[0]: file not found")
 
     def test_too_big(self) -> None:
-        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", png_bytes(pad=1 << 20)),))
+        exact = png_bytes()
+        exact += b"\0" * ((512 << 10) - len(exact))
+        self.assertClean(self.manifest_with(self.shots([("a.png", "x")]), (("a.png", exact),)))
+        self.tearDown_dir()
+        errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", exact + b"\0"),))
         self.assertError(errors, "screenshots[0]: over 512 KiB")
+
+    def tearDown_dir(self) -> None:
+        import shutil
+        shutil.rmtree(os.path.join(self.tmp.name, "demo"), ignore_errors=True)
+
+    def test_webp(self) -> None:
+        for kind, data, size in [("VP8", webp_bytes("VP8 ", 300, 200), (300, 200)),
+                                 ("VP8L", webp_bytes("VP8L", 300, 200), (300, 200)),
+                                 ("VP8X", webp_bytes("VP8X", 300, 200), (300, 200))]:
+            with self.subTest(kind=kind):
+                self.assertEqual(v.image_size(data, "webp"), size)
+                self.tearDown_dir()
+                self.assertClean(self.manifest_with(self.shots([("a.webp", "x")]), (("a.webp", data),)))
+        self.tearDown_dir()
+        errors = self.manifest_with(self.shots([("a.webp", "x")]), (("a.webp", png_bytes()),))
+        self.assertError(errors, "screenshots[0]: not a WebP")
 
     def test_magic_mismatch(self) -> None:
         errors = self.manifest_with(self.shots([("a.png", "x")]), (("a.png", jpeg_bytes()),))

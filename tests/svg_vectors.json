@@ -221,5 +221,69 @@
   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0\"></svg>",
   "ok": false,
   "reason": "not well-formed XML"
+ },
+ {
+  "name": "CSS escape \\75 in url(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"\\75 rl(http://evil.example/x)\"/></svg>",
+  "ok": false,
+  "reason": "backslash refused"
+ },
+ {
+  "name": "CSS escape u\\rl(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"u\\rl(http://evil.example/x)\"/></svg>",
+  "ok": false,
+  "reason": "backslash refused"
+ },
+ {
+  "name": "href \"#\" alone",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><use href=\"#\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "href \"#1a\" (an id starts with a letter or _)",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><use href=\"#1a\"/></svg>",
+  "ok": false,
+  "reason": "href must be a local #id reference"
+ },
+ {
+  "name": "url('#a') quoted",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"url('#a')\"/></svg>",
+  "ok": false,
+  "reason": "url() must be a local #id reference"
+ },
+ {
+  "name": "url(#a) then an external url(",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\" fill=\"url(#a) url(http://evil.example/x)\"/></svg>",
+  "ok": false,
+  "reason": "url() must be a local #id reference"
+ },
+ {
+  "name": "XXE SYSTEM entity",
+  "svg": "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>&x;</title></svg>",
+  "ok": false,
+  "reason": "entity refused"
+ },
+ {
+  "name": "doctype in lower case",
+  "svg": "<!doctype svg><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "DOCTYPE refused"
+ },
+ {
+  "name": "processing instruction inside svg",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><?php echo 1; ?><path d=\"M0 0\"/></svg>",
+  "ok": false,
+  "reason": "processing instruction refused"
+ },
+ {
+  "name": "predefined entity and character reference in title",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>A &amp; B &#x41;</title><path d=\"M0 0\"/></svg>",
+  "ok": true
+ },
+ {
+  "name": "id with _ . : -",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><defs><linearGradient id=\"_g.1:a-b\"><stop offset=\"0\"/></linearGradient></defs><rect width=\"1\" height=\"1\" fill=\"url(#_g.1:a-b)\"/></svg>",
+  "ok": true
  }
 ]

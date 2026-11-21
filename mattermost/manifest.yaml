@@ -2,7 +2,7 @@
 name: Mattermost
 description: Team chat with channels, threads, file sharing and integrations (Team Edition)
 icon: "\U0001F4AC"
-category: productivity
+category: communication
 tags: [chat, messaging, team, collaboration, slack-alternative]
 links:
   website: https://mattermost.com/

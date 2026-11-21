@@ -38,7 +38,7 @@
       "maxLength": 16384
     },
     "logo": {
-      "description": "An SVG logo file in the template folder itself (no directory part), at most 64 KiB, UTF-8, passing the logo lint (contract §3; tests/svgsafe.py). Only a logo the project publishes under terms that allow redistribution; record its source URL and licence in a comment next to this key and in CHANGELOG.md. Without one the emoji icon is shown.",
+      "description": "An SVG logo file in the template folder itself (no directory part), at most 64 KiB, UTF-8, passing the logo lint (contract §3; tests/svgsafe.py). Only a logo the project publishes under terms that allow redistribution, with its REUSE sidecar <logo>.license (SPDX-FileCopyrightText, SPDX-License-Identifier, source, changes) and the licence text in LICENSES/<identifier>.txt; also listed in CHANGELOG.md. Without one the emoji icon is shown.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]{0,62}\\.svg$"
     },
@@ -52,7 +52,7 @@
       }
     },
     "screenshots": {
-      "description": "Up to 6 screenshots in the template folder itself (contract §3): png, jpg or webp, at most 512 KiB and 4096 x 4096 each, leading bytes matching the extension; a one-line caption of at most 120 characters.",
+      "description": "Up to 6 screenshots in the template folder itself (contract §3): png, jpg or webp, at most 512 KiB each with leading bytes matching the extension, and 4096 x 4096 pixels (checked by tests/validate.py only); a one-line caption of at most 120 characters.",
       "type": "array",
       "maxItems": 6,
       "items": {
