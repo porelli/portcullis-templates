@@ -8557,7 +8557,9 @@ KUBE_HA_CORE_NAMES = ["nodeadm", "frontdoor", "cnpg-operator", "keycloak-pods", 
                       "portcullis-pg", "hub-state", "hub-backups", "portcullis-node", "portcullis-hub",
                       "traefik-metrics", "traefik-vpn", "wg-edge", "wg-metrics", "wg-people",
                       # Task 25: Vault's raft peers, the session store's pods and Sentinels, our CoreDNS DaemonSet.
-                      "vault-internal", "sessions-pods", "sessions-sentinel", "portcullis-dns-small"]
+                      "vault-internal", "sessions-pods", "sessions-sentinel", "portcullis-dns-small",
+                      # Task 28 fix round 1: the CoreDNS DaemonSet's own ServiceAccount.
+                      "portcullis-dns"]
 KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
 KUBE_MAX_APP_PRIORITY = 1000
 _HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
