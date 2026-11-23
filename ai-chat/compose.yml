@@ -143,7 +143,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.ai.rule: Host(`${PORTCULLIS_HOST_AI:-ai.portcullis.local}`)
       traefik.http.routers.ai.entrypoints: websecure
-      traefik.http.routers.ai.tls.options: authaware@file
+      traefik.http.routers.ai.tls.options: default
       traefik.http.routers.ai.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.ai.service: ai
       traefik.http.services.ai.loadbalancer.server.port: "3080"

@@ -37,7 +37,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.gitlab.rule: Host(`${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}`)
       traefik.http.routers.gitlab.entrypoints: websecure
-      traefik.http.routers.gitlab.tls.options: authaware@file
+      traefik.http.routers.gitlab.tls.options: default
       traefik.http.routers.gitlab.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.gitlab.service: gitlab
       # Interactive sign-in (/users/sign_in, the OIDC start and callback under
@@ -49,7 +49,7 @@ services:
       traefik.http.routers.gitlab-login.rule: Host(`${PORTCULLIS_HOST_GITLAB:-git.portcullis.local}`) && PathPrefix(`/users`)
       traefik.http.routers.gitlab-login.priority: "100"
       traefik.http.routers.gitlab-login.entrypoints: websecure
-      traefik.http.routers.gitlab-login.tls.options: authaware@file
+      traefik.http.routers.gitlab-login.tls.options: default
       traefik.http.routers.gitlab-login.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.gitlab-login.service: gitlab
       traefik.http.services.gitlab.loadbalancer.server.port: "80"

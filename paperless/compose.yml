@@ -132,7 +132,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.paperless.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`)
       traefik.http.routers.paperless.entrypoints: websecure
-      traefik.http.routers.paperless.tls.options: authaware@file
+      traefik.http.routers.paperless.tls.options: default
       traefik.http.routers.paperless.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.paperless.service: paperless
       traefik.http.services.paperless.loadbalancer.server.port: "8000"
@@ -145,7 +145,7 @@ services:
       traefik.http.routers.paperless-sso.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && PathPrefix(`/accounts/oidc`)
       traefik.http.routers.paperless-sso.priority: "100"
       traefik.http.routers.paperless-sso.entrypoints: websecure
-      traefik.http.routers.paperless-sso.tls.options: authaware@file
+      traefik.http.routers.paperless-sso.tls.options: default
       traefik.http.routers.paperless-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.paperless-sso.service: paperless
       # allauth headless provider login (an ID token for this client
@@ -154,7 +154,7 @@ services:
       traefik.http.routers.paperless-headless.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && (PathPrefix(`/api/auth/headless/browser/v1/auth/provider`) || PathPrefix(`/api/auth/headless/app/v1/auth/provider`))
       traefik.http.routers.paperless-headless.priority: "100"
       traefik.http.routers.paperless-headless.entrypoints: websecure
-      traefik.http.routers.paperless-headless.tls.options: authaware@file
+      traefik.http.routers.paperless-headless.tls.options: default
       traefik.http.routers.paperless-headless.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.paperless-headless.service: paperless
       # Django admin: superusers only in Paperless; here also behind
@@ -162,7 +162,7 @@ services:
       traefik.http.routers.paperless-admin.rule: Host(`${PORTCULLIS_HOST_PAPERLESS:-paperless.portcullis.local}`) && PathPrefix(`/admin`)
       traefik.http.routers.paperless-admin.priority: "100"
       traefik.http.routers.paperless-admin.entrypoints: websecure
-      traefik.http.routers.paperless-admin.tls.options: authaware@file
+      traefik.http.routers.paperless-admin.tls.options: default
       traefik.http.routers.paperless-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.paperless-admin.service: paperless
     restart: unless-stopped

@@ -40,7 +40,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.homeassistant.rule: Host(`${PORTCULLIS_HOST_HOMEASSISTANT:-home.portcullis.local}`)
       traefik.http.routers.homeassistant.entrypoints: websecure
-      traefik.http.routers.homeassistant.tls.options: authaware@file
+      traefik.http.routers.homeassistant.tls.options: default
       traefik.http.routers.homeassistant.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.homeassistant.service: homeassistant
       traefik.http.services.homeassistant.loadbalancer.server.port: "8123"

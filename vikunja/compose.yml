@@ -78,7 +78,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.vikunja.rule: Host(`${PORTCULLIS_HOST_VIKUNJA:-tasks.portcullis.local}`)
       traefik.http.routers.vikunja.entrypoints: websecure
-      traefik.http.routers.vikunja.tls.options: authaware@file
+      traefik.http.routers.vikunja.tls.options: default
       traefik.http.routers.vikunja.middlewares: security-headers@file
       traefik.http.services.vikunja.loadbalancer.server.port: "3456"
     restart: unless-stopped

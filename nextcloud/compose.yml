@@ -86,7 +86,7 @@ services:
       # clients, WebDAV, OCS and share links work.
       traefik.http.routers.nextcloud.rule: Host(`${PORTCULLIS_HOST_NEXTCLOUD:-cloud.portcullis.local}`)
       traefik.http.routers.nextcloud.entrypoints: websecure
-      traefik.http.routers.nextcloud.tls.options: authaware@file
+      traefik.http.routers.nextcloud.tls.options: default
       traefik.http.routers.nextcloud.middlewares: client-headers@file,security-headers@file
       traefik.http.services.nextcloud.loadbalancer.server.port: "80"
     restart: unless-stopped

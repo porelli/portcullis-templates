@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.craft-anything.rule: Host(`${PORTCULLIS_HOST_CRAFT_ANYTHING:-craft-anything.portcullis.local}`)
       traefik.http.routers.craft-anything.entrypoints: websecure
-      traefik.http.routers.craft-anything.tls.options: authaware@file
+      traefik.http.routers.craft-anything.tls.options: default
       traefik.http.routers.craft-anything.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.craft-anything.loadbalancer.server.port: "8080"
     restart: unless-stopped

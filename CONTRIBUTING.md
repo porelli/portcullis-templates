@@ -793,7 +793,7 @@ vpn:
   `<ROUTER>` is its name upper-cased with `-` as `_` (`litellm-ui` →
   `PORTCULLIS_HOST_LITELLM_UI`), path-scoped routers on the same host reuse
   its variable, and `<sub>` is the default subdomain (one DNS label). Then
-  `entrypoints: websecure`, `tls.options` one of `authaware@file`,
+  `entrypoints: websecure`, `tls.options` one of `default`,
   `public@file`, `protected@file`, and `security-headers@file` in the
   middlewares. Core subdomains (`auth`, `traefik`, `hub`, `directory`,
   `enroll`, `metrics`, `people`) are off limits. Router, service and

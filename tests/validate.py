@@ -133,7 +133,7 @@ HOST_PLACEHOLDER_RE = re.compile(r"\{\{HOST_([A-Za-z0-9_]*)\}\}")
 PROXY_NET = "portcullis-proxy"
 AUTH_MW = "portcullis-auth@docker"
 GROUPS_MW = "portcullis-groups@docker"
-TLS_OPTIONS = {"authaware@file", "public@file", "protected@file"}
+TLS_OPTIONS = {"default", "public@file", "protected@file"}
 
 # Host paths (relative to the core checkout) a template may bind-mount besides
 # ./templates/<app-id>/...: path -> (requires read-only, why).
@@ -9052,7 +9052,7 @@ KUBE_FILE_MIDDLEWARES = ["client-headers", "client-cert-pem", "rate-limit", "rat
 KUBE_FILE_SERVICES = ["group-gate", "forward-auth-ext", "mcp-gate"]
 KUBE_CORE_NAMES = ["hub", "keycloak", "hub-proxy-secret", "portcullis-auth-console", "strip-forwarded", "api", "noop",
                    "group-gate", "forward-auth-ext", "mcp-gate", "dashboard"]
-KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
+KUBE_TLS_OPTIONS = ["default", "public@file", "protected@file", "protected-any@file"]
 KUBE_MAX_APP_PRIORITY = 1000
 _HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
 _KUBE_ROUTE_RE = re.compile(

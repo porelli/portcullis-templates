@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.lightcraft.rule: Host(`${PORTCULLIS_HOST_LIGHTCRAFT:-lightcraft.portcullis.local}`)
       traefik.http.routers.lightcraft.entrypoints: websecure
-      traefik.http.routers.lightcraft.tls.options: authaware@file
+      traefik.http.routers.lightcraft.tls.options: default
       traefik.http.routers.lightcraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.lightcraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

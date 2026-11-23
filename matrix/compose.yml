@@ -56,7 +56,7 @@ services:
       # log in at the homeserver itself).
       traefik.http.routers.matrix.rule: Host(`${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}`)
       traefik.http.routers.matrix.entrypoints: websecure
-      traefik.http.routers.matrix.tls.options: authaware@file
+      traefik.http.routers.matrix.tls.options: default
       traefik.http.routers.matrix.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.matrix.service: matrix
       traefik.http.services.matrix.loadbalancer.server.port: "8008"
@@ -67,7 +67,7 @@ services:
       traefik.http.routers.matrix-admin.rule: Host(`${PORTCULLIS_HOST_MATRIX:-matrix.portcullis.local}`) && PathPrefix(`/_synapse/admin`)
       traefik.http.routers.matrix-admin.priority: "100"
       traefik.http.routers.matrix-admin.entrypoints: websecure
-      traefik.http.routers.matrix-admin.tls.options: authaware@file
+      traefik.http.routers.matrix-admin.tls.options: default
       traefik.http.routers.matrix-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.matrix-admin.service: matrix
     restart: unless-stopped
@@ -134,7 +134,7 @@ services:
       # itself happens at the homeserver (its own group check).
       traefik.http.routers.element.rule: Host(`${PORTCULLIS_HOST_ELEMENT:-element.portcullis.local}`)
       traefik.http.routers.element.entrypoints: websecure
-      traefik.http.routers.element.tls.options: authaware@file
+      traefik.http.routers.element.tls.options: default
       traefik.http.routers.element.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.element.service: element
       traefik.http.services.element.loadbalancer.server.port: "8080"

@@ -60,7 +60,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.esphome.rule: Host(`${PORTCULLIS_HOST_ESPHOME:-esphome.portcullis.local}`)
       traefik.http.routers.esphome.entrypoints: websecure
-      traefik.http.routers.esphome.tls.options: authaware@file
+      traefik.http.routers.esphome.tls.options: default
       traefik.http.routers.esphome.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.esphome.service: esphome
       traefik.http.services.esphome.loadbalancer.server.port: "6052"

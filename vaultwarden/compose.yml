@@ -45,7 +45,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.vaultwarden.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`)
       traefik.http.routers.vaultwarden.entrypoints: websecure
-      traefik.http.routers.vaultwarden.tls.options: authaware@file
+      traefik.http.routers.vaultwarden.tls.options: default
       traefik.http.routers.vaultwarden.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.vaultwarden.service: vaultwarden
       traefik.http.services.vaultwarden.loadbalancer.server.port: "80"
@@ -55,7 +55,7 @@ services:
       traefik.http.routers.vaultwarden-admin.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`) && PathPrefix(`/admin`)
       traefik.http.routers.vaultwarden-admin.priority: "100"
       traefik.http.routers.vaultwarden-admin.entrypoints: websecure
-      traefik.http.routers.vaultwarden-admin.tls.options: authaware@file
+      traefik.http.routers.vaultwarden-admin.tls.options: default
       traefik.http.routers.vaultwarden-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.vaultwarden-admin.service: vaultwarden
       # SSO start and callback: behind forward-auth + group-gate, so only
@@ -65,7 +65,7 @@ services:
       traefik.http.routers.vaultwarden-sso.rule: Host(`${PORTCULLIS_HOST_VAULTWARDEN:-passwords.portcullis.local}`) && (PathPrefix(`/identity/connect/authorize`) || PathPrefix(`/identity/connect/oidc-signin`))
       traefik.http.routers.vaultwarden-sso.priority: "100"
       traefik.http.routers.vaultwarden-sso.entrypoints: websecure
-      traefik.http.routers.vaultwarden-sso.tls.options: authaware@file
+      traefik.http.routers.vaultwarden-sso.tls.options: default
       traefik.http.routers.vaultwarden-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.vaultwarden-sso.service: vaultwarden
     restart: unless-stopped

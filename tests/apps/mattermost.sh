@@ -396,7 +396,7 @@ docker create --name "$gt-gate" --network portcullis-proxy \
   -l traefik.enable=true -l traefik.docker.network=portcullis-proxy \
   -l "traefik.http.routers.mmgatetest.rule=Host(\`$GT_HOST\`)" \
   -l traefik.http.routers.mmgatetest.entrypoints=websecure \
-  -l traefik.http.routers.mmgatetest.tls.options=authaware@file \
+  -l traefik.http.routers.mmgatetest.tls.options=default \
   -l traefik.http.routers.mmgatetest.service=mmgatetest \
   -l traefik.http.services.mmgatetest.loadbalancer.server.port=9000 \
   --entrypoint /bin/sh "$GATE_IMG" /portcullis/gate.sh >/dev/null

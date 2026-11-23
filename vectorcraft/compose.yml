@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.vectorcraft.rule: Host(`${PORTCULLIS_HOST_VECTORCRAFT:-vectorcraft.portcullis.local}`)
       traefik.http.routers.vectorcraft.entrypoints: websecure
-      traefik.http.routers.vectorcraft.tls.options: authaware@file
+      traefik.http.routers.vectorcraft.tls.options: default
       traefik.http.routers.vectorcraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.vectorcraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

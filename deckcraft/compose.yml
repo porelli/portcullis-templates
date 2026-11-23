@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.deckcraft.rule: Host(`${PORTCULLIS_HOST_DECKCRAFT:-deckcraft.portcullis.local}`)
       traefik.http.routers.deckcraft.entrypoints: websecure
-      traefik.http.routers.deckcraft.tls.options: authaware@file
+      traefik.http.routers.deckcraft.tls.options: default
       traefik.http.routers.deckcraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.deckcraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

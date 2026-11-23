@@ -100,7 +100,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.guacamole.rule: Host(`${PORTCULLIS_HOST_GUACAMOLE:-remote.portcullis.local}`)
       traefik.http.routers.guacamole.entrypoints: websecure
-      traefik.http.routers.guacamole.tls.options: authaware@file
+      traefik.http.routers.guacamole.tls.options: default
       traefik.http.routers.guacamole.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,guacamole-prefix@docker,security-headers@file
       traefik.http.middlewares.guacamole-prefix.addprefix.prefix: /guacamole
       traefik.http.services.guacamole.loadbalancer.server.port: "8080"

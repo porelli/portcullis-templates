@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.texturecraft.rule: Host(`${PORTCULLIS_HOST_TEXTURECRAFT:-texturecraft.portcullis.local}`)
       traefik.http.routers.texturecraft.entrypoints: websecure
-      traefik.http.routers.texturecraft.tls.options: authaware@file
+      traefik.http.routers.texturecraft.tls.options: default
       traefik.http.routers.texturecraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.texturecraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

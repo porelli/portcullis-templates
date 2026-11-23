@@ -44,7 +44,7 @@ services:
       # reachable from the internet.
       traefik.http.routers.wiki.rule: Host(`${PORTCULLIS_HOST_WIKI:-wiki.portcullis.local}`)
       traefik.http.routers.wiki.entrypoints: websecure
-      traefik.http.routers.wiki.tls.options: authaware@file
+      traefik.http.routers.wiki.tls.options: default
       traefik.http.routers.wiki.middlewares: client-headers@file,security-headers@file
       traefik.http.services.wiki.loadbalancer.server.port: "3000"
     restart: unless-stopped

@@ -59,7 +59,7 @@ ai:
 ROUTER = """\
       traefik.http.routers.demo.rule: {rule}
       traefik.http.routers.demo.entrypoints: websecure
-      traefik.http.routers.demo.tls.options: authaware@file
+      traefik.http.routers.demo.tls.options: default
       traefik.http.routers.demo.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file
 """
 
@@ -704,7 +704,7 @@ class TestGatedClientRouters(unittest.TestCase):
         mws = ("client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file"
                if gated else "client-headers@file,security-headers@file")
         routers = {"element": {"rule": self.HOST, "entrypoints": "websecure",
-                               "tls.options": "authaware@file", "middlewares": mws}}
+                               "tls.options": "default", "middlewares": mws}}
         t = v.Template(app_id)
         t.manifest = {"instances": "multi", "auth": {"method": "native-oidc", "group_access": True}}
         r = v.Report()
@@ -2454,7 +2454,7 @@ class TestSettingsV3(Case):
     def test_header_delivery_public_router_refused(self) -> None:
         """P14: a router the template labels public (no forward-auth, e.g.
         tls.options public@file) reaching the delivering backend."""
-        pub_tls = router("share", S_HOST + " && PathPrefix(`/share`)", gated=False).replace("authaware@file", "public@file")
+        pub_tls = router("share", S_HOST + " && PathPrefix(`/share`)", gated=False).replace("default", "public@file")
         self.cases([
             ("ungated router", S_HDR + s_opts(S_PERSON_HEADER),
              s_compose(routers=router("demo", S_HOST) + router("share", S_HOST + " && PathPrefix(`/share`)", gated=False)), "quota", "router share reaches service demo"),
@@ -3270,7 +3270,7 @@ FS_ROUTED = fs_compose(extra=(
     "      traefik.enable: \"true\"\n"
     "      traefik.http.routers.files.rule: Host(`${PORTCULLIS_HOST_FILES:-files.portcullis.local}`)\n"
     "      traefik.http.routers.files.entrypoints: websecure\n"
-    "      traefik.http.routers.files.tls.options: authaware@file\n"
+    "      traefik.http.routers.files.tls.options: default\n"
     "      traefik.http.routers.files.middlewares: security-headers@file\n"
     "      traefik.http.services.files.loadbalancer.server.port: \"80\"\n"
     "networks:\n  portcullis-proxy:\n    external: true\n"))
@@ -4201,7 +4201,7 @@ class AITests(Case):
             ("router not a host router", comp, ["router: demo", "router: nope"], [], "ai.mcp[demo]: router \"nope\" is not a host router"),
             ("router a path router", comp, ["router: demo", "router: demo-api"],
              ["      traefik.http.services.demo", "      traefik.http.routers.demo-api.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/api`)\n"
-              "      traefik.http.routers.demo-api.entrypoints: websecure\n      traefik.http.routers.demo-api.tls.options: authaware@file\n"
+              "      traefik.http.routers.demo-api.entrypoints: websecure\n      traefik.http.routers.demo-api.tls.options: default\n"
               "      traefik.http.routers.demo-api.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file\n"
               "      traefik.http.services.demo"],
              "ai.mcp[demo]: router \"demo-api\" is not a host router"),
@@ -4282,7 +4282,7 @@ class AITests(Case):
             ("too many tool patterns", comp, ['never: []', "never: [" + ", ".join(f"t{i}" for i in range(257)) + "]"], [], "ai.mcp[demo]: tools.never lists more than 256"),
             ("admin_paths", comp, ["  admin_group: admin_demo\n", "  admin_group: admin_demo\n  admin_paths: [/admin]\n"],
              ["      traefik.http.services.demo", "      traefik.http.routers.demo-admin.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/admin`)\n"
-              "      traefik.http.routers.demo-admin.entrypoints: websecure\n      traefik.http.routers.demo-admin.tls.options: authaware@file\n"
+              "      traefik.http.routers.demo-admin.entrypoints: websecure\n      traefik.http.routers.demo-admin.tls.options: default\n"
               "      traefik.http.routers.demo-admin.middlewares: portcullis-auth@docker,portcullis-groups@docker,security-headers@file\n"
               "      traefik.http.services.demo"],
              "ai.mcp: not allowed with auth.admin_paths"),

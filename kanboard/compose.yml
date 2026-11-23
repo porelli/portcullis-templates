@@ -29,7 +29,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.kanboard.rule: Host(`${PORTCULLIS_HOST_KANBOARD:-kanboard.portcullis.local}`)
       traefik.http.routers.kanboard.entrypoints: websecure
-      traefik.http.routers.kanboard.tls.options: authaware@file
+      traefik.http.routers.kanboard.tls.options: default
       traefik.http.routers.kanboard.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.kanboard.loadbalancer.server.port: "80"
     restart: unless-stopped
