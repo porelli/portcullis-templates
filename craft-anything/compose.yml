@@ -13,8 +13,8 @@ services:
     environment:
       CRAFT_APP: craft-anything
       CRAFT_REPO: storytold/craft-anything
-      CRAFT_VERSION: ${CRAFT_VERSION:-0.2.0}
-      CRAFT_SHA256: ${CRAFT_SHA256:-ebb32cafcb6cdf8942fe412ac3a3598586b5ed400739f44788e6adf966cb810b}
+      CRAFT_VERSION: ${CRAFT_VERSION:-0.6.1}
+      CRAFT_SHA256: ${CRAFT_SHA256:-e87273b5c0181785ce9059f5348353be44e18b4ba6485203babc26ef17f71d84}
     volumes:
       - craft-anything-site:/srv/craft
       - ./templates/craft-anything/fetch.sh:/craft-fetch.sh:ro
