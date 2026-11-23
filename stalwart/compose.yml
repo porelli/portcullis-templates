@@ -37,7 +37,7 @@ services:
   # Copies the pinned adapter image's static mailctl into mailctl_bin for
   # the bootstrap job (gate/copy-mailctl.sh). No network.
   adapter-bin:
-    image: ghcr.io/porelli/portcullis-mailctl:main-59c68fa@sha256:a85ad9ab6d86b3dc7a1cf9082456289f9753f9ee1a6fa9faf36a45fa0a6661f7
+    image: ghcr.io/porelli/portcullis-mailctl:main-d41cbb6@sha256:500c8b45ffb0d461e74786cf8a2acf2002f8d4a7e572c69931f83171f115d740
     user: "10010:10010"
     entrypoint: ["/bin/sh", "/portcullis/gate/copy-mailctl.sh"]
     read_only: true
@@ -56,7 +56,7 @@ services:
   # only viewer-password (contract §19.13), idempotent. Root with no
   # capability, no network, read-only root.
   key-init:
-    image: ghcr.io/porelli/portcullis-mailctl:main-59c68fa@sha256:a85ad9ab6d86b3dc7a1cf9082456289f9753f9ee1a6fa9faf36a45fa0a6661f7
+    image: ghcr.io/porelli/portcullis-mailctl:main-d41cbb6@sha256:500c8b45ffb0d461e74786cf8a2acf2002f8d4a7e572c69931f83171f115d740
     user: "0:2010"
     # 2011 (mailview): an owner without CHOWN can chgrp only to its own
     # groups (viewer_key, contract §19.13).
@@ -184,7 +184,7 @@ services:
   # the spam rules 8082 (internal), metrics 9100. The only holder of
   # Stalwart's API key besides the job.
   adapter:
-    image: ghcr.io/porelli/portcullis-mailctl:main-59c68fa@sha256:a85ad9ab6d86b3dc7a1cf9082456289f9753f9ee1a6fa9faf36a45fa0a6661f7
+    image: ghcr.io/porelli/portcullis-mailctl:main-d41cbb6@sha256:500c8b45ffb0d461e74786cf8a2acf2002f8d4a7e572c69931f83171f115d740
     user: "10010:10010"
     group_add: ["2010"]
     entrypoint: ["/bin/sh", "/portcullis/gate/adapter.sh"]
@@ -235,7 +235,7 @@ services:
   # through the Hub's override, the ticket key (a read-only file): no API
   # key, no slot file, no certificate key.
   admin-view:
-    image: ghcr.io/porelli/portcullis-mailctl:main-59c68fa@sha256:a85ad9ab6d86b3dc7a1cf9082456289f9753f9ee1a6fa9faf36a45fa0a6661f7
+    image: ghcr.io/porelli/portcullis-mailctl:main-d41cbb6@sha256:500c8b45ffb0d461e74786cf8a2acf2002f8d4a7e572c69931f83171f115d740
     user: "10010:10010"
     group_add: ["2011"]
     command: ["admin-view"]
