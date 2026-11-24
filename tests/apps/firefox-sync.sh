@@ -651,11 +651,12 @@ echo "$PAGE" | grep -q 'Access managed elsewhere ok' && pass "admin UI setup che
 CSRF=$(curl -s -c "$JAR" -b "$JAR" "$PB/" | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"$//')
 for form in "/sync/max-users max_users=1" "/sync/allowlist/allow uid=$OUTSIDER" "/sync/allowlist/remove uid=$ALLOWED_A"; do
   set -- $form
-  curl -s -c "$JAR" -b "$JAR" -o /dev/null -d "csrf=$CSRF&$2" "$PB$1" || true
-  if curl -s -c "$JAR" -b "$JAR" "$PB/" | grep -q 'managed outside the admin UI (ADMIN_ACCESS_EXTERNAL): nothing changed here'; then
+  RESP=$(curl -s -L -c "$JAR" -b "$JAR" -w '\n%{http_code} %{url_effective}' -d "csrf=$CSRF&$2" "$PB$1" || true)
+  if echo "$RESP" | grep -q 'managed outside the admin UI (ADMIN_ACCESS_EXTERNAL): nothing changed here'; then
     pass "admin UI refuses POST $1 (managed outside the admin UI)"
   else
-    fail "admin UI did not refuse POST $1"
+    fail "admin UI did not refuse POST $1 (csrf ${#CSRF} chars; last: $(echo "$RESP" | tail -1); $(echo "$RESP" | sed 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | grep -o -i -E '.{0,60}(fail|refus|error|session|not )[^.]{0,80}' | head -2 | tr '\n' ' '))"
+    docker logs portcullis-fxadmin-probe 2>&1 | tail -5
   fi
 done
 CONF=$(db "SELECT (SELECT config_value FROM config WHERE config_key = 'max_users') || ',' || (SELECT count(*) FROM sync_allowed_accounts)")
