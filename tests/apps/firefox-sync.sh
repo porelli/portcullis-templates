@@ -487,12 +487,14 @@ req = urllib.request.Request("http://127.0.0.1:8080/", headers={
 try:
     print(urllib.request.urlopen(req, timeout=10).status)
 except urllib.error.HTTPError as e:
-    print(e.code, " ".join(e.read().decode(errors="replace").split())[:300])
+    body = e.read().decode(errors="replace")
+    part = "path-group-denied" if "not authorized to access this part" in body else "other"
+    print(e.code, part, " ".join(body.split())[-300:])
 PY
 }
 for path in / /users/1 /auth/callback /%61uth/login; do
   OUT=$(gate_probe e2emember users_firefox-sync "$path" || true)
-  if [[ "$OUT" == "403 "* ]] && echo "$OUT" | grep -q 'not authorized to access this part'; then
+  if [[ "$OUT" == "403 path-group-denied "* ]]; then
     pass "group-gate: e2emember (users_firefox-sync only) refused on $ADMIN_HOST$path"
   else
     fail "group-gate: e2emember on $ADMIN_HOST$path -> $OUT"
@@ -536,7 +538,11 @@ jq -n --arg uri "$(echo "$REG_URI" | sed "s|{{HOST_FIREFOX_SYNC_ADMIN}}|$ADMIN_H
 AUTH_PATH="/${LOC#https://auth.$DOMAIN/}"
 out=$(via_traefik "auth.$DOMAIN" "$AUTH_PATH")
 case "${out%% *}" in
-  000|400|5??) fail "Keycloak refused the admin UI's authorization request: $out" ;;
+  000|400|5??) fail "Keycloak refused the admin UI's authorization request: $out"
+    info "client: $(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sync-admin" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -c '.[0] | {redirectUris, defaultClientScopes, enabled}')"
+    info "Keycloak said: $(curl -sk --resolve "auth.$DOMAIN:443:127.0.0.1" "https://auth.$DOMAIN$AUTH_PATH" | grep -o -i -E 'invalid[^<]{0,80}|error[^<]{0,80}' | head -3 | tr '\n' ' ')"
+    info "request: ${AUTH_PATH%%&state=*}" ;;
   *) pass "Keycloak accepts the admin UI's authorization request (registered redirect URI): ${out%% *}" ;;
 esac
 BAD_PATH=$(echo "$AUTH_PATH" | sed "s|redirect_uri=$ENC|redirect_uri=$(jq -rn --arg u "https://$HOST/auth/callback" '$u | @uri')|")
