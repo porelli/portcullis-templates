@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Test: Firefox Sync (public host for Firefox's anonymous requests; only the
 # Mozilla accounts of the Hub's allowlist.json data file get a tokenserver
-# row: the uids access-group members entered, plus Other allowed accounts)
+# row: the uids access-group members entered, plus Other allowed accounts),
+# and its admin UI (preview) on a host of its own behind Portcullis sign-in,
+# the admin group and its own OpenID Connect sign-in
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
@@ -14,12 +16,35 @@ SERVICE=firefox-sync
 COMPOSE=$(_find_compose "$APP_ID") || { fail "compose.yml not found for $APP_ID"; exit 1; }
 GUARD="$(dirname "$COMPOSE")/guard.sql"
 
-# Static: public host without the gateway, rate-limited
-if grep -q 'portcullis-auth@docker\|portcullis-groups@docker' "$COMPOSE"; then
-  fail "a router uses the Portcullis gateway (Firefox's Sync requests carry no cookie)"
+# Static: the sync host without the gateway, rate-limited; the gateway only
+# on the admin host's router.
+ADMIN_SVC=firefox-sync-admin
+SYNC_HOST_ROUTERS=$(yq -r '[.services[].labels // {} | to_entries[] | select(.key | test("^traefik[.]http[.]routers[.][^.]+[.]rule$"))
+  | select(.value | test("PORTCULLIS_HOST_FIREFOX_SYNC:-")) | .key | capture("routers[.](?<r>[^.]+)[.]rule").r] | sort | join(" ")' "$COMPOSE")
+if [ "$SYNC_HOST_ROUTERS" = "firefox-sync firefox-sync-root firefox-sync-token" ]; then
+  pass "sync host routers: firefox-sync, firefox-sync-root (exactly /), firefox-sync-token"
 else
-  pass "no gateway middlewares (auth.method custom, no native_login)"
+  fail "sync host routers: $SYNC_HOST_ROUTERS"
 fi
+for r in $SYNC_HOST_ROUTERS; do
+  MW=$(yq -r "[.services[].labels // {} | .[\"traefik.http.routers.$r.middlewares\"] | select(. != null)] | .[0]" "$COMPOSE")
+  TLS=$(yq -r "[.services[].labels // {} | .[\"traefik.http.routers.$r.tls.options\"] | select(. != null)] | .[0]" "$COMPOSE")
+  if echo "$MW" | grep -q 'portcullis-'; then
+    fail "sync host router $r uses the Portcullis gateway ($MW): Firefox's Sync requests carry no cookie"
+  elif [ "$TLS" != public@file ]; then
+    fail "sync host router $r: tls.options $TLS (Firefox presents no client certificate)"
+  else
+    pass "sync host router $r: no gateway, public@file ($MW)"
+  fi
+done
+assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-root.rule \
+  'Host\(`\$\{PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync\.portcullis\.local\}`\) && Path\(`/`\)'
+assert_compose_setting "$COMPOSE" traefik.http.middlewares.firefox-sync-root-redirect.redirectregex.replacement \
+  'https://\$\{PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin\.portcullis\.local\}/'
+assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-admin.rule \
+  'Host\(`\$\{PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin\.portcullis\.local\}`\)'
+assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-admin.middlewares \
+  'client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file'
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.tls.options 'public@file'
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync.middlewares 'rate-limit@file,security-headers@file'
 assert_compose_setting "$COMPOSE" traefik.http.routers.firefox-sync-token.middlewares 'rate-limit-auth@file,security-headers@file'
@@ -29,11 +54,52 @@ if grep -q '^  method: custom' "$MANIFEST" && ! grep -q '^  native_login:' "$MAN
 else
   fail "manifest must be method custom without native_login"
 fi
+# The admin host: group-gate requires the admin group on every path (the
+# Hub publishes path_groups from admin_paths), and the admin UI admits only
+# that group, by the groups claim of its OIDC sign-in.
+ADMIN_GROUP_M=$(yq -r '.auth.admin_group' "$MANIFEST")
+if [ "$(yq -r '.auth.admin_paths | join(",")' "$MANIFEST")" = / ] && [ "$ADMIN_GROUP_M" = admin_firefox-sync ]; then
+  pass "manifest: admin_paths [/] with admin_group $ADMIN_GROUP_M (group-gate on every admin-host path)"
+else
+  fail "manifest: admin_paths / admin_group"
+fi
+ADMIN_ENV() { yq -r ".services[\"$ADMIN_SVC\"].environment.$1 // \"<unset>\"" "$COMPOSE"; }
+[ "$(ADMIN_ENV ADMIN_PASSWORD)" = "" ] && pass "admin UI: ADMIN_PASSWORD empty (no password sign-in)" \
+  || fail "admin UI: ADMIN_PASSWORD is $(ADMIN_ENV ADMIN_PASSWORD | head -c 3)..."
+for k in ADMIN_AUTH_HEADER ADMIN_AUTH_GROUPS_HEADER ADMIN_TRUSTED_PROXIES ADMIN_ALLOWED_USERS ALERT_EMAIL SMTP_HOST ADMIN_NOTIFY; do
+  case "$(ADMIN_ENV "$k")" in ""|"<unset>") pass "admin UI: $k empty" ;; *) fail "admin UI: $k is set" ;; esac
+done
+[ "$(ADMIN_ENV ADMIN_ALLOWED_GROUPS)" = '${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync}' ] \
+  && pass "admin UI: ADMIN_ALLOWED_GROUPS = the instance's admin group" || fail "admin UI: ADMIN_ALLOWED_GROUPS $(ADMIN_ENV ADMIN_ALLOWED_GROUPS)"
+[ "$(ADMIN_ENV ADMIN_OIDC_ISSUER)" = 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis' ] \
+  && [ "$(ADMIN_ENV ADMIN_OIDC_GROUPS_CLAIM)" = groups ] && [ "$(ADMIN_ENV ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL)" = false ] \
+  && pass "admin UI: issuer Portcullis's realm, groups claim, unverified email not trusted" \
+  || fail "admin UI: OIDC issuer / groups claim / unverified email setting"
+# The redirect URI the admin UI sends is exactly the client's registered one.
+REG_URI=$(yq -r '.keycloak_clients[] | select(.client_id == "firefox-sync-admin") | .redirect_uri' "$MANIFEST")
+if [ "$REG_URI" = 'https://{{HOST_FIREFOX_SYNC_ADMIN}}/auth/callback' ] \
+    && [ "$(yq -r '.keycloak_clients[] | select(.client_id == "firefox-sync-admin") | .redirect_uris // "none"' "$MANIFEST")" = none ] \
+    && [ "$(ADMIN_ENV ADMIN_OIDC_REDIRECT_URL)" = 'https://${PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin.portcullis.local}/auth/callback' ]; then
+  pass "OIDC client firefox-sync-admin: one redirect URI, https://<admin host>/auth/callback, = ADMIN_OIDC_REDIRECT_URL"
+else
+  fail "OIDC redirect URI: manifest $REG_URI vs compose $(ADMIN_ENV ADMIN_OIDC_REDIRECT_URL)"
+fi
+if [ "$(yq -r ".services[\"$ADMIN_SVC\"].ports // [] | length" "$COMPOSE")" = 0 ]; then
+  pass "admin UI: no published port"
+else
+  fail "admin UI publishes a port"
+fi
+if [ "$(yq -r ".services[\"$ADMIN_SVC\"].profiles | join(\",\")" "$COMPOSE")" = admin ] \
+    && [ "$(yq -r '.settings.options[] | select(.key == "admin_ui") | [.default, (.profiles.preview | join(","))] | join("|")' "$MANIFEST")" = 'off|admin' ]; then
+  pass "admin UI (preview) runs only with the setup choice admin_ui = preview (default off)"
+else
+  fail "admin UI gating (profile admin, setup choice admin_ui default off)"
+fi
 # The internet-facing server: same image as the migrations, runs none, app role.
 IMG_APP=$(yq -r '.services["firefox-sync"].image' "$COMPOSE")
 IMG_MIG=$(yq -r '.services["firefox-sync-migrate"].image' "$COMPOSE")
-if [ "$IMG_APP" = "$IMG_MIG" ]; then
-  pass "firefox-sync and firefox-sync-migrate run the same image"
+if [ "$IMG_APP" = "$IMG_MIG" ] && [[ "$IMG_APP" == *:syncstorage-rs-postgres-0.25.1@sha256:* ]]; then
+  pass "firefox-sync and firefox-sync-migrate run the same image (syncstorage-rs 0.25.1)"
 else
   fail "image mismatch: $IMG_APP vs $IMG_MIG"
 fi
@@ -104,8 +170,11 @@ COMPOSE_OVERRIDE=$(mktemp)
 export COMPOSE_OVERRIDE
 write_appfiles_override "$APP_ID" allowlist "$DOC" "$COMPOSE_OVERRIDE"
 
+# The admin UI too (the setup choice admin_ui = preview).
+export COMPOSE_PROFILES=admin
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_FIREFOX_SYNC"
+ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN"
 
 for job in firefox-sync-migrate firefox-sync-init; do
   if RC=$(timeout 300 docker wait "portcullis-${job}-1" 2>/dev/null) && [ "$RC" = 0 ]; then
@@ -246,6 +315,57 @@ else
 fi
 guard "$DOC" > /dev/null || fail "init refused the original allowlist"
 
+# The admin UI's roles (guard.sql, admin-db.sql): the trigger stays in force.
+admin_sql() {  # $1 = role, $2 = database, $3 = statement (socket, as the admin UI connects)
+  docker exec portcullis-firefox-sync-db-1 psql -X -U "$1" -d "$2" -tAc "$3" 2>&1
+}
+for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
+            "ALTER TABLE users DISABLE TRIGGER ALL" \
+            "SET session_replication_role = replica" \
+            "CREATE TRIGGER x BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION public.portcullis_check_allowed_account()" \
+            "INSERT INTO sync_allowed_accounts (uid, added_at, added_by) VALUES ('$OUTSIDER', 1, 'x')" \
+            "UPDATE sync_allowed_accounts SET added_by = 'x'" \
+            "DELETE FROM sync_allowed_accounts" \
+            "INSERT INTO users (service, email, generation, client_state, created_at, nodeid) VALUES (1, '$OUTSIDER@api.accounts.firefox.com', 1, 'a', 1, 1)" \
+            "UPDATE users SET email = '$OUTSIDER@api.accounts.firefox.com'" \
+            "UPDATE nodes SET capacity = 0" \
+            "DELETE FROM nodes" \
+            "CREATE TABLE public.portcullis_x (a int)" \
+            "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$"; do
+  OUT=$(admin_sql firefoxsync_admin_sync firefoxsync "$stmt" || true)
+  if echo "$OUT" | grep -Eqi 'permission denied|must be owner'; then
+    pass "firefoxsync_admin_sync refused: ${stmt:0:40}"
+  else
+    fail "firefoxsync_admin_sync could: $stmt -> $OUT"
+  fi
+done
+OUT=$(admin_sql firefoxsync_admin_sync firefoxsync "SELECT count(*) FROM sync_allowed_accounts; DELETE FROM bsos WHERE false; DELETE FROM users WHERE false" || true)
+if echo "$OUT" | grep -qi 'error'; then
+  fail "firefoxsync_admin_sync can't read the allowlist or delete Sync rows: $OUT"
+else
+  pass "firefoxsync_admin_sync reads the Sync data (the allowlist too) and may delete users / storage rows"
+fi
+for who in "firefoxsync_admin firefoxsync" "firefoxsync_app firefoxsync_admin" "firefoxsync_admin_sync firefoxsync_admin"; do
+  set -- $who
+  OUT=$(admin_sql "$1" "$2" "SELECT 1" || true)
+  if echo "$OUT" | grep -qi 'permission denied for database'; then
+    pass "$1 may not connect to $2"
+  else
+    fail "$1 connects to $2: $OUT"
+  fi
+done
+TRIGGERS=$(db "SELECT string_agg(tgname, ',' ORDER BY tgname) FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND NOT tgisinternal")
+[ "$TRIGGERS" = portcullis_allowed_account ] && pass "users has exactly one trigger: portcullis_allowed_account (guard.sql)" \
+  || fail "users triggers: $TRIGGERS (another allowlist or limit trigger would fight guard.sql)"
+# A deleted account (the admin UI's reset / delete) comes back only through
+# the trigger: its next row is checked against the allowlist again.
+insert_user "$ALLOWED_A" > /dev/null || true
+OUT=$(admin_sql firefoxsync_admin_sync firefoxsync "DELETE FROM users WHERE email LIKE '$ALLOWED_A@%'" || true)
+if echo "$OUT" | grep -q '^DELETE [1-9]'; then pass "admin reader deleted alice's tokenserver row (reset)"; else fail "reset: $OUT"; fi
+OUT=$(insert_user "$ALLOWED_A" || true)
+echo "$OUT" | grep -Eq '^[0-9]+' && pass "listed account after a reset: a new row, through the trigger" || fail "listed account refused after reset: $OUT"
+[ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 3 ] && pass "a reset leaves the allowlist untouched" || fail "a reset changed the allowlist"
+
 # The tokenserver wants a Mozilla OAuth token; storage wants Hawk.
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://${IP}:8000/1.0/sync/1.5" || echo 000)
 [ "$CODE" = 401 ] && pass "GET /1.0/sync/1.5 without a token -> 401" || fail "GET /1.0/sync/1.5 without a token -> $CODE (expected 401)"
@@ -289,6 +409,143 @@ if { [ "$CODE" = 401 ] || [ "$CODE" = 413 ]; } && awk "BEGIN{exit !($SECS < 15)}
 else
   fail "oversized upload: HTTP $CODE in ${SECS}s"
 fi
+
+# Firefox's other endpoints, anonymous through Traefik: answered by
+# syncstorage-rs itself, never sent to Keycloak.
+for p in /__lbheartbeat__ /__version__; do
+  out=$(via_traefik "$HOST" "$p")
+  [ "${out%% *}" = 200 ] && pass "https://$HOST$p -> 200 via Traefik, anonymous" || fail "$p via Traefik: $out"
+done
+out=$(via_traefik "$HOST" /1.5/1/info/collections)
+if [ "${out%% *}" = 401 ] && ! echo "${out#* }" | grep -q "auth\.$DOMAIN"; then
+  pass "storage via Traefik -> 401 from the app (no Portcullis redirect)"
+else
+  fail "storage via Traefik: $out"
+fi
+
+# ── Admin UI ──
+for _ in $(seq 1 40); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "portcullis-${ADMIN_SVC}-1" 2>/dev/null)" = healthy ] && break
+  sleep 3
+done
+docker logs "portcullis-${ADMIN_SVC}-1" 2>&1 | tail -5 || true
+# Exactly / of the sync host: a redirect to the admin host; the sync host
+# never serves the admin UI.
+for _ in $(seq 1 30); do
+  out=$(via_traefik "$HOST" /)
+  case "${out%% *}" in 000|404|502) sleep 1 ;; *) break ;; esac
+done
+[ "$out" = "302 https://$ADMIN_HOST/" ] && pass "https://$HOST/ -> 302 https://$ADMIN_HOST/" || fail "sync host /: $out"
+out=$(via_traefik "$HOST" /login)
+[ "${out%% *}" = 404 ] && pass "sync host /login -> 404 (syncstorage-rs, not the admin UI)" || fail "sync host /login: $out"
+# Unauthenticated, or with forged identity headers: Portcullis sign-in,
+# never the admin UI (forward-auth replaces every identity header).
+assert_gated_path "$ADMIN_HOST" /
+assert_gated_path "$ADMIN_HOST" /users/1
+assert_gated_path "$ADMIN_HOST" /auth/callback
+assert_gated_path "$ADMIN_HOST" / -H 'X-Forwarded-User: e2eadmin' -H 'X-Auth-Request-User: e2eadmin' \
+  -H 'X-Auth-Request-Preferred-Username: e2eadmin' -H "X-Auth-Request-Groups: $ADMIN_GROUP_M,lldap_admin" \
+  -H 'X-Auth-Request-Email: e2eadmin@example.org' -H 'Remote-Email: e2eadmin@example.org' -H "Remote-Groups: $ADMIN_GROUP_M"
+out=$(via_traefik "$ADMIN_HOST" /login -X POST -d 'password=aaaaaaaaaaaaaaaa')
+if echo "${out#* }" | grep -q "auth\.$DOMAIN" || [ "${out%% *}" = 401 ]; then
+  pass "POST https://$ADMIN_HOST/login unauthenticated -> ${out%% *} from Portcullis (never the admin UI)"
+else
+  fail "POST https://$ADMIN_HOST/login unauthenticated -> $out"
+fi
+# Straight to the admin UI (past Traefik): forged headers sign nobody in, and
+# there is no password sign-in.
+AIP=$(app_container_ip "$APP_ID" "$ADMIN_SVC")
+CODE=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Forwarded-User: e2eadmin' -H 'X-Auth-Request-Preferred-Username: e2eadmin' \
+  -H "X-Auth-Request-Groups: $ADMIN_GROUP_M" -H 'Remote-Email: e2eadmin@example.org' -H "Remote-Groups: $ADMIN_GROUP_M" \
+  "http://${AIP}:8080/" || echo 000)
+[[ "$CODE" == "303 "*"/login" ]] && pass "admin UI with forged identity headers -> $CODE (not signed in)" || fail "admin UI with forged identity headers -> $CODE"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'password=aaaaaaaaaaaaaaaa' "http://${AIP}:8080/login" || echo 000)
+[ "$CODE" = 403 ] && pass "admin UI: POST /login -> 403 (no password sign-in)" || fail "admin UI: POST /login -> $CODE (expected 403)"
+if curl -s "http://${AIP}:8080/login" | grep -q 'type="password"'; then
+  fail "admin UI login page has a password form"
+else
+  pass "admin UI login page: no password form"
+fi
+
+# group-gate on the admin host, with the policy the Hub publishes from
+# auth.admin_paths: a signed-in member of the access group (not the admin
+# group) is refused on every path; a member of the admin group passes.
+VER=$(policy_version)
+ADMIN_PREFIXES=$(yq -o=json '.auth.admin_paths' "$MANIFEST")
+_policy_base "$VER" | jq --arg h "$ADMIN_HOST" --arg g "$ADMIN_GROUP_M" --argjson p "$ADMIN_PREFIXES" \
+  '.path_groups = {($h): ($p | map({prefix: ., group: $g}))}' | _hub_data_write
+gate_probe() {  # $1 user, $2 groups, $3 path: group-gate's answer to forward-auth
+  docker exec -i portcullis-group-gate-1 python3 - "$ADMIN_HOST" "$@" <<'PY'
+import base64, json, sys, urllib.error, urllib.request
+host, user, groups, path = sys.argv[1:5]
+b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+token = b64({"alg": "none", "typ": "JWT"}) + "." + b64({"preferred_username": user, "amr": ["hwk"]}) + "."
+req = urllib.request.Request("http://127.0.0.1:8080/", headers={
+    "X-Forwarded-Host": host, "X-Forwarded-Uri": path, "X-Forwarded-Method": "GET", "X-Forwarded-Proto": "https",
+    "X-Auth-Request-Preferred-Username": user, "X-Auth-Request-User": user, "X-Auth-Request-Groups": groups,
+    "X-Forwarded-Access-Token": token})
+try:
+    print(urllib.request.urlopen(req, timeout=10).status)
+except urllib.error.HTTPError as e:
+    print(e.code, " ".join(e.read().decode(errors="replace").split())[:300])
+PY
+}
+for path in / /users/1 /auth/callback /%61uth/login; do
+  OUT=$(gate_probe e2emember users_firefox-sync "$path" || true)
+  if [[ "$OUT" == "403 "* ]] && echo "$OUT" | grep -q 'not authorized to access this part'; then
+    pass "group-gate: e2emember (users_firefox-sync only) refused on $ADMIN_HOST$path"
+  else
+    fail "group-gate: e2emember on $ADMIN_HOST$path -> $OUT"
+  fi
+done
+OUT=$(gate_probe e2eoutsider "" / || true)
+[[ "$OUT" == "403 "* ]] && pass "group-gate: e2eoutsider (no group) refused" || fail "group-gate: e2eoutsider -> $OUT"
+OUT=$(gate_probe e2eadmin "users_firefox-sync,$ADMIN_GROUP_M" / || true)
+[ "$OUT" = 200 ] && pass "group-gate: e2eadmin ($ADMIN_GROUP_M) passes" || fail "group-gate: e2eadmin -> $OUT"
+clear_public_policy
+
+# The admin UI's own sign-in: discovery at Portcullis's issuer (through
+# Traefik, trusting Portcullis's CA), then Keycloak, with exactly the
+# redirect URI the Hub registers for the client (keycloak_clients).
+REDIRECT="https://$ADMIN_HOST/auth/callback"
+LOC=""
+for _ in $(seq 1 20); do
+  LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "http://${AIP}:8080/auth/login" || true)
+  case "$LOC" in "https://auth.$DOMAIN/"*) break ;; *) sleep 3 ;; esac
+done
+ENC=$(jq -rn --arg u "$REDIRECT" '$u | @uri')
+if [[ "$LOC" == "https://auth.$DOMAIN/realms/portcullis/protocol/openid-connect/auth?"* ]] \
+    && echo "$LOC" | grep -q "redirect_uri=$ENC\(&\|$\)" && echo "$LOC" | grep -q 'client_id=firefox-sync-admin\(&\|$\)' \
+    && echo "$LOC" | grep -q 'code_challenge_method=S256'; then
+  pass "admin UI /auth/login -> Keycloak, client firefox-sync-admin, redirect_uri $REDIRECT, PKCE S256"
+else
+  fail "admin UI /auth/login -> ${LOC:-<none>} (discovery of https://auth.$DOMAIN/realms/portcullis failed?)"
+fi
+# Register the client as the Hub does (redirect URI from keycloak_clients),
+# then Keycloak must accept the admin UI's request and refuse any other
+# redirect URI.
+KC_TOKEN=$(keycloak_admin_token)
+CLIENT_SECRET="$FIREFOX_SYNC_ADMIN_OIDC_SECRET"
+jq -n --arg uri "$(echo "$REG_URI" | sed "s|{{HOST_FIREFOX_SYNC_ADMIN}}|$ADMIN_HOST|")" --arg s "$CLIENT_SECRET" \
+  '{clientId: "firefox-sync-admin", name: "Firefox Sync admin UI", enabled: true, protocol: "openid-connect",
+    publicClient: false, secret: $s, redirectUris: [$uri], standardFlowEnabled: true, directAccessGrantsEnabled: false,
+    defaultClientScopes: ["openid", "profile", "email", "acr", "groups"]}' \
+  | curl -s -o /dev/null -w '%{http_code}\n' -X POST "$KEYCLOAK_URL/admin/realms/portcullis/clients" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") -H 'Content-Type: application/json' -d @- \
+  | grep -Eq '^(201|409)$' && pass "Keycloak client firefox-sync-admin registered (as the Hub does)" || fail "could not register the Keycloak client"
+AUTH_PATH="/${LOC#https://auth.$DOMAIN/}"
+out=$(via_traefik "auth.$DOMAIN" "$AUTH_PATH")
+case "${out%% *}" in
+  000|400|5??) fail "Keycloak refused the admin UI's authorization request: $out" ;;
+  *) pass "Keycloak accepts the admin UI's authorization request (registered redirect URI): ${out%% *}" ;;
+esac
+BAD_PATH=$(echo "$AUTH_PATH" | sed "s|redirect_uri=$ENC|redirect_uri=$(jq -rn --arg u "https://$HOST/auth/callback" '$u | @uri')|")
+out=$(via_traefik "auth.$DOMAIN" "$BAD_PATH")
+[ "${out%% *}" = 400 ] && pass "Keycloak refuses another redirect URI (the sync host's) -> 400" || fail "Keycloak with another redirect URI: $out"
+CID=$(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sync-admin" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -r '.[0].id // empty')
+[ -n "$CID" ] && curl -s -o /dev/null -X DELETE "$KEYCLOAK_URL/admin/realms/portcullis/clients/$CID" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN")
 
 compose_down "$APP_ID"
 rm -rf "$COMPOSE_OVERRIDE" "$APPFILES_DIR"

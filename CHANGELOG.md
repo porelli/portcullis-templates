@@ -5,6 +5,22 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ## Unreleased (app instances and extra domains)
 
+### firefox-sync: admin UI (preview) on its own host; syncstorage-rs 0.25.1
+
+syncstorage-rs 0.24.0 → 0.25.1 (no schema change; its new FxA delete-data
+endpoint stays off). New setup choice **Admin UI** (default Off; Preview
+starts porelli/firefox-sync's admin UI, `firefox-sync-admin`): on its own host
+(`firefox-sync-admin.<domain>`), behind Portcullis sign-in with the instance's
+admin group required on every path (`admin_paths: ["/"]`), then its own OIDC
+sign-in (Keycloak client `firefox-sync-admin`, admin group only, no password).
+It gets two database roles of its own that can't write the allowlist or touch
+the trigger, and its own database; only the Sync role and the admin UI's
+reader may connect to the Sync database. Exactly `/` of the sync host
+redirects to the admin host while it runs. Preview: the admin image predates
+upstream's externally managed access mode. `tests/validate.py`: a custom
+template may put `portcullis-auth@docker,portcullis-groups@docker` on a
+router only where `auth.admin_paths` covers every path it serves.
+
 ### Relative binds stay in the template's own files (ux2)
 
 A template's relative bind sources are now only `./templates/<id>/…` and

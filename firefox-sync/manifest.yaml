@@ -11,34 +11,58 @@ long_description: |
   Firefox Sync keeps bookmarks, passwords, history, open tabs and add-ons in step across a person's Firefox browsers. This template runs the sync storage server yourself, so the synced data is stored on your server instead of Mozilla's.
 
   People still sign in to Firefox with their Mozilla account. Each member of the access group enters their own account id on My apps, and only listed accounts can sync. Firefox can't pass a Portcullis sign-in, so the sync host is open to the internet.
+
+  An admin UI (preview) on a host of its own shows the server's health, storage, activity and each account's Sync data, behind Portcullis sign-in for the instance's admins.
 instances: multi
 
 auth:
   # A vendor account system (Mozilla accounts), like plex.tv: no
   # native_login, since the gateway in front of it would stop Firefox.
   method: custom
-  sso: false
-  # Firefox's requests are anonymous: nothing in front enforces the group.
+  # The admin UI signs in with Portcullis's Keycloak; Firefox never does.
+  sso: partial
+  # Firefox's requests are anonymous: nothing in front of the sync host
+  # enforces a group.
   group_access: false
-  group_admin: false
+  # The admin UI admits the admin group (ADMIN_ALLOWED_GROUPS).
+  group_admin: true
   # Who may enter a Mozilla account id on My apps (person-entered values).
   access_group: users_firefox-sync
+  admin_group: admin_firefox-sync
+  # Every path of the admin host (its only router with group-gate); the
+  # sync host's routers have no group-gate, so this never reaches them.
+  admin_paths: ["/"]
   notes: |
-    A self-hosted Firefox Sync server. People sign in to Firefox with their Mozilla account, and only the Mozilla accounts on this instance's allowlist can sync; the host is open to the internet, with no Portcullis sign-in, because Firefox can't pass one.
+    A self-hosted Firefox Sync server. People sign in to Firefox with their Mozilla account, and only the Mozilla accounts on this instance's allowlist can sync; the sync host is open to the internet, with no Portcullis sign-in, because Firefox can't pass one. Its admin UI (preview) is on a host of its own, behind Portcullis sign-in for the instance's admins.
 
-    **What runs:** Mozilla's syncstorage-rs 0.24.0 (Sync storage + tokenserver; upstream <https://github.com/mozilla-services/syncstorage-rs>), as built by porelli/firefox-sync (PostgreSQL image; `links.source`). Firefox signs in with a Mozilla account at accounts.firefox.com, then calls this server's tokenserver with that account's OAuth token, which the tokenserver verifies with Mozilla and exchanges for a short-lived storage token (1 h).
+    **What runs:** Mozilla's syncstorage-rs 0.25.1 (Sync storage + tokenserver; upstream <https://github.com/mozilla-services/syncstorage-rs>), as built by porelli/firefox-sync (PostgreSQL image; `links.source`). Firefox signs in with a Mozilla account at accounts.firefox.com, then calls this server's tokenserver with that account's OAuth token, which the tokenserver verifies with Mozilla and exchanges for a short-lived storage token (1 h).
 
     **Why no Portcullis sign-in** (`method: custom`, no `native_login`): Firefox makes every Sync and tokenserver request in the background as an anonymous request, without cookies, HTTP authentication or a client certificate (RESTRequest `LOAD_ANONYMOUS`, `resource.sys.mjs` fetch; tested by porelli/firefox-sync with a sign-in proxy and with mTLS: `no_node_found` / `NS_ERROR_NET_UNCLEAN_SHUTDOWN`). Portcullis sign-in, group-gate or a client-certificate tier in front of this host would break every Firefox, so the host is open (`public@file`, `rate-limit`; the tokenserver path `/1.0/` the stricter `rate-limit-auth`; syncstorage-rs enforces its own request size limits) and access is decided by the server itself.
 
-    **Exposed on the host:**
+    **Exposed on the sync host** (anonymous, as Firefox calls it):
 
-    - `GET /1.0/sync/1.5` (tokenserver: a Mozilla OAuth token with the Sync scope is required, 401 otherwise)
+    - `GET /1.0/sync/1.5` (tokenserver: a Mozilla OAuth token with the Sync scope is required, 401 otherwise; the account-events webhook and 0.25's FxA delete-data endpoint `DELETE /1.0/users/<uid>/storage` are off)
     - `/1.5/<uid>/...` (storage: Hawk-signed with this instance's secret, 401 otherwise)
-    - `/__heartbeat__`, `/__lbheartbeat__`, `/__version__`, `/__error__` (a test error), `/` and the API docs (`/swagger-ui`, `/api-doc/openapi.json`)
+    - `/__heartbeat__`, `/__lbheartbeat__`, `/__version__`, `/__error__` (a test error) and the API docs (`/swagger-ui`, `/api-doc/openapi.json`; since 0.25 also `/admin/swagger-ui` and `/api-doc/admin-openapi.json`, documentation of endpoints that are off here)
+    - exactly `/`: with the admin UI on, a redirect (302) to the admin host; with it off, syncstorage-rs' redirect to Mozilla's docs
 
-    No password, no sign-up page, no admin UI.
+    No password, no sign-up page. The sync host never serves the admin UI.
+
+    **Admin UI (preview)** (porelli/firefox-sync's admin UI, `docs/admin/README.md` there): on its own host (default `firefox-sync-admin.<domain>`), only with the setup choice **Admin UI** = Preview. Every path of that host is behind two sign-ins:
+
+    1. Portcullis sign-in (forward-auth), then group-gate requires the instance's **admin group** (`admin_firefox-sync`; `auth.admin_paths` `/`) and the host's sign-in template. Portcullis administrators get in by being members of the admin group, like other apps' admin pages: group-gate takes one group per path.
+    2. The admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the admin group (`ADMIN_ALLOWED_GROUPS`, from the `groups` claim). Never by email: the LLDAP email is user-editable and unverified.
+
+    No password sign-in (`ADMIN_PASSWORD` empty: no form, `POST /login` answers 403), no trusted identity header, no published port, no email alerts or notifications (no outbound SMTP), no update check.
+
+    It shows the server's health, versions, storage, Sync activity and errors, the event log and each account's Sync data (by Mozilla account uid; the allowlist's `added_by` says whose), with a reset or deletion of that data and a purge of expired storage.
+
+    - **Portcullis decides who syncs, not the admin UI.** Its database role can't write the allowlist, the trigger, the nodes or the user limit. A reset or deletion of an account's Sync data deletes that account's tokenserver row and storage; the allowlist is untouched, so a still-listed account just syncs again from its browsers (Firefox uploads its local data), and an unlisted one can't come back. To stop an account syncing, take its uid off My apps or **Other allowed accounts**.
+    - **Not ready:** this admin UI image predates upstream's externally managed access mode, so its pages still show the controls of who may sync (invite-only Sync, max users), read-only or failing here. Keep it off until the template pins the image with that mode.
 
     **Database roles:** the internet-facing server connects as `firefoxsync_app`, which owns no table and is no superuser (it can't drop or disable the allowlist trigger, change `session_replication_role` or write the allowlist) and may create no database object (an event trigger; it keeps `CREATE` on the schema only for syncstorage-rs' no-op migration check). It runs no migrations; `firefox-sync-migrate` and `firefox-sync-init` use the owner and are not reachable.
+
+    The admin UI has two roles of its own, with a password of their own: `firefoxsync_admin` owns its database `firefoxsync_admin` (event log, audit trail, notes; closed to every other role) and has nothing on the Sync database; `firefoxsync_admin_sync` reads the Sync database and may only delete rows of `users` and of the storage tables. Neither owns a table, is a superuser or may create objects there: neither can bypass the trigger or write the allowlist. Only these two and `firefoxsync_app` may connect to the Sync database.
 
     **Who can sync:** the Mozilla accounts on the allowlist:
 
@@ -70,7 +94,7 @@ auth:
 
     **Residuals:** the tokenserver needs outbound HTTPS to oauth.accounts.firefox.com.
 
-    **Upgrades:** keep `firefox-sync` and `firefox-sync-migrate` on the same image; don't bump the PostgreSQL major.
+    **Upgrades:** keep `firefox-sync` and `firefox-sync-migrate` on the same image; don't bump the PostgreSQL major. porelli/firefox-sync's own init image is not used: `guard.sql` is the only allowlist trigger and sets the node and its capacity itself.
 
 files:
   - name: allowlist
@@ -79,8 +103,28 @@ files:
     on_membership_change: restart
 
 settings:
-  sections: [Accounts]
+  sections: [Accounts, Admin UI]
   options:
+    - key: admin_ui
+      label: Admin UI
+      description: >
+        The admin UI on its own host, for the instance's admin group.
+        Preview: it still shows controls of who may sync, which Portcullis
+        owns (the allowlist), until the template pins an admin image with
+        the externally managed access mode.
+      section: Admin UI
+      type: enum
+      options:
+        - {value: "off", label: "Off"}
+        - {value: preview, label: Preview (not ready)}
+      default: "off"
+      scope: instance
+      setup: true
+      profiles:
+        "off": []
+        preview: [admin]
+      applies: restart
+      delivery: [{env: FIREFOX_SYNC_ADMIN_UI}]
     - key: mozilla_uid
       label: Mozilla account ID
       description: >
@@ -122,18 +166,30 @@ env:
   - key: FIREFOX_SYNC_METRICS_SECRET
     description: tokenserver metrics hash secret
     generate: random
+  - key: FIREFOX_SYNC_ADMIN_DB_PASSWORD
+    description: Password of the admin UI's own database roles (its database, its reader of the Sync data)
+    generate: random
+  - key: FIREFOX_SYNC_ADMIN_OIDC_SECRET
+    description: OpenID Connect client secret of the admin UI (Keycloak client firefox-sync-admin)
+    generate: random
 
-keycloak_clients: []
+keycloak_clients:
+  - client_id: firefox-sync-admin
+    secret_env: FIREFOX_SYNC_ADMIN_OIDC_SECRET
+    redirect_uri: "https://{{HOST_FIREFOX_SYNC_ADMIN}}/auth/callback"
+    name: Firefox Sync admin UI
 config_files: []
 
 urls:
   - label: Token server (identity.sync.tokenserver.uri)
     url: "https://{{HOST_FIREFOX_SYNC}}/1.0/sync/1.5"
+  - label: Admin UI (preview; setup choice Admin UI)
+    url: "https://{{HOST_FIREFOX_SYNC_ADMIN}}/"
 
 # Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test").
 tests:
   signin:
-    skip: "custom: Firefox signs in with a Mozilla account, not Portcullis (no gateway); tests/apps/firefox-sync.sh checks the allowlist and the database roles"
+    skip: "custom: Firefox signs in with a Mozilla account, not Portcullis (no gateway on the sync host); tests/apps/firefox-sync.sh checks the allowlist, the database roles and the admin host (sign-in, admin group, OIDC client)"
 
 # AI support (contracts §3.2): why the AI can't act in this app.
 ai:

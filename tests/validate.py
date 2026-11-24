@@ -2360,6 +2360,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     auth = (t.manifest or {}).get("auth") or {}
     method = auth.get("method")
     admin_paths = auth.get("admin_paths") or []
+    nl = auth.get("native_login")
     gated: List[Tuple[str, List[str]]] = []  # (router, path prefixes or ["/"])
 
     check_rule_forms(t, routers, r)
@@ -2397,6 +2398,14 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                 r.error(where, f"native-oidc router must not use {AUTH_MW} on the whole host",
                         "the app's own OIDC login, API and mobile clients break behind forward-auth; "
                         "gate only specific paths (PathPrefix) such as an admin panel or the login pages")
+        elif method == "custom" and has_auth and has_groups and not isinstance(nl, dict) \
+                and all(any(prefix_covers(ap, p) for ap in admin_paths) for p in (["/"] if host_wide else paths)):
+            # A custom app's admin UI behind Portcullis (firefox-sync's admin
+            # host): allowed only where group-gate requires the admin group
+            # on every path the router serves (auth.admin_paths), so the
+            # gate never admits a mere signed-in user; never with
+            # native_login (the Hub's override owns those middlewares).
+            pass
         elif method in ("public", "custom", "mtls"):
             if has_auth or has_groups:
                 hint = ("the Hub adds them for Portcullis sign-in (auth.native_login) through its override; "

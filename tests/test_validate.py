@@ -721,6 +721,37 @@ class TestGatedClientRouters(unittest.TestCase):
         self.assertTrue(any("router element must be a host router" in e for e in errors), errors)
 
 
+class TestCustomAdminRouter(unittest.TestCase):
+    """A custom app's admin UI behind Portcullis (firefox-sync's admin host):
+    group-gate only where it requires the admin group on every path."""
+    HOST = "Host(`${PORTCULLIS_HOST_ADMIN:-demo-admin.portcullis.local}`)"
+    GATED = "client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file"
+
+    def check(self, auth: Dict[str, Any], rule: str = "") -> List[str]:
+        routers = {"admin": {"rule": rule or self.HOST, "entrypoints": "websecure",
+                             "tls.options": "default", "middlewares": self.GATED}}
+        t = v.Template("demo")
+        t.manifest = {"instances": "multi", "auth": {"method": "custom", "group_access": False,
+                                                     "admin_group": "admin_demo", **auth}}
+        r = v.Report()
+        v.check_routers(t, routers, r)
+        return [e for e in r.errors if "must not use" in e]
+
+    def test_admin_group_on_every_path_may_gate(self) -> None:
+        self.assertFalse(self.check({"admin_paths": ["/"]}))
+        self.assertFalse(self.check({"admin_paths": ["/admin"]}, self.HOST + " && PathPrefix(`/admin`)"))
+
+    def test_without_admin_paths_refused(self) -> None:
+        self.assertTrue(self.check({}))
+
+    def test_path_outside_admin_paths_refused(self) -> None:
+        self.assertTrue(self.check({"admin_paths": ["/admin"]}))
+        self.assertTrue(self.check({"admin_paths": ["/admin"]}, self.HOST + " && PathPrefix(`/api`)"))
+
+    def test_native_login_refused(self) -> None:
+        self.assertTrue(self.check({"admin_paths": ["/"], "native_login": {"supported": True}}))
+
+
 class TestCross(Case):
     def test_multi_volume_keys_must_be_unique_across_templates(self) -> None:
         self.run_template(app_id="demo")
