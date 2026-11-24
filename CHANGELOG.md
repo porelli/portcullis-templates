@@ -15,7 +15,9 @@ own OIDC sign-in (Keycloak client `firefox-sync-admin`, admin group only, no
 password). It runs in upstream's *access managed elsewhere* mode
 (`ADMIN_ACCESS_EXTERNAL`): max users, the allowlist and sign-ups are read-only
 and refused server side. porelli's init (`firefox-sync-db-init`) now runs before
-`guard.sql`, which keeps the only allowlist trigger, writes the list and narrows
+`revoke.sql` (its own transaction: no role but the owner may run porelli's
+SECURITY DEFINER functions or write the allowlist, even when the guard then
+fails) and `guard.sql`, which keeps the only allowlist trigger, writes the list and narrows
 the admin UI's grants (no allowlist functions, no max-users write). Only the
 Sync role and the admin UI's reader may connect to the Sync database. Exactly
 `/` of the sync host redirects to the admin host. `tests/validate.py`: a custom

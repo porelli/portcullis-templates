@@ -201,7 +201,10 @@ services:
   # the Sync server does not start. The Hub bind-mounts the data file's
   # directory read-only at /portcullis (manifest files[]); the file is 0640
   # group 10001, hence group_add. Other values reach psql through the
-  # environment (\getenv), never argv. Then, outside that transaction
+  # environment (\getenv), never argv. First, in a transaction of its own
+  # that guard.sql's rollback can't undo, revoke.sql: no role but the owner
+  # may run porelli's SECURITY DEFINER functions or write the allowlist.
+  # Then, outside guard.sql's transaction
   # (CREATE DATABASE can't run in one), admin-db.sql: the admin UI's own
   # database, owned by its role and closed to every other.
   firefox-sync-init:
@@ -217,6 +220,7 @@ services:
     command:
       - |
         set -e
+        psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/revoke.sql
         psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/guard.sql
         psql -X -q -t -v ON_ERROR_STOP=1 -f /etc/portcullis/admin-db.sql
     environment:
@@ -229,6 +233,7 @@ services:
       FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
       PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-firefox-sync}
     volumes:
+      - ./templates/firefox-sync/revoke.sql:/etc/portcullis/revoke.sql:ro
       - ./templates/firefox-sync/guard.sql:/etc/portcullis/guard.sql:ro
       - ./templates/firefox-sync/admin-db.sql:/etc/portcullis/admin-db.sql:ro
     depends_on:
@@ -319,9 +324,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    # Last: only after both inits finished (porelli's grants, then
+    # revoke.sql and guard.sql), and again whenever they run again.
     depends_on:
+      firefox-sync-db-init:
+        condition: service_completed_successfully
+        restart: true
       firefox-sync-init:
         condition: service_completed_successfully
+        restart: true
     networks:
       - default
       - portcullis-proxy

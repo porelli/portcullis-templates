@@ -303,6 +303,41 @@ done
 [ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 3 ] && [ "$(db "SELECT count(*) FROM users")" = 2 ] \
   && pass "refused runs changed nothing" || fail "a refused run changed the allowlist or the users"
 
+# No role but the owner may run porelli's allowlist functions or write the
+# allowlist: after both inits, and after a start the guard refused.
+PRIV_SQL="SELECT count(DISTINCT p.proname) || ':' || COALESCE(bool_or(has_function_privilege(r, p.oid, 'EXECUTE')), false)
+  || ':' || bool_or(has_table_privilege(r, 'public.sync_allowed_accounts', 'INSERT,UPDATE,DELETE,TRUNCATE'))
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public',
+       unnest(ARRAY['firefoxsync_admin', 'firefoxsync_admin_sync', 'firefoxsync_app', 'public']) r
+  WHERE p.proname IN ('ffs_allow_account', 'ffs_remove_allowed_account', 'ffs_reject_account')"
+priv_check() {  # $1 = when
+  local out
+  out=$(db "$PRIV_SQL")
+  [ "$out" = "3:false:false" ] && pass "$1: no admin role, app role or PUBLIC may run ffs_allow_account / ffs_remove_allowed_account / ffs_reject_account or write sync_allowed_accounts" \
+    || fail "$1: allowlist privileges $out (want 3:false:false: functions found, none executable, no write)"
+}
+priv_check "after both inits"
+# porelli's init grants them again; then an invalid allowlist.json: the
+# guard refuses, revoke.sql has already taken them back, and the Sync
+# server and the admin UI don't start.
+docker stop portcullis-firefox-sync-1 "portcullis-${ADMIN_SVC}-1" > /dev/null 2>&1 || true
+write_appfile "$APP_ID" allowlist "$(allowlist "[{\"user\":\"alice\",\"value\":\"not-a-uid\"}]" '[]')"
+compose_up "$APP_ID" || true
+RC=$(docker inspect -f '{{.State.ExitCode}}' portcullis-firefox-sync-init-1 2>/dev/null || echo none)
+RUN="$(docker inspect -f '{{.State.Running}}' portcullis-firefox-sync-1 2>/dev/null) $(docker inspect -f '{{.State.Running}}' "portcullis-${ADMIN_SVC}-1" 2>/dev/null)"
+[ "$RC" != 0 ] && [ "$RUN" = "false false" ] && pass "invalid allowlist.json: firefox-sync-init exit $RC, the Sync server and the admin UI stay stopped" \
+  || fail "invalid allowlist.json: init exit $RC, running (sync admin): $RUN"
+priv_check "after a start with an invalid allowlist.json"
+write_appfile "$APP_ID" allowlist "$DOC"
+compose_up "$APP_ID"
+for job in firefox-sync-db-init firefox-sync-init; do
+  RC=$(timeout 300 docker wait "portcullis-${job}-1" 2>/dev/null || echo none)
+  [ "$RC" = 0 ] || fail "$job after the restore: exit $RC"
+done
+IP=$(app_container_ip "$APP_ID" "$SERVICE")
+wait_for_url "http://${IP}:8000/__heartbeat__" 180 "$APP_ID"
+priv_check "after the restart with the valid allowlist.json"
+
 # Removal: alice left the access group (the Hub delivers her entry no more):
 # at the next start her account loses its rows; empty = nobody.
 if guard "$(allowlist "[{\"user\":\"bob\",\"value\":\"$ALLOWED_B\"}]" "[\"$ALLOWED_C\"]")" > /dev/null; then
