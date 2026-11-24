@@ -2376,6 +2376,11 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
             r.error(where, f"tls.options must be one of {sorted(TLS_OPTIONS)} (got {tls!r})")
         if method == "mtls" and tls != "protected@file":
             r.error(where, "auth.method mtls needs tls.options: protected@file")
+        prio = rt.get("priority", "")
+        if prio and re.fullmatch(r"-?[0-9]+", prio) and int(prio) > KUBE_MAX_APP_PRIORITY - 3:
+            r.error(where, f"priority {prio} is above {KUBE_MAX_APP_PRIORITY - 3}",
+                    f"the Hub's public, extra-domain sign-in and MCP routers rank +1..+3 above the app's highest "
+                    f"router, and core admits no app route above {KUBE_MAX_APP_PRIORITY} (maxAppPriority)")
 
         mws = split_middlewares(rt.get("middlewares", ""))
         has_auth, has_groups = AUTH_MW in mws, GROUPS_MW in mws

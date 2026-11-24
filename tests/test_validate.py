@@ -721,6 +721,26 @@ class TestGatedClientRouters(unittest.TestCase):
         self.assertTrue(any("router element must be a host router" in e for e in errors), errors)
 
 
+class TestRouterPriorityCap(unittest.TestCase):
+    """An explicit priority leaves room for the Hub's +1..+3 routers under
+    core's maxAppPriority (the Hub's kubePriorityWithinCap)."""
+
+    def errors(self, prio: str) -> List[str]:
+        routers = {"web": {"rule": "Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && Path(`/`)",
+                           "entrypoints": "websecure", "tls.options": "public@file",
+                           "middlewares": "security-headers@file", "priority": prio}}
+        t = v.Template("demo")
+        t.manifest = {"instances": "multi", "auth": {"method": "custom", "group_access": False}}
+        r = v.Report()
+        v.check_routers(t, routers, r)
+        return [e for e in r.errors if "priority" in e]
+
+    def test_cap(self) -> None:
+        self.assertFalse(self.errors("997"))
+        self.assertTrue(self.errors("998"))
+        self.assertTrue(self.errors("1000"))
+
+
 class TestCustomAdminRouter(unittest.TestCase):
     """A custom app's admin UI behind Portcullis (firefox-sync's admin host):
     group-gate only where it requires the admin group on every path."""

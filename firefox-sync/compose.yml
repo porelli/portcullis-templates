@@ -349,9 +349,12 @@ services:
       # Exactly / on the (public) sync host: a redirect to the admin host,
       # instead of syncstorage-rs' redirect to Mozilla's docs. Defined here,
       # so it exists only while the admin UI runs. Nothing else of the sync
-      # host changes; the redirect reaches no backend.
+      # host changes; the redirect reaches no backend. Priority 500: above
+      # the host-wide router's (its rule's length: at most 261 for any
+      # hostname, the Hub bounds it at 323), at most 997, the highest an app
+      # route may have (core's maxAppPriority 1000, minus the Hub's +1..+3).
       traefik.http.routers.firefox-sync-root.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`) && Path(`/`)
-      traefik.http.routers.firefox-sync-root.priority: "1000"
+      traefik.http.routers.firefox-sync-root.priority: "500"
       traefik.http.routers.firefox-sync-root.entrypoints: websecure
       traefik.http.routers.firefox-sync-root.tls.options: public@file
       traefik.http.routers.firefox-sync-root.middlewares: rate-limit@file,firefox-sync-root-redirect@docker,security-headers@file
