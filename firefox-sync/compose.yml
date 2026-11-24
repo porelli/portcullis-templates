@@ -151,6 +151,49 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # One-shot, every start, after the migrations and before
+  # firefox-sync-init: porelli/firefox-sync's own init (tokenserver_db_init)
+  # with access managed elsewhere (ADMIN_ACCESS_EXTERNAL). The admin UI needs
+  # what it makes: the config table, sync_refused_accounts, the ffs_*
+  # functions, the max-users trigger before_insert_user (unlimited here), the
+  # admin UI's roles, database and grants. It writes and deletes no row of
+  # sync_allowed_accounts and keeps its own invite-only trigger off; guard.sql
+  # (next) installs Portcullis's list and trigger and narrows the grants.
+  # As the database owner: no SYNC_POSTGRES_APP_USER, which would hand the
+  # Sync tables to firefoxsync_app (the internet-facing role must own none).
+  # Passwords reach psql on its input, never argv (db_init.sh).
+  firefox-sync-db-init:
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T034155@sha256:19566723433882b1e1214da8ee987a9cdf3d453713979f2696d8e6307fa98558
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      POSTGRES_SERVER: firefox-sync-db
+      POSTGRES_SERVER_PORT: "5432"
+      POSTGRES_DATABASE: firefoxsync
+      POSTGRES_USER: firefoxsync
+      POSTGRES_PASSWORD: ${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}
+      POSTGRES_SYNC_USER: ""
+      DOMAIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      ADMIN_ACCESS_EXTERNAL: "1"
+      # Portcullis's allowlist is the only list and the only limit.
+      SYNC_ALLOWED_ACCOUNTS: ""
+      MAX_USERS: unlimited
+      SYNC_DB_CONTAINERS: "1"
+      ADMIN_DB_USER: firefoxsync_admin
+      ADMIN_DB_SYNC_USER: firefoxsync_admin_sync
+      ADMIN_DB_NAME: firefoxsync_admin
+      ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_ADMIN_DB_PASSWORD must be set}
+    depends_on:
+      firefox-sync-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   # One-shot, every start: the allowlist (the Hub's data file allowlist.json:
   # uids access-group members entered + Other allowed accounts) and its
   # trigger, the node of this hostname (guard.sql), in one transaction. Fails
@@ -176,7 +219,6 @@ services:
         set -e
         psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/guard.sql
         psql -X -q -t -v ON_ERROR_STOP=1 -f /etc/portcullis/admin-db.sql
-        echo "portcullis: admin UI $$FIREFOX_SYNC_ADMIN_UI (setup choice; the admin profile runs it)"
     environment:
       PGHOST: firefox-sync-db
       PGUSER: firefoxsync
@@ -186,14 +228,11 @@ services:
       FIREFOX_SYNC_ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_ADMIN_DB_PASSWORD must be set}
       FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
       PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-firefox-sync}
-      # The setup choice Admin UI (off / preview), for the log only: the
-      # Hub starts firefox-sync-admin through its compose profile.
-      FIREFOX_SYNC_ADMIN_UI: ${FIREFOX_SYNC_ADMIN_UI:-off}
     volumes:
       - ./templates/firefox-sync/guard.sql:/etc/portcullis/guard.sql:ro
       - ./templates/firefox-sync/admin-db.sql:/etc/portcullis/admin-db.sql:ro
     depends_on:
-      firefox-sync-migrate:
+      firefox-sync-db-init:
         condition: service_completed_successfully
     restart: "no"
 
@@ -206,17 +245,13 @@ services:
   # No password sign-in (ADMIN_PASSWORD empty: no form, POST /login 403),
   # no trusted header, no published port.
   #
-  # PREVIEW, NOT READY: started only by the setup choice admin_ui = preview
-  # (profile admin). This image predates upstream's externally managed
-  # access mode, so its pages still offer the controls of who may sync
-  # (invite-only Sync, max users), which Portcullis owns (the allowlist,
-  # guard.sql). Its database role can't use them (no grant on the
-  # allowlist, the user limit or the node rows), but the pages would
-  # mislead. TODO(upstream): set the access mode below and pin the admin
-  # image that has it.
+  # Access managed elsewhere (ADMIN_ACCESS_EXTERNAL, here and in
+  # firefox-sync-db-init): Portcullis decides who syncs (the allowlist,
+  # guard.sql). The admin UI shows max users, the allowlist and sign-ups
+  # read-only and refuses every change of them server side; its database
+  # reader can't write them either (guard.sql).
   firefox-sync-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-51ff94cf7c1d@sha256:708f31e41ba150c60cdff94d91a9f58570812a9dfbbc34265c8a3284f5dce660
-    profiles: [admin]
+    image: ghcr.io/porelli/firefox-sync:admin-721640567d61@sha256:0db8bcf937d9fc4f2271620951f98f0ba0bf2296eabfacfa26bf1912cf131a17
     read_only: true
     tmpfs:
       - /tmp:size=64m
@@ -225,12 +260,9 @@ services:
     mem_limit: 256m
     pids_limit: 128
     environment:
-      # TODO(upstream): the externally managed access mode (one ADMIN_*
-      # setting, name pending): who may sync is Portcullis's, the admin
-      # UI's account approval, invite-only Sync, max users and sign-up
-      # settings off or read-only. Until then MAX_USERS and
-      # SYNC_ALLOWED_ACCOUNTS stay empty (read-only, "set in .env").
-      MAX_USERS: ""
+      # Who may sync is Portcullis's: read-only here, refused server side.
+      ADMIN_ACCESS_EXTERNAL: "1"
+      MAX_USERS: unlimited
       SYNC_ALLOWED_ACCOUNTS: ""
       # Sign-in: OpenID Connect only, with Portcullis's Keycloak (the
       # Hub-registered client keycloak_clients firefox-sync-admin; the

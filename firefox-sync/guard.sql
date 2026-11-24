@@ -114,13 +114,22 @@ END $$;
 -- allowlist.sql: sync_allowed_accounts uid, note, added_at, added_by), so
 -- its admin UI reads the same rows; added_by = the LLDAP user who entered
 -- the uid, or the admin list.
+-- firefox-sync-db-init (porelli's init, access managed elsewhere) runs first
+-- and creates the table if missing, without the uid check: added here.
 CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
-    uid VARCHAR(32) PRIMARY KEY CHECK (uid ~ '^[0-9a-f]{32}$'),
+    uid VARCHAR(32) PRIMARY KEY,
     note VARCHAR(255) NOT NULL DEFAULT '',
     added_at BIGINT NOT NULL,
     added_by VARCHAR(255) NOT NULL
 );
 DELETE FROM sync_allowed_accounts;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint WHERE conname = 'portcullis_uid_format'
+                   AND conrelid = 'public.sync_allowed_accounts'::pg_catalog.regclass) THEN
+        ALTER TABLE public.sync_allowed_accounts ADD CONSTRAINT portcullis_uid_format CHECK (uid ~ '^[0-9a-f]{32}$');
+    END IF;
+END $$;
 INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by)
 SELECT uid, '', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT, left(added_by, 255)
 FROM portcullis_wanted;
@@ -131,7 +140,10 @@ FROM portcullis_wanted;
 -- firefox-sync's own invite-only trigger (ffs_check_allowed_account), which
 -- skips the row (RETURN NULL) to keep a record of the refusal and relies on
 -- the tokenserver failing on the missing RETURNING row; it is also off with
--- an empty list, ours refuses everybody then. The uid of a refused account
+-- an empty list, ours refuses everybody then. With access managed elsewhere
+-- firefox-sync-db-init drops that trigger (before_insert_allowed_user) and
+-- never makes it; its max-users trigger (before_insert_user, unlimited)
+-- stays and fires first (triggers fire by name). The uid of a refused account
 -- shows in the database log, for the admin to list.
 -- Runs as the caller (the app role). search_path is pg_catalog only and
 -- the table is schema-qualified: the app role may create objects in public
@@ -257,7 +269,8 @@ BEGIN
     FOR t IN SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
                AND c.relname NOT IN ('users', 'nodes', 'services', '__diesel_schema_migrations',
-                                     'sync_allowed_accounts', 'config')
+                                     'sync_allowed_accounts', 'config', 'sync_refused_accounts')
+               AND c.relname NOT LIKE 'ffs\_%'
     LOOP
         EXECUTE pg_catalog.format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO firefoxsync_app', t);
     END LOOP;
@@ -267,6 +280,10 @@ GRANT UPDATE (generation, keys_changed_at, replaced_at) ON public.users TO firef
 GRANT SELECT ON public.nodes TO firefoxsync_app;
 GRANT UPDATE (current_load, available) ON public.nodes TO firefoxsync_app;
 GRANT SELECT ON public.services, public.__diesel_schema_migrations, public.sync_allowed_accounts TO firefoxsync_app;
+-- firefox-sync's max-users trigger (check_user_limit, run as the inserting
+-- role) reads its config row FOR UPDATE: that needs an UPDATE privilege on
+-- some column. updated_at only: the server can't change a value.
+GRANT SELECT, UPDATE (updated_at) ON public.config TO firefoxsync_app;
 
 -- The admin UI (firefox-sync-admin, porelli/firefox-sync's ffs-admin) has
 -- two roles of its own, both with FIREFOX_SYNC_ADMIN_DB_PASSWORD, never the
@@ -283,10 +300,15 @@ GRANT SELECT ON public.services, public.__diesel_schema_migrations, public.sync_
 -- trigger, write the allowlist, or change the nodes or the user limit. A
 -- deleted users row only ends that account's tokens: its next token request
 -- inserts a new row, which the trigger checks against the allowlist again.
--- Not granted, on purpose: INSERT / UPDATE on users, anything on nodes,
--- services or config, any write on sync_allowed_accounts, and porelli's
--- allowlist and node-load functions (ffs_allow_account ... ffs_resync_
--- node_load), which this database doesn't have: Portcullis owns who syncs.
+-- firefox-sync-db-init (before this) made both roles and granted them its
+-- set (admin_grants.sql); everything is revoked here and given again, less:
+-- not INSERT / UPDATE on users, anything on nodes or services, UPDATE of
+-- config (max users) or any write on sync_allowed_accounts, and not
+-- ffs_allow_account, ffs_remove_allowed_account or ffs_reject_account:
+-- SECURITY DEFINER functions of the owner that write the allowlist, which the
+-- admin UI refuses to call with access managed elsewhere but its role could.
+-- Kept: ffs_resync_node_load (recounts a node's load), ffs_mark_refusal_
+-- reported and ffs_drop_admin_tables (the admin UI's own old tables).
 SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'firefoxsync_admin') AS portcullis_new_admin,
        NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'firefoxsync_admin_sync') AS portcullis_new_admin_sync \gset
 \if :portcullis_new_admin
@@ -328,6 +350,13 @@ BEGIN
                AND c.relname IN ('users', 'bsos', 'user_collections', 'batches', 'batch_bsos')
     LOOP
         EXECUTE pg_catalog.format('GRANT DELETE ON public.%I TO firefoxsync_admin_sync', t);
+    END LOOP;
+    FOR t IN SELECT p.oid::pg_catalog.regprocedure::pg_catalog.text FROM pg_catalog.pg_proc p
+             JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'public'
+               AND p.proname IN ('ffs_resync_node_load', 'ffs_mark_refusal_reported', 'ffs_drop_admin_tables')
+    LOOP
+        EXECUTE 'GRANT EXECUTE ON FUNCTION ' || t || ' TO firefoxsync_admin_sync';
     END LOOP;
 END $$;
 

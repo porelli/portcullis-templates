@@ -2,7 +2,7 @@
 # Test: Firefox Sync (public host for Firefox's anonymous requests; only the
 # Mozilla accounts of the Hub's allowlist.json data file get a tokenserver
 # row: the uids access-group members entered, plus Other allowed accounts),
-# and its admin UI (preview) on a host of its own behind Portcullis sign-in,
+# and its admin UI on a host of its own behind Portcullis sign-in,
 # the admin group and its own OpenID Connect sign-in
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -89,11 +89,22 @@ if [ "$(yq -r ".services[\"$ADMIN_SVC\"].ports // [] | length" "$COMPOSE")" = 0 
 else
   fail "admin UI publishes a port"
 fi
-if [ "$(yq -r ".services[\"$ADMIN_SVC\"].profiles | join(\",\")" "$COMPOSE")" = admin ] \
-    && [ "$(yq -r '.settings.options[] | select(.key == "admin_ui") | [.default, (.profiles.preview | join(","))] | join("|")' "$MANIFEST")" = 'off|admin' ]; then
-  pass "admin UI (preview) runs only with the setup choice admin_ui = preview (default off)"
+# Access managed elsewhere: in the admin UI and porelli's init, which gets no
+# list and no limit of its own and runs as the owner (no app role to hand
+# the tables to).
+DBI() { yq -r ".services[\"firefox-sync-db-init\"].environment.$1 // \"<unset>\"" "$COMPOSE"; }
+if [ "$(ADMIN_ENV ADMIN_ACCESS_EXTERNAL)" = 1 ] && [ "$(DBI ADMIN_ACCESS_EXTERNAL)" = 1 ] \
+    && [ "$(ADMIN_ENV SYNC_ALLOWED_ACCOUNTS)" = "" ] && [ "$(DBI SYNC_ALLOWED_ACCOUNTS)" = "" ] \
+    && [ "$(DBI MAX_USERS)" = unlimited ] && [ "$(DBI POSTGRES_SYNC_USER)" = "" ]; then
+  pass "ADMIN_ACCESS_EXTERNAL=1 in the admin UI and firefox-sync-db-init; no SYNC_ALLOWED_ACCOUNTS, MAX_USERS unlimited, no app role as owner"
 else
-  fail "admin UI gating (profile admin, setup choice admin_ui default off)"
+  fail "access managed elsewhere settings of the admin UI / firefox-sync-db-init"
+fi
+if [ "$(yq -r '.services["firefox-sync-init"].depends_on | keys | join(",")' "$COMPOSE")" = firefox-sync-db-init ] \
+    && [ "$(yq -r '.services["firefox-sync-db-init"].depends_on | keys | join(",")' "$COMPOSE")" = firefox-sync-migrate ]; then
+  pass "order: firefox-sync-migrate, firefox-sync-db-init (porelli's), firefox-sync-init (guard.sql)"
+else
+  fail "init order"
 fi
 # The internet-facing server: same image as the migrations, runs none, app role.
 IMG_APP=$(yq -r '.services["firefox-sync"].image' "$COMPOSE")
@@ -170,13 +181,11 @@ COMPOSE_OVERRIDE=$(mktemp)
 export COMPOSE_OVERRIDE
 write_appfiles_override "$APP_ID" allowlist "$DOC" "$COMPOSE_OVERRIDE"
 
-# The admin UI too (the setup choice admin_ui = preview).
-export COMPOSE_PROFILES=admin
 compose_up "$APP_ID"
 HOST="$PORTCULLIS_HOST_FIREFOX_SYNC"
 ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN"
 
-for job in firefox-sync-migrate firefox-sync-init; do
+for job in firefox-sync-migrate firefox-sync-db-init firefox-sync-init; do
   if RC=$(timeout 300 docker wait "portcullis-${job}-1" 2>/dev/null) && [ "$RC" = 0 ]; then
     pass "$job exited 0"
   else
@@ -331,6 +340,10 @@ for stmt in "DROP TRIGGER portcullis_allowed_account ON users" \
             "UPDATE nodes SET capacity = 0" \
             "DELETE FROM nodes" \
             "CREATE TABLE public.portcullis_x (a int)" \
+            "UPDATE config SET config_value = '0' WHERE config_key = 'max_users'" \
+            "SELECT ffs_allow_account('$OUTSIDER', 'x', 'x')" \
+            "SELECT ffs_remove_allowed_account('$ALLOWED_A')" \
+            "SELECT ffs_reject_account('$OUTSIDER', 'x')" \
             "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$"; do
   OUT=$(admin_sql firefoxsync_admin_sync firefoxsync "$stmt" || true)
   if echo "$OUT" | grep -Eqi 'permission denied|must be owner'; then
@@ -354,9 +367,25 @@ for who in "firefoxsync_admin firefoxsync" "firefoxsync_app firefoxsync_admin" "
     fail "$1 connects to $2: $OUT"
   fi
 done
+for stmt in "UPDATE config SET config_value = '0' WHERE config_key = 'max_users'" \
+            "INSERT INTO sync_refused_accounts (uid, first_at, last_at) VALUES ('x', 1, 1)" \
+            "SELECT ffs_allow_account('$OUTSIDER', 'x', 'x')"; do
+  OUT=$(app_sql "$stmt" || true)
+  if echo "$OUT" | grep -Eqi 'permission denied'; then pass "firefoxsync_app refused: ${stmt:0:40}"; else fail "firefoxsync_app could: $stmt -> $OUT"; fi
+done
 TRIGGERS=$(db "SELECT string_agg(tgname, ',' ORDER BY tgname) FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND NOT tgisinternal")
-[ "$TRIGGERS" = portcullis_allowed_account ] && pass "users has exactly one trigger: portcullis_allowed_account (guard.sql)" \
-  || fail "users triggers: $TRIGGERS (another allowlist or limit trigger would fight guard.sql)"
+[ "$TRIGGERS" = before_insert_user,portcullis_allowed_account ] \
+  && pass "users triggers: porelli's max-users (before_insert_user) and guard.sql's portcullis_allowed_account, no before_insert_allowed_user" \
+  || fail "users triggers: $TRIGGERS"
+CONF=$(db "SELECT string_agg(config_key || '=' || config_value, ',' ORDER BY config_key) FROM config WHERE config_key IN ('allowed_accounts', 'max_users')")
+[ "$CONF" = "allowed_accounts=external,max_users=unlimited" ] && pass "config: $CONF (porelli's init, access managed elsewhere)" || fail "config: $CONF"
+# Both inits again, in their order: ours still wins (an unlisted uid refused).
+docker start -a portcullis-firefox-sync-db-init-1 > /dev/null 2>&1 && pass "firefox-sync-db-init ran again" || fail "firefox-sync-db-init failed on a second start"
+guard "$DOC" > /dev/null || fail "init refused the original allowlist after firefox-sync-db-init"
+OUT=$(insert_user "$OUTSIDER" || true)
+echo "$OUT" | grep -q "portcullis: Firefox account $OUTSIDER is not on the allowlist" \
+  && pass "after both inits: an unlisted account gets no tokenserver row" || fail "after both inits, outsider: $OUT"
+[ "$(db "SELECT count(*) FROM sync_allowed_accounts")" = 3 ] && pass "after both inits: the allowlist is Portcullis's (3 rows)" || fail "allowlist rows after both inits"
 # A deleted account (the admin UI's reset / delete) comes back only through
 # the trigger: its next row is checked against the allowlist again.
 insert_user "$ALLOWED_A" > /dev/null || true
@@ -560,6 +589,44 @@ CID=$(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sy
   -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -r '.[0].id // empty')
 [ -n "$CID" ] && curl -s -o /dev/null -X DELETE "$KEYCLOAK_URL/admin/realms/portcullis/clients/$CID" \
   -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN")
+
+# Access managed elsewhere, as the admin UI shows and enforces it. The real
+# container has no password sign-in, so a probe of the same image and
+# environment with a test password instead of OIDC (secrets in files, never
+# argv) signs in and tries the changes.
+PROBE_DIR=$(mktemp -d); chmod 700 "$PROBE_DIR"
+openssl rand -hex 16 | tr -d '\n' > "$PROBE_DIR/pw"
+docker inspect "portcullis-${ADMIN_SVC}-1" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -v -E '^(ADMIN_OIDC_[A-Z_]*|ADMIN_PASSWORD|ADMIN_ALLOWED_GROUPS|PATH|HOME)=' > "$PROBE_DIR/env"
+{ printf 'ADMIN_PASSWORD=%s\n' "$(cat "$PROBE_DIR/pw")"; echo ADMIN_INSECURE_COOKIE=1; } >> "$PROBE_DIR/env"
+PNET=$(docker inspect portcullis-firefox-sync-db-1 --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
+docker run -d --name portcullis-fxadmin-probe --network "$PNET" --read-only --tmpfs /tmp --cap-drop ALL \
+  --env-file "$PROBE_DIR/env" "$(docker inspect -f '{{.Config.Image}}' "portcullis-${ADMIN_SVC}-1")" > /dev/null
+rm -f "$PROBE_DIR/env"
+for _ in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' portcullis-fxadmin-probe 2>/dev/null)" = healthy ] && break; sleep 2; done
+PIP=$(docker inspect portcullis-fxadmin-probe --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')
+PB="http://$PIP:8080"; JAR="$PROBE_DIR/jar"
+CODE=$(curl -s -c "$JAR" -b "$JAR" -o /dev/null -w '%{http_code} %{redirect_url}' --data-urlencode "password@$PROBE_DIR/pw" "$PB/login" || echo 000)
+[ "$CODE" = "303 $PB/" ] && info "probe signed in" || fail "admin UI probe sign-in: $CODE"
+PAGE=$(curl -s -c "$JAR" -b "$JAR" "$PB/" | sed 's/<[^>]*>/ /g' | tr -s ' \n' ' ')
+echo "$PAGE" | grep -q 'Access managed elsewhere' && echo "$PAGE" | grep -q 'Who may sync managed elsewhere' \
+  && pass "admin UI overview: Access managed elsewhere, Who may sync managed elsewhere" || fail "admin UI shows no Access managed elsewhere"
+echo "$PAGE" | grep -q 'Access managed elsewhere ok' && pass "admin UI setup check Access managed elsewhere: ok (the init agrees)" \
+  || fail "admin UI setup check Access managed elsewhere not ok"
+CSRF=$(curl -s -c "$JAR" -b "$JAR" "$PB/" | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"$//')
+for form in "/sync/max-users max_users=1" "/sync/allowlist/allow uid=$OUTSIDER" "/sync/allowlist/remove uid=$ALLOWED_A"; do
+  set -- $form
+  curl -s -c "$JAR" -b "$JAR" -o /dev/null -d "csrf=$CSRF&$2" "$PB$1" || true
+  if curl -s -c "$JAR" -b "$JAR" "$PB/" | grep -q 'managed outside the admin UI (ADMIN_ACCESS_EXTERNAL): nothing changed here'; then
+    pass "admin UI refuses POST $1 (managed outside the admin UI)"
+  else
+    fail "admin UI did not refuse POST $1"
+  fi
+done
+CONF=$(db "SELECT (SELECT config_value FROM config WHERE config_key = 'max_users') || ',' || (SELECT count(*) FROM sync_allowed_accounts)")
+[ "$CONF" = "unlimited,3" ] && pass "after the refused POSTs: max users unlimited, the allowlist unchanged" || fail "after the POSTs: $CONF"
+docker rm -f portcullis-fxadmin-probe > /dev/null 2>&1 || true
+rm -rf "$PROBE_DIR"
 
 compose_down "$APP_ID"
 rm -rf "$COMPOSE_OVERRIDE" "$APPFILES_DIR"
