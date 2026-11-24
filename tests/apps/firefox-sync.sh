@@ -536,18 +536,26 @@ jq -n --arg uri "$(echo "$REG_URI" | sed "s|{{HOST_FIREFOX_SYNC_ADMIN}}|$ADMIN_H
       -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") -H 'Content-Type: application/json' -d @- \
   | grep -Eq '^(201|409)$' && pass "Keycloak client firefox-sync-admin registered (as the Hub does)" || fail "could not register the Keycloak client"
 AUTH_PATH="/${LOC#https://auth.$DOMAIN/}"
-out=$(via_traefik "auth.$DOMAIN" "$AUTH_PATH")
-case "${out%% *}" in
-  000|400|5??) fail "Keycloak refused the admin UI's authorization request: $out"
-    info "client: $(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sync-admin" \
-      -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -c '.[0] | {redirectUris, defaultClientScopes, enabled}')"
-    info "Keycloak said: $(curl -sk --resolve "auth.$DOMAIN:443:127.0.0.1" "https://auth.$DOMAIN$AUTH_PATH" | grep -o -i -E 'invalid[^<]{0,80}|error[^<]{0,80}' | head -3 | tr '\n' ' ')"
-    info "request: ${AUTH_PATH%%&state=*}" ;;
-  *) pass "Keycloak accepts the admin UI's authorization request (registered redirect URI): ${out%% *}" ;;
-esac
+# Keycloak's answer to a bad client or redirect URI is its error page
+# ("Invalid parameter: redirect_uri", "Client not found"); a good request
+# gets Portcullis's sign-in flow (an anonymous browser: its login page).
+kc_page() { curl -sk --max-time 15 --resolve "auth.$DOMAIN:443:127.0.0.1" "https://auth.$DOMAIN$1" 2>/dev/null || true; }
+KC_ERR='Invalid parameter: redirect_uri|Client not found|Invalid redirect uri|invalid_redirect_uri|unauthorized_client'
+PAGE=$(kc_page "$AUTH_PATH")
+if [ -n "$PAGE" ] && ! echo "$PAGE" | grep -Eqi "$KC_ERR"; then
+  pass "Keycloak accepts the admin UI's authorization request (client and registered redirect URI; sign-in page shown)"
+else
+  fail "Keycloak refused the admin UI's authorization request: $(echo "$PAGE" | grep -Eoi "$KC_ERR" | head -1)"
+  info "client: $(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sync-admin" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -c '.[0] | {redirectUris, defaultClientScopes, enabled}')"
+  info "request: ${AUTH_PATH%%&state=*}"
+fi
 BAD_PATH=$(echo "$AUTH_PATH" | sed "s|redirect_uri=$ENC|redirect_uri=$(jq -rn --arg u "https://$HOST/auth/callback" '$u | @uri')|")
-out=$(via_traefik "auth.$DOMAIN" "$BAD_PATH")
-[ "${out%% *}" = 400 ] && pass "Keycloak refuses another redirect URI (the sync host's) -> 400" || fail "Keycloak with another redirect URI: $out"
+if [ "$BAD_PATH" != "$AUTH_PATH" ] && kc_page "$BAD_PATH" | grep -Eqi "$KC_ERR"; then
+  pass "Keycloak refuses another redirect URI (the sync host's): invalid redirect_uri"
+else
+  fail "Keycloak did not refuse another redirect URI"
+fi
 CID=$(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=firefox-sync-admin" \
   -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -r '.[0].id // empty')
 [ -n "$CID" ] && curl -s -o /dev/null -X DELETE "$KEYCLOAK_URL/admin/realms/portcullis/clients/$CID" \
