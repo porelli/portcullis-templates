@@ -2857,10 +2857,13 @@ CORE_TRAEFIK_NAMES = {
                 # renders it on the wired provider).
                 "portcullis-mail-wellknown",
                 # core cli: the CLI API router on people.<domain> (Hub main reserves it).
-                "people-cli"},
+                "people-cli",
+                # Sign out (contract §5 "Sign out"): the guarded logout and the landing page.
+                "oauth2-signout", "signed-out"},
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
                     "directory-redirect", "hub-proxy-secret", "hub-cli-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
-                    "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self"},
+                    "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self",
+                    "portcullis-signout-guard"},
     "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people", "hub-cli",
                  "keycloak", "lldap", "mcp-gate",
                  # The mail provider slot's well-known service (the Hub's).
