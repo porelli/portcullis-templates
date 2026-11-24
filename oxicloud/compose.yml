@@ -63,7 +63,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.oxicloud.rule: Host(`${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}`)
       traefik.http.routers.oxicloud.entrypoints: websecure
-      traefik.http.routers.oxicloud.tls.options: authaware@file
+      traefik.http.routers.oxicloud.tls.options: default
       traefik.http.routers.oxicloud.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.oxicloud.service: oxicloud
       traefik.http.services.oxicloud.loadbalancer.server.port: "8086"
@@ -74,7 +74,7 @@ services:
       traefik.http.routers.oxicloud-sso.rule: Host(`${PORTCULLIS_HOST_OXICLOUD:-drive.portcullis.local}`) && PathPrefix(`/api/auth/oidc/authorize`)
       traefik.http.routers.oxicloud-sso.priority: "100"
       traefik.http.routers.oxicloud-sso.entrypoints: websecure
-      traefik.http.routers.oxicloud-sso.tls.options: authaware@file
+      traefik.http.routers.oxicloud-sso.tls.options: default
       traefik.http.routers.oxicloud-sso.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.oxicloud-sso.service: oxicloud
     restart: unless-stopped

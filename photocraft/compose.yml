@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.photocraft.rule: Host(`${PORTCULLIS_HOST_PHOTOCRAFT:-photocraft.portcullis.local}`)
       traefik.http.routers.photocraft.entrypoints: websecure
-      traefik.http.routers.photocraft.tls.options: authaware@file
+      traefik.http.routers.photocraft.tls.options: default
       traefik.http.routers.photocraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.photocraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

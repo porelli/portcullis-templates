@@ -6,6 +6,10 @@ tags: [finance, accounting, budget, bookkeeping]
 links:
   website: https://www.firefly-iii.org/
   source: https://github.com/firefly-iii/firefly-iii
+long_description: |
+  Firefly III is a personal finance manager based on double-entry bookkeeping. It tracks accounts, income and expenses, budgets, categories, bills and piggy banks, and has rules for automatic categorisation and an API for importers.
+
+  Portcullis signs people in and passes their username to Firefly III, which creates their account on first sign-in.
 instances: multi
 
 auth:
@@ -15,19 +19,14 @@ auth:
   group_admin: false
   access_group: users_firefly-iii
   admin_group: admin_firefly-iii
-  notes: >
-    Uses remote_user_guard: the account is keyed on X-Forwarded-User, the
-    immutable LLDAP username (stored in Firefly's email column; Firefly does
-    not require an address there). X-Forwarded-Email (user-editable in LLDAP)
-    only sets the notification address and never selects an account.
-    remote_user_guard has no proxy allowlist, so the container's nginx rejects
-    (403) any request carrying X-Forwarded-User or X-Forwarded-Email that does
-    not come from Traefik (PORTCULLIS_TRAEFIK_SOURCE); TRUSTED_PROXIES is likewise
-    limited to Traefik. Auto-creates user on first login. No group-based admin
-    support. Upgrading from a release that keyed users on email: the old
-    accounts are named after the email; rename them to the LLDAP username
-    (users.email column) before users log in again, or they get new empty
-    accounts.
+  notes: |
+    Uses `remote_user_guard`: the account is keyed on `X-Forwarded-User`, the immutable LLDAP username. Auto-creates user on first login; no group-based admin support.
+
+    - The username is stored in Firefly's email column (Firefly does not require an address there).
+    - `X-Forwarded-Email` (user-editable in LLDAP) only sets the notification address and never selects an account.
+    - `remote_user_guard` has no proxy allowlist, so the container's nginx rejects (403) any request carrying `X-Forwarded-User` or `X-Forwarded-Email` that does not come from Traefik (`PORTCULLIS_TRAEFIK_SOURCE`); `TRUSTED_PROXIES` is likewise limited to Traefik.
+
+    **Upgrading from a release that keyed users on email:** the old accounts are named after the email; rename them to the LLDAP username (`users.email` column) before users log in again, or they get new empty accounts.
 
 env:
   - key: FIREFLY_APP_KEY

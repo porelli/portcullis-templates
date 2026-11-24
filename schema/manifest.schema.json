@@ -26,9 +26,44 @@
       "maxLength": 16
     },
     "category": {
-      "description": "Catalog category (lowercase, e.g. monitoring, media, productivity, security, networking, ai, devops, finance, vpn, remote-access, public).",
+      "description": "Catalog category (contract §3 \"Catalog fields\"): one of the 16 slugs, in the Marketplace's order. The Hub labels a slug outside the list from the slug and sorts it last; this repo accepts only these.",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+      "enum": ["productivity", "communication", "mail", "storage", "media", "creative", "home-automation", "ai",
+               "finance", "devops", "monitoring", "networking", "vpn", "remote-access", "security", "public"]
+    },
+    "long_description": {
+      "description": "Markdown for the Marketplace's detail drawer (contract §3 \"Catalog fields\"): the auth.notes pipeline and limits (at most 16 KiB, nesting 16, no hidden characters, no raw HTML, images or links the Hub turns into text). A YAML literal block of 2-5 short paragraphs: what the app is, what it is good for, what Portcullis wires. Never a copy of auth.notes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "logo": {
+      "description": "An SVG logo file in the template folder itself (no directory part), at most 64 KiB, UTF-8, passing the logo lint (contract §3; tests/svgsafe.py). Only a logo the project publishes under terms that allow redistribution, with its REUSE sidecar <logo>.license (SPDX-FileCopyrightText, SPDX-License-Identifier, source, changes) and the licence text in LICENSES/<identifier>.txt; also listed in CHANGELOG.md. Without one the emoji icon is shown.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}\\.svg$"
+    },
+    "resources": {
+      "description": "The minimum resources the project's own documentation states (contract §3). Leave a figure out when upstream documents none.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_memory_mib": {"description": "Minimum RAM in MiB.", "type": "integer", "minimum": 16, "maximum": 1048576},
+        "min_disk_gib": {"description": "Minimum disk in GiB.", "type": "integer", "minimum": 1, "maximum": 65536}
+      }
+    },
+    "screenshots": {
+      "description": "Up to 6 screenshots in the template folder itself (contract §3): png, jpg or webp, at most 512 KiB each with leading bytes matching the extension, and 4096 x 4096 pixels (checked by tests/validate.py only); a one-line caption of at most 120 characters.",
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "caption"],
+        "properties": {
+          "file": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}\\.(png|jpg|webp)$"},
+          "caption": {"$ref": "#/$defs/singleLine", "minLength": 1, "maxLength": 120}
+        }
+      }
     },
     "tags": {
       "description": "Searchable tags (lowercase).",
@@ -145,6 +180,7 @@
         },
         "wellknown": {"$ref": "#/$defs/mailEndpoint", "description": "MTA-STS, autoconfig and autodiscover: the Hub's portcullis-mail-wellknown router routes to it."},
         "metrics": {"$ref": "#/$defs/mailEndpoint", "description": "The provider's metrics, scraped by core's Prometheus."},
+        "admin_view": {"$ref": "#/$defs/mailEndpoint", "description": "Optional: the read-only mail admin view (contracts §19.13), a service of its own (never in tls or gated, not the api, listeners, wellknown or metrics service). The Hub routes mail-admin.<main domain> to it behind an admin-only router."},
         "server_metrics": {
           "description": "Optional: the mail server's own metrics and their absolute URL path.",
           "type": "object",
@@ -399,7 +435,11 @@
           "description": "native-oidc only, needs access_group. The Hub restricts sign-in to access_group in Keycloak (contract §8 Access role): every client of the instance gets the client role access, the instance's access group gets it, and the client's browser flow denies sign-in without it (also on the SSO-cookie path). Set it for apps that can't restrict sign-in to a group themselves or that let outsiders create accounts without rights. The Hub does the same for every native-oidc template with group_access: false (which must therefore declare access_group). Fails closed: without the group or the role nobody signs in. Only access_group members sign in, admin_group members included only if they are in access_group too. Every client of such an app has direct access grants, implicit flow, service accounts, device and CIBA grants and standard token exchange switched off (only the browser flow signs in): don't use it for an app whose client needs one of them.",
           "type": "boolean"
         },
-        "notes": {"type": "string"},
+        "notes": {
+          "description": "Markdown for admins (contract §3): CommonMark plus GitHub tables and autolinks, rendered and sanitised by the Hub (notes_html). Write it as a YAML literal block (|) and open with a one- or two-sentence summary paragraph; it is also the portal note of an app without a web page (its plain text, at most 300 runes). At most 16 KiB (also maxLength here, in characters), block nesting at most 16, no control, bidi or zero-width characters. Raw HTML is never shown and tests/validate.py refuses it, images and links the Hub would turn into text too; only http/https (no userinfo) and mailto links stay links.",
+          "maxLength": 16384,
+          "type": "string"
+        },
         "public_access": {"$ref": "#/$defs/publicAccess"},
         "native_login": {"$ref": "#/$defs/nativeLogin"},
         "identity_headers": {

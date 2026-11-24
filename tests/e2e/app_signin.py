@@ -444,11 +444,26 @@ def policy_doc(ver: int) -> dict:
         }
 
 
+# A host as the extension accepts it in app_hosts (contract §8.1): a
+# lowercase DNS name of at most 253 characters (the Hub's appHostRE).
+APP_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+
+
+def app_hosts(policy: dict) -> list:
+    """signin-keycloak.json app_hosts as the Hub publishes it (contract §8.1
+    "Let through"): the gated core pages' hosts (the policy's `core`) and
+    every host of the enabled app, lowercase, valid, sorted, each once."""
+    hs = {h.lower() for h in list(policy.get("core", {})) + list(HOSTS.values())}
+    return sorted(h for h in hs if len(h) <= 253 and APP_HOST_RE.match(h))
+
+
 def keycloak_doc(ver: int) -> dict:
     """Build the signin-keycloak.json document for the given version.
 
     For v6+: contract §8.1, the Keycloak extension reads this file to
-    decide which sign-in methods are available and enforce templates.
+    decide which sign-in methods are available and enforce templates;
+    it refuses the whole file (every sign-in method off) without
+    app_hosts, the hosts its "Let through" page may name.
     """
     if ver >= 6:
         methods = ["passkey_device", "passkey_synced", "security_key", "yubikey_cert"]
@@ -466,7 +481,8 @@ def keycloak_doc(ver: int) -> dict:
             "templates": {"standard": standard_template},
             "clients": {},
             "authenticators": {},
-            "mds": {"serial": 0, "next_update": "0001-01-01T00:00:00Z"}
+            "mds": {"serial": 0, "next_update": "0001-01-01T00:00:00Z"},
+            "app_hosts": app_hosts(policy_doc(ver))
         }
     return {}
 
@@ -514,6 +530,9 @@ def selftest() -> None:
     assert kc6["authenticators"] == {}, f"keycloak_doc v6 authenticators: got {kc6['authenticators']}, want {{}}"
     assert kc6["mds"] == {"serial": 0, "next_update": "0001-01-01T00:00:00Z"}, \
         f"keycloak_doc v6 mds: got {kc6['mds']}"
+    want_hosts = sorted({h.lower() for h in list(v6["core"]) + list(HOSTS.values())})
+    assert kc6["app_hosts"] == want_hosts, f"keycloak_doc v6 app_hosts: got {kc6['app_hosts']}, want {want_hosts}"
+    assert f"auth.{DOMAIN}" not in kc6["app_hosts"], "keycloak_doc v6 app_hosts: auth.<domain> listed"
     # keycloak_doc v5: no file for v5, returns empty.
     kc5 = keycloak_doc(5)
     assert kc5 == {}, f"keycloak_doc v5: got {kc5}, want {{}}"

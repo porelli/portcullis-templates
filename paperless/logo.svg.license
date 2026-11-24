@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2026 The paperless-ngx contributors
+SPDX-License-Identifier: GPL-3.0-only
+
+Source: https://github.com/paperless-ngx/paperless-ngx/blob/fbadc2e1b8c34f80b48be0766cae7168e0e8ec24/docs/assets/logo_leaf.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

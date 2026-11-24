@@ -6,6 +6,10 @@ tags: [kanban, projects, tasks, boards]
 links:
   website: https://kanboard.org/
   source: https://github.com/kanboard/kanboard
+long_description: |
+  Kanboard is a minimalist Kanban project management tool: boards with columns and swimlanes, tasks with subtasks, due dates and comments, and simple analytics.
+
+  Portcullis signs people in and passes their username to Kanboard, which creates their account on first sign-in.
 instances: multi
 
 auth:
@@ -15,19 +19,16 @@ auth:
   group_admin: false
   access_group: users_kanboard
   admin_group: admin_kanboard
-  notes: >
-    No public exceptions: Kanboard's router reads ?controller=&action= before
-    the path (app/Core/Http/Router.php), so any public prefix would reach
-    every APP_PUBLIC action, local password login included.
-    Reverse proxy auth: users are matched on X-Forwarded-User, the immutable
-    LLDAP username, honoured only from Traefik (TRUSTED_PROXY_NETWORKS =
-    PORTCULLIS_TRAEFIK_SOURCE). X-Forwarded-Email (user-editable) only fills the
-    profile email and is ignored from other peers too. Auto-creates users on
-    first login. The LLDAP user picked in "Kanboard administrator"
-    (default admin = LLDAP's built-in admin) gets the
-    Kanboard admin role; other roles are set in the Kanboard UI. Access gated
-    by group-gate. Accounts created when the header carried the email are
-    named after it; rename them to the LLDAP username in Kanboard.
+  notes: |
+    Reverse proxy auth: users are matched on `X-Forwarded-User`, the immutable LLDAP username, and auto-created on first login. Access gated by group-gate.
+
+    - The header is honoured only from Traefik (`TRUSTED_PROXY_NETWORKS` = `PORTCULLIS_TRAEFIK_SOURCE`).
+    - `X-Forwarded-Email` (user-editable) only fills the profile email and is ignored from other peers too.
+    - The LLDAP user picked in **Kanboard administrator** (default `admin` = LLDAP's built-in admin) gets the Kanboard admin role; other roles are set in the Kanboard UI.
+
+    **No public exceptions:** Kanboard's router reads `?controller=&action=` before the path (`app/Core/Http/Router.php`), so any public prefix would reach every `APP_PUBLIC` action, local password login included.
+
+    Accounts created when the header carried the email are named after it; rename them to the LLDAP username in Kanboard.
 
 settings:
   options:

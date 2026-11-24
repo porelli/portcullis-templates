@@ -82,7 +82,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.mealie.rule: Host(`${PORTCULLIS_HOST_MEALIE:-recipes.portcullis.local}`)
       traefik.http.routers.mealie.entrypoints: websecure
-      traefik.http.routers.mealie.tls.options: authaware@file
+      traefik.http.routers.mealie.tls.options: default
       traefik.http.routers.mealie.middlewares: client-headers@file,security-headers@file
       traefik.http.services.mealie.loadbalancer.server.port: "9000"
     restart: unless-stopped

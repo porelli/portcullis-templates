@@ -96,7 +96,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.motioneye.rule: Host(`${PORTCULLIS_HOST_MOTIONEYE:-cameras.portcullis.local}`)
       traefik.http.routers.motioneye.entrypoints: websecure
-      traefik.http.routers.motioneye.tls.options: authaware@file
+      traefik.http.routers.motioneye.tls.options: default
       traefik.http.routers.motioneye.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.motioneye.service: motioneye
       traefik.http.services.motioneye.loadbalancer.server.port: "8765"

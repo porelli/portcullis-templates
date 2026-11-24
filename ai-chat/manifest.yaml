@@ -6,6 +6,10 @@ tags: [ai, chat, llm, mcp, librechat]
 links:
   website: https://www.librechat.ai/
   source: https://github.com/danny-avila/LibreChat
+long_description: |
+  AI Chat is LibreChat, a chat interface for large language models. People chat with the models the administrator has chosen on the instance's AI tab, keep their conversations, and can use presets and agents.
+
+  Portcullis signs people in through OpenID Connect, limited to the access group, and connects LibreChat to one MCP server, "All my apps": the AI can use the Portcullis apps the signed-in person may use, with that person's rights.
 instances: multi
 
 auth:
@@ -15,42 +19,31 @@ auth:
   group_admin: false
   keycloak_access_role: true
   access_group: users_ai-chat
-  notes: >
-    LibreChat 0.8.8 signs people in through Keycloak (OpenID only: no
-    password login, no local sign-up, no password reset). Only members of
-    users_ai-chat get in: the Hub's Keycloak access role refuses everyone
-    else, and LibreChat itself requires the access group in the ID token's
-    groups claim. Accounts are keyed on the token's sub; the name shown is
-    the LLDAP username. Nobody is a LibreChat administrator (OpenID
-    accounts are plain users), and the configuration comes only from the
-    Hub. The AI side: one MCP server, "All my apps"
-    (https://mcp.<domain>/mcp), reached with each person's own OAuth token
-    of the instance's ai-chat-mcp client (scope mcp:all): each person
-    connects once and consents in Keycloak; nobody can add other MCP
-    servers. Nothing a person does makes the server fetch a URL they
-    chose: agents have no actions (OpenAPI calls), web search, code
-    interpreter, file search or OCR, and of LibreChat's built-in tools only
-    the calculator is offered. Conversations can't be shared (no shared links, public or
-    not), and a link can't submit a prompt by itself. Models: the providers selected on the instance's AI tab (Hub
-    Settings → AI), each shown under its label. Everyone who can open the
-    instance can use every provider selected for it, and what they send,
-    and what their apps return, goes to that provider; give a group other
-    providers with another ai-chat instance and its own access group.
-    Kinds: OpenAI-compatible servers and LiteLLM, OpenAI, Anthropic
-    (LibreChat's native Messages API client), Google (Gemini through
-    Google's OpenAI-compatible API, https://generativelanguage.googleapis.com/v1beta/openai
-    unless the provider sets its own base URL) and Azure OpenAI deployment
-    groups. AWS Bedrock isn't offered: LibreChat takes Bedrock credentials
-    only from its own fixed variables, never as a configuration reference.
-    Keys are never written to a file: librechat.yaml holds ${VAR}
-    references LibreChat expands from its environment. A provider with
-    per-person keys asks each person for their own key (not possible for
-    Azure OpenAI: the instance refuses to start). A provider whose key
-    isn't set yet is left out until it is. Upgrades: LibreChat's api and
-    config services share one image; MongoDB stays on 7.0 (MongoDB 8
-    refuses Linux kernels 6.19 to 7.0.13) and its majors and Meilisearch
-    minors move by hand with LibreChat's own compose file (the search
-    index is rebuilt from MongoDB).
+  notes: |
+    LibreChat 0.8.8, an AI chat for members of `users_ai-chat`: they sign in through Keycloak and chat with the providers selected on the instance's AI tab, with one MCP server, "All my apps".
+
+    **Sign-in:** through Keycloak, OpenID only (no password login, no local sign-up, no password reset).
+
+    - Only members of `users_ai-chat` get in: the Hub's Keycloak access role refuses everyone else, and LibreChat itself requires the access group in the ID token's `groups` claim.
+    - Accounts are keyed on the token's `sub`; the name shown is the LLDAP username.
+    - Nobody is a LibreChat administrator (OpenID accounts are plain users), and the configuration comes only from the Hub.
+
+    **The AI side:** one MCP server, "All my apps" (`https://mcp.<domain>/mcp`), reached with each person's own OAuth token of the instance's `ai-chat-mcp` client (scope `mcp:all`): each person connects once and consents in Keycloak; nobody can add other MCP servers.
+
+    - Nothing a person does makes the server fetch a URL they chose: agents have no actions (OpenAPI calls), web search, code interpreter, file search or OCR, and of LibreChat's built-in tools only the calculator is offered.
+    - Conversations can't be shared (no shared links, public or not), and a link can't submit a prompt by itself.
+
+    **Models:** the providers selected on the instance's AI tab (Hub **Settings → AI**), each shown under its label. Everyone who can open the instance can use every provider selected for it, and what they send, and what their apps return, goes to that provider; give a group other providers with another ai-chat instance and its own access group.
+
+    - Kinds: OpenAI-compatible servers and LiteLLM, OpenAI, Anthropic (LibreChat's native Messages API client), Google (Gemini through Google's OpenAI-compatible API, `https://generativelanguage.googleapis.com/v1beta/openai` unless the provider sets its own base URL) and Azure OpenAI deployment groups.
+    - AWS Bedrock isn't offered: LibreChat takes Bedrock credentials only from its own fixed variables, never as a configuration reference.
+
+    **Keys** are never written to a file: `librechat.yaml` holds `${VAR}` references LibreChat expands from its environment.
+
+    - A provider with per-person keys asks each person for their own key (not possible for Azure OpenAI: the instance refuses to start).
+    - A provider whose key isn't set yet is left out until it is.
+
+    **Upgrades:** LibreChat's `api` and `config` services share one image. MongoDB stays on 7.0 (MongoDB 8 refuses Linux kernels 6.19 to 7.0.13); its majors and Meilisearch minors move by hand with LibreChat's own compose file (the search index is rebuilt from MongoDB).
 
 env:
   - key: AI_CHAT_OIDC_SECRET

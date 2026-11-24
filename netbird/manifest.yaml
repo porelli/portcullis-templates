@@ -6,6 +6,12 @@ tags: [vpn, wireguard, mesh, zero-trust]
 links:
   website: https://netbird.io/
   source: https://github.com/netbirdio/netbird
+long_description: |
+  NetBird is a WireGuard-based mesh VPN with zero-trust access control. Devices connect peer to peer; the management service hands out keys and access policies, and a relay helps when a direct connection isn't possible.
+
+  Portcullis signs people in to the dashboard through OpenID Connect.
+resources:
+  min_memory_mib: 2048
 instances: multi
 
 auth:
@@ -16,24 +22,16 @@ auth:
   group_admin: false
   access_group: users_netbird
   admin_group: admin_netbird
-  notes: >
-    Dashboard uses OIDC. Management API validates JWT audience. No group-based
-    access restriction — all OIDC users can access dashboard. Identity:
-    management keys users on the token's sub (AuthUserIDClaim; no IdP
-    manager, so nothing is matched by email). The dashboard sends the ID token to the management API (NETBIRD_TOKEN_SOURCE=idToken): its audience is the client id management checks; Keycloak access tokens would carry aud "account".
-    Upgrades: netbird-management and netbird-signal are pinned to the same
-    release and must move together (the dashboard has its own version line);
-    follow the upstream upgrade notes and do not skip releases with migrations.
-    Instances: coturn runs with host networking (a TURN relay advertises its
-    relay ports to peers, so they must be the host's own ports) and binds the
-    STUN/TURN and TURNS ports and the UDP media relay range itself. All three
-    are per-instance port settings; the defaults (3478, 5349, 49152-65535)
-    are taken by the first instance, so the Hub's port collision check
-    refuses to start another instance until it is given free ports and a
-    range that doesn't overlap (e.g. 3479, 5350, 40000-40999).
-    management.json is generated once (it holds NetBird's
-    DataStoreEncryptionKey); a later hostname, STUN port or
-    TURN public IP change is applied to it in place on the next start.
+  notes: |
+    Dashboard uses OIDC; the management API validates the JWT audience. No group-based access restriction — all OIDC users can access the dashboard.
+
+    **Identity:** management keys users on the token's `sub` (`AuthUserIDClaim`; no IdP manager, so nothing is matched by email). The dashboard sends the ID token to the management API (`NETBIRD_TOKEN_SOURCE=idToken`): its audience is the client id management checks; Keycloak access tokens would carry aud `account`.
+
+    **Upgrades:** `netbird-management` and `netbird-signal` are pinned to the same release and must move together (the dashboard has its own version line); follow the upstream upgrade notes and do not skip releases with migrations.
+
+    **Instances:** coturn runs with host networking (a TURN relay advertises its relay ports to peers, so they must be the host's own ports) and binds the STUN/TURN and TURNS ports and the UDP media relay range itself. All three are per-instance port settings; the defaults (3478, 5349, 49152-65535) are taken by the first instance, so the Hub's port collision check refuses to start another instance until it is given free ports and a range that doesn't overlap (e.g. 3479, 5350, 40000-40999).
+
+    `management.json` is generated once (it holds NetBird's `DataStoreEncryptionKey`); a later hostname, STUN port or TURN public IP change is applied to it in place on the next start.
 
 ports:
   - key: COTURN_STUN_PORT

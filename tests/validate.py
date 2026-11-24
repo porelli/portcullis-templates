@@ -39,16 +39,25 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs jsonschema: pip install pyyaml jsonschema")
 try:
+    from markdown_it import MarkdownIt  # auth.notes: CommonMark tokens, as the Hub's goldmark parses them
+except ImportError:  # pragma: no cover
+    sys.exit("validate.py needs markdown-it-py: pip install -r tests/requirements.txt")
+try:
     import re2  # google-re2: setting patterns are RE2, as in the Hub (Go regexp)
 except ImportError:  # pragma: no cover
     sys.exit("validate.py needs google-re2: pip install -r tests/requirements.txt")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import svgsafe  # logo lint (contract §3), defusedxml
+except ImportError:  # pragma: no cover
+    sys.exit("validate.py needs defusedxml: pip install -r tests/requirements.txt")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(ROOT, "schema", "manifest.schema.json")
 DOCS_URL = "https://porelli.github.io/portcullis-docs/guides"
 
 # Directories at the repo root that are not templates.
-NON_TEMPLATE_DIRS = {"tests", "schema"}
+NON_TEMPLATE_DIRS = {"tests", "schema", "LICENSES"}
 
 # Hub idRe (contracts §3).
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -124,7 +133,7 @@ HOST_PLACEHOLDER_RE = re.compile(r"\{\{HOST_([A-Za-z0-9_]*)\}\}")
 PROXY_NET = "portcullis-proxy"
 AUTH_MW = "portcullis-auth@docker"
 GROUPS_MW = "portcullis-groups@docker"
-TLS_OPTIONS = {"authaware@file", "public@file", "protected@file"}
+TLS_OPTIONS = {"default", "public@file", "protected@file"}
 
 # Host paths (relative to the core checkout) a template may bind-mount besides
 # ./templates/<app-id>/...: path -> (requires read-only, why).
@@ -422,12 +431,18 @@ def _construct_key(loader: yaml.SafeLoader, key_node: yaml.Node, deep: bool) -> 
 
 def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> Dict[Any, Any]:
     seen: Set[Any] = set()
+    texts: Set[str] = set()
     for key_node, _ in node.value:
         key = _construct_key(loader, key_node, deep)
-        if key in seen:
+        # yaml.v3 compares a scalar key by its text, whatever its tag or
+        # quoting (N6): 1 and "1", true and "true" are the same key there.
+        text = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+        if key in seen or (text is not None and text in texts):
             raise yaml.constructor.ConstructorError(
                 None, None, f"duplicate key {key!r}", key_node.start_mark)
         seen.add(key)
+        if text is not None:
+            texts.add(text)
     loader.flatten_mapping(node)   # merge keys (<<), as SafeLoader.construct_mapping
     mapping: Dict[Any, Any] = {}
     for key_node, value_node in node.value:
@@ -821,6 +836,298 @@ def check_manifest_rules(t: Template, r: Report) -> None:
         r.warn(t.m_where, f"auth.method {auth['method']} with group_access: false lets every Portcullis user in",
                "set group_access: true and access_group: users_<app> unless that is intended")
 
+    check_notes(t, r)
+    check_long_description(t, r)
+    check_logo(t, r)
+    check_screenshots(t, r)
+
+
+NOTES_HINT = ("auth.notes is Markdown and the Hub never shows raw HTML (contract §3): use Markdown, put "
+              "tags and placeholders such as <instance-id> in backticks, or write &lt; for a literal <")
+NOTES_LIMITS_HINT = ("contract §3: auth.notes is at most 16 KiB, nests block quotes and list items at most 16 deep "
+                     "and holds no control, bidi or zero-width character (only newline and tab)")
+NOTES_LINK_HINT = ("contract §3: the Hub keeps only absolute http/https links with a host and no user@ part, and "
+                   "mailto: links (anything else becomes text); images are never shown")
+# The Hub's limits (internal/notes MaxBytes, MaxDepth): rendering Markdown
+# is superlinear in the nesting depth.
+NOTES_MAX_BYTES = 16 << 10
+NOTES_MAX_DEPTH = 16
+# CommonMark (as goldmark, the Hub's parser) plus GitHub tables; html stays
+# on so raw HTML shows up as html_block / html_inline tokens to refuse.
+# maxNesting (commonmark preset: 20 block tokens, about 10 list levels)
+# raised so a depth over NOTES_MAX_DEPTH is seen, not cut off.
+NOTES_MD = MarkdownIt("commonmark", {"maxNesting": 4 * NOTES_MAX_DEPTH + 8}).enable("table")
+# Default-ignorable and variation-selector code points (the Hub's
+# templates.HiddenRune; Cc, Cf, Zl, Zp, Co, Cs and non-ASCII Zs come from
+# the category).
+NOTES_IGNORABLE = ({0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0} | set(range(0x180B, 0x1810))
+                   | set(range(0xFE00, 0xFE10)) | set(range(0xE0100, 0xE01F0)) | set(range(0xE0000, 0xE1000)))
+
+
+def notes_hidden_char(notes: str) -> Optional[Tuple[int, str]]:
+    """The first character of notes a person can't see as written (the
+    Hub's HiddenRune, newline and tab allowed), as (index, U+XXXX)."""
+    for i, c in enumerate(notes):
+        if c in "\n\t":
+            continue
+        cat = unicodedata.category(c)
+        if cat in ("Cc", "Cf", "Zl", "Zp", "Co", "Cs") or (cat == "Zs" and c != " ") or ord(c) in NOTES_IGNORABLE:
+            return i, f"U+{ord(c):04X}"
+    return None
+
+
+def notes_marker_depth(line: str) -> int:
+    """The block quote and list markers a line opens with (the Hub's
+    notes.markerDepth): a cheap bound before parsing."""
+    d, s = 0, line
+    while d <= NOTES_MAX_DEPTH:
+        s = s.lstrip(" \t")
+        m = re.match(r">|[-*+][ \t]|[0-9]{1,9}[.)][ \t]", s)
+        if not m:
+            break
+        s = s[m.end():]
+        d += 1
+    return d
+
+
+def notes_problems(notes: str) -> List[Tuple[str, str]]:
+    """What auth.notes breaks (contract §3), as (message, hint)."""
+    return markdown_problems(notes, "auth.notes")
+
+
+def markdown_problems(notes: str, field: str) -> List[Tuple[str, str]]:
+    """What a Markdown field (auth.notes, long_description) breaks
+    (contract §3), as (message, hint): over the size or depth limit, a
+    hidden character, raw HTML (CommonMark html_block / html_inline tokens,
+    parsed by markdown-it-py), an image or a link the Hub wouldn't keep.
+    auth.notes messages read "auth.notes is …", every other field's
+    "<field>: is …" (contract §3, fix round 1; the Hub's alike)."""
+    out = _markdown_problems(notes, field)
+    if field == "auth.notes":
+        return out
+    return [(f"{field}:{msg[len(field):]}", hint) for msg, hint in out]
+
+
+def _markdown_problems(notes: str, field: str) -> List[Tuple[str, str]]:
+    size = len(notes.encode("utf-8"))
+    if size > NOTES_MAX_BYTES:
+        return [(f"{field} is {size} bytes, at most {NOTES_MAX_BYTES} allowed", NOTES_LIMITS_HINT)]
+    hidden = notes_hidden_char(notes)
+    if hidden:
+        return [(f"{field} has the hidden character {hidden[1]} at character {hidden[0]}", NOTES_LIMITS_HINT)]
+    if any(notes_marker_depth(line) > NOTES_MAX_DEPTH for line in notes.split("\n")):
+        return [(f"{field} nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT)]
+    tokens = NOTES_MD.parse(notes)
+    depth = deepest = 0
+    out: List[Tuple[str, str]] = []
+    for tok in tokens:
+        if tok.type in ("blockquote_open", "list_item_open"):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif tok.type in ("blockquote_close", "list_item_close"):
+            depth -= 1
+        elif tok.type == "html_block":
+            out.append((f"{field} has raw HTML: {tok.content.strip()[:24]!r}", NOTES_HINT))
+        for child in tok.children or []:
+            if child.type == "html_inline":
+                out.append((f"{field} has raw HTML: {child.content[:24]!r}", NOTES_HINT))
+            elif child.type == "image":
+                out.append((f"{field} has an image: {str(child.attrs.get('src', ''))[:40]!r}", NOTES_LINK_HINT))
+            elif child.type == "link_open" and not notes_link_ok(str(child.attrs.get("href", ""))):
+                out.append((f"{field} has a link the Hub turns into text: {str(child.attrs.get('href', ''))[:40]!r}",
+                            NOTES_LINK_HINT))
+    if deepest > NOTES_MAX_DEPTH:
+        out.insert(0, (f"{field} nests blocks deeper than {NOTES_MAX_DEPTH}", NOTES_LIMITS_HINT))
+    return out
+
+
+def notes_link_ok(href: str) -> bool:
+    """The Hub's notes.allowedURL: absolute http/https with a host and no
+    userinfo, or mailto with an address."""
+    try:
+        u = urlsplit(href.strip())
+    except ValueError:
+        return False
+    if u.scheme.lower() in ("http", "https"):
+        return bool(u.hostname) and "@" not in u.netloc
+    if u.scheme.lower() == "mailto":
+        return bool(u.path)
+    return False
+
+
+def notes_raw_html(notes: str) -> List[str]:
+    """The raw HTML snippets in Markdown notes (html_block / html_inline)."""
+    return [msg.split(": ", 1)[1] for msg, hint in notes_problems(notes) if hint == NOTES_HINT]
+
+
+def check_markdown(t: Template, r: Report, field: str, text: Any) -> None:
+    """auth.notes and long_description: the same Markdown rules (contract §3)."""
+    if not isinstance(text, str):
+        return
+    for msg, hint in markdown_problems(text, field):
+        r.error(t.m_where, msg, hint.replace("auth.notes", field))
+
+
+def check_notes(t: Template, r: Report) -> None:
+    check_markdown(t, r, "auth.notes", ((t.manifest or {}).get("auth") or {}).get("notes"))
+
+
+def check_long_description(t: Template, r: Report) -> None:
+    check_markdown(t, r, "long_description", (t.manifest or {}).get("long_description"))
+
+
+ASSET_HINT = ("contract §3 \"Catalog fields\": a file in the template folder itself (no directory part), named "
+              "^[a-z0-9][a-z0-9_-]{0,62}\\.<ext>$")
+LOGO_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\.svg")
+LOGO_HINT = ("contract §3 \"Logo lint\": only svg g path circle ellipse rect line polyline polygon defs gradients stop "
+             "clipPath mask use symbol title desc, geometry and presentation attributes, href and url() only as #id; "
+             "no style, script, events, DOCTYPE or entities; strip editor metadata and inline the paint")
+SHOT_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\.(png|jpg|webp)")
+SHOT_MAX_BYTES = 512 << 10
+SHOT_MAX_PIXELS = 4096
+
+
+def _asset_path(t: Template, name: str) -> Optional[str]:
+    """The regular file name in the template folder, or None."""
+    path = os.path.join(t.dir, name)
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    return path
+
+
+def check_logo(t: Template, r: Report) -> None:
+    """logo: an SVG in the template folder, at most 64 KiB, passing the lint
+    (tests/svgsafe.py = the Hub's rules, shared vectors)."""
+    logo = (t.manifest or {}).get("logo")
+    if logo is None:
+        return
+    path = _asset_path(t, logo) if isinstance(logo, str) and LOGO_RE.fullmatch(logo) else None
+    if path is None:
+        r.error(t.m_where, f"logo: file not found: {str(logo)[:80]!r}", ASSET_HINT.replace("<ext>", "svg"))
+        return
+    if os.path.getsize(path) > svgsafe.MAX_BYTES:
+        r.error(t.m_where, "logo: over 64 KiB", LOGO_HINT)
+        return
+    with open(path, "rb") as f:
+        reason = svgsafe.check(f.read())
+    if reason:
+        r.error(t.m_where, f"logo: {reason}", LOGO_HINT)
+    check_logo_license(t, logo, r)
+
+
+LOGO_LICENSE_HINT = ("contract §3: a logo ships with <logo>.license next to it (REUSE): SPDX-FileCopyrightText "
+                     "(the upstream holder), SPDX-License-Identifier, the source URL and what was modified; the "
+                     "licence text in LICENSES/<identifier>.txt")
+SPDX_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
+
+
+def check_logo_license(t: Template, logo: str, r: Report) -> None:
+    """The logo's REUSE sidecar <logo>.license and its LICENSES/ texts."""
+    name = logo + ".license"
+    path = _asset_path(t, name)
+    if path is None:
+        r.error(t.m_where, f"logo: {name} not found", LOGO_LICENSE_HINT)
+        return
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = [line.strip() for line in f.read(64 << 10).splitlines()]
+    holders = [line.split(":", 1)[1].strip() for line in lines if line.startswith("SPDX-FileCopyrightText:")]
+    ids = [line.split(":", 1)[1].strip() for line in lines if line.startswith("SPDX-License-Identifier:")]
+    if not any(holders):
+        r.error(t.m_where, f"logo: {name} has no SPDX-FileCopyrightText", LOGO_LICENSE_HINT)
+    if not any(ids):
+        r.error(t.m_where, f"logo: {name} has no SPDX-License-Identifier", LOGO_LICENSE_HINT)
+    for expr in ids:
+        for tok in expr.replace("(", " ").replace(")", " ").split():
+            if tok in ("AND", "OR", "WITH"):
+                continue
+            if not SPDX_ID_RE.fullmatch(tok) or not os.path.isfile(os.path.join(ROOT, "LICENSES", tok + ".txt")):
+                r.error(t.m_where, f"logo: LICENSES/{tok[:64]}.txt not found", LOGO_LICENSE_HINT)
+
+
+def image_size(data: bytes, kind: str) -> Optional[Tuple[int, int]]:
+    """(width, height) from the PNG IHDR, the JPEG SOF or the WebP header;
+    None when the leading bytes aren't that format's."""
+    if kind == "png":
+        if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR" or len(data) < 24:
+            return None
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if kind == "jpg":
+        if data[:3] != b"\xff\xd8\xff":
+            return None
+        i = 2
+        while i + 4 <= len(data):
+            if data[i] != 0xFF:
+                return None
+            marker = data[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg = int.from_bytes(data[i + 2:i + 4], "big")
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if i + 9 > len(data):
+                    return None
+                return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+            if seg < 2:
+                return None
+            i += 2 + seg
+        return None
+    if kind == "webp":
+        if data[:4] != b"RIFF" or data[8:12] != b"WEBP" or len(data) < 30:
+            return None
+        chunk = data[12:16]
+        if chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            return int.from_bytes(data[26:28], "little") & 0x3FFF, int.from_bytes(data[28:30], "little") & 0x3FFF
+        if chunk == b"VP8L" and data[20] == 0x2F:
+            b = int.from_bytes(data[21:25], "little")
+            return (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+        if chunk == b"VP8X":
+            return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+        return None
+    return None
+
+
+SHOT_KIND_NAME = {"png": "PNG", "jpg": "JPEG", "webp": "WebP"}
+
+
+def check_screenshots(t: Template, r: Report) -> None:
+    """screenshots: at most 6 {file, caption}; each file in the template
+    folder, png / jpg / webp by its leading bytes, at most 512 KiB and
+    4096 x 4096; the caption one line of at most 120 characters (the
+    schema also has these; the file checks are this function's)."""
+    shots = (t.manifest or {}).get("screenshots")
+    if shots is None:
+        return
+    if not isinstance(shots, list):
+        return  # the schema reports it
+    if len(shots) > 6:
+        r.error(t.m_where, f"screenshots: {len(shots)} entries, at most 6 allowed", ASSET_HINT)
+    for i, shot in enumerate(shots[:6]):
+        if not isinstance(shot, dict):
+            continue
+        name, caption = shot.get("file"), shot.get("caption")
+        if not isinstance(caption, str) or not caption.strip() or len(caption) > 120 or has_control(caption):
+            r.error(t.m_where, f"screenshots[{i}]: the caption must be one line of 1-120 characters", ASSET_HINT)
+        m = SHOT_RE.fullmatch(name) if isinstance(name, str) else None
+        path = _asset_path(t, name) if m else None
+        if path is None:
+            r.error(t.m_where, f"screenshots[{i}]: file not found: {str(name)[:80]!r}",
+                    ASSET_HINT.replace("<ext>", "(png|jpg|webp)"))
+            continue
+        if os.path.getsize(path) > SHOT_MAX_BYTES:
+            r.error(t.m_where, f"screenshots[{i}]: over 512 KiB", ASSET_HINT)
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        size = image_size(data, m.group(1))
+        if size is None:
+            r.error(t.m_where, f"screenshots[{i}]: not a {SHOT_KIND_NAME[m.group(1)]}",
+                    "the file's leading bytes must match its extension")
+        elif not (1 <= size[0] <= SHOT_MAX_PIXELS and 1 <= size[1] <= SHOT_MAX_PIXELS):
+            r.error(t.m_where, f"screenshots[{i}]: {size[0]}x{size[1]} pixels, at most 4096x4096", ASSET_HINT)
+
 
 LINKS_HINT = "see CONTRIBUTING.md, \"Adding an app\" (links): the project's own homepage and its canonical upstream repository"
 # links.source on a known code host must be the repository itself (no
@@ -978,8 +1285,6 @@ def check_compose(t: Template, r: Report) -> None:
     # names) and portcullis_<instance-id>-<key> for the others (§11.2).
     top_vols = data.get("volumes") or {}
     for vname, spec in top_vols.items():
-        if isinstance(spec, dict) and spec.get("external"):
-            r.error(t.c_where, f"volumes.{vname}: external volumes are not allowed in templates")
         vol_name = spec.get("name") if isinstance(spec, dict) else None
         if mail_provider:
             # A mail template's volumes are plain <project>_<key> volumes
@@ -1135,6 +1440,7 @@ def check_compose(t: Template, r: Report) -> None:
     check_ai(t, services, routers, r)
     check_vpn(t, services, r)
     check_mail(t, services, r)
+    check_relative_binds(t, services, r)
     check_setup(t, services, routers, r)
 
 
@@ -1219,7 +1525,7 @@ def check_worker_tmpfs(t: Template, services: Dict[str, Any], r: Report) -> None
                 "size every tmpfs, e.g. /tmp:size=64m (at most 2g), or mark the template placement: primary_only")
 
 
-_NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.")
+_NAME_LABEL_RE = re.compile(r"^traefik\.(?:http|tcp|udp)\.(routers|services|middlewares)\.([^.]+)\.", re.IGNORECASE)
 
 
 def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Report) -> None:
@@ -1234,7 +1540,10 @@ def check_traefik_names(t: Template, labels: Dict[str, str], where: str, r: Repo
         if "_" in name:
             r.error(where, f"{kind} name {name} contains '_'",
                     "use '-': the Hub prefixes names with <instance-id>_ for every instance but the default; " + V2_HINT)
-        if t.multi and name.startswith("portcullis-") and not name.startswith(PUBLIC_RESERVED):
+        # Every template, single or multi, in any case: core's and the Hub's
+        # routers, services and middlewares (e.g. portcullis-mail-admin)
+        # carry the prefix (contract §3).
+        if name.lower().startswith("portcullis-"):
             r.error(where, f"{kind} name {name} starts with 'portcullis-'", "that prefix is reserved for core and the Hub")
 
 
@@ -2051,6 +2360,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     auth = (t.manifest or {}).get("auth") or {}
     method = auth.get("method")
     admin_paths = auth.get("admin_paths") or []
+    nl = auth.get("native_login")
     gated: List[Tuple[str, List[str]]] = []  # (router, path prefixes or ["/"])
 
     check_rule_forms(t, routers, r)
@@ -2088,6 +2398,14 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                 r.error(where, f"native-oidc router must not use {AUTH_MW} on the whole host",
                         "the app's own OIDC login, API and mobile clients break behind forward-auth; "
                         "gate only specific paths (PathPrefix) such as an admin panel or the login pages")
+        elif method == "custom" and has_auth and has_groups and not isinstance(nl, dict) \
+                and all(any(prefix_covers(ap, p) for ap in admin_paths) for p in (["/"] if host_wide else paths)):
+            # A custom app's admin UI behind Portcullis (firefox-sync's admin
+            # host): allowed only where group-gate requires the admin group
+            # on every path the router serves (auth.admin_paths), so the
+            # gate never admits a mere signed-in user; never with
+            # native_login (the Hub's override owns those middlewares).
+            pass
         elif method in ("public", "custom", "mtls"):
             if has_auth or has_groups:
                 hint = ("the Hub adds them for Portcullis sign-in (auth.native_login) through its override; "
@@ -2191,12 +2509,9 @@ def check_rule_forms(t: Template, routers: Dict[str, Dict[str, str]], r: Report)
 
 
 def check_public_access(t: Template, services: Dict[str, Any], routers: Dict[str, Dict[str, str]], r: Report) -> None:
-    for sname, svc in services.items():
-        for k in labels_of(svc if isinstance(svc, dict) else {}):
-            mm = re.match(r"^traefik\.(?:http|tcp)\.(routers|middlewares)\.([^.]+)\.", k)
-            if mm and mm.group(2).startswith(PUBLIC_RESERVED):
-                r.error(f"{t.c_where}: services.{sname}", f"{mm.group(1)[:-1]} name {mm.group(2)} uses the prefix {PUBLIC_RESERVED}",
-                        "that prefix is reserved for the router the Hub generates from auth.public_access")
+    # portcullis-public-* (the Hub's public router) is refused, like every
+    # portcullis- name, by check_traefik_names (the Hub's rule: any kind,
+    # any case).
     auth = (t.manifest or {}).get("auth") or {}
     pa = auth.get("public_access")
     if not isinstance(pa, dict):
@@ -6218,6 +6533,7 @@ def check_settings(t: Template, services: Dict[str, Any], routers: Dict[str, Dic
 
 AI_CLIENT_PREFIX = "portcullis-ai-"
 AI_PROVIDERS_FILE = "ai-providers"
+MAIL_ADMIN_FILE = "mail-admin"   # the mail admin view's ticket key directory (Hub templates.MailAdminFile)
 DEFAULT_MCP_PATH = "/mcp"
 MAX_ALIAS_LEN = 63
 MCP_PROTOCOLS = ("2025-06-18", "2025-11-25", "2026-07-28")
@@ -6346,6 +6662,8 @@ class _AICheck:
         for f in m.get("files") or []:
             if isinstance(f, dict) and _str(f, "name") == AI_PROVIDERS_FILE:
                 self.err(f"files[{AI_PROVIDERS_FILE}]: the data file name {AI_PROVIDERS_FILE} is reserved for the AI page (contract §3.2)")
+            if isinstance(f, dict) and _str(f, "name").lower() == MAIL_ADMIN_FILE:
+                self.err(f"files[{_str(f, 'name')}]: the data file name {MAIL_ADMIN_FILE} is reserved for the mail admin view's ticket key (contract §19.13)")
         # A core subdomain (mcp included) as a default subdomain:
         # check_rule_forms ("subdomain ... belongs to core").
         a = m.get("ai")
@@ -7291,6 +7609,183 @@ def bind_escapes(tdir: str, tid: str, services: Dict[str, Any], loc: str) -> Lis
     return []
 
 
+CA_BUNDLE_PATH = "certs/ca-bundle.crt"
+
+
+def mount_interpolated(v: Any) -> Tuple[str, bool]:
+    """The Hub's mountInterpolated (every template, R2-M2 follow-up): a
+    volume entry that uses `$` in any form ($X, ${X}, ${X:-default},
+    ${X-alt}, $$) is refused: short syntax anywhere in the entry, long
+    syntax in source or type. Compose would resolve it after the checks."""
+    if isinstance(v, dict):
+        for k in ("source", "type"):
+            if v.get(k) is not None and "$" in scalar_text(v.get(k)):
+                src = scalar_text(v.get("source")).strip() if v.get("source") is not None else ""
+                return (src or json.dumps(v, sort_keys=True)), True
+        return "", False
+    s = scalar_text(v).strip()
+    return s, "$" in s
+
+
+MOUNT_TEXT_WHY = ": a mount source or target can't start or end with whitespace or hold a control character"
+
+
+def mount_text_bad(s: str) -> bool:
+    """The Hub's mountTextBad (R3-I1): leading or trailing whitespace, or a
+    control character anywhere. compose-go never trims: " /../secrets" is
+    relative to the project directory."""
+    return s != s.strip() or any(unicodedata.category(c) == "Cc" for c in s)
+
+
+def go_quote(s: str) -> str:
+    """Go's strconv.Quote for the texts the mount errors show (ASCII
+    escapes; printable non-ASCII kept)."""
+    out = []
+    for c in s:
+        if c in ('"', "\\"):
+            out.append("\\" + c)
+        elif c == "\n":
+            out.append("\\n")
+        elif c == "\t":
+            out.append("\\t")
+        elif c == "\r":
+            out.append("\\r")
+        elif c in "\a\b\f\v":
+            out.append("\\" + "abfv"["\a\b\f\v".index(c)])
+        elif unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") or (unicodedata.category(c) == "Zs" and c != " "):
+            o = ord(c)
+            out.append(f"\\x{o:02x}" if o < 0x80 else (f"\\u{o:04x}" if o <= 0xFFFF else f"\\U{o:08x}"))
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
+
+
+def template_mount(v: Any) -> Tuple[Optional[Tuple[bool, bool, str, str, bool]], str]:
+    """The Hub's templateMount: one volume entry as Compose reads it, as
+    (absolute, read-only, source, entry) for a bind, None otherwise; the
+    second value (the entry and why) when it can't be read — never skipped
+    (fail closed, ux2 round 4). Short syntax: a source with a "/" or
+    starting with "." or "~" is a bind, a bare name a named volume."""
+    if isinstance(v, dict):
+        typ = scalar_text(v.get("type")) if v.get("type") not in (None, "") else "volume"
+        src = scalar_text(v.get("source")) if v.get("source") is not None else ""   # never trimmed (R3-I1)
+        shown = src or json.dumps(v, sort_keys=True)
+        tgt = scalar_text(v.get("target")) if v.get("target") is not None else ""
+        if mount_text_bad(src) or mount_text_bad(tgt) or mount_text_bad(typ):
+            return None, go_quote(shown) + MOUNT_TEXT_WHY
+        if typ == "tmpfs":
+            return None, ""
+        if typ == "volume":
+            if src and not _VPN_VOLUME_NAME_RE.fullmatch(src):
+                return None, f"{shown}: a volume source must be a volume name"
+            return None, ""
+        if typ == "bind":
+            if not src:
+                return None, f"{shown}: a bind needs a source"
+            ro = v.get("read_only") is True   # a real boolean only (ux2 round 4)
+            extra = any(str(k) not in ("type", "source", "target", "read_only") for k in v)
+            return (src.startswith("/") or bool(_VPN_DRIVE_RE.match(src)), ro, src, src, extra), ""
+        return None, f"{shown}: mount type {typ} isn't supported (bind, volume or tmpfs)"
+    if not isinstance(v, str):
+        return None, f"{scalar_text(v)}: a volume entry is a string or a mapping"
+    entry = v   # never trimmed (R3-I1)
+    if mount_text_bad(entry):
+        return None, go_quote(entry) + MOUNT_TEXT_WHY
+    if _VPN_DRIVE_RE.match(entry):
+        return (True, False, entry, entry, False), ""
+    parts = entry.split(":")
+    if len(parts) == 1:
+        if not entry.startswith("/"):
+            return None, f"{entry}: an anonymous volume is an absolute container path"
+        return None, ""
+    src = parts[0]
+    if len(parts) > 3 or not src or not parts[1]:
+        return None, f"{entry}: not source:target[:options]"
+    if mount_text_bad(src) or mount_text_bad(parts[1]):
+        return None, go_quote(entry) + MOUNT_TEXT_WHY
+    opts = parts[2].split(",") if len(parts) == 3 else []
+    ro = "ro" in opts
+    if ro and "rw" in opts:   # Compose takes the last one: never guess (ux2 round 4)
+        return None, f"{entry}: the options carry both ro and rw"
+    extra = bool(opts) and opts != ["ro"]
+    if src.startswith((".", "/", "~")) or "/" in src:
+        return (src.startswith("/"), ro, src, entry, extra), ""
+    if not _VPN_VOLUME_NAME_RE.fullmatch(src):
+        return None, f"{entry}: the source is neither a path nor a volume name"
+    return None, ""
+
+
+def volume_driver_errors(compose: Any) -> List[str]:
+    """The Hub's checkVolumeDrivers (every template, ux2 round 4): a
+    top-level volume with driver / driver_opts is refused (the local driver
+    with o=bind and a device mounts any host path)."""
+    vols = compose.get("volumes") if isinstance(compose, dict) else None
+    if not isinstance(vols, dict):
+        return []
+    for k in sorted(str(x) for x in vols):
+        val = vols.get(k)
+        if isinstance(val, dict):
+            # Every external volume is another workload's data (ux2 N1, the Hub's rule).
+            if val.get("external") not in (None, False):
+                return [f"volumes.{k}: external volumes are not allowed in templates"]
+            for key in ("driver", "driver_opts"):
+                if key in val:
+                    return [f"volume {k} sets {key}: a template's volumes use the default driver (driver options can bind host paths)"]
+    return []
+
+
+def relative_bind_errors(tdir: str, tid: str, services: Dict[str, Any], compose: Any = None) -> List[str]:
+    """The Hub's CheckRelativeBinds (every template, contract §3 "Limits"):
+    every bind source that isn't absolute is relative (Compose resolves it
+    against the core checkout) and is only the template's own files,
+    ./templates/<id>/… (cleaned, no .. out of it, symlinks inside the
+    template directory resolved), or ./certs/ca-bundle.crt read-only; a ~
+    source, any interpolated mount, an entry that can't be read and a
+    top-level volume driver are refused."""
+    errs = volume_driver_errors(compose)
+    if errs:
+        return errs
+    base = os.path.realpath(tdir) if tdir else ""
+    for n in sorted(str(k) for k in services):
+        if services[n] is not None and not isinstance(services[n], dict):
+            return [f"compose.yml: service {n} is not a mapping"]   # fail closed standalone (N2)
+        sv = services[n] or {}
+        for v in as_list(sv.get("volumes")):   # entry by entry: one entry never hides the next
+            shown, interp = mount_interpolated(v)
+            if interp:
+                return [f"service {n} mounts {shown}: a mount source can't be interpolated (no $ in a volume entry)"]
+            m, bad = template_mount(v)
+            if bad:
+                return [f"service {n} mounts {bad}"]
+            if m is None or m[0]:
+                continue
+            _, ro, src, entry, extra = m
+            if src.startswith("~"):
+                return [f"service {n} mounts {entry}: a bind source can't start with ~ (a home directory)"]
+            norm = posixpath.normpath(src)
+            if norm == CA_BUNDLE_PATH:
+                if not ro:
+                    return [f"service {n} mounts {entry}: ./{CA_BUNDLE_PATH} must be bound read-only"]
+                if extra:   # no SELinux relabel or other option on core's shared file (R3-M1)
+                    return [f"service {n} mounts {entry}: ./{CA_BUNDLE_PATH} takes no option but read-only "
+                            "(it is core's shared file: no z, Z or bind.*)"]
+                continue
+            if not (norm == f"templates/{tid}" or norm.startswith(f"templates/{tid}/")):
+                return [f"service {n} mounts {entry}: a template binds only its own files (./templates/{tid}/…) or ./{CA_BUNDLE_PATH}"]
+            if base:
+                rest = norm[len(f"templates/{tid}"):].lstrip("/")
+                real = os.path.realpath(os.path.join(tdir, rest))
+                if real != base and not real.startswith(base + os.sep):
+                    return [f"service {n} mounts {entry}: it resolves outside templates/{tid}/ (a symlink)"]
+    return []
+
+
+def check_relative_binds(t: Template, services: Dict[str, Any], r: Report) -> None:
+    for e in relative_bind_errors(os.path.join(ROOT, t.id), t.id, services, t.compose):
+        r.error(t.c_where, e, "bind only the template's own files (./templates/<id>/…), or ./certs/ca-bundle.crt read-only; "
+                "never another instance's data (./appfiles/…), ./secrets or the core checkout")
+
+
 def check_vpn(t: Template, services: Dict[str, Any], r: Report) -> None:
     """The vpn: block (contracts §3.3), as the Hub's ValidateVPN checks it.
     A misshapen block is left to the schema errors (its hooks are still
@@ -7320,12 +7815,12 @@ MAIL_BLOCK_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.5, the mail: bloc
 MAIL_LABEL_MAX = 64
 MAIL_FORMER_ID_ARG = "{former_id}"
 MAIL_TOP_KEYS = ("label", "api_version", "api", "listeners", "wellknown", "metrics", "server_metrics", "tls", "gated",
-                 "sessions", "export")
+                 "sessions", "export", "admin_view")
 MAIL_FIELD_KEYS = {
     "api": ("service", "port"), "wellknown": ("service", "port"), "metrics": ("service", "port"),
     "server_metrics": ("service", "port", "path"),
     "listeners": ("service", "smtp", "submissions", "submission", "imaps"),
-    "sessions": ("restart",), "export": ("service", "argv"),
+    "sessions": ("restart",), "export": ("service", "argv"), "admin_view": ("service", "port"),
 }
 MAIL_LISTENER_PORTS = ("smtp", "submissions", "submission", "imaps")
 MAIL_LETTER_TEXT = "a mail template's volume names are longer than one letter"
@@ -7359,7 +7854,7 @@ class _MailNotInt(str):
 
 _GO_ATOI_RE = re.compile(r"[+-]?[0-9]+")
 MAIL_INT_FIELDS = {"api_version": None, "api": ("port",), "wellknown": ("port",), "metrics": ("port",),
-                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS}
+                   "server_metrics": ("port",), "listeners": MAIL_LISTENER_PORTS, "admin_view": ("port",)}
 
 
 def go_atoi(text: str) -> Optional[int]:
@@ -7700,6 +8195,21 @@ def mail_errors(m: Any, compose: Any, app_id: str = "", compose_text: Optional[s
         e = service("export", _mail_str(_mail_get(ex, "service")), None, False)
         if e:
             return [e]
+    if "admin_view" in b:
+        # The read-only admin view (contract §19.13): a service of its own,
+        # never handed the certificate or the slot files.
+        e = endpoint("admin_view")
+        if e:
+            return [e]
+        av = _mail_str(_mail_get(b["admin_view"], "service"))
+        own = {api_service, listener, _mail_str(_mail_get(b.get("wellknown"), "service")),
+               _mail_str(_mail_get(b.get("metrics"), "service"))}
+        if "server_metrics" in b:
+            own.add(_mail_str(_mail_get(b["server_metrics"], "service")))
+        if av in own:
+            return [f"mail.admin_view: {av} must be a service of its own (not api, listeners, wellknown or metrics)"]
+        if av in (_mail_strings(b.get("tls")) or []) or av in (_mail_strings(b.get("gated")) or []):
+            return [f"mail.admin_view: {av} is in tls or gated: the admin view gets no mail certificate and no slot file"]
     # The manifest.
     if m.get("instances") == "multi":
         return ["mail: instances must be single"]
@@ -8560,7 +9070,7 @@ KUBE_HA_CORE_NAMES = ["nodeadm", "frontdoor", "cnpg-operator", "keycloak-pods", 
                       "vault-internal", "sessions-pods", "sessions-sentinel", "portcullis-dns-small",
                       # Task 28 fix round 1: the CoreDNS DaemonSet's own ServiceAccount.
                       "portcullis-dns"]
-KUBE_TLS_OPTIONS = ["authaware@file", "public@file", "protected@file", "protected-any@file"]
+KUBE_TLS_OPTIONS = ["default", "public@file", "protected@file", "protected-any@file"]
 KUBE_MAX_APP_PRIORITY = 1000
 _HOST_LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?"
 _KUBE_ROUTE_RE = re.compile(

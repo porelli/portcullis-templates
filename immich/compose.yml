@@ -28,7 +28,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.immich.rule: Host(`${PORTCULLIS_HOST_IMMICH:-photos.portcullis.local}`)
       traefik.http.routers.immich.entrypoints: websecure
-      traefik.http.routers.immich.tls.options: authaware@file
+      traefik.http.routers.immich.tls.options: default
       traefik.http.routers.immich.middlewares: client-headers@file,security-headers@file
       traefik.http.services.immich.loadbalancer.server.port: "2283"
     restart: unless-stopped

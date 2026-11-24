@@ -6,6 +6,10 @@ tags: [dns, adblock, privacy, filtering]
 links:
   website: https://adguard.com/en/adguard-home/overview.html
   source: https://github.com/AdguardTeam/AdGuardHome
+long_description: |
+  AdGuard Home is a network-wide DNS server that blocks ads and trackers for every device that uses it. It filters with blocklists and custom rules, can answer over DNS-over-HTTPS, DNS-over-TLS and DNS-over-QUIC, and shows a query log and statistics per client.
+
+  Portcullis puts its sign-in and the access group in front of the web interface. AdGuard Home has no single sign-on, so its own admin password stays as a second step.
 instances: multi
 
 auth:
@@ -15,16 +19,12 @@ auth:
   group_admin: false
   access_group: users_adguard
   admin_group: admin_adguard
-  notes: >
-    No SSO in AdGuard Home (local accounts only). Access is gated by
-    forward-auth + group-gate, and AdGuard's own admin password (set in its
-    setup wizard) stays on purpose: upstream can only disable it by leaving
-    users empty, which turns authentication off for every peer
-    (https://github.com/AdguardTeam/AdGuardHome/wiki/Configuration, users),
-    and its web server has no client allowlist, so every other container on
-    portcullis-proxy would get the full admin API unauthenticated. The same
-    web server also answers DNS-over-HTTPS (/dns-query); through Portcullis
-    it is behind forward-auth, so DoH clients can't use it.
+  notes: |
+    No SSO in AdGuard Home (local accounts only). Access is gated by forward-auth + group-gate, and AdGuard's own admin password (set in its setup wizard) stays on purpose.
+
+    Why the password stays: upstream can only disable it by leaving `users` empty, which turns authentication off for every peer (<https://github.com/AdguardTeam/AdGuardHome/wiki/Configuration>, `users`), and its web server has no client allowlist, so every other container on `portcullis-proxy` would get the full admin API unauthenticated.
+
+    The same web server also answers DNS-over-HTTPS (`/dns-query`); through Portcullis it is behind forward-auth, so DoH clients can't use it.
 
 ports:
   - key: ADGUARD_DNS_TCP_HOST

@@ -5,7 +5,7 @@ services:
   # public (see auth.notes); who may sync is decided by the tokenserver's
   # allowlist trigger (guard.sql), installed before this starts.
   firefox-sync:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -40,6 +40,9 @@ services:
       SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
       # No account-events webhook (default off; kept explicit).
       SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
+      # No FxA delete-data endpoint (0.25: DELETE /1.0/users/<uid>/storage,
+      # default off; kept explicit).
+      SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
     healthcheck:
       test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/__heartbeat__"]
       interval: 30s
@@ -50,8 +53,12 @@ services:
       firefox-sync-init:
         condition: service_completed_successfully
     networks:
-      - default
-      - portcullis-proxy
+      # The admin UI reaches it as firefox-sync-internal, a name only this
+      # instance's default network has (on portcullis-proxy every
+      # instance's service answers to "firefox-sync").
+      default:
+        aliases: [firefox-sync-internal]
+      portcullis-proxy: {}
     labels:
       traefik.enable: "true"
       traefik.http.routers.firefox-sync.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`)
@@ -64,8 +71,9 @@ services:
       # before the body is read; storage writes check Content-Length and
       # stream-limit the read to max_request_bytes, 413 otherwise
       # (syncserver/src/web/extractors/bso_bodies.rs, bso_body.rs, utils.rs
-      # check_content_length, 0.24.0). The other routes read no body.
+      # check_content_length, 0.25.1). The other routes read no body.
       traefik.http.routers.firefox-sync.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.firefox-sync.service: firefox-sync
       # The tokenserver (one request per Firefox per hour or so): the
       # stricter auth rate limit, against token replay and load inflation.
       traefik.http.routers.firefox-sync-token.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`) && PathPrefix(`/1.0/`)
@@ -81,7 +89,7 @@ services:
   # reachable: default network only, stopped as soon as its heartbeat answers.
   # The allowlist trigger needs the users table, so it comes after this.
   firefox-sync-migrate:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0@sha256:6b4ad5b6ed19e02813e5771f563e5ca634661e77f18578245e569d794b672d4b
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -112,6 +120,9 @@ services:
       SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
       # No account-events webhook (default off; kept explicit).
       SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
+      # No FxA delete-data endpoint (0.25: DELETE /1.0/users/<uid>/storage,
+      # default off; kept explicit).
+      SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -140,6 +151,49 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # One-shot, every start, after the migrations and before
+  # firefox-sync-init: porelli/firefox-sync's own init (tokenserver_db_init)
+  # with access managed elsewhere (ADMIN_ACCESS_EXTERNAL). The admin UI needs
+  # what it makes: the config table, sync_refused_accounts, the ffs_*
+  # functions, the max-users trigger before_insert_user (unlimited here), the
+  # admin UI's roles, database and grants. It writes and deletes no row of
+  # sync_allowed_accounts and keeps its own invite-only trigger off; guard.sql
+  # (next) installs Portcullis's list and trigger and narrows the grants.
+  # As the database owner: no SYNC_POSTGRES_APP_USER, which would hand the
+  # Sync tables to firefoxsync_app (the internet-facing role must own none).
+  # Passwords reach psql on its input, never argv (db_init.sh).
+  firefox-sync-db-init:
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T034155@sha256:19566723433882b1e1214da8ee987a9cdf3d453713979f2696d8e6307fa98558
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      POSTGRES_SERVER: firefox-sync-db
+      POSTGRES_SERVER_PORT: "5432"
+      POSTGRES_DATABASE: firefoxsync
+      POSTGRES_USER: firefoxsync
+      POSTGRES_PASSWORD: ${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}
+      POSTGRES_SYNC_USER: ""
+      DOMAIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      ADMIN_ACCESS_EXTERNAL: "1"
+      # Portcullis's allowlist is the only list and the only limit.
+      SYNC_ALLOWED_ACCOUNTS: ""
+      MAX_USERS: unlimited
+      SYNC_DB_CONTAINERS: "1"
+      ADMIN_DB_USER: firefoxsync_admin
+      ADMIN_DB_SYNC_USER: firefoxsync_admin_sync
+      ADMIN_DB_NAME: firefoxsync_admin
+      ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_ADMIN_DB_PASSWORD must be set}
+    depends_on:
+      firefox-sync-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   # One-shot, every start: the allowlist (the Hub's data file allowlist.json:
   # uids access-group members entered + Other allowed accounts) and its
   # trigger, the node of this hostname (guard.sql), in one transaction. Fails
@@ -147,7 +201,12 @@ services:
   # the Sync server does not start. The Hub bind-mounts the data file's
   # directory read-only at /portcullis (manifest files[]); the file is 0640
   # group 10001, hence group_add. Other values reach psql through the
-  # environment (\getenv), never argv.
+  # environment (\getenv), never argv. First, in a transaction of its own
+  # that guard.sql's rollback can't undo, revoke.sql: no role but the owner
+  # may run porelli's SECURITY DEFINER functions or write the allowlist.
+  # Then, outside guard.sql's transaction
+  # (CREATE DATABASE can't run in one), admin-db.sql: the admin UI's own
+  # database, owned by its role and closed to every other.
   firefox-sync-init:
     image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "70:70"
@@ -157,21 +216,150 @@ services:
     cap_drop: [ALL]
     mem_limit: 128m
     pids_limit: 32
-    entrypoint: ["psql", "-X", "-q", "-t", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-f", "/etc/portcullis/guard.sql"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/revoke.sql
+        psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/guard.sql
+        psql -X -q -t -v ON_ERROR_STOP=1 -f /etc/portcullis/admin-db.sql
     environment:
       PGHOST: firefox-sync-db
       PGUSER: firefoxsync
       PGDATABASE: firefoxsync
       PGPASSWORD: ${FIREFOX_SYNC_DB_PASSWORD:?FIREFOX_SYNC_DB_PASSWORD must be set}
       FIREFOX_SYNC_APP_DB_PASSWORD: ${FIREFOX_SYNC_APP_DB_PASSWORD:?FIREFOX_SYNC_APP_DB_PASSWORD must be set}
+      FIREFOX_SYNC_ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_ADMIN_DB_PASSWORD must be set}
       FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
       PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-firefox-sync}
     volumes:
+      - ./templates/firefox-sync/revoke.sql:/etc/portcullis/revoke.sql:ro
       - ./templates/firefox-sync/guard.sql:/etc/portcullis/guard.sql:ro
+      - ./templates/firefox-sync/admin-db.sql:/etc/portcullis/admin-db.sql:ro
     depends_on:
-      firefox-sync-migrate:
+      firefox-sync-db-init:
         condition: service_completed_successfully
     restart: "no"
+
+  # The admin UI of porelli/firefox-sync (docs/admin/README.md there):
+  # monitoring, storage, alerts, per-account tools. On a host of its own
+  # (${PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN}), behind Portcullis sign-in and
+  # the instance's admin group (group-gate, auth.admin_paths "/"), then
+  # its own OpenID Connect sign-in with Portcullis's Keycloak, which again
+  # admits only the admin group (ADMIN_ALLOWED_GROUPS, the groups claim).
+  # No password sign-in (ADMIN_PASSWORD empty: no form, POST /login 403),
+  # no trusted header, no published port.
+  #
+  # Access managed elsewhere (ADMIN_ACCESS_EXTERNAL, here and in
+  # firefox-sync-db-init): Portcullis decides who syncs (the allowlist,
+  # guard.sql). The admin UI shows max users, the allowlist and sign-ups
+  # read-only and refuses every change of them server side; its database
+  # reader can't write them either (guard.sql).
+  firefox-sync-admin:
+    image: ghcr.io/porelli/firefox-sync:admin-721640567d61@sha256:0db8bcf937d9fc4f2271620951f98f0ba0bf2296eabfacfa26bf1912cf131a17
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 128
+    environment:
+      # Who may sync is Portcullis's: read-only here, refused server side.
+      ADMIN_ACCESS_EXTERNAL: "1"
+      MAX_USERS: unlimited
+      SYNC_ALLOWED_ACCOUNTS: ""
+      # Sign-in: OpenID Connect only, with Portcullis's Keycloak (the
+      # Hub-registered client keycloak_clients firefox-sync-admin; the
+      # realm's groups scope sends the LLDAP groups by name). Admins by
+      # group only: no ADMIN_ALLOWED_USERS, and the user-editable,
+      # unverified LLDAP email is never trusted.
+      ADMIN_PASSWORD: ""
+      ADMIN_OIDC_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      ADMIN_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID_FIREFOX_SYNC_ADMIN:-firefox-sync-admin}
+      ADMIN_OIDC_CLIENT_SECRET: ${FIREFOX_SYNC_ADMIN_OIDC_SECRET:?FIREFOX_SYNC_ADMIN_OIDC_SECRET must be set}
+      ADMIN_OIDC_REDIRECT_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin.portcullis.local}/auth/callback
+      ADMIN_OIDC_SCOPES: openid email profile
+      ADMIN_OIDC_NAME: Portcullis
+      ADMIN_OIDC_GROUPS_CLAIM: groups
+      ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL: "false"
+      ADMIN_ALLOWED_USERS: ""
+      ADMIN_ALLOWED_GROUPS: ${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync}
+      ADMIN_AUTH_HEADER: ""
+      # Discovery, JWKS and the token exchange go to auth.<domain> through
+      # Traefik: trust Portcullis's CA bundle (Go reads SSL_CERT_FILE).
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      # Its own database (admin-db.sql) and a reader of the Sync data
+      # (guard.sql), both with this password; never the Sync roles'.
+      TOKENSERVER_DB_TYPE: postgres
+      TOKENSERVER_DB_HOST: firefox-sync-db
+      TOKENSERVER_DB_PORT: "5432"
+      TOKENSERVER_DB_NAME: firefoxsync
+      TOKENSERVER_DB_USER: firefoxsync_admin_sync
+      ADMIN_DB_USER: firefoxsync_admin
+      ADMIN_DB_SYNC_USER: firefoxsync_admin_sync
+      ADMIN_DB_NAME: firefoxsync_admin
+      ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_ADMIN_DB_PASSWORD must be set}
+      SYNCSTORAGE_URL: http://firefox-sync-internal:8000
+      SYNCSTORAGE_DOMAIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}
+      FXA_OAUTH_SERVER_URL: https://oauth.accounts.firefox.com/v1
+      FXA_EMAIL_DOMAIN: api.accounts.firefox.com
+      # No mail (no outbound SMTP unless an admin configures it), no
+      # notifications, no update check against GitHub (the template pins
+      # the image), no hourly fetch of the public URLs (Portcullis checks
+      # its certificates itself).
+      ALERT_EMAIL: ""
+      ADMIN_NOTIFY: ""
+      SMTP_HOST: ""
+      ADMIN_UPDATE_CHECK: "false"
+      ADMIN_PUBLIC_CHECK: "false"
+      # Not published (Traefik only).
+      ADMIN_EXPORT_PORT: ""
+    volumes:
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    # The image's own check: /healthz (no shell in the image).
+    healthcheck:
+      test: ["CMD", "/ffs-admin", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Last: only after both inits finished (porelli's grants, then
+    # revoke.sql and guard.sql), and again whenever they run again.
+    depends_on:
+      firefox-sync-db-init:
+        condition: service_completed_successfully
+        restart: true
+      firefox-sync-init:
+        condition: service_completed_successfully
+        restart: true
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      # The admin host: Portcullis sign-in, then group-gate requires the
+      # instance's admin group on every path (auth.admin_paths "/").
+      traefik.http.routers.firefox-sync-admin.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin.portcullis.local}`)
+      traefik.http.routers.firefox-sync-admin.entrypoints: websecure
+      traefik.http.routers.firefox-sync-admin.tls.options: default
+      traefik.http.routers.firefox-sync-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-admin.service: firefox-sync-admin
+      traefik.http.services.firefox-sync-admin.loadbalancer.server.port: "8080"
+      # Exactly / on the (public) sync host: a redirect to the admin host,
+      # instead of syncstorage-rs' redirect to Mozilla's docs. Defined here,
+      # so it exists only while the admin UI runs. Nothing else of the sync
+      # host changes; the redirect reaches no backend.
+      traefik.http.routers.firefox-sync-root.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC:-firefox-sync.portcullis.local}`) && Path(`/`)
+      traefik.http.routers.firefox-sync-root.priority: "1000"
+      traefik.http.routers.firefox-sync-root.entrypoints: websecure
+      traefik.http.routers.firefox-sync-root.tls.options: public@file
+      traefik.http.routers.firefox-sync-root.middlewares: rate-limit@file,firefox-sync-root-redirect@docker,security-headers@file
+      traefik.http.routers.firefox-sync-root.service: firefox-sync-admin
+      traefik.http.middlewares.firefox-sync-root-redirect.redirectregex.regex: ^.*$$
+      traefik.http.middlewares.firefox-sync-root-redirect.redirectregex.replacement: https://${PORTCULLIS_HOST_FIREFOX_SYNC_ADMIN:-firefox-sync-admin.portcullis.local}/
+      traefik.http.middlewares.firefox-sync-root-redirect.redirectregex.permanent: "false"
+    restart: unless-stopped
 
   firefox-sync-db:
     image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac

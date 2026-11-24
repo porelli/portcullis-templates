@@ -5,6 +5,85 @@ versioned individually; entries are dated by the commit that lands on `main`.
 
 ## Unreleased (app instances and extra domains)
 
+### firefox-sync: admin UI on its own host; syncstorage-rs 0.25.1
+
+syncstorage-rs 0.24.0 → 0.25.1 (no schema change; its new FxA delete-data
+endpoint stays off). porelli/firefox-sync's admin UI (`firefox-sync-admin`) on
+its own host (`firefox-sync-admin.<domain>`): Portcullis sign-in with the
+instance's admin group required on every path (`admin_paths: ["/"]`), then its
+own OIDC sign-in (Keycloak client `firefox-sync-admin`, admin group only, no
+password). It runs in upstream's *access managed elsewhere* mode
+(`ADMIN_ACCESS_EXTERNAL`): max users, the allowlist and sign-ups are read-only
+and refused server side. porelli's init (`firefox-sync-db-init`) now runs before
+`revoke.sql` (its own transaction: no role but the owner may run porelli's
+SECURITY DEFINER functions or write the allowlist, even when the guard then
+fails) and `guard.sql`, which keeps the only allowlist trigger, writes the list and narrows
+the admin UI's grants (no allowlist functions, no max-users write). Only the
+Sync role and the admin UI's reader may connect to the Sync database. Exactly
+`/` of the sync host redirects to the admin host. `tests/validate.py`: a custom
+template may put `portcullis-auth@docker,portcullis-groups@docker` on a router
+only where `auth.admin_paths` covers every path it serves.
+
+### Relative binds stay in the template's own files (ux2)
+
+A template's relative bind sources are now only `./templates/<id>/…` and
+`./certs/ca-bundle.crt` (contract §3; `tests/validate.py` and the Hub agree):
+the core checkout holds every instance's data, so `./appfiles/…`, `./secrets`,
+`..` and symlinked escapes are refused, and no volume entry may use `$`
+interpolation in any form (no shipped template did). Round 4: a bind source without `./` is
+relative too, `~` sources are refused, the CA bundle binds read-only only,
+an unreadable volume entry is refused, and top-level volumes may not set
+`driver` / `driver_opts` (none of the 52 did). The data-file name
+`mail-admin` is reserved. **docs** no longer serves core's `./docs` directory: it serves its
+own placeholder page (`docs/docs/index.md`), pointing at the published
+documentation.
+
+### Marketplace fields: long descriptions, logos, minimum resources (ux3)
+
+Every template gets a `long_description` (Markdown, the `auth.notes` rules; contract §3
+"Catalog fields"), shown in the Hub's Marketplace drawer. `resources` is set only where the
+project's own documentation states a minimum: immich (6 GB RAM), gitlab (8 GB: its
+installation requirements say a single node "can run with at least 8 GB of memory" in
+memory-constrained environments, 16 GB being the baseline), netbird (2 GB), mattermost (2 GB, its smallest single-server
+size), wiki (1 GB), grafana (512 MB) and pihole (512 MB RAM, 2 GB disk). No template has
+`screenshots` yet. `category` is now one of 16 fixed slugs; mattermost moves from
+`productivity` to `communication`, next to matrix.
+
+`logo.svg` ships only where the project publishes an SVG logo in its own repository under a
+licence that allows redistribution and no company holds the mark without published terms.
+Each file is the upstream file with editor metadata, comments, `version` / `xml:space` and
+hidden paths removed and `style` / CSS class properties written as presentation attributes
+(`tests/svgsafe.py`, the logo lint); the drawing is unchanged. Each logo has a REUSE sidecar
+`logo.svg.license` (copyright holder, SPDX licence, source, changes; contract §3), and the
+licence texts are in `LICENSES/`. The logos identify their projects; any trademark stays its
+owner's. Sources:
+
+- `headscale`: <https://github.com/juanfont/headscale/blob/f00c412cde4a000cc091037f926519b99ceb7626/docs/assets/logo/headscale3-dots.svg> (BSD-3-Clause)
+- `jellyfin`: <https://github.com/jellyfin/jellyfin-ux/blob/9e27258e873f64edaa9c5955e753978975ed5589/branding/SVG/icon-transparent.svg> (CC-BY-SA-4.0)
+- `paperless`: <https://github.com/paperless-ngx/paperless-ngx/blob/fbadc2e1b8c34f80b48be0766cae7168e0e8ec24/docs/assets/logo_leaf.svg> (GPL-3.0-only)
+- `vaultwarden`: <https://github.com/dani-garcia/vaultwarden/blob/d57b69952db6eb12987a9668fea6b72df79cfa41/resources/vaultwarden-icon.svg> (AGPL-3.0-only)
+- `vikunja`: <https://github.com/go-vikunja/vikunja/blob/5b9d4fcc720fe65548ab6c3f7c974c12b28d13af/frontend/originalMedia/images/logo.svg> (AGPL-3.0-or-later)
+- `zigbee2mqtt`: <https://github.com/Koenkk/zigbee2mqtt/blob/9c505fd75f503a91a61244d6f0efa0e37d81a7b0/images/logo_vector.svg> (GPL-3.0-only)
+
+Not shipped (checked 2026-11-20): Gitea (mark held by CommitGo / Gitea Ltd, no published
+terms), Immich (FUTO, no published terms), OxiCloud (a trademark notice without terms),
+LibreChat (trademark terms not verified), Scrutiny (its glasses come from a Noun Project
+icon, terms not verified), Nextcloud (its logo is `LicenseRef-NextcloudTrademarks`), Home
+Assistant (CC BY-NC-SA), Actual Budget (white-only mark), DokuWiki and Kanboard (CSS a plain
+lint can't keep), and projects whose logo terms are a trademark policy only.
+
+### stalwart: the read-only mail admin view
+
+The `stalwart` template gets the optional `mail.admin_view` (contracts
+§3.5, §19.13): a new `admin-view` service (`mailctl admin-view`, the adapter
+image) that the Hub routes `mail-admin.<main domain>` to, full
+administrators only. The bootstrap job makes the read-only role
+`portcullis-viewer` and its account and writes its password to the new
+`viewer_key` volume (group 2011, mailview); Stalwart serves its web admin
+(the bundle pinned in the mailctl image) at `/admin` on a TLS listener
+answered only to `admin-view`. Every write is refused by Stalwart itself.
+Needs a mailctl image with `admin-view` (the pin is bumped separately).
+
 ### Template contract v3 settings (breaking)
 
 Every template declares its settings in the contract v3 form (`settings:

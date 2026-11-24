@@ -6,6 +6,12 @@ tags: [budget, finance, money, tracking]
 links:
   website: https://actualbudget.org/
   source: https://github.com/actualbudget/actual
+long_description: |
+  Actual Budget is a personal finance app built around envelope budgeting: you assign your income to budget categories, then track spending against them. It handles accounts, transactions, rules, schedules and reports, and can import bank files or sync with supported bank-sync providers.
+
+  The server stores the budget files and syncs them between your devices; the app itself works locally in the browser.
+
+  Portcullis signs people in through OpenID Connect, limited to the instance's access group. Actual has no roles, so every member has the same access.
 instances: multi
 
 auth:
@@ -16,12 +22,10 @@ auth:
   group_admin: false
   access_group: users_actual-budget
   admin_group: admin_actual-budget
-  notes: >
-    OpenID login with auto-register. No native group/role support — all SSO
-    users get equal access. Identity: Actual keys users on preferred_username
-    (falling back to login, email, sub only when that claim is absent);
-    Keycloak always sends it via the profile scope, so accounts follow the
-    immutable LLDAP username, never the user-editable email.
+  notes: |
+    OpenID login with auto-register. No native group/role support — all SSO users get equal access.
+
+    **Identity:** Actual keys users on `preferred_username` (falling back to `login`, `email`, `sub` only when that claim is absent). Keycloak always sends it via the `profile` scope, so accounts follow the immutable LLDAP username, never the user-editable email.
 
 env:
   - key: ACTUAL_OIDC_SECRET

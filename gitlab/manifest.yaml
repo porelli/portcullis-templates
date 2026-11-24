@@ -6,6 +6,12 @@ tags: [git, ci-cd, devops, registry, issues]
 links:
   website: https://about.gitlab.com/
   source: https://gitlab.com/gitlab-org/gitlab
+long_description: |
+  GitLab is a complete DevOps platform: Git repositories, merge requests, issues and boards, CI/CD pipelines, a container and package registry and a wiki, in one application.
+
+  Portcullis signs people in through OpenID Connect, and only members of the access group can sign in or get an account. Git over HTTPS, the API, the registry and CI runners use personal access tokens.
+resources:
+  min_memory_mib: 8192
 instances: multi
 
 auth:
@@ -18,38 +24,24 @@ auth:
   group_admin: false
   access_group: users_gitlab
   admin_group: admin_gitlab
-  notes: >
-    Full OIDC with Keycloak. git-over-HTTPS, the API, the registry and CI
-    runners are not behind forward-auth and work with personal access tokens.
-    The sign-in, sign-up and OIDC paths (/users/...) are behind forward-auth +
-    group-gate, so only members of users_gitlab can log in or have an account
-    auto-created (GitLab CE has no OIDC group restriction; required_groups and
-    admin_groups are Premium/Ultimate only). Existing GitLab sessions survive
-    removal from the group until they expire; block the user in GitLab to cut
-    access immediately. Admin rights are granted in GitLab (root account uses
-    GITLAB_ROOT_PASSWORD); admin_gitlab is not mapped.
-    Password logins outside the gated /users paths: GitLab's "password
-    authentication for Git over HTTP(S)" and the OAuth password grant
-    (/oauth/token, grant_type=password) are application settings, not
-    gitlab.rb options, so the template can't switch them off. SSO-created
-    accounts have no password (GitLab generates one nobody knows; resetting
-    it goes through the gated /users/password); the root account's is
-    GITLAB_ROOT_PASSWORD (generated). After the first start, turn off
-    Admin > Settings > General > Sign-in restrictions > "Allow password
-    authentication for Git over HTTP(S)" and enable two-factor
-    authentication for root (GitLab refuses both for 2FA accounts).
-    Identity: OIDC identities are keyed on preferred_username (uid_field, the
-    immutable LLDAP username) and omniauth_auto_link_user is false, so an
-    email match never attaches an OIDC login to an existing GitLab account
-    (GitLab instead asks for that account's password). The email is not
-    synced from Keycloak after the account is created.
-    CA trust: GitLab's embedded OpenSSL uses the Hub's certs/ca-bundle.crt
-    (system CAs + Portcullis' internal CA) in place of its bundled
-    cacert.pem, so OIDC to auth.<domain> verifies with an ACME or internal
-    certificate.
-    Upgrades: the image is pinned; GitLab must be upgraded along its documented
-    upgrade path (required stops between versions), never by jumping straight
-    to the newest release.
+  notes: |
+    Full OIDC with Keycloak. Only members of `users_gitlab` can log in or have an account auto-created; git-over-HTTPS, the API, the registry and CI runners work with personal access tokens.
+
+    **What is gated:** git-over-HTTPS, the API, the registry and CI runners are not behind forward-auth. The sign-in, sign-up and OIDC paths (`/users/...`) are behind forward-auth + group-gate, so only members of `users_gitlab` can log in or have an account auto-created (GitLab CE has no OIDC group restriction; `required_groups` and `admin_groups` are Premium/Ultimate only).
+
+    - Existing GitLab sessions survive removal from the group until they expire; block the user in GitLab to cut access immediately.
+    - Admin rights are granted in GitLab (root account uses `GITLAB_ROOT_PASSWORD`); `admin_gitlab` is not mapped.
+
+    **Password logins outside the gated `/users` paths:** GitLab's "password authentication for Git over HTTP(S)" and the OAuth password grant (`/oauth/token`, `grant_type=password`) are application settings, not `gitlab.rb` options, so the template can't switch them off.
+
+    - SSO-created accounts have no password (GitLab generates one nobody knows; resetting it goes through the gated `/users/password`); the root account's is `GITLAB_ROOT_PASSWORD` (generated).
+    - After the first start, turn off **Admin > Settings > General > Sign-in restrictions > Allow password authentication for Git over HTTP(S)** and enable two-factor authentication for root (GitLab refuses both for 2FA accounts).
+
+    **Identity:** OIDC identities are keyed on `preferred_username` (`uid_field`, the immutable LLDAP username) and `omniauth_auto_link_user` is false, so an email match never attaches an OIDC login to an existing GitLab account (GitLab instead asks for that account's password). The email is not synced from Keycloak after the account is created.
+
+    **CA trust:** GitLab's embedded OpenSSL uses the Hub's `certs/ca-bundle.crt` (system CAs + Portcullis' internal CA) in place of its bundled `cacert.pem`, so OIDC to `auth.<domain>` verifies with an ACME or internal certificate.
+
+    **Upgrades:** the image is pinned; GitLab must be upgraded along its documented upgrade path (required stops between versions), never by jumping straight to the newest release.
 
 env:
   - key: GITLAB_ROOT_PASSWORD

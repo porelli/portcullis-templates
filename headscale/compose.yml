@@ -98,7 +98,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.headplane.rule: Host(`${PORTCULLIS_HOST_HEADPLANE:-vpn-admin.portcullis.local}`)
       traefik.http.routers.headplane.entrypoints: websecure
-      traefik.http.routers.headplane.tls.options: authaware@file
+      traefik.http.routers.headplane.tls.options: default
       traefik.http.routers.headplane.middlewares: client-headers@file,headplane-root-redirect@docker,security-headers@file
       traefik.http.middlewares.headplane-root-redirect.redirectregex.regex: ^https://[^/]+/?$$
       traefik.http.middlewares.headplane-root-redirect.redirectregex.replacement: https://${PORTCULLIS_HOST_HEADPLANE:-vpn-admin.portcullis.local}/admin

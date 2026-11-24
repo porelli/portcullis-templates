@@ -120,7 +120,7 @@ services:
       # group (required groups claim, see gitea-auth).
       traefik.http.routers.gitea.rule: Host(`${PORTCULLIS_HOST_GITEA:-gitea.portcullis.local}`)
       traefik.http.routers.gitea.entrypoints: websecure
-      traefik.http.routers.gitea.tls.options: authaware@file
+      traefik.http.routers.gitea.tls.options: default
       traefik.http.routers.gitea.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.gitea.service: gitea
       traefik.http.services.gitea.loadbalancer.server.port: "3000"

@@ -38,7 +38,7 @@ services:
       # clients authenticate with the master key or virtual API keys.
       traefik.http.routers.litellm.rule: Host(`${PORTCULLIS_HOST_LITELLM:-llm.portcullis.local}`)
       traefik.http.routers.litellm.entrypoints: websecure
-      traefik.http.routers.litellm.tls.options: authaware@file
+      traefik.http.routers.litellm.tls.options: default
       traefik.http.routers.litellm.middlewares: client-headers@file,security-headers@file
       traefik.http.routers.litellm.service: litellm
       # Admin UI and every interactive login path (SSO, username/password,
@@ -48,7 +48,7 @@ services:
       traefik.http.routers.litellm-ui.rule: Host(`${PORTCULLIS_HOST_LITELLM:-llm.portcullis.local}`) && (PathPrefix(`/ui`) || PathPrefix(`/sso`) || PathPrefix(`/login`) || PathPrefix(`/v2/login`) || PathPrefix(`/fallback/login`) || PathPrefix(`/onboarding`))
       traefik.http.routers.litellm-ui.priority: "100"
       traefik.http.routers.litellm-ui.entrypoints: websecure
-      traefik.http.routers.litellm-ui.tls.options: authaware@file
+      traefik.http.routers.litellm-ui.tls.options: default
       traefik.http.routers.litellm-ui.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.litellm-ui.service: litellm
       traefik.http.services.litellm.loadbalancer.server.port: "4000"

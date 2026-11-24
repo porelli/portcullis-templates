@@ -6,6 +6,12 @@ tags: [wiki, docs, knowledge-base]
 links:
   website: https://js.wiki/
   source: https://github.com/requarks/wiki
+long_description: |
+  Wiki.js is a wiki with a visual editor and a Markdown editor, page history, full-text search and fine-grained permissions.
+
+  Portcullis signs people in through OpenID Connect, with no password login. Members of the access group are editors, and members of the admin group are Wiki.js administrators.
+resources:
+  min_memory_mib: 1024
 instances: multi
 # One-off setup container nobody waits for (contracts §3 "One-off jobs"):
 # done when it exited 0, failed otherwise; never a stopped service.
@@ -19,53 +25,36 @@ auth:
   group_admin: true
   access_group: users_wiki
   admin_group: admin_wiki
-  notes: >
-    Native OIDC through Wiki.js' generic OpenID Connect strategy (key
-    "portcullis"), configured by the wiki-setup sidecar at every start over
-    the internal network (GraphQL, with its own API key kept in the
-    wiki-setup-data volume). One Portcullis login: the login page offers only
-    "Portcullis". No password login: the sidecar disables the local strategy
-    (and its self-registration), so the internet-facing GraphQL login and
-    register mutations refuse local accounts. Traefik only routes the wiki
-    while its healthcheck passes, which needs the Portcullis strategy enabled
-    and the local one disabled: the setup wizard of a fresh install, and a
-    re-enabled local login, get 404 from Traefik. Identity: Wiki.js keys
-    accounts on the OIDC subject (the Keycloak id of the LLDAP user, never the
-    email; Wiki.js has no username-claim option). It requires an email claim
-    and keeps emails unique per strategy, so an account's email is only
-    profile data, but: it would link a login to a user an admin pre-created
-    for this strategy with the same email (never pre-create users for the
-    Portcullis strategy), and a user who sets their LLDAP email to another
-    user's address makes the later login of whichever of them is second fail
-    (denial of service, no takeover; fix the email in LLDAP). Rights come only
-    from groups: new accounts get no group, and at each login Wiki.js sets the
-    user's membership of the Wiki.js groups users_wiki (editors, created once;
-    adjust its rights in Wiki.js) and admin_wiki (manage:system, re-applied
-    every start) from the groups claim. A realm user outside access_group
-    can't sign in (Keycloak denies it, see below) and would have no rights
-    anyway. The Guests group has no permissions
-    (re-applied before every boot by wiki-init and by the sidecar), so
-    nothing is readable anonymously. Removing a user from the groups takes
-    effect at their next login (Wiki.js sessions last up to 14 days).
-    Break-glass, on the server only: docker compose -p portcullis-<instance>
-    exec wiki-db psql -U wiki -d wiki -c "UPDATE authentication SET
-    \"isEnabled\" = true WHERE key = 'local'", restart the wiki container,
-    open Wiki.js directly on its container address (e.g. an SSH tunnel to
-    <container ip>:3000; Traefik serves 404 meanwhile) and sign in as
-    admin@wiki.invalid with WIKI_ADMIN_PASSWORD; the next start of the app
-    (Hub) disables the local login again. Existing installs: local accounts
-    can no longer sign in; reset or remove them in Administration > Users (as
-    an SSO admin) since their passwords stay valid if the local login is ever
-    re-enabled. If the sidecar has neither its API key nor the local admin
-    admin@wiki.invalid / WIKI_ADMIN_PASSWORD (installs whose first admin had
-    another email), it can't configure anything and the wiki stays unrouted:
-    create that local admin through the break-glass steps and restart.
-    Hostname: wiki-init writes the site URL from the instance's hostname
-    before Wiki.js boots, so a hostname change only needs a restart.
-    Sign-in is restricted to access_group in Keycloak (keycloak_access_role,
-    contract §8 Access role): only access_group members can sign in, so a
-    member of admin_group who is not also in access_group is denied — put
-    the wiki's admins in both groups.
+  notes: |
+    Native OIDC through Wiki.js' generic OpenID Connect strategy: the login page offers only "Portcullis", and there is no password login. Rights come only from the groups `users_wiki` (editors) and `admin_wiki`; put the wiki's admins in both groups.
+
+    **Setup:** the strategy (key `portcullis`) is configured by the `wiki-setup` sidecar at every start over the internal network (GraphQL, with its own API key kept in the `wiki-setup-data` volume).
+
+    **No password login:** the sidecar disables the local strategy (and its self-registration), so the internet-facing GraphQL login and register mutations refuse local accounts. Traefik only routes the wiki while its healthcheck passes, which needs the Portcullis strategy enabled and the local one disabled: the setup wizard of a fresh install, and a re-enabled local login, get 404 from Traefik.
+
+    **Identity:** Wiki.js keys accounts on the OIDC subject (the Keycloak id of the LLDAP user, never the email; Wiki.js has no username-claim option). It requires an email claim and keeps emails unique per strategy, so an account's email is only profile data, but:
+
+    - it would link a login to a user an admin pre-created for this strategy with the same email (never pre-create users for the Portcullis strategy);
+    - a user who sets their LLDAP email to another user's address makes the later login of whichever of them is second fail (denial of service, no takeover; fix the email in LLDAP).
+
+    **Rights** come only from groups: new accounts get no group, and at each login Wiki.js sets the user's membership of the Wiki.js groups `users_wiki` (editors, created once; adjust its rights in Wiki.js) and `admin_wiki` (`manage:system`, re-applied every start) from the `groups` claim.
+
+    - A realm user outside `access_group` can't sign in (Keycloak denies it, see below) and would have no rights anyway.
+    - The Guests group has no permissions (re-applied before every boot by `wiki-init` and by the sidecar), so nothing is readable anonymously.
+    - Removing a user from the groups takes effect at their next login (Wiki.js sessions last up to 14 days).
+    - Sign-in is restricted to `access_group` in Keycloak (`keycloak_access_role`, contract §8 Access role): only `access_group` members can sign in, so a member of `admin_group` who is not also in `access_group` is denied — put the wiki's admins in both groups.
+
+    **Break-glass, on the server only:**
+
+    1. `docker compose -p portcullis-<instance> exec wiki-db psql -U wiki -d wiki -c "UPDATE authentication SET \"isEnabled\" = true WHERE key = 'local'"`
+    2. restart the wiki container;
+    3. open Wiki.js directly on its container address (e.g. an SSH tunnel to `<container ip>:3000`; Traefik serves 404 meanwhile) and sign in as `admin@wiki.invalid` with `WIKI_ADMIN_PASSWORD`.
+
+    The next start of the app (Hub) disables the local login again.
+
+    **Existing installs:** local accounts can no longer sign in; reset or remove them in **Administration > Users** (as an SSO admin) since their passwords stay valid if the local login is ever re-enabled. If the sidecar has neither its API key nor the local admin `admin@wiki.invalid` / `WIKI_ADMIN_PASSWORD` (installs whose first admin had another email), it can't configure anything and the wiki stays unrouted: create that local admin through the break-glass steps and restart.
+
+    **Hostname:** `wiki-init` writes the site URL from the instance's hostname before Wiki.js boots, so a hostname change only needs a restart.
 env:
   - key: WIKI_DB_PASSWORD
     description: Wiki.js database password

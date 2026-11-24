@@ -106,7 +106,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.zigbee2mqtt.rule: Host(`${PORTCULLIS_HOST_ZIGBEE2MQTT:-zigbee.portcullis.local}`)
       traefik.http.routers.zigbee2mqtt.entrypoints: websecure
-      traefik.http.routers.zigbee2mqtt.tls.options: authaware@file
+      traefik.http.routers.zigbee2mqtt.tls.options: default
       traefik.http.routers.zigbee2mqtt.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.zigbee2mqtt.service: zigbee2mqtt
       traefik.http.services.zigbee2mqtt.loadbalancer.server.port: "8080"

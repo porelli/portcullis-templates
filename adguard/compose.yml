@@ -11,7 +11,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.adguard.rule: Host(`${PORTCULLIS_HOST_ADGUARD:-adguard.portcullis.local}`)
       traefik.http.routers.adguard.entrypoints: websecure
-      traefik.http.routers.adguard.tls.options: authaware@file
+      traefik.http.routers.adguard.tls.options: default
       traefik.http.routers.adguard.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.adguard.loadbalancer.server.port: "3000"
     restart: unless-stopped

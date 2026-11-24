@@ -69,7 +69,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.firefly.rule: Host(`${PORTCULLIS_HOST_FIREFLY:-finance.portcullis.local}`)
       traefik.http.routers.firefly.entrypoints: websecure
-      traefik.http.routers.firefly.tls.options: authaware@file
+      traefik.http.routers.firefly.tls.options: default
       traefik.http.routers.firefly.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.firefly.loadbalancer.server.port: "8080"
     restart: unless-stopped

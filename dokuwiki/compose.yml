@@ -40,7 +40,7 @@ services:
       # forward-auth; DokuWiki's ACL gives anonymous visitors nothing.
       traefik.http.routers.dokuwiki.rule: Host(`${PORTCULLIS_HOST_DOKUWIKI:-dokuwiki.portcullis.local}`)
       traefik.http.routers.dokuwiki.entrypoints: websecure
-      traefik.http.routers.dokuwiki.tls.options: authaware@file
+      traefik.http.routers.dokuwiki.tls.options: default
       traefik.http.routers.dokuwiki.middlewares: client-headers@file,security-headers@file
       traefik.http.services.dokuwiki.loadbalancer.server.port: "80"
     restart: unless-stopped

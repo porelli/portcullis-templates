@@ -84,7 +84,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.cadcraft.rule: Host(`${PORTCULLIS_HOST_CADCRAFT:-cadcraft.portcullis.local}`)
       traefik.http.routers.cadcraft.entrypoints: websecure
-      traefik.http.routers.cadcraft.tls.options: authaware@file
+      traefik.http.routers.cadcraft.tls.options: default
       traefik.http.routers.cadcraft.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.services.cadcraft.loadbalancer.server.port: "8080"
     restart: unless-stopped

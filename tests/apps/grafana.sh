@@ -10,7 +10,7 @@ APP_ID=grafana
 
 # Public exception ON in listed mode with one listed dashboard token: the
 # override the Hub would generate (tests/lib.sh quirk #12), every router of
-# the host on the default policy's tier (authaware@file).
+# the host on the default policy's tier (default).
 TOKEN=$(openssl rand -hex 16)
 OTHER=$(openssl rand -hex 16)
 MANIFEST="$(dirname "$(_find_compose "$APP_ID")")/manifest.yaml"
@@ -22,7 +22,7 @@ export COMPOSE_OVERRIDE
 # policy-file entry the Hub would publish (at the version core's group-gate serves, tests/lib.sh policy_version).
 write_public_policy grafana "$MANIFEST" listed
 # shellcheck disable=SC2016 # ${PORTCULLIS_HOST_GRAFANA} is for compose to expand
-write_public_override "$APP_ID" dashboards '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' authaware@file "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
+write_public_override "$APP_ID" dashboards '${PORTCULLIS_HOST_GRAFANA:-grafana.portcullis.local}' default "$COMPOSE_OVERRIDE" "${ROUTED[@]}"
 
 # AI support on, as the Hub writes it while the grafana-mcp companion is on
 # (contracts §3.1): trust.sh then adds the companion's address.

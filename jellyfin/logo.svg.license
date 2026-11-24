@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2019 The Jellyfin contributors
+SPDX-License-Identifier: CC-BY-SA-4.0
+
+Source: https://github.com/jellyfin/jellyfin-ux/blob/9e27258e873f64edaa9c5955e753978975ed5589/branding/SVG/icon-transparent.svg
+Modified (where present): editor metadata, upstream comments, the version and xml:space attributes removed; style and CSS
+class properties written as presentation attributes (the logo lint, contract §3). The duplicate root id was removed. The drawing is unchanged.
+Shown only to identify the app; any trademark stays its owner's.

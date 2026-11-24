@@ -23,7 +23,7 @@ services:
       traefik.enable: "true"
       traefik.http.routers.actual.rule: Host(`${PORTCULLIS_HOST_ACTUAL:-budget.portcullis.local}`)
       traefik.http.routers.actual.entrypoints: websecure
-      traefik.http.routers.actual.tls.options: authaware@file
+      traefik.http.routers.actual.tls.options: default
       traefik.http.routers.actual.middlewares: client-headers@file,security-headers@file
       traefik.http.services.actual.loadbalancer.server.port: "5006"
     restart: unless-stopped

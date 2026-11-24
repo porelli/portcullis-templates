@@ -67,6 +67,51 @@ Reference docs:
    Open both URLs before you submit: validate.py checks their form (https,
    repository-root URLs on known code hosts, no registry pages), not that
    they are the official ones.
+
+   Write `auth.notes` in Markdown, for admins (the Hub renders it on the
+   instance's Overview; contract §3):
+   ```yaml
+   auth:
+     notes: |
+       One or two sentences: what the app is and how people sign in.
+
+       Then short paragraphs or lists. Commands and paths in backticks:
+       `docker compose -p portcullis-<instance> exec app ...`.
+   ```
+   - Use a literal block (`|`): a folded one (`>`) joins the paragraphs.
+   - The first paragraph is the summary; for an app without a web page it is
+     also the portal note (at most 300 characters as plain text).
+   - Keep every fact a maintainer needs (pins, uids, capabilities, upgrade
+     paths), grouped under bold lead-ins such as `**Upgrades:**`.
+   - No raw HTML: validate.py refuses it (the Hub would drop it). Put tags
+     and placeholders such as `<instance-id>` in backticks. No images; only
+     `http`, `https` (without a `user@` part) and `mailto` links.
+   - At most 16 KiB, lists and quotes nested at most 16 deep, and no
+     control, bidi or zero-width characters.
+
+   Then the Marketplace listing (all optional; [Catalog
+   fields](https://porelli.github.io/portcullis-docs/guides/manifest-reference/#catalog-fields)):
+   ```yaml
+   category: storage        # one of the 16 slugs in the schema's enum
+   long_description: |
+     What the app is and what it is good for, in a short paragraph.
+
+     What Portcullis wires: sign-in, groups, AI, VPN or mail.
+   resources:
+     min_memory_mib: 2048   # only what the project's own docs state
+   logo: logo.svg
+   ```
+   - `long_description` follows the `auth.notes` rules above and never
+     repeats them: the Marketplace's detail drawer shows both.
+   - Add a `logo.svg` only when the project publishes an SVG logo under
+     terms that allow redistribution, and its trademark terms allow showing
+     it to identify the app. Copy it unchanged from the project's
+     repository at a commit; write CSS styles as presentation attributes
+     (`fill="…"`) if `tests/svgsafe.py` refuses them. Next to it, add a
+     REUSE sidecar `logo.svg.license` (`SPDX-FileCopyrightText`,
+     `SPDX-License-Identifier`, `Source:` with the commit URL, and what you
+     changed), the licence text in `LICENSES/<identifier>.txt`, and a line
+     in `CHANGELOG.md`. Without a logo the emoji `icon` is shown.
 5. **Write `compose.yml`** following the [rules](#compose-rules) below.
 6. **Pin the images** by version tag and digest (see [Images](#images)).
 7. **Add the directory to `.github/dependabot.yml`** (docker-compose
@@ -748,7 +793,7 @@ vpn:
   `<ROUTER>` is its name upper-cased with `-` as `_` (`litellm-ui` →
   `PORTCULLIS_HOST_LITELLM_UI`), path-scoped routers on the same host reuse
   its variable, and `<sub>` is the default subdomain (one DNS label). Then
-  `entrypoints: websecure`, `tls.options` one of `authaware@file`,
+  `entrypoints: websecure`, `tls.options` one of `default`,
   `public@file`, `protected@file`, and `security-headers@file` in the
   middlewares. Core subdomains (`auth`, `traefik`, `hub`, `directory`,
   `enroll`, `metrics`, `people`) are off limits. Router, service and

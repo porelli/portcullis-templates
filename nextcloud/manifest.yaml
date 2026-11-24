@@ -6,6 +6,12 @@ tags: [files, calendar, office, collaboration]
 links:
   website: https://nextcloud.com/
   source: https://github.com/nextcloud/server
+long_description: |
+  Nextcloud is a productivity platform: file storage and sync, sharing, calendars, contacts and many more apps, with desktop and mobile clients.
+
+  Portcullis signs people in through Nextcloud's official OpenID Connect app, with no password login. Only members of the access group can sign in, and members of the admin group are Nextcloud administrators. Files can be shared publicly through share links.
+
+  With AI support on, an MCP server lets people's AI assistants work with their files, calendars and contacts.
 instances: multi
 
 auth:
@@ -102,85 +108,43 @@ auth:
         supporting: true
       - prefix: /apps/text/public
         description: Markdown / README viewer public sessions (token in the request body, so only in mode all)
-  notes: >
-    Native OIDC through Nextcloud's official user_oidc app (pinned v8.11.0,
-    installed and configured by setup.sh at every start; upgrade it there).
-    Sign-in is one Portcullis login: the login page redirects to Keycloak.
-    Accounts are created on the first SSO login and keyed on the LLDAP
-    username (preferred_username, unique-uid off, so the Nextcloud user id is
-    the username); soft auto-provisioning is off, so an SSO login is never
-    attached to an existing local account and nothing is matched by email
-    (the user-editable email only fills the profile). Sign-in is restricted
-    to access_group in Keycloak (keycloak_access_role, contract §8 Access
-    role): only users_nextcloud members can sign in, so a member of
-    admin_nextcloud who is not also in users_nextcloud is denied — put
-    Nextcloud's admins in both groups (user_oidc's group whitelist + login
-    restriction stay as a second check); both groups are synced into
-    Nextcloud at each login, and members of admin_nextcloud become Nextcloud admins within a
-    minute (nextcloud-cron maps them into Nextcloud's "admin" group and
-    removes SSO accounts that left it). No password login at all: Nextcloud
-    can't switch its password form off server-side, so every local account
-    (the nc-breakglass admin the image creates at install, the "admin" of
-    installs made before this template version, accounts created in the
-    Users page) is disabled at every start and within a minute by
-    nextcloud-cron; the login form is hidden. Move a local account's files to
-    its owner's SSO account with occ files:transfer-ownership. An LLDAP user
-    whose name is a local account (e.g. "admin" on older installs) gets "User
-    conflict" until that account is deleted (occ user:delete). Desktop/mobile
-    clients use Login Flow v2 and get app passwords; WebDAV/OCS accept only
-    app passwords or tokens (token_auth_enforced). Break-glass is occ on the
-    server, e.g. docker compose -p portcullis-<instance> exec -u www-data
-    nextcloud php occ group:adduser admin <user> (or user_oidc:provider,
-    config:system:set, user:info). Removing a user from the groups blocks new
-    SSO logins and drops the groups at their next login, not sessions or app
-    passwords already issued (occ user:disable <user> for that); single
-    logout is off because the Keycloak client has no post-logout redirect
-    URI. Hostname: setup.sh re-applies trusted_domains, overwrite.cli.url,
-    overwritehost and overwriteprotocol from the instance's hostname at every
-    start, so a hostname change only needs a restart.
-    Public exceptions: the host is not behind forward-auth, so every share
-    link already works without Portcullis sign-in, listed or not (Nextcloud's
-    share token, password, expiry and brute-force protection apply; it sees
-    the client IP via TRUSTED_PROXIES = Traefik). The Hub exception only
-    changes hosts whose policy requires a client certificate: there, the
-    listed share links (mode all: every share) and the static files their
-    page needs are served without one, and logins (Basic auth, remember-me
-    cookies) are refused on those paths. The PDF viewer page (a PHP route) is
-    not in the list, so on such hosts PDFs on a share download instead of
-    opening inline; Markdown renders only in mode all. Apps installed under
-    /custom_apps that hook the share page are not covered.
-    Keycloak must be reachable at a public name and address: Nextcloud's HTTP
-    client refuses hosts with a local TLD (.local, .lan, ...) or a private
-    address (allow_local_remote_servers stays off; user_oidc has no switch
-    scoped to the provider), so with split DNS or a LAN-only domain user_oidc
-    answers "Could not reach the OpenID Connect provider". Never set
-    user_oidc's httpclient.allowselfsigned (it turns TLS verification off).
-    Upgrades: the image is pinned; Nextcloud only upgrades one major version at
-    a time, so step through every major (e.g. 33 -> 34 -> 35) and never skip one.
-    Keep nextcloud and nextcloud-cron on the same image.
-    Database: chosen at setup (PostgreSQL on nextcloud-postgres, the
-    default, MySQL / MariaDB on nextcloud-mariadb, each under its own
-    compose profile, or SQLite in the data volume) and fixed after the
-    first start. Switching means a new instance
-    with the other choice and moving the data across (e.g. with Nextcloud's
-    occ db:convert-type). Never bump the database servers' major versions
-    in place.
-    Settings: the default storage quota and the trash retention are applied
-    live through occ by the apply-settings hook (apply-settings.php, run by
-    the Hub as www-data in the nextcloud container at start and after every
-    save; idempotent, exits non-zero on any occ failure). Quotas set per
-    user in Nextcloud's Users page still win over the default.
-    AI availability: while AI support is on, any container on
-    portcullis-proxy can reach the companion and send wrong credentials;
-    Nextcloud's brute-force protection counts them against the companion's
-    address, which every AI request comes from, so such a container can
-    slow everyone's AI requests down (sign-in itself still holds).
-    Re-used usernames: accounts are keyed on the username, so a deleted
-    person's username given to someone new gets the former person's
-    Nextcloud account, on the web and through AI alike (the AI mint can't
-    tell them apart: user_oidc stores no Keycloak id). Delete or rename
-    the former person's Nextcloud account (occ user:delete) before re-using
-    a username.
+  notes: |
+    Native OIDC through Nextcloud's official `user_oidc` app: sign-in is one Portcullis login, and only members of `users_nextcloud` can sign in. Members of `admin_nextcloud` become Nextcloud admins (put them in both groups); there is no password login at all.
+
+    **The app:** `user_oidc`, pinned v8.11.0, installed and configured by `setup.sh` at every start (upgrade it there). The login page redirects to Keycloak.
+
+    **Identity:** accounts are created on the first SSO login and keyed on the LLDAP username (`preferred_username`, unique-uid off, so the Nextcloud user id is the username). Soft auto-provisioning is off, so an SSO login is never attached to an existing local account and nothing is matched by email (the user-editable email only fills the profile).
+
+    **Groups:** sign-in is restricted to `access_group` in Keycloak (`keycloak_access_role`, contract §8 Access role): only `users_nextcloud` members can sign in, so a member of `admin_nextcloud` who is not also in `users_nextcloud` is denied — put Nextcloud's admins in both groups (`user_oidc`'s group whitelist + login restriction stay as a second check). Both groups are synced into Nextcloud at each login, and members of `admin_nextcloud` become Nextcloud admins within a minute (`nextcloud-cron` maps them into Nextcloud's `admin` group and removes SSO accounts that left it).
+
+    **No password login at all:** Nextcloud can't switch its password form off server-side, so every local account (the `nc-breakglass` admin the image creates at install, the `admin` of installs made before this template version, accounts created in the Users page) is disabled at every start and within a minute by `nextcloud-cron`; the login form is hidden.
+
+    - Move a local account's files to its owner's SSO account with `occ files:transfer-ownership`.
+    - An LLDAP user whose name is a local account (e.g. `admin` on older installs) gets "User conflict" until that account is deleted (`occ user:delete`).
+    - Desktop/mobile clients use Login Flow v2 and get app passwords; WebDAV/OCS accept only app passwords or tokens (`token_auth_enforced`).
+    - Break-glass is `occ` on the server, e.g. `docker compose -p portcullis-<instance> exec -u www-data nextcloud php occ group:adduser admin <user>` (or `user_oidc:provider`, `config:system:set`, `user:info`).
+
+    **Revoking access:** removing a user from the groups blocks new SSO logins and drops the groups at their next login, not sessions or app passwords already issued (`occ user:disable <user>` for that); single logout is off because the Keycloak client has no post-logout redirect URI.
+
+    **Hostname:** `setup.sh` re-applies `trusted_domains`, `overwrite.cli.url`, `overwritehost` and `overwriteprotocol` from the instance's hostname at every start, so a hostname change only needs a restart.
+
+    **Public exceptions:** the host is not behind forward-auth, so every share link already works without Portcullis sign-in, listed or not (Nextcloud's share token, password, expiry and brute-force protection apply; it sees the client IP via `TRUSTED_PROXIES` = Traefik).
+
+    - The Hub exception only changes hosts whose policy requires a client certificate: there, the listed share links (mode `all`: every share) and the static files their page needs are served without one, and logins (Basic auth, remember-me cookies) are refused on those paths.
+    - The PDF viewer page (a PHP route) is not in the list, so on such hosts PDFs on a share download instead of opening inline; Markdown renders only in mode `all`.
+    - Apps installed under `/custom_apps` that hook the share page are not covered.
+
+    **Keycloak must be reachable at a public name and address:** Nextcloud's HTTP client refuses hosts with a local TLD (`.local`, `.lan`, ...) or a private address (`allow_local_remote_servers` stays off; `user_oidc` has no switch scoped to the provider), so with split DNS or a LAN-only domain `user_oidc` answers "Could not reach the OpenID Connect provider". Never set `user_oidc`'s `httpclient.allowselfsigned` (it turns TLS verification off).
+
+    **Upgrades:** the image is pinned; Nextcloud only upgrades one major version at a time, so step through every major (e.g. 33 → 34 → 35) and never skip one. Keep `nextcloud` and `nextcloud-cron` on the same image.
+
+    **Database:** chosen at setup (PostgreSQL on `nextcloud-postgres`, the default, MySQL / MariaDB on `nextcloud-mariadb`, each under its own compose profile, or SQLite in the data volume) and fixed after the first start. Switching means a new instance with the other choice and moving the data across (e.g. with Nextcloud's `occ db:convert-type`). Never bump the database servers' major versions in place.
+
+    **Settings:** the default storage quota and the trash retention are applied live through `occ` by the `apply-settings` hook (`apply-settings.php`, run by the Hub as `www-data` in the nextcloud container at start and after every save; idempotent, exits non-zero on any `occ` failure). Quotas set per user in Nextcloud's Users page still win over the default.
+
+    **AI availability:** while AI support is on, any container on `portcullis-proxy` can reach the companion and send wrong credentials; Nextcloud's brute-force protection counts them against the companion's address, which every AI request comes from, so such a container can slow everyone's AI requests down (sign-in itself still holds).
+
+    **Re-used usernames:** accounts are keyed on the username, so a deleted person's username given to someone new gets the former person's Nextcloud account, on the web and through AI alike (the AI mint can't tell them apart: `user_oidc` stores no Keycloak id). Delete or rename the former person's Nextcloud account (`occ user:delete`) before re-using a username.
 
 hooks:
   - name: apply-settings
