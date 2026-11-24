@@ -4541,12 +4541,19 @@ def applies_of(o: Dict[str, Any]) -> str:
     return "restart"
 
 
+# RESERVED_IDS (templates.ReservedIDs) are never a template or instance id:
+# the Hub's own names (its mail sender, contract §19.14) and core's.
+RESERVED_IDS = ("hub", "portcullis")
+
+
 def check_id_shape(app_id: str) -> Optional[str]:
     """templates.CheckIDShape: no portcullis segment, its own Normalize form."""
     for seg in re.split(r"[^a-zA-Z0-9]+", app_id):
         if seg.lower() == "portcullis":
             return (f"id {json.dumps(app_id)}: portcullis may not be a segment of an id (Traefik's automatic names "
                     f"<service>-portcullis-<id> of two instances could collide)")
+    if app_id.lower() in RESERVED_IDS:
+        return f"id {json.dumps(app_id)} is reserved for core and the Hub"
     if "--" in app_id:
         return (f"id {json.dumps(app_id)} may not contain \"--\": it separates an instance from its objects' names "
                 "(<instance>--<object> on Kubernetes), so another instance's names could equal this one's")

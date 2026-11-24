@@ -2731,12 +2731,12 @@ settings:
                 self.assertFalse([e for e in errors if "traefik.enable" in e], errors)
 
     def test_check_id_shape(self) -> None:
-        for app_id in ("a-portcullis-b", "portcullis", "x-portcullis", "portcullis-x", "a_portcullis_b", "my_app", "my--app", "app-", "app_", "a_b"):
+        for app_id in ("a-portcullis-b", "portcullis", "x-portcullis", "portcullis-x", "a_portcullis_b", "my_app", "my--app", "app-", "app_", "a_b", "hub"):
             with self.subTest(app_id=app_id):
                 errors, _ = self.run_raw(S_HDR, s_compose(), app_id=app_id)
                 self.assertError(errors, "id")
-                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e or "may not contain \"--\"" in e) for e in errors), errors)
-        for app_id in ("my-app", "a-portcullisx", "portcullisx-b", "xportcullis-b", "firefox-sync", "a1-2b"):
+                self.assertTrue(any(app_id + "/" in e and ("portcullis may not be a segment" in e or "single -" in e or "may not contain \"--\"" in e or "is reserved for core and the Hub" in e) for e in errors), errors)
+        for app_id in ("my-app", "a-portcullisx", "portcullisx-b", "xportcullis-b", "firefox-sync", "a1-2b", "hubble", "my-hub"):
             with self.subTest(app_id=app_id):
                 self.assertIsNone(v.check_id_shape(app_id))
 
