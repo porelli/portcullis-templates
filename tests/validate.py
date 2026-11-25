@@ -1597,8 +1597,7 @@ def check_hosts_reasons(t: Template, r: Report) -> None:
     """NEW (Firefox own accounts): hosts.reasons validation (contracts §3, §11.7)."""
     if not t.manifest:
         return
-    auth = t.manifest.get("auth") or {}
-    hosts = auth.get("hosts")
+    hosts = t.manifest.get("hosts")
     if not isinstance(hosts, dict):
         return
     reasons = hosts.get("reasons")
@@ -2428,7 +2427,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
 
     # Get the set of host routers with reasons (keys are host router names)
     host_reasons_keys: Set[str] = set()
-    hosts = auth.get("hosts")
+    hosts = (t.manifest or {}).get("hosts")
     if isinstance(hosts, dict):
         reasons = hosts.get("reasons")
         if isinstance(reasons, dict):
@@ -2469,19 +2468,25 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
         if method in ("forward-auth", "header-auth"):
             # Routers may skip auth middleware if their host (from the rule) has a
             # reason in hosts.reasons (badge explains the bypass; e.g., Firefox
-            # calling APIs in the background). Parse the host variable from the rule,
-            # reverse var_key to get the router name, check if that router has a reason.
+            # calling APIs in the background). The rule must fullmatch the v2 grammar
+            # (single Host() with optional && paths), parse the host variable, and
+            # compare it with each reason key's computed variable for exact equality.
             router_has_reason = False
             if not (has_auth and has_groups):
-                # Parse PORTCULLIS_HOST_<VAR> from the rule (anchored at start)
-                match = re.match(r'^Host\(\`\$\{PORTCULLIS_HOST_([A-Z0-9_]+):-', rule)
+                # Rule must fullmatch: Host(`${PORTCULLIS_HOST_X:-...}`) [&& paths]
+                # No HostRegexp, no second Host(), no || outside parenthesised paths
+                match = re.fullmatch(r'Host\(\`\$\{PORTCULLIS_HOST_([A-Z0-9_]+):-[^`]*\}\`\)(?:\s*&&\s*(.+))?', rule, re.S)
                 if match:
-                    var_suffix = match.group(1)
-                    # Reverse var_key: FIREFOX_SYNC_FXA_API -> firefox-sync-fxa-api
-                    router_name = var_suffix.lower().replace("_", "-")
-                    # Check if this router name has a reason
-                    if router_name in host_reasons_keys:
-                        router_has_reason = True
+                    captured_var = match.group(1)
+                    path_part = match.group(2)
+                    # Optional path part must be valid: Path/PathPrefix or ( ... || ... )
+                    if path_part is None or PATH_PART_RE.match(path_part.strip()):
+                        # For each reason key, compute "PORTCULLIS_HOST_" + var_key(key)
+                        # and compare with captured variable for exact equality
+                        for reason_key in host_reasons_keys:
+                            if f"PORTCULLIS_HOST_{var_key(reason_key)}" == f"PORTCULLIS_HOST_{captured_var}":
+                                router_has_reason = True
+                                break
             if not (has_auth and has_groups) and not router_has_reason:
                 r.error(where, f"{method} router must use middlewares {AUTH_MW},{GROUPS_MW}")
         elif method == "native-oidc":

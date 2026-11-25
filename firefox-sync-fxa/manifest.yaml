@@ -32,17 +32,18 @@ auth:
   group_admin: false
   access_group: users_firefox-sync-fxa
   admin_group: admin_firefox-sync-fxa
-  hosts:
-    reasons:
-      firefox-sync-fxa: "Firefox syncs in the background, without cookies; each request is signed with the account's own keys."
-      firefox-sync-fxa-api: "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account."
-      firefox-sync-fxa-profile: "Firefox loads account profiles and avatars in the background, without cookies."
-      firefox-sync-fxa-pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
-      firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
 
     **What runs:** Mozilla's accounts (auth, content, profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.1 on PostgreSQL and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>).
+
+hosts:
+  reasons:
+    firefox-sync-fxa: "Firefox syncs in the background, without cookies; each request is signed with the account's own keys."
+    firefox-sync-fxa-api: "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account."
+    firefox-sync-fxa-profile: "Firefox loads account profiles and avatars in the background, without cookies."
+    firefox-sync-fxa-pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
+    firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
 
 env:
   - key: FXA_MYSQL_PASSWORD

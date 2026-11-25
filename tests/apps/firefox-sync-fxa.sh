@@ -292,37 +292,37 @@ for r in firefox-sync-fxa-accounts firefox-sync-fxa-admin; do
   fi
 done
 
-# accounts_open_paths: the accounts-open router exactly the four Path()s, priority 1000, rate-limit.
+# accounts_open_paths: the accounts-open router exactly the four Path()s, priority 100, rate-limit.
 OPEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.rule"] // ""' "$COMPOSE")
 OPEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.middlewares"] // ""' "$COMPOSE")
 OPEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.priority"] // ""' "$COMPOSE")
 WANT_OPEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && ( Path(`/`) || Path(`/.well-known/change-password`) || Path(`/.well-known/fxa-client-configuration`) || Path(`/metrics-flow`) )'
-if [ "$OPEN_RULE" = "$WANT_OPEN_RULE" ] && [ "$OPEN_MW" = "rate-limit@file,security-headers@file" ] && [ "$OPEN_PRIO" = "1000" ]; then
-  pass "accounts_open_paths: exactly the four Path()s, priority 1000, rate-limit@file"
+if [ "$OPEN_RULE" = "$WANT_OPEN_RULE" ] && [ "$OPEN_MW" = "rate-limit@file,security-headers@file" ] && [ "$OPEN_PRIO" = "100" ]; then
+  pass "accounts_open_paths: exactly the four Path()s, priority 100, rate-limit@file"
 else
   fail "accounts_open_paths: rule='$OPEN_RULE' mws='$OPEN_MW' prio='$OPEN_PRIO'"
 fi
 
-# signup router: API host && Path(/v1/account/create), priority 1000, rate-limit-auth.
+# signup router: API host && Path(/v1/account/create), priority 100, rate-limit-auth.
 SIGNUP_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.rule"] // ""' "$COMPOSE")
 SIGNUP_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.middlewares"] // ""' "$COMPOSE")
 SIGNUP_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.priority"] // ""' "$COMPOSE")
 WANT_SIGNUP_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}`) && Path(`/v1/account/create`)'
-if [ "$SIGNUP_RULE" = "$WANT_SIGNUP_RULE" ] && [ "$SIGNUP_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$SIGNUP_PRIO" = "1000" ]; then
-  pass "signup router: API host && Path(/v1/account/create), priority 1000, rate-limit-auth@file"
+if [ "$SIGNUP_RULE" = "$WANT_SIGNUP_RULE" ] && [ "$SIGNUP_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$SIGNUP_PRIO" = "100" ]; then
+  pass "signup router: API host && Path(/v1/account/create), priority 100, rate-limit-auth@file"
 else
   fail "signup router: rule='$SIGNUP_RULE' mws='$SIGNUP_MW' prio='$SIGNUP_PRIO'"
 fi
 
-# token router: Sync host && PathPrefix(/1.0/), rate-limit-auth (no priority needed: shorter Path prefix = lower default prio).
+# token router: Sync host && PathPrefix(/1.0/), rate-limit-auth, priority 100 for consistency.
 TOKEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.rule"] // ""' "$COMPOSE")
 TOKEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.middlewares"] // ""' "$COMPOSE")
 TOKEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.priority"] // ""' "$COMPOSE")
 WANT_TOKEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}`) && PathPrefix(`/1.0/`)'
-if [ "$TOKEN_RULE" = "$WANT_TOKEN_RULE" ] && [ "$TOKEN_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$TOKEN_PRIO" = "" ]; then
-  pass "token router: Sync host && PathPrefix(/1.0/), rate-limit-auth@file (no priority)"
+if [ "$TOKEN_RULE" = "$WANT_TOKEN_RULE" ] && [ "$TOKEN_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$TOKEN_PRIO" = "100" ]; then
+  pass "token router: Sync host && PathPrefix(/1.0/), rate-limit-auth@file, priority 100"
 else
-  fail "token router: rule='$TOKEN_RULE' mws='$TOKEN_MW' prio='$TOKEN_PRIO' (want empty)"
+  fail "token router: rule='$TOKEN_RULE' mws='$TOKEN_MW' prio='$TOKEN_PRIO' (want 100)"
 fi
 
 # manifest_auth: method forward-auth, group_access true, no admin_paths.
@@ -335,27 +335,27 @@ else
   fail "manifest_auth: method=$METHOD group_access=$GROUP_ACCESS admin_paths=$ADMIN_PATHS"
 fi
 
-# host_reasons: five entries with exact keys and texts.
-REASON_KEYS=$(yq -r '.auth.hosts.reasons // {} | keys | sort | join(" ")' "$MANIFEST")
+# host_reasons: five entries with exact keys and texts (top-level hosts.reasons).
+REASON_KEYS=$(yq -r '.hosts.reasons // {} | keys | sort | join(" ")' "$MANIFEST")
 WANT_KEYS="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile"
 if [ "$REASON_KEYS" = "$WANT_KEYS" ]; then
   pass "host_reasons: five keys (firefox-sync-fxa, -accounts, -api, -pairing, -profile)"
 else
   fail "host_reasons: got keys '$REASON_KEYS', want '$WANT_KEYS'"
 fi
-SYNC_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa"] // ""' "$MANIFEST")
+SYNC_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa"] // ""' "$MANIFEST")
 [ "$SYNC_REASON" = "Firefox syncs in the background, without cookies; each request is signed with the account's own keys." ] \
   && pass "host_reasons: firefox-sync-fxa text matches" || fail "host_reasons: firefox-sync-fxa text is '$SYNC_REASON'"
-API_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-api"] // ""' "$MANIFEST")
+API_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-api"] // ""' "$MANIFEST")
 [ "$API_REASON" = "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account." ] \
   && pass "host_reasons: firefox-sync-fxa-api text matches" || fail "host_reasons: firefox-sync-fxa-api text is '$API_REASON'"
-PROFILE_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-profile"] // ""' "$MANIFEST")
+PROFILE_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-profile"] // ""' "$MANIFEST")
 [ "$PROFILE_REASON" = "Firefox loads account profiles and avatars in the background, without cookies." ] \
   && pass "host_reasons: firefox-sync-fxa-profile text matches" || fail "host_reasons: firefox-sync-fxa-profile text is '$PROFILE_REASON'"
-PAIRING_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-pairing"] // ""' "$MANIFEST")
+PAIRING_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-pairing"] // ""' "$MANIFEST")
 [ "$PAIRING_REASON" = "An encrypted relay for pairing a phone by QR code; it can't read what it relays." ] \
   && pass "host_reasons: firefox-sync-fxa-pairing text matches" || fail "host_reasons: firefox-sync-fxa-pairing text is '$PAIRING_REASON'"
-ACCOUNTS_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MANIFEST")
+ACCOUNTS_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MANIFEST")
 [ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
   && pass "host_reasons: firefox-sync-fxa-accounts text matches" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
 

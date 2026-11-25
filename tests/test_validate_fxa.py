@@ -397,3 +397,105 @@ networks:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostsReasonsRoutersBypassAddendum(FxACase):
+    """Additional security tests for the addendum parsing rules."""
+
+    def test_host_or_host_rule_fails(self) -> None:
+        """(addendum c1) Host(reasoned) || Host(unreasoned) without auth fails."""
+        # Rule has two Host() clauses with ||, should not get exemption
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) || Host(`demo-alt.portcullis.local`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: public@file
+      traefik.http.routers.demo.middlewares: rate-limit@file,security-headers@file
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        manifest = BASE_MANIFEST.replace("instances: multi", "instances: multi\nhosts:\n  reasons:\n    demo: \"Reason\"")
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        # Should fail - || outside parentheses doesn't fullmatch the grammar
+        self.assertTrue(any("must use middlewares portcullis-auth@docker,portcullis-groups@docker" in e for e in errors),
+                        f"Expected auth required error for Host||Host rule. Errors: {errors}")
+
+    def test_hostregexp_rule_fails(self) -> None:
+        """(addendum c2) HostRegexp rule without auth fails."""
+        # Rule uses HostRegexp instead of Host
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: HostRegexp(`{host:.+}`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: public@file
+      traefik.http.routers.demo.middlewares: rate-limit@file,security-headers@file
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        manifest = BASE_MANIFEST.replace("instances: multi", "instances: multi\nhosts:\n  reasons:\n    demo: \"Reason\"")
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        # Should fail - HostRegexp doesn't fullmatch the grammar
+        self.assertTrue(any("must use middlewares portcullis-auth@docker,portcullis-groups@docker" in e for e in errors),
+                        f"Expected auth required error for HostRegexp rule. Errors: {errors}")
+
+    def test_dot_vs_dash_no_match(self) -> None:
+        """(addendum c3) Host var differing only by . vs - doesn't match."""
+        # Reason has "demo-dash" (DEMO_DASH), router uses "demo.dash" (DEMO_DASH too but different string)
+        # They should NOT match because we compare the full PORTCULLIS_HOST_X string exactly
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: default
+      traefik.http.routers.demo.middlewares: portcullis-auth@docker,portcullis-groups@docker
+      traefik.http.routers.demo.service: demo
+      traefik.http.routers.demo-special.rule: Host(`${PORTCULLIS_HOST_DEMO_DOT:-demo-dot.portcullis.local}`)
+      traefik.http.routers.demo-special.entrypoints: websecure
+      traefik.http.routers.demo-special.tls.options: public@file
+      traefik.http.routers.demo-special.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.demo-special.service: demo
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        # Reason has "demo-dash" (var_key -> DEMO_DASH), router uses DEMO_DOT
+        # These are different, so no match
+        manifest = BASE_MANIFEST.replace("instances: multi", "instances: multi\nhosts:\n  reasons:\n    demo-dash: \"Reason for demo-dash\"")
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        # Router uses DEMO_DOT, reason has "demo-dash" (DEMO_DASH), no match
+        self.assertTrue(any("demo-special" in e and "must use middlewares" in e for e in errors),
+                        f"Expected auth required for demo-special (no matching reason). Errors: {errors}")
+
+

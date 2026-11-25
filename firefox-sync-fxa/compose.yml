@@ -953,21 +953,22 @@ services:
       traefik.http.routers.firefox-sync-fxa-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
       traefik.http.routers.firefox-sync-fxa-admin.service: firefox-sync-fxa-gate
       # Path routers: open paths of the accounts host, the sign-up endpoint,
-      # the tokenserver (all priority 1000, above the host-wide routers).
+      # the tokenserver (all priority 100, the convention for path routers).
       traefik.http.routers.firefox-sync-fxa-accounts-open.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && ( Path(`/`) || Path(`/.well-known/change-password`) || Path(`/.well-known/fxa-client-configuration`) || Path(`/metrics-flow`) )
-      traefik.http.routers.firefox-sync-fxa-accounts-open.priority: "1000"
+      traefik.http.routers.firefox-sync-fxa-accounts-open.priority: "100"
       traefik.http.routers.firefox-sync-fxa-accounts-open.entrypoints: websecure
       traefik.http.routers.firefox-sync-fxa-accounts-open.tls.options: public@file
       traefik.http.routers.firefox-sync-fxa-accounts-open.middlewares: rate-limit@file,security-headers@file
       traefik.http.routers.firefox-sync-fxa-accounts-open.service: firefox-sync-fxa-gate
       traefik.http.routers.firefox-sync-fxa-signup.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}`) && Path(`/v1/account/create`)
-      traefik.http.routers.firefox-sync-fxa-signup.priority: "1000"
+      traefik.http.routers.firefox-sync-fxa-signup.priority: "100"
       traefik.http.routers.firefox-sync-fxa-signup.entrypoints: websecure
       traefik.http.routers.firefox-sync-fxa-signup.tls.options: public@file
       traefik.http.routers.firefox-sync-fxa-signup.middlewares: rate-limit-auth@file,security-headers@file
       traefik.http.routers.firefox-sync-fxa-signup.service: firefox-sync-fxa-gate
       # The tokenserver: a stricter rate limit against token replay.
       traefik.http.routers.firefox-sync-fxa-token.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}`) && PathPrefix(`/1.0/`)
+      traefik.http.routers.firefox-sync-fxa-token.priority: "100"
       traefik.http.routers.firefox-sync-fxa-token.entrypoints: websecure
       traefik.http.routers.firefox-sync-fxa-token.tls.options: public@file
       traefik.http.routers.firefox-sync-fxa-token.middlewares: rate-limit-auth@file,security-headers@file
