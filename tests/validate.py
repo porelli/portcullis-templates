@@ -1603,25 +1603,43 @@ def check_hosts_reasons(t: Template, r: Report) -> None:
     reasons = hosts.get("reasons")
     if not isinstance(reasons, dict):
         return
-    for router, reason in reasons.items():
-        # Check router is a known host router
-        router_var = "PORTCULLIS_HOST_" + var_key(router)
-        if router_var not in t.host_vars:
-            r.error(t.m_where, f"hosts.reasons: {router} is not a host router")
+    for key, reason in reasons.items():
+        # Map reason key to router name: "api" -> "firefox-sync-fxa-api", "Sync" -> "firefox-sync-fxa"
+        # Check router is a known host router by trying to find a matching host variable
+        # The host var is PORTCULLIS_HOST_<var_key(router_name)>
+        router_name = None
+        # Try exact match (key is the router name)
+        test_var = "PORTCULLIS_HOST_" + var_key(key)
+        if test_var in t.host_vars:
+            router_name = key
+        else:
+            # Try app-id suffix match: key might be a suffix (e.g., "api" for "firefox-sync-fxa-api")
+            candidate = f"{t.id}-{key.lower()}"
+            test_var = "PORTCULLIS_HOST_" + var_key(candidate)
+            if test_var in t.host_vars:
+                router_name = candidate
+            else:
+                # Try app-id itself (for keys like "Sync" referring to the main host)
+                test_var = "PORTCULLIS_HOST_" + var_key(t.id)
+                if test_var in t.host_vars and (key.lower() == "sync" or key == t.id):
+                    router_name = t.id
+
+        if not router_name:
+            r.error(t.m_where, f"hosts.reasons: {key} does not match any host router (tried {t.id}, {t.id}-{key.lower()})")
             continue
         if not isinstance(reason, str):
             continue
         # Check reason is not empty
         if not reason:
-            r.error(t.m_where, f"hosts.reasons[{router}]: reason is empty")
+            r.error(t.m_where, f"hosts.reasons[{key}]: reason is empty")
             continue
         # Check length (200 runes max)
         rune_count = len(reason)  # Python's len() counts unicode characters (runes)
         if rune_count > 200:
-            r.error(t.m_where, f"hosts.reasons[{router}]: reason is {rune_count} runes, at most 200 allowed")
+            r.error(t.m_where, f"hosts.reasons[{key}]: reason is {rune_count} runes, at most 200 allowed")
         # Check for control characters (newlines not allowed)
         if any(ord(c) < 32 or ord(c) == 127 for c in reason):
-            r.error(t.m_where, f"hosts.reasons[{router}]: reason has a control character (newlines are not allowed)")
+            r.error(t.m_where, f"hosts.reasons[{key}]: reason has a control character (newlines are not allowed)")
 
 
 def check_instance_vars(t: Template, r: Report) -> None:
@@ -2425,6 +2443,27 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     nl = auth.get("native_login")
     gated: List[Tuple[str, List[str]]] = []  # (router, path prefixes or ["/"])
 
+    # Build set of routers that have reasons (may skip auth middleware)
+    routers_with_reasons: Set[str] = set()
+    hosts = (t.manifest or {}).get("hosts")
+    if isinstance(hosts, dict):
+        reasons = hosts.get("reasons")
+        if isinstance(reasons, dict):
+            for key in reasons.keys():
+                # Map reason key to router name (same logic as check_hosts_reasons)
+                test_var = "PORTCULLIS_HOST_" + var_key(key)
+                if test_var in t.host_vars:
+                    routers_with_reasons.add(key)
+                else:
+                    candidate = f"{t.id}-{key.lower()}"
+                    test_var = "PORTCULLIS_HOST_" + var_key(candidate)
+                    if test_var in t.host_vars:
+                        routers_with_reasons.add(candidate)
+                    else:
+                        test_var = "PORTCULLIS_HOST_" + var_key(t.id)
+                        if test_var in t.host_vars and (key.lower() == "sync" or key == t.id):
+                            routers_with_reasons.add(t.id)
+
     check_rule_forms(t, routers, r)
     for name, rt in sorted(routers.items()):
         where = f"{t.c_where}: router {name}"
@@ -2458,7 +2497,17 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
         host_wide = not paths
 
         if method in ("forward-auth", "header-auth"):
-            if not (has_auth and has_groups):
+            # Routers may skip auth middleware if their host has a reason in hosts.reasons
+            # (badge explains the bypass; e.g., Firefox calling APIs in the background).
+            # Check if this router or its host (for path routers) has a reason.
+            router_has_reason = name in routers_with_reasons
+            if not router_has_reason:
+                # For path routers, check if they're on a host with a reason
+                for host_router in routers_with_reasons:
+                    if name.startswith(host_router + "-"):
+                        router_has_reason = True
+                        break
+            if not (has_auth and has_groups) and not router_has_reason:
                 r.error(where, f"{method} router must use middlewares {AUTH_MW},{GROUPS_MW}")
         elif method == "native-oidc":
             if has_auth and host_wide and name not in GATED_CLIENT_ROUTERS.get(t.id, set()):
