@@ -1597,35 +1597,18 @@ def check_hosts_reasons(t: Template, r: Report) -> None:
     """NEW (Firefox own accounts): hosts.reasons validation (contracts §3, §11.7)."""
     if not t.manifest:
         return
-    hosts = t.manifest.get("hosts")
+    auth = t.manifest.get("auth") or {}
+    hosts = auth.get("hosts")
     if not isinstance(hosts, dict):
         return
     reasons = hosts.get("reasons")
     if not isinstance(reasons, dict):
         return
     for key, reason in reasons.items():
-        # Map reason key to router name: "api" -> "firefox-sync-fxa-api", "Sync" -> "firefox-sync-fxa"
-        # Check router is a known host router by trying to find a matching host variable
-        # The host var is PORTCULLIS_HOST_<var_key(router_name)>
-        router_name = None
-        # Try exact match (key is the router name)
-        test_var = "PORTCULLIS_HOST_" + var_key(key)
-        if test_var in t.host_vars:
-            router_name = key
-        else:
-            # Try app-id suffix match: key might be a suffix (e.g., "api" for "firefox-sync-fxa-api")
-            candidate = f"{t.id}-{key.lower()}"
-            test_var = "PORTCULLIS_HOST_" + var_key(candidate)
-            if test_var in t.host_vars:
-                router_name = candidate
-            else:
-                # Try app-id itself (for keys like "Sync" referring to the main host)
-                test_var = "PORTCULLIS_HOST_" + var_key(t.id)
-                if test_var in t.host_vars and (key.lower() == "sync" or key == t.id):
-                    router_name = t.id
-
-        if not router_name:
-            r.error(t.m_where, f"hosts.reasons: {key} does not match any host router (tried {t.id}, {t.id}-{key.lower()})")
+        # Each key must be a host router (contracts §3)
+        router_var = "PORTCULLIS_HOST_" + var_key(key)
+        if router_var not in t.host_vars:
+            r.error(t.m_where, f"hosts.reasons: {key} is not a host router")
             continue
         if not isinstance(reason, str):
             continue
@@ -2443,26 +2426,13 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
     nl = auth.get("native_login")
     gated: List[Tuple[str, List[str]]] = []  # (router, path prefixes or ["/"])
 
-    # Build set of routers that have reasons (may skip auth middleware)
-    routers_with_reasons: Set[str] = set()
-    hosts = (t.manifest or {}).get("hosts")
+    # Get the set of host routers with reasons (keys are host router names)
+    host_reasons_keys: Set[str] = set()
+    hosts = auth.get("hosts")
     if isinstance(hosts, dict):
         reasons = hosts.get("reasons")
         if isinstance(reasons, dict):
-            for key in reasons.keys():
-                # Map reason key to router name (same logic as check_hosts_reasons)
-                test_var = "PORTCULLIS_HOST_" + var_key(key)
-                if test_var in t.host_vars:
-                    routers_with_reasons.add(key)
-                else:
-                    candidate = f"{t.id}-{key.lower()}"
-                    test_var = "PORTCULLIS_HOST_" + var_key(candidate)
-                    if test_var in t.host_vars:
-                        routers_with_reasons.add(candidate)
-                    else:
-                        test_var = "PORTCULLIS_HOST_" + var_key(t.id)
-                        if test_var in t.host_vars and (key.lower() == "sync" or key == t.id):
-                            routers_with_reasons.add(t.id)
+            host_reasons_keys = set(reasons.keys())
 
     check_rule_forms(t, routers, r)
     for name, rt in sorted(routers.items()):
@@ -2497,16 +2467,21 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
         host_wide = not paths
 
         if method in ("forward-auth", "header-auth"):
-            # Routers may skip auth middleware if their host has a reason in hosts.reasons
-            # (badge explains the bypass; e.g., Firefox calling APIs in the background).
-            # Check if this router or its host (for path routers) has a reason.
-            router_has_reason = name in routers_with_reasons
-            if not router_has_reason:
-                # For path routers, check if they're on a host with a reason
-                for host_router in routers_with_reasons:
-                    if name.startswith(host_router + "-"):
+            # Routers may skip auth middleware if their host (from the rule) has a
+            # reason in hosts.reasons (badge explains the bypass; e.g., Firefox
+            # calling APIs in the background). Parse the host variable from the rule,
+            # reverse var_key to get the router name, check if that router has a reason.
+            router_has_reason = False
+            if not (has_auth and has_groups):
+                # Parse PORTCULLIS_HOST_<VAR> from the rule (anchored at start)
+                match = re.match(r'^Host\(\`\$\{PORTCULLIS_HOST_([A-Z0-9_]+):-', rule)
+                if match:
+                    var_suffix = match.group(1)
+                    # Reverse var_key: FIREFOX_SYNC_FXA_API -> firefox-sync-fxa-api
+                    router_name = var_suffix.lower().replace("_", "-")
+                    # Check if this router name has a reason
+                    if router_name in host_reasons_keys:
                         router_has_reason = True
-                        break
             if not (has_auth and has_groups) and not router_has_reason:
                 r.error(where, f"{method} router must use middlewares {AUTH_MW},{GROUPS_MW}")
         elif method == "native-oidc":

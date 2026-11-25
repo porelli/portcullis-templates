@@ -449,6 +449,26 @@
           "description": "native-oidc only, needs access_group. The Hub restricts sign-in to access_group in Keycloak (contract §8 Access role): every client of the instance gets the client role access, the instance's access group gets it, and the client's browser flow denies sign-in without it (also on the SSO-cookie path). Set it for apps that can't restrict sign-in to a group themselves or that let outsiders create accounts without rights. The Hub does the same for every native-oidc template with group_access: false (which must therefore declare access_group). Fails closed: without the group or the role nobody signs in. Only access_group members sign in, admin_group members included only if they are in access_group too. Every client of such an app has direct access grants, implicit flow, service accounts, device and CIBA grants and standard token exchange switched off (only the browser flow signs in): don't use it for an app whose client needs one of them.",
           "type": "boolean"
         },
+        "hosts": {
+          "description": "NEW (Firefox own accounts): hosts.reasons explains why specific host routers skip Portcullis sign-in (contracts §3, §11.7: shown as a badge to admins).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reasons": {
+              "description": "Keys are host router names (exact match). Values are one line, 1-200 characters, explaining the bypass (e.g., 'Firefox calls this in the background, without cookies').",
+              "type": "object",
+              "patternProperties": {
+                "^[a-z0-9][a-z0-9_-]{0,63}$": {
+                  "type": "string",
+                  "pattern": "^[^\u0000-\u001F\u007F]*$",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
         "notes": {
           "description": "Markdown for admins (contract §3): CommonMark plus GitHub tables and autolinks, rendered and sanitised by the Hub (notes_html). Write it as a YAML literal block (|) and open with a one- or two-sentence summary paragraph; it is also the portal note of an app without a web page (its plain text, at most 300 runes). At most 16 KiB (also maxLength here, in characters), block nesting at most 16, no control, bidi or zero-width characters. Raw HTML is never shown and tests/validate.py refuses it, images and links the Hub would turn into text too; only http/https (no userinfo) and mailto links stay links.",
           "maxLength": 16384,

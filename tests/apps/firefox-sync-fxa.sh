@@ -335,29 +335,29 @@ else
   fail "manifest_auth: method=$METHOD group_access=$GROUP_ACCESS admin_paths=$ADMIN_PATHS"
 fi
 
-# host_reasons: the four open hosts have reasons.
-for h in api profile Sync pairing; do
-  key="firefox-sync-fxa-$h"
-  [ "$h" = "Sync" ] && key="firefox-sync-fxa"
-  reason=$(yq -r ".auth.hosts.reasons[\"$h\"] // \"\"" "$MANIFEST")
-  if [ -n "$reason" ]; then
-    pass "host_reasons: $h has a reason"
-  else
-    fail "host_reasons: $h has no reason in auth.hosts.reasons"
-  fi
-done
-API_REASON=$(yq -r '.auth.hosts.reasons.api // ""' "$MANIFEST")
-[ "$API_REASON" = "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account." ] \
-  && pass "host_reasons: api text matches" || fail "host_reasons: api text is '$API_REASON'"
-PROFILE_REASON=$(yq -r '.auth.hosts.reasons.profile // ""' "$MANIFEST")
-[ "$PROFILE_REASON" = "Firefox loads account profiles and avatars in the background, without cookies." ] \
-  && pass "host_reasons: profile text matches" || fail "host_reasons: profile text is '$PROFILE_REASON'"
-SYNC_REASON=$(yq -r '.auth.hosts.reasons.Sync // ""' "$MANIFEST")
+# host_reasons: five entries with exact keys and texts.
+REASON_KEYS=$(yq -r '.auth.hosts.reasons // {} | keys | sort | join(" ")' "$MANIFEST")
+WANT_KEYS="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile"
+if [ "$REASON_KEYS" = "$WANT_KEYS" ]; then
+  pass "host_reasons: five keys (firefox-sync-fxa, -accounts, -api, -pairing, -profile)"
+else
+  fail "host_reasons: got keys '$REASON_KEYS', want '$WANT_KEYS'"
+fi
+SYNC_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa"] // ""' "$MANIFEST")
 [ "$SYNC_REASON" = "Firefox syncs in the background, without cookies; each request is signed with the account's own keys." ] \
-  && pass "host_reasons: Sync text matches" || fail "host_reasons: Sync text is '$SYNC_REASON'"
-PAIRING_REASON=$(yq -r '.auth.hosts.reasons.pairing // ""' "$MANIFEST")
+  && pass "host_reasons: firefox-sync-fxa text matches" || fail "host_reasons: firefox-sync-fxa text is '$SYNC_REASON'"
+API_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-api"] // ""' "$MANIFEST")
+[ "$API_REASON" = "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account." ] \
+  && pass "host_reasons: firefox-sync-fxa-api text matches" || fail "host_reasons: firefox-sync-fxa-api text is '$API_REASON'"
+PROFILE_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-profile"] // ""' "$MANIFEST")
+[ "$PROFILE_REASON" = "Firefox loads account profiles and avatars in the background, without cookies." ] \
+  && pass "host_reasons: firefox-sync-fxa-profile text matches" || fail "host_reasons: firefox-sync-fxa-profile text is '$PROFILE_REASON'"
+PAIRING_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-pairing"] // ""' "$MANIFEST")
 [ "$PAIRING_REASON" = "An encrypted relay for pairing a phone by QR code; it can't read what it relays." ] \
-  && pass "host_reasons: pairing text matches" || fail "host_reasons: pairing text is '$PAIRING_REASON'"
+  && pass "host_reasons: firefox-sync-fxa-pairing text matches" || fail "host_reasons: firefox-sync-fxa-pairing text is '$PAIRING_REASON'"
+ACCOUNTS_REASON=$(yq -r '.auth.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MANIFEST")
+[ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
+  && pass "host_reasons: firefox-sync-fxa-accounts text matches" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
 
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0

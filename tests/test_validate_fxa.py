@@ -238,5 +238,162 @@ class TestHostsReasons(FxACase):
                         f"Expected '201 runes' error. Errors: {errors}")
 
 
+class TestHostsReasonsRoutersBypass(FxACase):
+    """Security tests for the hosts.reasons bypass (Fix round 1)."""
+
+    def test_open_router_with_reason_passes(self) -> None:
+        """(a) An open router on a host with a reason passes."""
+        # Router without auth middleware, host has reason
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: public@file
+      traefik.http.routers.demo.middlewares: rate-limit@file,security-headers@file
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        manifest = BASE_MANIFEST + textwrap.dedent("""\
+            hosts:
+              reasons:
+                demo: "Firefox calls this in the background, without cookies."
+            """)
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        # Should not have "must use middlewares" error
+        self.assertFalse(any("must use middlewares portcullis-auth@docker,portcullis-groups@docker" in e for e in errors),
+                         f"Should not require auth when host has reason. Errors: {errors}")
+
+    def test_open_router_without_reason_fails(self) -> None:
+        """(b) An open router on a host without a reason fails."""
+        # Router without auth middleware, host has NO reason
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: public@file
+      traefik.http.routers.demo.middlewares: rate-limit@file,security-headers@file
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        t = self.write_template(BASE_MANIFEST, compose)
+        errors, _ = self.check_template(t)
+        # Should require auth
+        self.assertTrue(any("forward-auth router must use middlewares portcullis-auth@docker,portcullis-groups@docker" in e for e in errors),
+                        f"Expected 'must use middlewares' error. Errors: {errors}")
+
+    def test_name_prefix_bypass_regression(self) -> None:
+        """(c) Router name starting with reasoned host, but on different host, fails (bypass regression test)."""
+        # Reasons has 'app', router 'app-admin' on PORTCULLIS_HOST_APP_ADMIN without auth
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.app.rule: Host(`${PORTCULLIS_HOST_APP:-app.portcullis.local}`)
+      traefik.http.routers.app.entrypoints: websecure
+      traefik.http.routers.app.tls.options: public@file
+      traefik.http.routers.app.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.app.service: demo
+      traefik.http.routers.app-admin.rule: Host(`${PORTCULLIS_HOST_APP_ADMIN:-app-admin.portcullis.local}`)
+      traefik.http.routers.app-admin.entrypoints: websecure
+      traefik.http.routers.app-admin.tls.options: default
+      traefik.http.routers.app-admin.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.app-admin.service: demo
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        manifest = BASE_MANIFEST.replace("demo", "app") + textwrap.dedent("""\
+            hosts:
+              reasons:
+                app: "Firefox calls this in the background, without cookies."
+            """)
+        t = self.write_template(manifest, compose, app_id="app")
+        errors, _ = self.check_template(t)
+        # app-admin router should FAIL (it's on PORTCULLIS_HOST_APP_ADMIN which has no reason)
+        self.assertTrue(any("app-admin" in e and "must use middlewares portcullis-auth@docker,portcullis-groups@docker" in e for e in errors),
+                        f"Expected 'app-admin must use middlewares' error (bypass regression). Errors: {errors}")
+
+    def test_reason_key_not_host_router_fails(self) -> None:
+        """(d) A reason key that isn't a host router fails."""
+        # Already tested in TestHostsReasons.test_hosts_reasons_known_routers
+        # but let's have it here too for completeness
+        manifest = BASE_MANIFEST + textwrap.dedent("""\
+            hosts:
+              reasons:
+                not-a-router: "Some reason"
+            """)
+        t = self.write_template(manifest, BASE_COMPOSE)
+        errors, _ = self.check_template(t)
+        self.assertTrue(any("hosts.reasons: not-a-router is not a host router" in e for e in errors),
+                        f"Expected 'not-a-router is not a host router' error. Errors: {errors}")
+
+    def test_path_router_on_reasoned_host_passes(self) -> None:
+        """(e) A path router on a reasoned host passes."""
+        # Host router has reason, path router on same host without auth
+        compose = r"""
+services:
+  demo:
+    image: demo/demo:1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.demo.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`)
+      traefik.http.routers.demo.entrypoints: websecure
+      traefik.http.routers.demo.tls.options: public@file
+      traefik.http.routers.demo.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.demo.service: demo
+      traefik.http.routers.demo-api.rule: Host(`${PORTCULLIS_HOST_DEMO:-demo.portcullis.local}`) && PathPrefix(`/api/`)
+      traefik.http.routers.demo-api.entrypoints: websecure
+      traefik.http.routers.demo-api.tls.options: public@file
+      traefik.http.routers.demo-api.middlewares: rate-limit@file,security-headers@file
+      traefik.http.routers.demo-api.service: demo
+      traefik.http.services.demo.loadbalancer.server.port: "80"
+
+networks:
+  portcullis-proxy:
+    external: true
+"""
+        manifest = BASE_MANIFEST + textwrap.dedent("""\
+            hosts:
+              reasons:
+                demo: "Firefox calls this in the background, without cookies."
+            """)
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        # Path router demo-api should also pass (it's on PORTCULLIS_HOST_DEMO which has a reason)
+        self.assertFalse(any("demo-api" in e and "must use middlewares" in e for e in errors),
+                         f"Path router on reasoned host should not require auth. Errors: {errors}")
+
+
 if __name__ == "__main__":
     unittest.main()

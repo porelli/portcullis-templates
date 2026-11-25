@@ -34,10 +34,11 @@ auth:
   admin_group: admin_firefox-sync-fxa
   hosts:
     reasons:
-      Sync: "Firefox syncs in the background, without cookies; each request is signed with the account's own keys."
-      api: "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account."
-      profile: "Firefox loads account profiles and avatars in the background, without cookies."
-      pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
+      firefox-sync-fxa: "Firefox syncs in the background, without cookies; each request is signed with the account's own keys."
+      firefox-sync-fxa-api: "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account."
+      firefox-sync-fxa-profile: "Firefox loads account profiles and avatars in the background, without cookies."
+      firefox-sync-fxa-pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
+      firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
 
