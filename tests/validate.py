@@ -362,8 +362,10 @@ REQUIRED_INIT_JOBS = [
     ("ghcr.io/librechat-ai/librechat:", "config",
      "LibreChat's librechat.yaml (the MCP server, the model endpoints, no secret values) is rendered by the "
      "config one-shot from the Hub's ai-providers.json; keep it"),
-    ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
-     "Firefox Sync's tokenserver takes any Mozilla account; only the firefox-sync-init allowlist trigger keeps other accounts off"),
+    # {id}: the template id (firefox-sync-init, firefox-sync-fxa-init).
+    ("ghcr.io/porelli/firefox-sync:", "{id}-init",
+     "Firefox Sync's tokenserver takes any account its accounts server vouches for; only the {id}-init guard "
+     "on the Sync database (roles, grants, firefox-sync's allowlist trigger) keeps the others off"),
 ]
 
 # image prefix -> (one-shot the image's Traefik-routed services must wait for, message)
@@ -371,9 +373,9 @@ REQUIRED_BEFORE_ROUTED = [
     ("ghcr.io/librechat-ai/librechat:", "config",
      "LibreChat must start only after config rendered librechat.yaml (depends_on: config: condition: "
      "service_completed_successfully); without it LibreChat starts on its defaults"),
-    ("ghcr.io/porelli/firefox-sync:", "firefox-sync-init",
-     "the public Sync server must start only after firefox-sync-init installed the allowlist "
-     "(depends_on: firefox-sync-init: condition: service_completed_successfully)"),
+    ("ghcr.io/porelli/firefox-sync:", "{id}-init",
+     "the public Sync server must start only after {id}-init installed its guard "
+     "(depends_on: {id}-init: condition: service_completed_successfully)"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -1792,9 +1794,11 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
                 if val != want:
                     r.error(t.m_where, msg)
         for prefix, job, msg in REQUIRED_INIT_JOBS:
+            job, msg = job.replace("{id}", t.id), msg.replace("{id}", t.id)
             if image.startswith(prefix) and job not in services:
                 r.error(where, msg, EMAIL_HINT)
         for prefix, job, msg in REQUIRED_BEFORE_ROUTED:
+            job, msg = job.replace("{id}", t.id), msg.replace("{id}", t.id)
             if image.startswith(prefix) and str(labels_of(svc).get("traefik.enable", "")).lower() == "true":
                 dep = svc.get("depends_on")
                 cond = dep.get(job) if isinstance(dep, dict) else None

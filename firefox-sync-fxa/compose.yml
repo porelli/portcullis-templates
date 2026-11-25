@@ -1,0 +1,930 @@
+# Firefox Sync with its own Mozilla accounts (porelli/firefox-sync's
+# compose/fxa.yml + compose/fxa-mysql.yml, and the Sync side of
+# firefox-sync/compose.yml on PostgreSQL). No ports:, no env_file: the
+# settings of upstream's config/fxa/no-telemetry.env are written inline on
+# every running accounts service.
+#
+# Network: every service is on the instance's own default network only.
+# fxa-gate (a Traefik-only nginx) is the only service on portcullis-proxy
+# and carries every router, so no other app can reach fxa-auth:9000 and
+# skip the sign-up gate (ffs-admin:8081).
+#
+# Start order: fxa-db -> fxa-migrations -> fxa-policy -> fxa-auth (with
+# fxa-keys-owner and fxa-redis) -> fxa-profile -> fxa-content; Sync:
+# firefox-sync-fxa-db -> -migrate -> -db-init -> -init -> firefox-sync-fxa.
+services:
+  # Accounts' cache: last use of sessions, revoked tokens, rate limits. No
+  # volume (lost on a recreate anyway): no RDB/AOF, /data a tmpfs over the
+  # image's VOLUME.
+  fxa-redis:
+    image: redis:8.12.0-alpine@sha256:5af80107c1eeecb484a2269b80a26d12bfa6521787da4663bd9f19f60a163483
+    user: "999:1000"
+    read_only: true
+    tmpfs:
+      - /data:size=64m
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    command: [redis-server, --save, "", --appendonly, "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # The accounts database (mysql:lts, MySQL 9.7; upstream's accounts code has
+  # no PostgreSQL). The event scheduler as upstream's fxa-mysql.yml.
+  fxa-db:
+    image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
+    user: "999:999"
+    tmpfs:
+      - /tmp:size=256m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 256
+    environment:
+      MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+    command: [mysqld, --event-scheduler=ON]
+    volumes:
+      - fxa-db-data:/var/lib/mysql
+    healthcheck:
+      # Over TCP: the first start runs a temporary server on the socket only.
+      # The password in mysqladmin's environment, never its argv.
+      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent"]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: the accounts image runs as app (10001); a new volume is root's.
+  fxa-keys-owner:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "0:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    mem_limit: 64m
+    pids_limit: 16
+    command: [chown, "10001:10001", /fxa-keys]
+    volumes:
+      - fxa-keys:/fxa-keys
+    restart: "no"
+
+  # One-shot, every start: the accounts' database migrations (auth, oauth,
+  # profile, pushbox).
+  fxa-migrations:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 128
+    working_dir: /fxa/packages/db-migrations
+    # As upstream: retried while the server doesn't answer yet; a refused
+    # sign-in stops at once.
+    command: [sh, -c, 'for i in $$(seq 1 60); do out=$$(node bin/patcher.mjs 2>&1) && { echo "$$out"; exit 0; }; echo "$$out"; case "$$out" in *"Access denied for user"*) echo "the accounts database refused the user or its grants: not retried" >&2; exit 1 ;; esac; sleep 5; done; exit 1']
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      AUTH_MYSQL_HOST: fxa-db
+      AUTH_MYSQL_PORT: "3306"
+      AUTH_MYSQL_USERNAME: root
+      AUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      OAUTH_MYSQL_HOST: fxa-db
+      OAUTH_MYSQL_PORT: "3306"
+      OAUTH_MYSQL_USERNAME: root
+      OAUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      PROFILE_MYSQL_HOST: fxa-db
+      PROFILE_MYSQL_PORT: "3306"
+      PROFILE_MYSQL_USERNAME: root
+      PROFILE_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      PUSHBOX_MYSQL_HOST: fxa-db
+      PUSHBOX_MYSQL_PORT: "3306"
+      PUSHBOX_MYSQL_USERNAME: root
+      PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+    volumes:
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    depends_on:
+      fxa-db:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot, every start (porelli's fxa-init): the sign-up policy, enforced
+  # by the accounts database itself, and the database users of the admin UI
+  # (ffs_admin) and of Portcullis's access sync (ffs_access). Access managed
+  # elsewhere: with ADMIN_ACCESS_EXTERNAL and FXA_ACCESS_DB_PASSWORD it
+  # forces FXA_SIGNUPS=allowlist; the list is fxa-access-sync's alone, so
+  # FXA_SIGNUP_ALLOWLIST is never set.
+  fxa-policy:
+    image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    command: [fxa-init]
+    environment:
+      FXA_DB_CONTAINERS: "1"
+      FXA_DB_HOST: fxa-db
+      FXA_DB_PORT: "3306"
+      # Empty: installs the policy as FXA_MYSQL_USER.
+      FXA_DB_ROOT_USER: ""
+      FXA_DB_ROOT_PASSWORD: ""
+      FXA_MYSQL_USER: root
+      FXA_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      FXA_ADMIN_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:?FXA_ADMIN_DB_PASSWORD must be set}
+      FXA_ACCESS_DB_PASSWORD: ${FXA_ACCESS_DB_PASSWORD:?FXA_ACCESS_DB_PASSWORD must be set}
+      ADMIN_ACCESS_EXTERNAL: "1"
+      FXA_SIGNUPS: allowlist
+      # No account cap by default: the access group decides.
+      FXA_MAX_ACCOUNTS: unlimited
+    depends_on:
+      fxa-migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Validates the mail settings before the auth server starts (filled in
+  # with the mail settings).
+  fxa-mail-check:
+    image: redis:8.12.0-alpine@sha256:5af80107c1eeecb484a2269b80a26d12bfa6521787da4663bd9f19f60a163483
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 32m
+    pids_limit: 16
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exit 0"]
+    restart: "no"
+
+  # The accounts API and OAuth server (FXA_AUTH_URL = the API host). Its keys
+  # are generated once into fxa-keys (in the instance backup).
+  fxa-auth:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1536m
+    pids_limit: 256
+    working_dir: /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server
+    # As upstream: oauth-clients.js first (the key scripts load the config,
+    # which needs mfa.jwt.secretKey, derived from OAUTH_SERVER_SECRET_KEY).
+    command:
+      - sh
+      - -c
+      - >-
+        node /fxa-config/oauth-clients.js /fxa-keys/oauth-clients.json &&
+        node scripts/gen_keys.js &&
+        node scripts/oauth_gen_keys.js &&
+        node scripts/gen_vapid_keys.js &&
+        exec node bin/key_server.js
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      NODE_ENV: prod
+      CONFIG_FILES: /fxa-keys/oauth-clients.json
+      IP_ADDRESS: 0.0.0.0
+      PUBLIC_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      OAUTH_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      CONTENT_SERVER_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      FXA_OPENID_ISSUER: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      # The API host: it signs and checks the OAuth assertions.
+      ISSUER: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      PROFILE_SERVER_URL: http://fxa-profile:1111
+      SYNC_TOKENSERVER_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      CORS_ORIGIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      # The client IP of the rate limits: 2 = Traefik alone (fxa-gate
+      # forwards Traefik's X-Forwarded-For unchanged and adds nothing).
+      CLIENT_ADDRESS_DEPTH: "2"
+      # Firefox's access tokens live 60 minutes (Mozilla's default: 365).
+      FXA_EXPIRATION_ACCESS_TOKEN: 60 minutes
+      LASTACCESSTIME_UPDATES_SAMPLE_RATE: "1"
+      # Clients that never skip the sign-in code (Mozilla's defaults).
+      SERVICES_WITH_EMAIL_VERIFICATION: 32aaeb6f1c21316a,98e6508e88680e1a
+      OAUTH_SERVER_SECRET_KEY: ${FXA_OAUTH_SECRET:?FXA_OAUTH_SECRET must be set}
+      OAUTH_SERVER_SECRETS: ${FXA_OAUTH_SECRET:?FXA_OAUTH_SECRET must be set}
+      AUTH_SERVER_SECRETS: ${FXA_OAUTH_SECRET:?FXA_OAUTH_SECRET must be set}
+      AUTH_SERVER_SHARED_SECRET: ${FXA_AUTH_SECRET:?FXA_AUTH_SECRET must be set}
+      PROFILE_SERVER_AUTH_SECRET_BEARER_TOKEN: ${FXA_PROFILE_SECRET:?FXA_PROFILE_SECRET must be set}
+      FLOW_ID_KEY: ${FXA_FLOW_ID_KEY:?FXA_FLOW_ID_KEY must be set}
+      SESSION_TOKEN_HANDLE_KEY: ${FXA_SESSION_TOKEN_HANDLE_KEY:?FXA_SESSION_TOKEN_HANDLE_KEY must be set}
+      SECRET_KEY_FILE: /fxa-keys/secret-key.json
+      PUBLIC_KEY_FILE: /fxa-keys/public-key.json
+      VAPID_KEYS_FILE: /fxa-keys/vapid-keys.json
+      FXA_OPENID_KEYFILE: /fxa-keys/openid-key.json
+      FXA_OPENID_NEWKEYFILE: /fxa-keys/openid-newKey.json
+      FXA_OPENID_OLDKEYFILE: /fxa-keys/openid-oldKey.json
+      DB: mysql
+      AUTH_MYSQL_HOST: fxa-db
+      AUTH_MYSQL_PORT: "3306"
+      AUTH_MYSQL_USERNAME: root
+      AUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      MYSQL_HOST: fxa-db
+      MYSQL_PORT: "3306"
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      PUSHBOX_ENABLED: "true"
+      PUSHBOX_MYSQL_HOST: fxa-db
+      PUSHBOX_MYSQL_PORT: "3306"
+      PUSHBOX_MYSQL_USERNAME: root
+      PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      DB_AUTO_UPDATE_CLIENTS: "true"
+      REDIS_HOST: fxa-redis
+      ACCESS_TOKEN_REDIS_HOST: fxa-redis
+      REFRESH_TOKEN_REDIS_HOST: fxa-redis
+      CUSTOMS_REDIS_HOST: fxa-redis
+      RATELIMIT_REDIS_HOST: fxa-redis
+      METRICS_REDIS_HOST: fxa-redis
+      AUTH_CACHE_REDIS_HOST: fxa-redis
+      RECOVERY_PHONE_REDIS_HOST: fxa-redis
+      PASSKEY_REDIS_HOST: fxa-redis
+      # Mozilla/Google cloud services this deployment doesn't have.
+      FIRESTORE_ENABLED: "false"
+      SNS_TOPIC_ARN: disabled
+      GEODB_ENABLED: "false"
+      CUSTOMS_SERVER_URL: none
+      RECOVERY_PHONE__ENABLED: "false"
+      RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE: ""
+      # No security history: it stores IP addresses.
+      ACCOUNT_EVENTS_ENABLED: "false"
+      # Never skip the sign-in code for a known IP address.
+      IP_PROFILING_RECENCY: 0
+      LOG_LEVEL: INFO
+    volumes:
+      - fxa-keys:/fxa-keys
+      - ./templates/firefox-sync-fxa/fxa-config:/fxa-config:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    depends_on:
+      fxa-keys-owner:
+        condition: service_completed_successfully
+      fxa-policy:
+        condition: service_completed_successfully
+      fxa-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9000/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # The accounts web pages (FXA_CONTENT_URL = the accounts host). Not
+  # read-only: content-server.js points the built pages from Mozilla's CDN to
+  # this host, in the image's own files.
+  fxa-content:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 256
+    working_dir: /fxa/packages/fxa-content-server
+    command:
+      - sh
+      - -c
+      - >-
+        node /fxa-config/content-server.js /tmp/content-server.json &&
+        exec node server/bin/fxa-content-server.js
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      NODE_ENV: production
+      CONFIG_FILES: /tmp/content-server.json
+      CONTENT_SESSION_SECRET: ${FXA_CONTENT_SESSION_SECRET:?FXA_CONTENT_SESSION_SECRET must be set}
+      PUBLIC_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      FXA_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      FXA_OAUTH_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      FXA_PROFILE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}
+      FXA_PROFILE_IMAGES_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}/img
+      SYNC_TOKENSERVER_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      # QR-code pairing through this instance's own channel server.
+      PAIRING_SERVER_BASE_URI: wss://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING:-firefox-sync-fxa-pairing.portcullis.local}
+      SERVICES_WITH_EMAIL_VERIFICATION: 32aaeb6f1c21316a
+      FLOW_ID_KEY: ${FXA_FLOW_ID_KEY:?FXA_FLOW_ID_KEY must be set}
+      REDIS_HOST: fxa-redis
+      GEODB_ENABLED: "false"
+      # The pages' Glean pings (they turn Glean on by themselves) go to these
+      # pages, which answer 404, never to Mozilla.
+      GLEAN_SERVER_ENDPOINT: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+    volumes:
+      - ./templates/firefox-sync-fxa/fxa-config:/fxa-config:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    depends_on:
+      fxa-auth:
+        condition: service_healthy
+      fxa-profile:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3030/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # The profile server (FXA_PROFILE_URL = the profile host): names, avatars.
+  fxa-profile:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    working_dir: /fxa/packages/fxa-profile-server
+    command: [node, bin/server.js]
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      DB: mysql
+      MYSQL_HOST: fxa-db
+      MYSQL_PORT: "3306"
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      PUBLIC_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}
+      AUTH_SERVER_URL: http://fxa-auth:9000/v1
+      OAUTH_SERVER_URL: http://fxa-auth:9000/v1
+      AUTH_SECRET_BEARER_TOKEN: ${FXA_PROFILE_SECRET:?FXA_PROFILE_SECRET must be set}
+      REDIS_HOST: fxa-redis
+      WORKER_URL: http://fxa-profile-worker:1113
+      IMG: local
+      IMG_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}/img/a/{id}
+      IMG_PROVIDERS_FXA: ^https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}/img/a/[0-9a-f]{32}$$
+      EVENTS_ENABLED: "false"
+    volumes:
+      - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    depends_on:
+      fxa-migrations:
+        condition: service_completed_successfully
+      fxa-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1111/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Resizes the uploaded avatars (port 1113, internal only).
+  fxa-profile-worker:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 64
+    working_dir: /fxa/packages/fxa-profile-server
+    command: [node, bin/worker.js]
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      NODE_ENV: production
+      WORKER_HOST: 0.0.0.0
+      IMG: local
+    volumes:
+      - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Serves the avatars (/img/ of the profile host, prefix stripped).
+  fxa-profile-static:
+    image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 64
+    working_dir: /fxa/packages/fxa-profile-server
+    command: [node, bin/_static.js]
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/portcullis-ca-bundle.crt
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      IMG: local
+    volumes:
+      - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public:ro
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1112/a/00000000000000000000000000000000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # The channel server for pairing a phone by QR code (a websocket relay; it
+  # can't read what it relays).
+  fxa-pairing:
+    image: ghcr.io/porelli/firefox-sync:fxa-channelserver-1.6.0@sha256:cfc3319d79ba46bdc7b32922170bbfa5ea5eec3cb6549519ac0996309f320f74
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      # no-telemetry.env (porelli/firefox-sync config/fxa), inline
+      SENTRY_DSN: ""
+      GLEAN_ENABLED: "false"
+      GLEAN_UPLOAD_ENABLED: "false"
+      CONTENT_SERVER_GLEAN_ENABLED: "false"
+      AUTH_GLEAN_ENABLED: "false"
+      AMPLITUDE_ENABLED: "false"
+      AMPLITUDE_DISABLED: "true"
+      FLOW_METRICS_DISABLED: "true"
+      STATSD_ENABLE: "false"
+      METRIC_ENABLED: "false"
+      PAIR_STATSD_HOST: ""
+      TRACING_GCP_EXPORTER_ENABLED: "false"
+      TRACING_OTEL_EXPORTER_ENABLED: "false"
+      TRACING_SAMPLE_RATE: "0"
+      NIMBUS_ENABLED: "false"
+      PAIR_IP_REPUTATION_SERVER: ""
+      PAIR_HOSTNAME: 0.0.0.0
+      PAIR_PORT: "8000"
+      PAIR_HUMAN_LOGS: "true"
+      PAIR_TRUSTED_PROXY_LIST: 127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
+    # The image (debian slim) has no curl or wget: bash's /dev/tcp.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /__heartbeat__ HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # porelli/firefox-sync's admin UI (:8080) and the sign-up gate (:8081, POST
+  # /v1/account/create of the API host). Access managed elsewhere: who may
+  # sign up is Portcullis's access group (fxa-access-sync). No password
+  # sign-in, no mail of its own, no published port.
+  ffs-admin:
+    image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 128
+    environment:
+      ADMIN_ACCESS_EXTERNAL: "1"
+      ADMIN_PASSWORD: ""
+      ADMIN_OIDC_GROUPS_CLAIM: groups
+      ADMIN_ALLOWED_GROUPS: ${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}
+      ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL: "false"
+      ADMIN_ALLOWED_USERS: ""
+      ADMIN_AUTH_HEADER: ""
+      # Go reads SSL_CERT_FILE: Portcullis's CA bundle.
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      # The accounts (ffs_admin, made by fxa-policy).
+      FXA_DB: mysql
+      FXA_DB_HOST: fxa-db
+      FXA_DB_PORT: "3306"
+      FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:?FXA_ADMIN_DB_PASSWORD must be set}
+      FXA_MAX_ACCOUNTS: unlimited
+      FXA_AUTH_UPSTREAM: http://fxa-auth:9000
+      FXA_ACCOUNT_EVENTS: "false"
+      FXA_CLIENT_ADDRESS_DEPTH: "2"
+      FXA_ACCESS_TOKEN_LIFETIME: 60 minutes
+      FXA_CONTENT_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      FXA_AUTH_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      FXA_PROFILE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}
+      FXA_PAIRING_URL: wss://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING:-firefox-sync-fxa-pairing.portcullis.local}
+      # Sync (its own roles on the Sync database, as in firefox-sync/).
+      MAX_USERS: unlimited
+      SYNC_ALLOWED_ACCOUNTS: ""
+      TOKENSERVER_DB_TYPE: postgres
+      TOKENSERVER_DB_HOST: firefox-sync-fxa-db
+      TOKENSERVER_DB_PORT: "5432"
+      TOKENSERVER_DB_NAME: firefoxsync
+      TOKENSERVER_DB_USER: firefoxsync_admin_sync
+      ADMIN_DB_USER: firefoxsync_admin
+      ADMIN_DB_SYNC_USER: firefoxsync_admin_sync
+      ADMIN_DB_NAME: firefoxsync_admin
+      ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD must be set}
+      SYNCSTORAGE_URL: http://firefox-sync-fxa-internal:8000
+      SYNCSTORAGE_DOMAIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      FXA_OAUTH_SERVER_URL: http://fxa-auth:9000/v1
+      FXA_EMAIL_DOMAIN: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      # No mail, notifications, update check, public checks or published ports.
+      ALERT_EMAIL: ""
+      ADMIN_NOTIFY: ""
+      SMTP_HOST: ""
+      ADMIN_UPDATE_CHECK: "false"
+      ADMIN_PUBLIC_CHECK: "false"
+      ADMIN_EXPORT_PORT: ""
+      ADMIN_GATE_EXPORT_PORT: ""
+    volumes:
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    healthcheck:
+      test: ["CMD", "/ffs-admin", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      fxa-policy:
+        condition: service_completed_successfully
+        restart: true
+      firefox-sync-fxa-db-init:
+        condition: service_completed_successfully
+        restart: true
+      firefox-sync-fxa-init:
+        condition: service_completed_successfully
+        restart: true
+    restart: unless-stopped
+
+  # Portcullis's access group to the sign-up allowlist (ffs_access); the
+  # hook runs the sync in here.
+  fxa-access-sync:
+    image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
+    user: "10001:10001"
+    group_add: ["10001"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    entrypoint: []
+    command: [sleep, infinity]
+    volumes:
+      - fxa-access-state:/state
+    depends_on:
+      fxa-policy:
+        condition: service_completed_successfully
+        restart: true
+    restart: unless-stopped
+
+  # Mozilla's syncstorage-rs (Sync storage + tokenserver), PostgreSQL build of
+  # porelli/firefox-sync. Its tokenserver verifies Firefox's OAuth tokens with
+  # this instance's own auth server, internally, and knows the accounts as
+  # <uid>@<API host>.
+  firefox-sync-fxa:
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 256
+    environment:
+      SYNC_HOST: 0.0.0.0
+      SYNC_PORT: "8000"
+      SYNC_HUMAN_LOGS: "1"
+      RUST_LOG: info
+      SYNC_MASTER_SECRET: ${FIREFOX_SYNC_FXA_MASTER_SECRET:?FIREFOX_SYNC_FXA_MASTER_SECRET must be set}
+      SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync
+      SYNC_TOKENSERVER__ENABLED: "true"
+      # Migrations run in firefox-sync-fxa-migrate (as the owner), never here.
+      SYNC_TOKENSERVER__RUN_MIGRATIONS: "false"
+      SYNC_TOKENSERVER__NODE_TYPE: postgres
+      SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync
+      SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL: http://fxa-auth:9000/v1
+      SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET: ${FIREFOX_SYNC_FXA_METRICS_SECRET:?FIREFOX_SYNC_FXA_METRICS_SECRET must be set}
+      SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
+      SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
+      SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/__heartbeat__"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      firefox-sync-fxa-init:
+        condition: service_completed_successfully
+    # The port its alias serves (the alias Service on Kubernetes carries it).
+    expose: ["8000"]
+    networks:
+      # fxa-gate and the admin UI reach it as firefox-sync-fxa-internal, a
+      # name only this instance's default network has.
+      default:
+        aliases: [firefox-sync-fxa-internal]
+    restart: unless-stopped
+
+  # One-shot, every start: the Sync migrations and this host's node, as in
+  # firefox-sync/ (stopped as soon as its heartbeat answers).
+  firefox-sync-fxa-migrate:
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    environment:
+      SYNC_HOST: 0.0.0.0
+      SYNC_PORT: "8000"
+      SYNC_HUMAN_LOGS: "1"
+      RUST_LOG: info
+      SYNC_MASTER_SECRET: ${FIREFOX_SYNC_FXA_MASTER_SECRET:?FIREFOX_SYNC_FXA_MASTER_SECRET must be set}
+      SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync
+      SYNC_TOKENSERVER__ENABLED: "true"
+      SYNC_TOKENSERVER__RUN_MIGRATIONS: "true"
+      SYNC_TOKENSERVER__NODE_TYPE: postgres
+      SYNC_TOKENSERVER__DATABASE_URL: postgres://firefoxsync:${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync
+      SYNC_TOKENSERVER__INIT_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL: http://fxa-auth:9000/v1
+      SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET: ${FIREFOX_SYNC_FXA_METRICS_SECRET:?FIREFOX_SYNC_FXA_METRICS_SECRET must be set}
+      SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
+      SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
+      SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        pid=
+        for i in $$(seq 1 120); do
+          if [ -z "$$pid" ] || ! kill -0 $$pid 2> /dev/null; then
+            /app/bin/syncserver &
+            pid=$$!
+          fi
+          if curl -sf -o /dev/null http://localhost:8000/__heartbeat__; then
+            kill $$pid
+            # as porelli/firefox-sync: killed if still up 30 s after SIGTERM
+            (sleep 30; kill -0 $$pid 2> /dev/null && echo "portcullis: syncstorage-rs still running 30 s after SIGTERM, killed" && kill -9 $$pid) &
+            wait $$pid
+            kill $$! 2> /dev/null
+            echo "portcullis: migrations done"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "portcullis: syncstorage-rs did not start" >&2
+        kill $$pid
+        exit 1
+    depends_on:
+      firefox-sync-fxa-db:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot, every start: porelli/firefox-sync's own init (tokenserver_db_init)
+  # with access managed elsewhere, as in firefox-sync/: the config table, the
+  # ffs_* functions, the admin UI's roles and database. As the owner.
+  firefox-sync-fxa-db-init:
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T171959@sha256:a43d7e844d66fa6cc48d7de027038b3f9029bf46c8740cbb445a7b2cab96f8d8
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 64
+    environment:
+      POSTGRES_SERVER: firefox-sync-fxa-db
+      POSTGRES_SERVER_PORT: "5432"
+      POSTGRES_DATABASE: firefoxsync
+      POSTGRES_USER: firefoxsync
+      POSTGRES_PASSWORD: ${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}
+      POSTGRES_SYNC_USER: ""
+      DOMAIN: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      ADMIN_ACCESS_EXTERNAL: "1"
+      SYNC_ALLOWED_ACCOUNTS: ""
+      MAX_USERS: unlimited
+      SYNC_DB_CONTAINERS: "1"
+      ADMIN_DB_USER: firefoxsync_admin
+      ADMIN_DB_SYNC_USER: firefoxsync_admin_sync
+      ADMIN_DB_NAME: firefoxsync_admin
+      ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD must be set}
+    depends_on:
+      firefox-sync-fxa-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # One-shot, every start: Portcullis's guard on the Sync database (the
+  # roles and grants; guard.sql, revoke.sql, admin-db.sql). Until those land
+  # it only checks the database answers, so the Sync server never starts
+  # before it.
+  firefox-sync-fxa-init:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    user: "70:70"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -X -q -t -v ON_ERROR_STOP=1 -c 'SELECT 1'
+    environment:
+      PGHOST: firefox-sync-fxa-db
+      PGUSER: firefoxsync
+      PGDATABASE: firefoxsync
+      PGPASSWORD: ${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}
+    depends_on:
+      firefox-sync-fxa-db-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  firefox-sync-fxa-db:
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    user: "70:70"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 128
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: firefoxsync
+      POSTGRES_PASSWORD: ${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}
+      POSTGRES_DB: firefoxsync
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - firefox-sync-fxa-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firefoxsync -d firefoxsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # The only service on portcullis-proxy: a Traefik-only nginx (the
+  # esphome/gate.sh pattern) in front of every host. Until its gate.sh lands
+  # nothing listens on 8080, so Traefik routes nothing (fail closed), and
+  # every host router carries the Portcullis sign-in.
+  fxa-gate:
+    image: nginx:1.31.8-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    mem_limit: 64m
+    pids_limit: 64
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exec sleep infinity"]
+    networks:
+      - default
+      - portcullis-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.firefox-sync-fxa.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa.tls.options: default
+      traefik.http.routers.firefox-sync-fxa.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa.service: firefox-sync-fxa-gate
+      traefik.http.routers.firefox-sync-fxa-accounts.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa-accounts.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa-accounts.tls.options: default
+      traefik.http.routers.firefox-sync-fxa-accounts.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa-accounts.service: firefox-sync-fxa-gate
+      traefik.http.routers.firefox-sync-fxa-api.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa-api.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa-api.tls.options: default
+      traefik.http.routers.firefox-sync-fxa-api.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa-api.service: firefox-sync-fxa-gate
+      traefik.http.routers.firefox-sync-fxa-profile.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa-profile.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa-profile.tls.options: default
+      traefik.http.routers.firefox-sync-fxa-profile.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa-profile.service: firefox-sync-fxa-gate
+      traefik.http.routers.firefox-sync-fxa-admin.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa-admin.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa-admin.tls.options: default
+      traefik.http.routers.firefox-sync-fxa-admin.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa-admin.service: firefox-sync-fxa-gate
+      traefik.http.routers.firefox-sync-fxa-pairing.rule: Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING:-firefox-sync-fxa-pairing.portcullis.local}`)
+      traefik.http.routers.firefox-sync-fxa-pairing.entrypoints: websecure
+      traefik.http.routers.firefox-sync-fxa-pairing.tls.options: default
+      traefik.http.routers.firefox-sync-fxa-pairing.middlewares: client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file
+      traefik.http.routers.firefox-sync-fxa-pairing.service: firefox-sync-fxa-gate
+      traefik.http.services.firefox-sync-fxa-gate.loadbalancer.server.port: "8080"
+    restart: unless-stopped
+
+volumes:
+  fxa-keys: {}
+  fxa-db-data: {}
+  fxa-profile-images: {}
+  fxa-access-state: {}
+  firefox-sync-fxa-db-data: {}
+
+networks:
+  portcullis-proxy:
+    external: true

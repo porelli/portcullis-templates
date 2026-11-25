@@ -30,6 +30,8 @@ firefly-iii	kubernetes	refused	service firefly-iii mounts a volume but has no nu
 firefly-iii	podman	ok	
 firefox-sync	kubernetes	ok	
 firefox-sync	podman	ok	
+firefox-sync-fxa	kubernetes	ok	
+firefox-sync-fxa	podman	ok	
 gitea	kubernetes	refused	service gitea mounts a volume but has no numeric user; service gitea-migrate mounts a volume but has no numeric user; service gitea-db mounts a volume but has no numeric user
 gitea	podman	ok	
 gitlab	kubernetes	refused	service gitlab mounts a volume but has no numeric user

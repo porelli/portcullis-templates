@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=../schema/manifest.schema.json
+name: Firefox Sync + own accounts
+description: Firefox Sync with self-hosted Mozilla accounts (accounts, API, profile, Sync storage, admin UI); nothing depends on Mozilla
+icon: "\U0001F98A"
+category: productivity
+tags: [firefox, sync, bookmarks, browser, mozilla, accounts]
+links:
+  website: https://mozilla-services.github.io/syncstorage-rs/
+  source: https://github.com/porelli/firefox-sync
+long_description: |
+  Firefox Sync keeps bookmarks, passwords, history, open tabs and add-ons in step across a person's Firefox browsers. This template runs the whole stack on your server, Mozilla's account service included, so nothing depends on Mozilla.
+
+  Who may have an account is the instance's access group, matched by each person's verified Portcullis email. The account pages and the admin UI sit behind Portcullis sign-in; only what Firefox needs stays open.
+
+  The stack needs about 4 GB of RAM, and its accounts image is about 5 GB.
+instances: multi
+
+# Upstream's figures (porelli/firefox-sync docs/accounts.md#requirements and
+# its chart's PVC sizes): 3-4 GB of RAM for the whole stack; accounts DB
+# 8 GiB + keys 1 GiB + avatars 1 GiB + one Sync database 8 GiB. The about
+# 5 GB accounts image comes on top.
+resources:
+  min_memory_mib: 4096
+  min_disk_gib: 18
+
+auth:
+  method: forward-auth
+  sso: false
+  group_access: true
+  # true once the admin UI admits the admin group (its OIDC sign-in), with
+  # tests.signin.admin.
+  group_admin: false
+  access_group: users_firefox-sync-fxa
+  admin_group: admin_firefox-sync-fxa
+  notes: |
+    Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
+
+    **What runs:** Mozilla's accounts (auth, content, profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.1 on PostgreSQL and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>).
+
+env:
+  - key: FXA_MYSQL_PASSWORD
+    description: Accounts database (MySQL) root password
+    generate: random
+  - key: FXA_ADMIN_DB_PASSWORD
+    description: Accounts database password of the admin UI (ffs_admin)
+    generate: random
+  - key: FXA_ACCESS_DB_PASSWORD
+    description: Accounts database password of Portcullis's access sync (ffs_access, the sign-up allowlist)
+    generate: random
+  - key: FXA_OAUTH_SECRET
+    description: Accounts OAuth server secret (also the key the MFA JWT key is derived from)
+    generate: random
+  - key: FXA_AUTH_SECRET
+    description: Accounts auth server shared secret
+    generate: random
+  - key: FXA_PROFILE_SECRET
+    description: Accounts profile server bearer token
+    generate: random
+  - key: FXA_FLOW_ID_KEY
+    description: Accounts flow id key
+    generate: random
+  - key: FXA_SESSION_TOKEN_HANDLE_KEY
+    description: Accounts session token handle key
+    generate: random
+  - key: FXA_CONTENT_SESSION_SECRET
+    description: Account pages' session cookie secret
+    generate: random
+  - key: FIREFOX_SYNC_FXA_DB_PASSWORD
+    description: Sync database owner password (migrations, init)
+    generate: random
+  - key: FIREFOX_SYNC_FXA_APP_DB_PASSWORD
+    description: Sync database password of the server's own role (no owner rights)
+    generate: random
+  - key: FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD
+    description: Sync database password of the admin UI's own roles (its database, its reader of the Sync data)
+    generate: random
+  - key: FIREFOX_SYNC_FXA_MASTER_SECRET
+    description: syncstorage-rs master secret (signs the storage tokens)
+    generate: random
+  - key: FIREFOX_SYNC_FXA_METRICS_SECRET
+    description: tokenserver metrics hash secret
+    generate: random
+  - key: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET
+    description: OpenID Connect client secret of the admin UI
+    generate: random
+
+urls:
+  - label: Accounts (identity.fxaccounts.autoconfig.uri)
+    url: "https://{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}}"
+  - label: Admin UI
+    url: "https://{{HOST_FIREFOX_SYNC_FXA_ADMIN}}/"
+
+# Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test"):
+# the account pages behind Portcullis sign-in.
+tests:
+  signin:
+    host: "{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}}"
+    path: /settings
+    signed_in:
+      html: "Mozilla accounts"
+      wait: 60
+    boot_timeout: 900
+
+ai:
+  unsupported: "Signs people in with its own Mozilla accounts, not Portcullis identities; no MCP server known"

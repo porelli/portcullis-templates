@@ -681,20 +681,26 @@ class TestIdentityRules(Case):
         self.assertFalse([e for e in self.recheck() if "config" in e and "LibreChat" in e])
 
     def test_firefox_sync_routed_service_waits_for_the_allowlist(self) -> None:
+        # The guard job is the template's own <id>-init (firefox-sync-init,
+        # firefox-sync-fxa-init); here the template is "demo".
         image = "ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.24.0"
-        init = (f"  firefox-sync-init:\n    image: postgres:17.11-alpine@sha256:{'0' * 64}\n    restart: \"no\"\n")
+        other = (f"  firefox-sync-init:\n    image: postgres:17.11-alpine@sha256:{'0' * 64}\n    restart: \"no\"\n")
+        init = (f"  demo-init:\n    image: postgres:17.11-alpine@sha256:{'0' * 64}\n    restart: \"no\"\n")
         self.run_template()
         self.rewrite_compose("image: demo/demo:1.2.3", f"image: {image}")
-        self.assertError(self.recheck(), "only the firefox-sync-init allowlist trigger")
+        self.assertError(self.recheck(), "only the demo-init guard")
+        # Another template's job name doesn't count.
+        self.rewrite_compose("services:\n", "services:\n" + other)
+        self.assertError(self.recheck(), "only the demo-init guard")
         self.rewrite_compose("services:\n", "services:\n" + init)
-        self.assertFalse([e for e in self.recheck() if "allowlist trigger" in e])
-        self.assertError(self.recheck(), "only after firefox-sync-init")
+        self.assertFalse([e for e in self.recheck() if "only the demo-init guard" in e])
+        self.assertError(self.recheck(), "only after demo-init")
         self.rewrite_compose("    networks:\n      - default\n      - portcullis-proxy\n",
-                             "    depends_on:\n      firefox-sync-init:\n        condition: service_started\n"
+                             "    depends_on:\n      demo-init:\n        condition: service_started\n"
                              "    networks:\n      - default\n      - portcullis-proxy\n")
-        self.assertError(self.recheck(), "only after firefox-sync-init")
+        self.assertError(self.recheck(), "only after demo-init")
         self.rewrite_compose("condition: service_started", "condition: service_completed_successfully")
-        self.assertFalse([e for e in self.recheck() if "firefox-sync-init" in e])
+        self.assertFalse([e for e in self.recheck() if "demo-init" in e])
 
 
 class TestGatedClientRouters(unittest.TestCase):
