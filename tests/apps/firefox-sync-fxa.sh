@@ -183,6 +183,8 @@ check_env fxa-auth MYSQL_USERNAME fxa_auth
 check_env fxa-auth PUSHBOX_MYSQL_USERNAME fxa_auth
 check_env fxa-profile MYSQL_USERNAME fxa_profile
 # db-users.sh grants exactly DML + EXECUTE on the services' own databases.
+# M1: test that GRANTs target the right users/databases (grep each grant's target)
+# and that any REVOKE is present as designed. M3: escape `_` in database names.
 DBU="$(dirname "$COMPOSE")/db-users.sh"
 if [ "$(grep -c 'GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON' "$DBU")" = 1 ] \
     && [ "$(grep -o 'GRANT [A-Z ,]* ON' "$DBU" | sort -u)" = "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON" ] \
@@ -193,6 +195,19 @@ if [ "$(grep -c 'GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON' "$DBU")" = 1 
 else
   fail "db-users.sh: grants changed"
 fi
+# M1: Check GRANT targets are correct (the script creates GRANTs for these users)
+# Check the script references both users in the user() calls
+if grep -q "user fxa_auth" "$DBU" && grep -q "user fxa_profile" "$DBU"; then
+  pass "db-users.sh M1: script creates GRANTs for fxa_auth and fxa_profile users"
+else
+  fail "db-users.sh M1: GRANT targets missing or incorrect"
+fi
+# M3: Check that _ in database names is escaped in GRANT patterns
+if grep -q '`fxa\\_' "$DBU" || grep -q '`pushbox\\_' "$DBU" || ! grep -Eq 'GRANT.*ON `(fxa|pushbox)_[^\\]' "$DBU"; then
+  pass "db-users.sh M3: underscore escaped in database name patterns (or no wildcard grants)"
+else
+  fail "db-users.sh M3: underscore not escaped in database names (wildcard risk)"
+fi
 
 # volumes
 VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
@@ -200,6 +215,13 @@ VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
   && pass "volumes: exactly $VOLS" || fail "volumes: got '$VOLS'"
 [ "$(yq -r '.services["fxa-redis"].volumes // [] | length' "$COMPOSE")" = 0 ] \
   && pass "volumes: fxa-redis has none" || fail "volumes: fxa-redis mounts a volume"
+
+# M2: test that no service uses network_mode
+if yq -r '.services[] | select(has("network_mode")) | keys' "$COMPOSE" 2>/dev/null | grep -q .; then
+  fail "M2: some services use network_mode (not allowed)"
+else
+  pass "M2: no service uses network_mode"
+fi
 
 # resources
 [ "$(yq -r '.resources.min_memory_mib' "$MANIFEST")" = 4096 ] && [ "$(yq -r '.resources.min_disk_gib' "$MANIFEST")" = 18 ] \
@@ -240,6 +262,102 @@ for f in oauth-clients.js content-server.js; do
     fail "fxa-config/$f has no header naming porelli/firefox-sync 7216405"
   fi
 done
+
+# routers_exact: exactly the six host routers + three path routers.
+ACTUAL_ROUTERS=$(yq -r '[.services["fxa-gate"].labels // {} | to_entries[] | select(.key | test("^traefik[.]http[.]routers[.][^.]+[.]rule$")) | .key | capture("routers[.](?<r>[^.]+)[.]rule").r] | sort | join(" ")' "$COMPOSE")
+WANT_ALL="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-accounts-open firefox-sync-fxa-admin firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile firefox-sync-fxa-signup firefox-sync-fxa-token"
+if [ "$ACTUAL_ROUTERS" = "$WANT_ALL" ]; then
+  pass "routers_exact: $WANT_ALL"
+else
+  fail "routers_exact: got '$ACTUAL_ROUTERS', want '$WANT_ALL'"
+fi
+
+# open_routers_no_gateway: the four open host routers have rate-limit + security-headers, no portcullis-auth/groups.
+for r in firefox-sync-fxa firefox-sync-fxa-api firefox-sync-fxa-profile firefox-sync-fxa-pairing; do
+  mws=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$r.middlewares\"] // \"\"" "$COMPOSE")
+  if [ "$mws" = "rate-limit@file,security-headers@file" ]; then
+    pass "open_routers_no_gateway: $r carries rate-limit@file,security-headers@file (no auth)"
+  else
+    fail "open_routers_no_gateway: $r middlewares '$mws', want 'rate-limit@file,security-headers@file'"
+  fi
+done
+
+# gated_routers_gateway: the two gated host routers have the full chain.
+for r in firefox-sync-fxa-accounts firefox-sync-fxa-admin; do
+  mws=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$r.middlewares\"] // \"\"" "$COMPOSE")
+  if [ "$mws" = "client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file" ]; then
+    pass "gated_routers_gateway: $r carries the full chain (auth + groups)"
+  else
+    fail "gated_routers_gateway: $r middlewares '$mws', want 'client-headers@file,portcullis-auth@docker,portcullis-groups@docker,security-headers@file'"
+  fi
+done
+
+# accounts_open_paths: the accounts-open router exactly the four Path()s, priority 1000, rate-limit.
+OPEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.rule"] // ""' "$COMPOSE")
+OPEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.middlewares"] // ""' "$COMPOSE")
+OPEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.priority"] // ""' "$COMPOSE")
+WANT_OPEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && ( Path(`/`) || Path(`/.well-known/change-password`) || Path(`/.well-known/fxa-client-configuration`) || Path(`/metrics-flow`) )'
+if [ "$OPEN_RULE" = "$WANT_OPEN_RULE" ] && [ "$OPEN_MW" = "rate-limit@file,security-headers@file" ] && [ "$OPEN_PRIO" = "1000" ]; then
+  pass "accounts_open_paths: exactly the four Path()s, priority 1000, rate-limit@file"
+else
+  fail "accounts_open_paths: rule='$OPEN_RULE' mws='$OPEN_MW' prio='$OPEN_PRIO'"
+fi
+
+# signup router: API host && Path(/v1/account/create), priority 1000, rate-limit-auth.
+SIGNUP_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.rule"] // ""' "$COMPOSE")
+SIGNUP_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.middlewares"] // ""' "$COMPOSE")
+SIGNUP_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.priority"] // ""' "$COMPOSE")
+WANT_SIGNUP_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}`) && Path(`/v1/account/create`)'
+if [ "$SIGNUP_RULE" = "$WANT_SIGNUP_RULE" ] && [ "$SIGNUP_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$SIGNUP_PRIO" = "1000" ]; then
+  pass "signup router: API host && Path(/v1/account/create), priority 1000, rate-limit-auth@file"
+else
+  fail "signup router: rule='$SIGNUP_RULE' mws='$SIGNUP_MW' prio='$SIGNUP_PRIO'"
+fi
+
+# token router: Sync host && PathPrefix(/1.0/), rate-limit-auth (no priority needed: shorter Path prefix = lower default prio).
+TOKEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.rule"] // ""' "$COMPOSE")
+TOKEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.middlewares"] // ""' "$COMPOSE")
+TOKEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.priority"] // ""' "$COMPOSE")
+WANT_TOKEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}`) && PathPrefix(`/1.0/`)'
+if [ "$TOKEN_RULE" = "$WANT_TOKEN_RULE" ] && [ "$TOKEN_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$TOKEN_PRIO" = "" ]; then
+  pass "token router: Sync host && PathPrefix(/1.0/), rate-limit-auth@file (no priority)"
+else
+  fail "token router: rule='$TOKEN_RULE' mws='$TOKEN_MW' prio='$TOKEN_PRIO' (want empty)"
+fi
+
+# manifest_auth: method forward-auth, group_access true, no admin_paths.
+METHOD=$(yq -r '.auth.method // ""' "$MANIFEST")
+GROUP_ACCESS=$(yq -r '.auth.group_access // ""' "$MANIFEST")
+ADMIN_PATHS=$(yq -r '.auth.admin_paths // [] | length' "$MANIFEST")
+if [ "$METHOD" = "forward-auth" ] && [ "$GROUP_ACCESS" = "true" ] && [ "$ADMIN_PATHS" = "0" ]; then
+  pass "manifest_auth: method forward-auth, group_access true, no admin_paths"
+else
+  fail "manifest_auth: method=$METHOD group_access=$GROUP_ACCESS admin_paths=$ADMIN_PATHS"
+fi
+
+# host_reasons: the four open hosts have reasons.
+for h in api profile Sync pairing; do
+  key="firefox-sync-fxa-$h"
+  [ "$h" = "Sync" ] && key="firefox-sync-fxa"
+  reason=$(yq -r ".auth.hosts.reasons[\"$h\"] // \"\"" "$MANIFEST")
+  if [ -n "$reason" ]; then
+    pass "host_reasons: $h has a reason"
+  else
+    fail "host_reasons: $h has no reason in auth.hosts.reasons"
+  fi
+done
+API_REASON=$(yq -r '.auth.hosts.reasons.api // ""' "$MANIFEST")
+[ "$API_REASON" = "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account." ] \
+  && pass "host_reasons: api text matches" || fail "host_reasons: api text is '$API_REASON'"
+PROFILE_REASON=$(yq -r '.auth.hosts.reasons.profile // ""' "$MANIFEST")
+[ "$PROFILE_REASON" = "Firefox loads account profiles and avatars in the background, without cookies." ] \
+  && pass "host_reasons: profile text matches" || fail "host_reasons: profile text is '$PROFILE_REASON'"
+SYNC_REASON=$(yq -r '.auth.hosts.reasons.Sync // ""' "$MANIFEST")
+[ "$SYNC_REASON" = "Firefox syncs in the background, without cookies; each request is signed with the account's own keys." ] \
+  && pass "host_reasons: Sync text matches" || fail "host_reasons: Sync text is '$SYNC_REASON'"
+PAIRING_REASON=$(yq -r '.auth.hosts.reasons.pairing // ""' "$MANIFEST")
+[ "$PAIRING_REASON" = "An encrypted relay for pairing a phone by QR code; it can't read what it relays." ] \
+  && pass "host_reasons: pairing text matches" || fail "host_reasons: pairing text is '$PAIRING_REASON'"
 
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0
