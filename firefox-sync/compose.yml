@@ -163,7 +163,7 @@ services:
   # Sync tables to firefoxsync_app (the internet-facing role must own none).
   # Passwords reach psql on its input, never argv (db_init.sh).
   firefox-sync-db-init:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T034155@sha256:19566723433882b1e1214da8ee987a9cdf3d453713979f2696d8e6307fa98558
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T171959@sha256:a43d7e844d66fa6cc48d7de027038b3f9029bf46c8740cbb445a7b2cab96f8d8
     user: "999:999"
     read_only: true
     tmpfs:
@@ -256,7 +256,7 @@ services:
   # read-only and refuses every change of them server side; its database
   # reader can't write them either (guard.sql).
   firefox-sync-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-721640567d61@sha256:0db8bcf937d9fc4f2271620951f98f0ba0bf2296eabfacfa26bf1912cf131a17
+    image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
     read_only: true
     tmpfs:
       - /tmp:size=64m
