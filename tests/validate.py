@@ -2846,7 +2846,7 @@ def check_dependabot(app_ids: List[str], r: Report) -> None:
 
 HUB_HINT = f"the Hub refuses this template (see {DOCS_URL}/integration-contracts/#3-template-contract)"
 CORE_SERVICES = {"socket-proxy-traefik", "socket-proxy-hub", "traefik", "postgres", "vault", "lldap", "keycloak",
-                 "forward-auth", "forward-auth-ext", "signed-out", "group-gate", "hub", "enroll", "domains", "prometheus",
+                 "forward-auth", "forward-auth-ext", "group-gate", "hub", "enroll", "domains", "prometheus",
                  "alertmanager", "blackbox", "textfile-exporter", "grafana", "mcp-gate", "sessions", "dns-tool",
                  "wg", "mail-cert"}
 CORE_VOLUMES = {"postgres_data", "vault_data", "lldap_data", "hub_data", "traefik_acme", "domains_data",
@@ -2924,7 +2924,7 @@ CORE_TRAEFIK_NAMES = {
     "middlewares": {"vpn-required-path", "portcullis-groups-vpn", "portcullis-public-guard-vpn", "portal-vpn-path",
                     "directory-redirect", "hub-proxy-secret", "hub-cli-proxy-secret", "portal-path", "portcullis-auth", "portcullis-auth-console",
                     "portcullis-auth-ext", "portcullis-groups", "portcullis-public-guard", "portcullis-self", "portcullis-signout-guard"},
-    "services": {"enroll", "forward-auth", "forward-auth-ext", "signed-out", "grafana-metrics", "group-gate", "hub", "hub-people", "hub-cli",
+    "services": {"enroll", "forward-auth", "forward-auth-ext", "grafana-metrics", "group-gate", "hub", "hub-people", "hub-cli",
                  "keycloak", "lldap", "mcp-gate",
                  # The mail provider slot's well-known service (the Hub's).
                  "portcullis-mail-wellknown"},
