@@ -29,18 +29,17 @@ auth:
   # Firefox and the account pages use the instance's own Mozilla accounts.
   sso: partial
   group_access: true
-  # The admin UI admits only the admin group (its OIDC sign-in,
-  # ADMIN_ALLOWED_GROUPS; tests/apps/firefox-sync-fxa.sh "admin"). Still
-  # false: group_admin needs a tests.signin.admin check, and the sign-in e2e
-  # checks one host (the accounts host), where the admin group changes
-  # nothing; the admin UI is on a host of its own.
-  group_admin: false
+  # The admin host admits only the admin group: at the gateway (fxa-gate,
+  # from group-gate's groups header) and again in the admin UI's OIDC
+  # sign-in (ADMIN_ALLOWED_GROUPS). tests.signin.admin checks it on the
+  # admin host.
+  group_admin: true
   access_group: users_firefox-sync-fxa
   admin_group: admin_firefox-sync-fxa
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
 
-    **Admin UI** (porelli/firefox-sync's admin UI): on its own host (default `firefox-sync-fxa-admin.<domain>`), behind two sign-ins. First Portcullis sign-in and the access group (group-gate). Then the admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the instance's **admin group** (`admin_firefox-sync-fxa`, from the `groups` claim; never by email, which is user-editable and unverified). No password sign-in (`POST /login` answers 403), no trusted identity header, no mail of its own, no update check.
+    **Admin UI** (porelli/firefox-sync's admin UI): on its own host (default `firefox-sync-fxa-admin.<domain>`), behind two sign-ins. First Portcullis sign-in, and only members of the instance's **admin group** get past the gateway (members of the access group alone get 403). Then the admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the instance's **admin group** (`admin_firefox-sync-fxa`, from the `groups` claim; never by email, which is user-editable and unverified). No password sign-in (`POST /login` answers 403), no trusted identity header, no mail of its own, no update check.
 
     - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*, `ADMIN_ACCESS_EXTERNAL`): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and the admin UI's forms for them are refused. Its database user `ffs_admin` can't write them directly.
     - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. Two of these reach past the access group: **deleting an account also removes its email from the sign-up allowlist** (that person can't sign up again until the next access sync puts the email back), and **enable re-enables any disabled account**, whether or not that person is still in the access group. The next access sync decides again who may sign up. The Connect a device page gives `identity.fxaccounts.autoconfig.uri` = the accounts host.
@@ -212,13 +211,21 @@ urls:
     url: "https://{{HOST_FIREFOX_SYNC_FXA_ADMIN}}/"
 
 # Sign-in e2e (tests/e2e/app_signin.py, CONTRIBUTING.md "Sign-in test"):
-# the account pages behind Portcullis sign-in.
+# the account pages behind Portcullis sign-in; the admin UI on its own host
+# (the admin group only: members and outsiders get 403 there), signed in
+# through its own OpenID Connect sign-in. The stack needs a mail server to
+# start: tests/e2e/prep/firefox-sync-fxa.sh gives it a test SMTP server.
 tests:
   signin:
     host: "{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}}"
     path: /settings
     signed_in:
       html: "Mozilla accounts"
+      wait: 60
+    admin:
+      host: "{{HOST_FIREFOX_SYNC_FXA_ADMIN}}"
+      reach: /auth/login
+      text: "Access managed elsewhere"
       wait: 60
     boot_timeout: 900
 

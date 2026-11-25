@@ -257,6 +257,8 @@ tests:
     admin:                       # required with auth.group_admin: true (e.g. DokuWiki)
       reach: /doku.php?do=admin  #   the path answers 2xx (members get 403 / the app's denial)
       text: "Access Control List"
+      # host: "{{HOST_APP_ADMIN}}"  # optional: an admin UI on a host of its own (firefox-sync-fxa);
+      #                             # the outsider must then get group-gate's 403 there too
     password: "why a password field is expected"   # e.g. a documented break-glass login
     setup:                       # optional: post-start steps an admin would do (e.g. an API key setting)
       - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}   # user: run as
@@ -271,6 +273,12 @@ tests:
     boot_timeout: 600            # seconds for the containers to be ready (default 600)
     timeout: 240                 # seconds per user sign-in (default 240)
 ```
+
+An app that needs something from its surroundings to start (firefox-sync-fxa:
+a mail server) gets it from `tests/e2e/prep/<app>.sh <work dir>`, which runs
+before the app starts and prints `NAME=value` lines for the app's environment
+(values never logged; `COMPOSE_OVERRIDE` for test-only services). Never use it
+to loosen the app's access control.
 
 Strings may use `{username}`, `{email}`, `{access_group}`, `{admin_group}`;
 URLs are paths on the app host. Prefer checks that prove the identity

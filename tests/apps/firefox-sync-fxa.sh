@@ -17,10 +17,13 @@ FXA_DONE=0
 # The test's own helper containers (they carry the instance's secrets) go
 # on every exit, timeouts and aborts included.
 FXA_TEST_CONTAINERS=""
+FXA_TEST_NETWORKS=""
 fxa_exit() {
   local rc=$?
   # shellcheck disable=SC2086
   [ -z "$FXA_TEST_CONTAINERS" ] || docker rm -f $FXA_TEST_CONTAINERS > /dev/null 2>&1 || true
+  # shellcheck disable=SC2086
+  [ -z "$FXA_TEST_NETWORKS" ] || docker network rm $FXA_TEST_NETWORKS > /dev/null 2>&1 || true
   [ "$FXA_DONE" = 1 ] || fail "aborted before the last check (exit status $rc)"
   report
 }
@@ -107,6 +110,7 @@ LABELLED=$(yq -r '[.services | to_entries[] | select((.value.labels // {}) | has
 ALIAS=$(yq -r '.services["firefox-sync-fxa"].networks.default.aliases // [] | join(",")' "$COMPOSE")
 [ "$ALIAS" = firefox-sync-fxa-internal ] && pass "only_gate_on_proxy: firefox-sync-fxa answers as firefox-sync-fxa-internal on default" \
   || fail "only_gate_on_proxy: firefox-sync-fxa aliases '$ALIAS'"
+
 
 # images_pinned
 WANT_IMAGES="
@@ -391,6 +395,75 @@ PAIRING_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-pairing"] // ""' "$MANI
 ACCOUNTS_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MANIFEST")
 [ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
   && pass "host_reasons: firefox-sync-fxa-accounts text matches" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
+
+# ── fxa-gate (Task 12): the Traefik-only nginx gate, static ──
+GATE_SH="$(dirname "$COMPOSE")/fxa-gate.sh"
+GS() { yq -r ".services[\"fxa-gate\"]$1" "$COMPOSE"; }
+# Every upstream under a default-only -internal alias, with its port declared
+# (the alias Service on Kubernetes carries it).
+bad=""
+for e in fxa-content=fxa-content-internal:3030 fxa-auth=fxa-auth-internal:9000 ffs-admin=ffs-admin-internal:8080,8081 \
+         fxa-profile=fxa-profile-internal:1111 fxa-profile-static=fxa-profile-static-internal:1112 \
+         firefox-sync-fxa=firefox-sync-fxa-internal:8000 fxa-pairing=fxa-pairing-internal:8000; do
+  svc=${e%%=*} want=${e#*=}
+  got="$(yq -r ".services[\"$svc\"].networks.default.aliases // [] | join(\",\")" "$COMPOSE"):$(yq -r ".services[\"$svc\"].expose // [] | join(\",\")" "$COMPOSE")"
+  [ "$got" = "$want" ] || bad="$bad $svc($got, want $want)"
+  grep -q "^up_[a-z]*=\$(target [a-z]* ${want%%:*} " "$GATE_SH" || bad="$bad $svc(fxa-gate.sh doesn't call ${want%%:*})"
+done
+[ -z "$bad" ] && pass "gate_upstreams: every service behind fxa-gate answers on default as <service>-internal, its ports exposed; fxa-gate.sh calls exactly those names" \
+  || fail "gate_upstreams:$bad"
+# The gate's script: cidr_ok() byte-identical to esphome/gate.sh's, allow
+# PORTCULLIS_TRAEFIK_SOURCE only, no realip, every credential header and the
+# forward-auth cookies stripped, the admin group map.
+ref_fn=$(awk '/^cidr_ok\(\) \{$/,/^\}$/' "$(dirname "$COMPOSE")/../esphome/gate.sh")
+got_fn=$(awk '/^cidr_ok\(\) \{$/,/^\}$/' "$GATE_SH")
+[ -n "$ref_fn" ] && [ "$ref_fn" = "$got_fn" ] && pass "gate_script: cidr_ok() is esphome/gate.sh's, byte for byte" \
+  || fail "gate_script: cidr_ok() differs from esphome/gate.sh's"
+bad=""
+for want in 'cidr_ok "$src" || ' '  allow ${src};' '  deny all;' 'proxy_set_header X-Forwarded-Access-Token "";' \
+            'proxy_set_header X-Auth-Request-Access-Token "";' "echo '  proxy_set_header Authorization \"\";'" \
+            'proxy_set_header Cookie \$pc_cookie;' 'if (\$pc_cookie_left) { return 400; }' '_oauth2_proxy|__Host-portcullis_ext' \
+            'proxy_set_header X-Forwarded-For \$http_x_forwarded_for;' 'proxy_set_header Host \$http_host;' \
+            'map \$http_x_auth_request_groups \$pc_admin ' 'if (\$pc_admin != 1) { return 403; }' 'return 421;'; do
+  grep -qF -- "$want" "$GATE_SH" || bad="$bad [$want]"
+done
+grep -qE '\b(set_real_ip_from|real_ip_header|real_ip_recursive)\b' "$GATE_SH" && bad="$bad [realip]"
+[ -z "$bad" ] && pass "gate_script: allow Traefik's range only, deny all, no realip; credentials and forward-auth cookies stripped; Host / X-Forwarded-For as Traefik sent them; the admin group map; 421 for other hosts" \
+  || fail "gate_script: missing:$bad"
+# The service: unprivileged and read-only, the six hosts and the admin group
+# from the instance variables, the script read-only.
+if [ "$(GS .user)" = "101:101" ] && [ "$(GS .read_only)" = true ] && [ "$(GS '.cap_drop | join(",")')" = ALL ] \
+    && [ "$(GS '.cap_add // [] | length')" = 0 ] && [ "$(GS '.security_opt | join(",")')" = "no-new-privileges:true" ] \
+    && [ "$(GS .pids_limit)" = 64 ] && [ "$(GS '.tmpfs | join(",")')" = "/tmp:size=16m" ] && [ "$(GS '.privileged // false')" = false ]; then
+  pass "gate_hardening: fxa-gate runs as 101:101 (numeric, not root), read-only with a sized /tmp, cap_drop ALL and no cap_add, no-new-privileges, pids_limit 64"
+else
+  fail "gate_hardening: user=$(GS .user) read_only=$(GS .read_only) cap_drop=$(GS '.cap_drop | join(",")') cap_add=$(GS '.cap_add // [] | join(",")') security_opt=$(GS '.security_opt | join(",")') pids=$(GS .pids_limit) tmpfs=$(GS '.tmpfs | join(",")')"
+fi
+check_env fxa-gate PORTCULLIS_TRAEFIK_SOURCE '${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}'
+check_env fxa-gate GATE_LISTEN 8080
+check_env fxa-gate GATE_ADMIN_GROUP '${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}'
+for h in SYNC= ACCOUNTS=_ACCOUNTS API=_API PROFILE=_PROFILE ADMIN=_ADMIN PAIRING=_PAIRING; do
+  sub=$(echo "firefox-sync-fxa${h#*=}" | tr 'A-Z_' 'a-z-')
+  check_env fxa-gate "GATE_HOST_${h%%=*}" "\${PORTCULLIS_HOST_FIREFOX_SYNC_FXA${h#*=}:-$sub.portcullis.local}"
+done
+[ "$(GS '.entrypoint | join(" ")')" = "/bin/sh /portcullis/fxa-gate.sh" ] \
+  && [ "$(GS '.volumes | join(",")')" = "./templates/firefox-sync-fxa/fxa-gate.sh:/portcullis/fxa-gate.sh:ro" ] \
+  && pass "gate_hardening: entrypoint /bin/sh /portcullis/fxa-gate.sh, the script mounted read-only (nothing else)" \
+  || fail "gate_hardening: entrypoint $(GS '.entrypoint | join(" ")'), volumes $(GS '.volumes | join(",")')"
+[ "$(GS '.labels["traefik.http.services.firefox-sync-fxa-gate.loadbalancer.server.port"]')" = 8080 ] \
+  && pass "gate: Traefik's service port 8080 = GATE_LISTEN" || fail "gate: service port $(GS '.labels["traefik.http.services.firefox-sync-fxa-gate.loadbalancer.server.port"]')"
+# gate_waits_for_init (T10-M4): every one-shot completed, every service it
+# calls healthy.
+for job in fxa-db-users fxa-keys-owner fxa-migrations fxa-policy fxa-mail-check firefox-sync-fxa-migrate firefox-sync-fxa-db-init firefox-sync-fxa-init; do
+  check_dep fxa-gate "$job" service_completed_successfully
+done
+for up in fxa-auth fxa-content fxa-profile fxa-profile-static fxa-pairing ffs-admin firefox-sync-fxa; do
+  check_dep fxa-gate "$up" service_healthy
+done
+ONESHOTS=$(yq -r '[.services | to_entries[] | select(.value.restart == "no") | .key] | sort | join(" ")' "$COMPOSE")
+GATE_JOBS=$(GS '.depends_on | to_entries | map(select(.value.condition == "service_completed_successfully") | .key) | sort | join(" ")')
+[ "$ONESHOTS" = "$GATE_JOBS" ] && pass "gate_waits_for_init: fxa-gate waits for exactly every one-shot ($ONESHOTS)" \
+  || fail "gate_waits_for_init: one-shots '$ONESHOTS', fxa-gate waits for '$GATE_JOBS'"
 
 # ── Mail (Task 14): the server's mail provider by default, or an external
 # SMTP server; the optional account cap. ──
@@ -871,11 +944,14 @@ REG_URI=$(yq -r '.keycloak_clients[0].redirect_uri' "$MANIFEST")
 [ "$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-admin.rule"]' "$COMPOSE")" = "Host(\`$ADMIN_HOST_DEFAULT\`)" ] \
   && pass "admin host: firefox-sync-fxa-admin router on fxa-gate (gated: gated_routers_gateway)" \
   || fail "admin host: router rule $(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-admin.rule"]' "$COMPOSE")"
-[ "$(yq -r '.auth.sso' "$MANIFEST")" = partial ] && [ "$(yq -r '.auth.group_admin' "$MANIFEST")" = false ] \
-  && pass "manifest: sso partial (the admin UI signs in with Portcullis's Keycloak); group_admin false until the sign-in e2e can check a second host" \
+[ "$(yq -r '.auth.sso' "$MANIFEST")" = partial ] && [ "$(yq -r '.auth.group_admin' "$MANIFEST")" = true ] \
+  && pass "manifest: sso partial (the admin UI signs in with Portcullis's Keycloak); group_admin true (the admin host: the admin group only)" \
   || fail "manifest: sso $(yq -r '.auth.sso' "$MANIFEST"), group_admin $(yq -r '.auth.group_admin' "$MANIFEST")"
 [ "$(yq -r '.tests.signin.host + " " + .tests.signin.path' "$MANIFEST")" = "{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}} /settings" ] \
   && pass "tests.signin: the accounts host, /settings" || fail "tests.signin: $(yq -o=json -I=0 '.tests.signin' "$MANIFEST")"
+[ "$(yq -r '.tests.signin.admin.host + " " + .tests.signin.admin.reach' "$MANIFEST")" = "{{HOST_FIREFOX_SYNC_FXA_ADMIN}} /auth/login" ] \
+  && pass "tests.signin.admin: on the admin host, through the admin UI's own sign-in (/auth/login)" \
+  || fail "tests.signin.admin: $(yq -o=json -I=0 '.tests.signin.admin' "$MANIFEST")"
 
 FXA_DONE=1
 if [ "${STATIC_ONLY:-}" = 1 ]; then
@@ -888,6 +964,153 @@ fi
 # accounts' mail path is exercised here, fxa-auth reached inside its own
 # container. Until the end, an abort is a failure again.
 FXA_DONE=0
+
+# ══ fxa-gate (Task 12) against stand-ins: the real fxa-gate.sh, as compose
+# runs it (user 101, read-only, no capabilities), on a throwaway network with
+# fixed addresses: one "Traefik" peer, stand-in upstreams under the
+# -internal names that answer with what they received. ══
+section "Firefox Sync + own accounts (gate, stand-ins)"
+GT="portcullis-fxa-test-gate-$$"
+GT_NET="$GT-net"
+FXA_TEST_CONTAINERS="$FXA_TEST_CONTAINERS $GT-main $GT-pairing $GT-gate"
+FXA_TEST_NETWORKS="$FXA_TEST_NETWORKS $GT_NET"
+docker network create --subnet 10.254.78.0/24 --ip-range 10.254.78.128/25 "$GT_NET" > /dev/null
+# shellcheck disable=SC2016
+UPCONF='server { client_max_body_size 0; listen 3030; listen 9000; listen 8081; listen 1111; listen 1112; listen 8000; listen 8080;
+  location / { default_type text/plain; return 200 "up=@NAME@ port=$server_port uri=$request_uri host=$http_host auth=[$http_authorization] xat=[$http_x_forwarded_access_token$http_x_auth_request_access_token] cookie=[$http_cookie] xff=[$http_x_forwarded_for] proto=$http_x_forwarded_proto upgrade=$http_upgrade"; } }'
+for n in main pairing; do
+  if [ "$n" = main ]; then
+    aliases=(--network-alias fxa-content-internal --network-alias fxa-auth-internal --network-alias ffs-admin-internal
+             --network-alias fxa-profile-internal --network-alias fxa-profile-static-internal --network-alias firefox-sync-fxa-internal)
+  else
+    aliases=(--network-alias fxa-pairing-internal)
+  fi
+  UPCONF="${UPCONF//@NAME@/$n}" docker run -d --name "$GT-$n" --network "$GT_NET" "${aliases[@]}" -e UPCONF \
+    --entrypoint sh "$NGINX_IMAGE" -c 'printf "%s\n" "$UPCONF" > /etc/nginx/conf.d/default.conf && exec nginx -g "daemon off;"' > /dev/null
+done
+GH_ACC=accounts.fxa-gate.test GH_API=api.fxa-gate.test GH_PROF=profile.fxa-gate.test GH_SYNC=sync.fxa-gate.test
+GH_ADMIN=admin.fxa-gate.test GH_PAIR=pairing.fxa-gate.test
+GATE_ENV=(-e PORTCULLIS_TRAEFIK_SOURCE=10.254.78.2/32 -e GATE_LISTEN=8080 -e "GATE_HOST_ACCOUNTS=$GH_ACC" -e "GATE_HOST_API=$GH_API"
+  -e "GATE_HOST_PROFILE=$GH_PROF" -e "GATE_HOST_SYNC=$GH_SYNC" -e "GATE_HOST_ADMIN=$GH_ADMIN" -e "GATE_HOST_PAIRING=$GH_PAIR"
+  -e GATE_ADMIN_GROUP=admin_firefox-sync-fxa)
+GATE_RUN=(--user 101:101 --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64
+  -v "$(cd "$(dirname "$GATE_SH")" && pwd)/fxa-gate.sh:/portcullis/fxa-gate.sh:ro" --entrypoint /bin/sh)
+docker run -d --name "$GT-gate" --network "$GT_NET" --ip 10.254.78.20 "${GATE_RUN[@]}" "${GATE_ENV[@]}" \
+  "$NGINX_IMAGE" /portcullis/fxa-gate.sh > /dev/null
+for _ in $(seq 1 20); do
+  docker run --rm --network "$GT_NET" --ip 10.254.78.2 --entrypoint curl "$NGINX_IMAGE" -s -o /dev/null --max-time 2 \
+    -H "Host: $GH_ACC" http://10.254.78.20:8080/ && break
+  sleep 1
+done
+# gt <client ip> <curl args...>: "<body> [<status>]" as the client sees it.
+gt() {
+  local ip=$1
+  shift
+  docker run --rm -i --network "$GT_NET" --ip "$ip" --entrypoint curl "$NGINX_IMAGE" -s --max-time 10 --path-as-is \
+    -w ' [%{http_code}]' "$@" 2>/dev/null || true
+}
+T_IP=10.254.78.2
+G=http://10.254.78.20:8080
+OUT=$(gt $T_IP -H "Host: $GH_ACC" -H 'Authorization: Bearer kc-token' -H 'X-Forwarded-Access-Token: kc' -H 'X-Auth-Request-Access-Token: kc' \
+  -H 'X-Forwarded-For: 198.51.100.7' -H 'Cookie: a=1; _oauth2_proxy=s; _oauth2_proxy_1=t; __Host-portcullis_ext_csrf=u; b=2' "$G/settings")
+[ "$OUT" = "up=main port=3030 uri=/settings host=$GH_ACC auth=[] xat=[] cookie=[a=1; b=2] xff=[198.51.100.7] proto=https upgrade= [200]" ] \
+  && pass "gate_routes: accounts -> fxa-content-internal:3030; Authorization, the access-token headers and the forward-auth cookies stripped; Host and X-Forwarded-For unchanged" \
+  || fail "gate_routes: accounts: $OUT"
+OUT=$(gt $T_IP -H "Host: $GH_API" -H 'Authorization: Hawk id="x"' -H 'Cookie: _oauth2_proxy=s' "$G/v1/account/status")
+[ "$OUT" = "up=main port=9000 uri=/v1/account/status host=$GH_API auth=[Hawk id=\"x\"] xat=[] cookie=[] xff=[] proto=https upgrade= [200]" ] \
+  && pass "gate_routes: api -> fxa-auth-internal:9000, Firefox's own Authorization kept, the forward-auth cookie stripped" \
+  || fail "gate_routes: api: $OUT"
+bad=""
+for p in /v1/account/create /v1/account/create/ //v1/account/create /v1//account/create '/v1/account/create?keys=true' \
+         /V1/Account/Create /v1/account/%63reate /v1/./account/create /v1/x/../account/create /v1/account/create.json; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  want="uri=/v1/account/create"
+  case "$p" in *'?keys=true') want="uri=/v1/account/create?keys=true" ;; esac
+  case "$OUT" in "up=main port=8081 $want host="*" [200]") ;; *) bad="$bad $p($OUT)" ;; esac
+done
+[ -z "$bad" ] && pass "signup_path_variants: every spelling of /v1/account/create (trailing slash, //, case, %-encoding, dot segments, a suffix) goes to the sign-up gate (ffs-admin-internal:8081) as exactly /v1/account/create" \
+  || fail "signup_path_variants: not to the sign-up gate:$bad"
+OUT=$(gt $T_IP -H "Host: $GH_API" "$G/v1/account/login")
+case "$OUT" in "up=main port=9000 uri=/v1/account/login "*) pass "gate_routes: api /v1/account/login -> fxa-auth (not the sign-up gate)" ;; *) fail "gate_routes: api login: $OUT" ;; esac
+OUT=$(gt $T_IP -H "Host: $GH_PROF" -H 'Authorization: Bearer fxa' "$G/v1/profile")
+case "$OUT" in "up=main port=1111 uri=/v1/profile host=$GH_PROF auth=[Bearer fxa] "*) pass "gate_routes: profile -> fxa-profile-internal:1111 (Authorization kept)" ;; *) fail "gate_routes: profile: $OUT" ;; esac
+OUT=$(gt $T_IP -H "Host: $GH_PROF" "$G/img/a/0123456789abcdef0123456789abcdef")
+case "$OUT" in "up=main port=1112 uri=/a/0123456789abcdef0123456789abcdef "*) pass "gate_routes: profile /img/ -> fxa-profile-static-internal:1112, the prefix stripped" ;; *) fail "gate_routes: profile /img/: $OUT" ;; esac
+OUT=$(gt $T_IP -H "Host: $GH_SYNC" -H 'Authorization: Hawk id="s"' "$G/1.0/sync/1.5")
+case "$OUT" in "up=main port=8000 uri=/1.0/sync/1.5 host=$GH_SYNC auth=[Hawk id=\"s\"] "*) pass "gate_routes: sync -> firefox-sync-fxa-internal:8000 (Authorization kept)" ;; *) fail "gate_routes: sync: $OUT" ;; esac
+OUT=$(gt $T_IP -H "Host: $GH_PAIR" -H 'Connection: Upgrade' -H 'Upgrade: websocket' "$G/v1/ws/")
+case "$OUT" in "up=pairing port=8000 uri=/v1/ws/ host=$GH_PAIR "*"upgrade=websocket [200]") pass "gate_routes: pairing -> fxa-pairing-internal:8000, the websocket upgrade passed on" ;; *) fail "gate_routes: pairing: $OUT" ;; esac
+BIG=$(head -c 2621440 /dev/zero | tr '\0' 'a')
+OUT=$(gt $T_IP -o /dev/null -X POST -H "Host: $GH_SYNC" --data-binary @- "$G/1.5/x/storage/bookmarks" <<< "$BIG")
+[ "$OUT" = " [200]" ] && pass "gate_body: a 2.5 MB body passes on the Sync host (client_max_body_size 10m)" || fail "gate_body: Sync host 2.5 MB: $OUT"
+OUT=$(gt $T_IP -o /dev/null -X POST -H "Host: $GH_API" --data-binary @- "$G/v1/x" <<< "$BIG")
+[ "$OUT" = " [413]" ] && pass "gate_body: 2.5 MB on the API host -> 413 (2 MB elsewhere)" || fail "gate_body: API host 2.5 MB: $OUT"
+unset BIG
+# The admin host: group-gate's X-Auth-Request-Groups must list the admin
+# group as one exact entry.
+bad=""
+for g in "admin_firefox-sync-fxa=200" "users_firefox-sync-fxa,admin_firefox-sync-fxa=200" "x, admin_firefox-sync-fxa ,y=200" \
+         "=403" "users_firefox-sync-fxa=403" "ADMIN_FIREFOX-SYNC-FXA=403" "admin_firefox-sync-fxa-x=403" "/admin_firefox-sync-fxa=403" \
+         "xadmin_firefox-sync-fxa=403" "admin_firefox-sync-fxa2,users=403" "admin_firefox-sync-fxa;x=403" "admin_.*=403"; do
+  want=${g##*=} g=${g%=*}
+  if [ -n "$g" ]; then
+    OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ADMIN" -H "X-Auth-Request-Groups: $g" -H 'Authorization: Bearer kc' "$G/")
+  else
+    OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ADMIN" -H 'Authorization: Bearer kc' "$G/")
+  fi
+  [ "$OUT" = " [$want]" ] || bad="$bad '$g'->$OUT(want $want)"
+done
+[ -z "$bad" ] && pass "admin_group_only: the admin host answers only when X-Auth-Request-Groups lists admin_firefox-sync-fxa exactly (missing, the access group alone, other case, prefixes, suffixes, a path form, a regex: 403)" \
+  || fail "admin_group_only:$bad"
+OUT=$(gt $T_IP -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' -H 'Authorization: Bearer kc' -H 'Cookie: ffs=1; _oauth2_proxy=x' "$G/users/x")
+case "$OUT" in "up=main port=8080 uri=/users/x host=$GH_ADMIN auth=[] xat=[] cookie=[ffs=1] "*) pass "gate_routes: admin -> ffs-admin-internal:8080; Authorization and the forward-auth cookie stripped" ;; *) fail "gate_routes: admin: $OUT" ;; esac
+bad=""
+for p in /accounts/signups /accounts/max-accounts /accounts/invite /accounts/allowlist/remove /sync/max-users \
+         /sync/allowlist/allow /sync/allowlist/reject /sync/allowlist/remove /accounts/signups/ /Accounts/Signups \
+         //accounts/signups /accounts/%73ignups /accounts/./invite /sync/allowlist; do
+  for m in POST GET; do
+    OUT=$(gt $T_IP -o /dev/null -X $m -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+    [ "$OUT" = " [403]" ] || bad="$bad $m:$p->$OUT"
+  done
+done
+for p in /accounts/0123/disable /users/0123/delete /connect /sync/allowlistx /accounts/signupsx; do
+  OUT=$(gt $T_IP -o /dev/null -X POST -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+  [ "$OUT" = " [200]" ] || bad="$bad other:$p->$OUT"
+done
+[ -z "$bad" ] && pass "admin_forms_403: the admin UI's sign-up and allowlist forms (and their confirmation pages) answer 403 at the gate, every spelling; its other pages pass" \
+  || fail "admin_forms_403:$bad"
+OUT=$(gt $T_IP -o /dev/null -H 'Host: other.fxa-gate.test' "$G/")
+[ "$OUT" = " [421]" ] && pass "gate_routes: an unknown host -> 421" || fail "gate_routes: unknown host: $OUT"
+OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ACC" -H "Cookie: $(printf '_oauth2_proxy_%s=x; ' 1 2 3 4 5 6 7)" "$G/")
+[ "$OUT" = " [400]" ] && pass "gate_cookies: a Cookie header with more forward-auth cookies than six passes strip -> 400" || fail "gate_cookies: $OUT"
+bad=""
+for h in "$GH_ACC" "$GH_API" "$GH_PROF" "$GH_SYNC" "$GH_PAIR"; do
+  OUT=$(gt 10.254.78.9 -o /dev/null -H "Host: $h" "$G/v1/account/create")
+  [ "$OUT" = " [403]" ] || bad="$bad $h->$OUT"
+done
+OUT=$(gt 10.254.78.9 -o /dev/null -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G/")
+[ "$OUT" = " [403]" ] || bad="$bad $GH_ADMIN(forged groups)->$OUT"
+[ -z "$bad" ] && pass "gate_traefik_only: a peer outside PORTCULLIS_TRAEFIK_SOURCE gets 403 on every host (forged groups on the admin host included)" \
+  || fail "gate_traefik_only:$bad"
+ST=$(docker exec "$GT-gate" sh -c 'id -u; grep -E "^Cap(Eff|Prm|Bnd):" /proc/1/status | tr -s "\t " " "; touch /etc/x 2>&1 || true' 2>&1 | tr '\n' ' ')
+case "$ST" in "101 CapPrm: 0000000000000000 CapEff: 0000000000000000 CapBnd: 0000000000000000 "*"Read-only file system"*)
+  pass "gate_unprivileged: nginx runs as uid 101 with no capabilities on a read-only filesystem" ;;
+  *) fail "gate_unprivileged: $ST" ;; esac
+# Fails closed: a malformed setting stops the gate before nginx starts.
+bad=""
+for e in "PORTCULLIS_TRAEFIK_SOURCE=172.31.250.2/24" "PORTCULLIS_TRAEFIK_SOURCE=0.0.0.0/00" "PORTCULLIS_TRAEFIK_SOURCE=" \
+         "GATE_HOST_API=$GH_ACC" "GATE_HOST_ADMIN=Admin.fxa-gate.test" "GATE_HOST_SYNC=sync.fxa-gate.test;" "GATE_HOST_PAIRING=localhost" \
+         "GATE_HOST_PROFILE=" "GATE_ADMIN_GROUP=" "GATE_ADMIN_GROUP=a,b" "GATE_ADMIN_GROUP= a" "GATE_LISTEN=80x"; do
+  OUT=$(docker run --rm --network none "${GATE_RUN[@]}" "${GATE_ENV[@]}" -e "$e" "$NGINX_IMAGE" -c 'timeout 5 sh /portcullis/fxa-gate.sh; echo "exit=$?"' 2>&1 | tail -2 | tr '\n' ' ')
+  case "$OUT" in "fxa-gate: "*" exit=1 ") ;; *) bad="$bad [$e: $OUT]" ;; esac
+done
+OUT=$(docker run --rm --network none "${GATE_RUN[@]}" "${GATE_ENV[@]}" -e "GATE_ADMIN_GROUP=$(printf 'a\tb')" "$NGINX_IMAGE" -c 'timeout 5 sh /portcullis/fxa-gate.sh; echo "exit=$?"' 2>&1 | tail -2 | tr '\n' ' ')
+case "$OUT" in "fxa-gate: "*" exit=1 ") ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac
+[ -z "$bad" ] && pass "gate_fails_closed: a bad source range, hostname, duplicate host, admin group or port stops the gate (exit 1, nginx never starts)" \
+  || fail "gate_fails_closed:$bad"
+docker rm -f "$GT-main" "$GT-pairing" "$GT-gate" > /dev/null 2>&1 || true
+docker network rm "$GT_NET" > /dev/null 2>&1 || true
+
 section "Firefox Sync + own accounts (mail, live)"
 _export_manifest_env "$COMPOSE"
 _export_instance_env "$COMPOSE"
@@ -937,65 +1160,7 @@ mysql_root() {  # SQL on stdin; the root password stays in fxa-db's own environm
 # It logs CONNECT, EHLO, STARTTLS, every AUTH command, "PASSWORD SEEN" when
 # any line (or a base64 word of it) holds the password, and each message,
 # saved in its /tmp with whether it came over TLS.
-CATCHER_JS='
-const net = require("net"), tls = require("tls"), fs = require("fs");
-const U = process.env.CATCHER_USER || "", P = process.env.CATCHER_PASS || "";
-const TLS = process.env.CATCHER_TLS === "1";
-const ctx = TLS ? tls.createSecureContext({key: fs.readFileSync("/tls/key.pem"), cert: fs.readFileSync("/tls/cert.pem")}) : null;
-fs.mkdirSync("/tmp/mail", {recursive: true});
-let n = 0;
-const seen = line => P && (line.includes(P) || line.split(/[ :]/).some(t => { try { return Buffer.from(t, "base64").toString("latin1").includes(P); } catch (e) { return false; } }));
-function session(c, secure) {
-  let buf = "", data = false, from = "", rcpt = [], authed = false, step = null, user = "";
-  const w = s => c.write(s + "\r\n");
-  const check = (u, p) => { authed = u === U && p === P; console.log("AUTH " + (authed ? "ok" : "refused") + " user=" + u + (secure ? " tls" : " plain")); w(authed ? "235 2.7.0 ok" : "535 5.7.8 refused"); };
-  const plain = b => { const p = Buffer.from(b, "base64").toString().split("\0"); check(p[1] || "", p[2] || ""); };
-  c.on("error", () => {});
-  c.on("data", function onData(d) {
-    buf += d.toString("latin1");
-    for (;;) {
-      if (data) {
-        const i = buf.indexOf("\r\n.\r\n");
-        if (i < 0) return;
-        n++;
-        fs.writeFileSync("/tmp/mail/" + n + ".eml", "MAIL FROM " + from + "\nRCPT " + rcpt.join(",") + "\nAUTH " + (authed ? "ok" : "none") + "\nTLS " + (secure ? "yes" : "no") + "\n\n" + buf.slice(0, i));
-        console.log("MESSAGE " + n + " from=" + from + " rcpt=" + rcpt.join(",") + (secure ? " tls" : " plain"));
-        buf = buf.slice(i + 5); data = false; w("250 2.0.0 queued");
-        continue;
-      }
-      const i = buf.indexOf("\r\n");
-      if (i < 0) return;
-      const line = buf.slice(0, i); buf = buf.slice(i + 2);
-      if (seen(line)) console.log("PASSWORD SEEN" + (secure ? " tls" : " plain"));
-      if (step === "plain") { step = null; plain(line); continue; }
-      if (step === "user") { user = Buffer.from(line, "base64").toString(); step = "pass"; w("334 UGFzc3dvcmQ6"); continue; }
-      if (step === "pass") { step = null; check(user, Buffer.from(line, "base64").toString()); continue; }
-      const a = line.split(" "), cmd = a[0].toUpperCase(), m = (a[1] || "").toUpperCase();
-      if (cmd === "AUTH") console.log("AUTH command " + m + (secure ? " tls" : " plain"));
-      if (cmd === "EHLO") { console.log("EHLO" + (secure ? " tls" : " plain")); c.write("250-catcher\r\n" + (TLS && !secure ? "250-STARTTLS\r\n" : "") + "250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n"); }
-      else if (cmd === "HELO") w("250 catcher");
-      else if (cmd === "STARTTLS" && TLS && !secure) {
-        w("220 2.0.0 ready");
-        c.removeListener("data", onData);
-        console.log("STARTTLS");
-        session(new tls.TLSSocket(c, {isServer: true, secureContext: ctx}), true);
-        return;
-      }
-      else if (cmd === "AUTH" && m === "PLAIN") { if (a[2]) plain(a[2]); else { step = "plain"; w("334 "); } }
-      else if (cmd === "AUTH" && m === "LOGIN") { if (a[2]) { user = Buffer.from(a[2], "base64").toString(); step = "pass"; w("334 UGFzc3dvcmQ6"); } else { step = "user"; w("334 VXNlcm5hbWU6"); } }
-      else if (cmd === "MAIL") { if (U && !authed) w("530 5.7.0 authentication required"); else { from = line.slice(10).trim(); rcpt = []; w("250 ok"); } }
-      else if (cmd === "RCPT") { rcpt.push(line.slice(8).trim()); w("250 ok"); }
-      else if (cmd === "DATA") { data = true; w("354 go ahead"); }
-      else if (cmd === "RSET") { from = ""; rcpt = []; w("250 ok"); }
-      else if (cmd === "NOOP") w("250 ok");
-      else if (cmd === "QUIT") { w("221 bye"); c.end(); }
-      else w("502 5.5.2 not implemented");
-    }
-  });
-}
-net.createServer(c => { console.log("CONNECT"); c.write("220 catcher ESMTP\r\n"); session(c, false); })
-  .listen(587, "0.0.0.0", () => console.log("catcher listening on 587" + (TLS ? " (STARTTLS)" : " (no STARTTLS)")));
-'
+CATCHER_JS=$(cat tests/fxa_smtp_catcher.js)
 # A test CA and the catcher's certificate (CN/SAN fxa-test-smtp), and the
 # auth server's CA bundle = core's bundle + the test CA (an override of its
 # read-only bundle mount, as the Hub's CA bundle would carry a real
@@ -1268,10 +1433,12 @@ MAXA=$(max_accounts_setting)
 
 # ══ Sync (Task 15), live: the guard's roles against the running database,
 # then a Firefox (tests/fxa_client.py, PyFxA) signs up, gets a Sync token
-# and round-trips a record. Until Task 12's gate the helper reaches fxa-auth
-# and the Sync server over the instance's network, from a container of the
-# pinned syncstorage-rs image (PyFxA, requests and hawkauthlib ship in it);
-# the base URLs are its parameters. ══
+# and round-trips a record. The helper (a container of the pinned
+# syncstorage-rs image: PyFxA, requests and hawkauthlib ship in it) goes the
+# public way, as a Firefox on the internet: Traefik and fxa-gate at the API
+# and Sync hosts (CI's public-DNS stand-in on portcullis-proxy resolves them
+# to Traefik), trusting Portcullis's CA bundle; the sign-up passes the
+# sign-up gate. ══
 section "Firefox Sync + own accounts (sync, live)"
 SYNC_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA"
 API_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API"
@@ -1478,12 +1645,13 @@ MAIL_DIR=$(mktemp -d)
 chmod 0777 "$MAIL_DIR"
 CATCHER_MAIL_DIR="$MAIL_DIR" start_catcher "$EXT_USER" "$EXT_PW" 1 || true
 wait_healthy "$AUTH_C" 300 || fail "first_sync: fxa-auth not healthy: $(redact "$(docker logs --tail 10 "$AUTH_C" 2>&1)")"
-fxa_client() {  # the helper on the instance's network; the password by env
-  docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true \
+fxa_client() {  # the helper through Traefik at the public hosts; the password by env
+  docker run --rm --network portcullis-proxy --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true \
     --user 10001:10001 -v "$PWD/tests/fxa_client.py:/portcullis-test/fxa_client.py:ro" -v "$MAIL_DIR:/mail:ro" \
-    -e FXA_PASSWORD -e FXA_MAIL_DIR=/mail -e FXA_AUTH_URL=http://fxa-auth:9000 \
-    -e FXA_TOKEN_URL=http://firefox-sync-fxa-internal:8000 -e FXA_NODE_URL="https://$SYNC_HOST" \
-    -e FXA_SYNC_URL=http://firefox-sync-fxa-internal:8000 \
+    -v "$PROJECT_DIR/certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro" \
+    -e REQUESTS_CA_BUNDLE=/etc/ssl/certs/portcullis-ca-bundle.crt -e SSL_CERT_FILE=/etc/ssl/certs/portcullis-ca-bundle.crt \
+    -e FXA_PASSWORD -e FXA_MAIL_DIR=/mail -e FXA_AUTH_URL="https://$API_HOST" \
+    -e FXA_TOKEN_URL="https://$SYNC_HOST" -e FXA_NODE_URL="https://$SYNC_HOST" -e FXA_SYNC_URL= \
     --entrypoint python3 "$SYNC_IMAGE" -I -B /portcullis-test/fxa_client.py "$@" 2>&1 | tail -1
 }
 jget() { printf '%s' "$1" | jq -r "$2" 2>/dev/null || echo "<not JSON>"; }
@@ -1545,12 +1713,142 @@ done
 rm -rf "$MAIL_DIR"
 unset FXA_PASSWORD
 
+# ══ fxa-gate (Task 12), live: the real gate behind core's Traefik, from
+# the CI host (via_traefik) and from another container on portcullis-proxy. ══
+section "Firefox Sync + own accounts (gate, live)"
+GATE_C=portcullis-fxa-gate-1
+PROFILE_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE"
+G_ACC_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS"
+G_ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN"
+G_PAIR_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING"
+ST=$(docker inspect -f '{{.State.Status}} user={{.Config.User}} ro={{.HostConfig.ReadonlyRootfs}} drop={{.HostConfig.CapDrop}} add={{.HostConfig.CapAdd}} pids={{.HostConfig.PidsLimit}}' "$GATE_C" 2>/dev/null || echo absent)
+[ "$ST" = "running user=101:101 ro=true drop=[ALL] add=[] pids=64" ] && pass "gate_running: fxa-gate runs unprivileged ($ST)" \
+  || fail "gate_running: $ST: $(docker logs --tail 10 "$GATE_C" 2>&1 | tr '\n' ' ')"
+CAPS=$(docker exec "$GATE_C" sh -c 'id -u; grep "^CapEff:" /proc/1/status' 2>&1 | tr -s '\n\t ' ' ')
+[ "$CAPS" = "101 CapEff: 0000000000000000 " ] && pass "gate_running: nginx's master is uid 101 with no effective capabilities" || fail "gate_running: $CAPS"
+ON_PROXY=$(docker network inspect portcullis-proxy --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' \
+  | grep -xE "portcullis-($(yq -r '.services | keys | join("|")' "$COMPOSE"))-1" | tr '\n' ' ' || true)
+[ "$ON_PROXY" = "$GATE_C " ] && pass "gate_only_on_proxy: of this instance only $GATE_C is on portcullis-proxy" || fail "gate_only_on_proxy: $ON_PROXY"
+
+# open_paths_anonymous: the open hosts answer without a cookie; the open
+# paths of the accounts host are the app's, everything else there signs in.
+for h in "$SYNC_HOST" "$API_HOST" "$PROFILE_HOST" "$G_PAIR_HOST"; do
+  OUT=$(via_traefik "$h" /__heartbeat__)
+  [ "${OUT%% *}" = 200 ] && pass "open_paths_anonymous: https://$h/__heartbeat__ -> 200 without a cookie" \
+    || fail "open_paths_anonymous: https://$h/__heartbeat__ -> $OUT"
+done
+OUT=$(via_traefik "$PROFILE_HOST" /img/a/00000000000000000000000000000000)
+[ "${OUT%% *}" = 200 ] && pass "open_paths_anonymous: the profile host's /img/ (avatars, the prefix stripped) -> 200" \
+  || fail "open_paths_anonymous: profile /img/ -> $OUT"
+CFG=$(curl -sk --max-time 15 --resolve "$G_ACC_HOST:443:127.0.0.1" "https://$G_ACC_HOST/.well-known/fxa-client-configuration" || true)
+[ "$(jq -r '.auth_server_base_url // ""' <<< "$CFG" 2>/dev/null)" = "https://$API_HOST" ] \
+  && [ "$(jq -r '.sync_tokenserver_base_url // ""' <<< "$CFG" 2>/dev/null)" = "https://$SYNC_HOST" ] \
+  && pass "open_paths_anonymous: /.well-known/fxa-client-configuration (no cookie) names https://$API_HOST and https://$SYNC_HOST" \
+  || fail "open_paths_anonymous: fxa-client-configuration: $(head -c 300 <<< "$CFG")"
+for path in / /.well-known/change-password /metrics-flow; do
+  OUT=$(via_traefik "$G_ACC_HOST" "$path"); code=${OUT%% *}
+  case "$OUT" in
+    *"auth.$DOMAIN"*) fail "open_paths_anonymous: accounts $path -> Keycloak ($OUT)" ;;
+    000* | 403* | 421* | 5*) fail "open_paths_anonymous: accounts $path -> $OUT" ;;
+    *) pass "open_paths_anonymous: accounts $path -> HTTP $code without a cookie, no Keycloak" ;;
+  esac
+done
+OUT=$(via_traefik "$G_ACC_HOST" /settings)
+case "$OUT" in *"auth.$DOMAIN"* | *"/oauth2/"*) pass "accounts_gated: accounts /settings -> Portcullis sign-in ($OUT)" ;; *) fail "accounts_gated: accounts /settings -> $OUT" ;; esac
+# admin_gated
+for path in / /auth/login /accounts/signups; do
+  OUT=$(via_traefik "$G_ADMIN_HOST" "$path")
+  case "$OUT" in *"auth.$DOMAIN"* | *"/oauth2/"*) pass "admin_gated: admin $path -> Portcullis sign-in" ;; *) fail "admin_gated: admin $path -> $OUT" ;; esac
+done
+OUT=$(via_traefik "$G_ADMIN_HOST" / -H "X-Auth-Request-Groups: $(yq -r '.auth.admin_group' "$MANIFEST")" -H 'X-Auth-Request-Preferred-Username: e2eadmin')
+case "$OUT" in *"auth.$DOMAIN"* | *"/oauth2/"*) pass "admin_gated: forged groups / identity headers from a client still -> Portcullis sign-in" ;; *) fail "admin_gated: forged headers -> $OUT" ;; esac
+
+# another_app_cannot_reach_auth: a container on portcullis-proxy (another
+# app) neither resolves nor reaches the accounts API, and the gate refuses it.
+GATE_PROXY_IP=$(docker inspect "$GATE_C" --format '{{with index .NetworkSettings.Networks "portcullis-proxy"}}{{.IPAddress}}{{end}}')
+bad=""
+for u in http://fxa-auth:9000/__heartbeat__ http://fxa-auth-internal:9000/__heartbeat__ http://ffs-admin-internal:8081/ \
+         http://firefox-sync-fxa-internal:8000/__heartbeat__; do
+  rc=0
+  docker run --rm --network portcullis-proxy --entrypoint curl "$NGINX_IMAGE" -s -o /dev/null --max-time 5 "$u" > /dev/null 2>&1 || rc=$?
+  case "$rc" in 6 | 7 | 28) ;; *) bad="$bad $u(curl exit $rc)" ;; esac
+done
+[ -z "$bad" ] && pass "another_app_cannot_reach_auth: from portcullis-proxy, fxa-auth / the -internal names don't answer (curl exit 6, 7 or 28)" \
+  || fail "another_app_cannot_reach_auth: reached:$bad"
+nb() {  # $1 host header, rest: curl args -> status from a portcullis-proxy neighbour straight at the gate
+  local h=$1
+  shift
+  docker run --rm --network portcullis-proxy --entrypoint curl "$NGINX_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "Host: $h" "$@" 2>/dev/null || true
+}
+bad=""
+[ -n "$GATE_PROXY_IP" ] || bad=" (no gate address on portcullis-proxy)"
+for h in "$API_HOST" "$SYNC_HOST" "$PROFILE_HOST" "$G_PAIR_HOST" "$G_ACC_HOST"; do
+  code=$(nb "$h" -X POST -H 'Content-Type: application/json' -d '{}' "http://$GATE_PROXY_IP:8080/v1/account/create")
+  [ "$code" = 403 ] || bad="$bad $h->$code"
+done
+code=$(nb "$G_ADMIN_HOST" -H "X-Auth-Request-Groups: $(yq -r '.auth.admin_group' "$MANIFEST")" "http://$GATE_PROXY_IP:8080/")
+[ "$code" = 403 ] || bad="$bad $G_ADMIN_HOST(forged groups)->$code"
+[ -z "$bad" ] && pass "another_app_cannot_reach_auth: straight at fxa-gate ($GATE_PROXY_IP:8080) from portcullis-proxy: 403 on every host (POST /v1/account/create; the admin host with forged groups)" \
+  || fail "another_app_cannot_reach_auth:$bad"
+
+# spoofed_xff_same_key: a client's X-Forwarded-For never becomes the rate
+# limits' address (Traefik drops it; the gate adds nothing).
+RL_USER="fxa-ratelimit-test@$DOMAIN"
+codes=""
+last=""
+for n in 1 2 3 4 5 6; do
+  last=$(curl -sk --max-time 15 --resolve "$API_HOST:443:127.0.0.1" -H "X-Forwarded-For: 203.0.113.$n" \
+    -H 'Content-Type: application/json' -d "{\"email\":\"$RL_USER\",\"authPW\":\"$(printf '0%.0s' $(seq 1 64))\"}" \
+    -w ' %{http_code}' "https://$API_HOST/v1/account/login" || echo "error 000")
+  codes="$codes ${last##* }"
+done
+ERRNO=$(jq -r '.errno // ""' <<< "${last% *}" 2>/dev/null || true)
+if [ "${last##* }" = 429 ] && [ "$ERRNO" = 114 ]; then
+  pass "spoofed_xff_same_key: 6 failed logins for one email, each with another X-Forwarded-For: the 6th -> 429 errno 114 (statuses:$codes)"
+else
+  fail "spoofed_xff_same_key: statuses:$codes, last errno '$ERRNO': $(head -c 200 <<< "${last% *}")"
+fi
+KEYS=$(docker exec portcullis-fxa-redis-1 redis-cli --scan --pattern '*203.0.113*' 2>&1 || echo "<redis-cli failed>")
+[ -z "$KEYS" ] && pass "spoofed_xff_same_key: no rate-limit key holds a spoofed address (redis --scan '*203.0.113*' empty)" \
+  || fail "spoofed_xff_same_key: keys with a spoofed address: $(head -c 300 <<< "$KEYS")"
+
+# sync_body_2_5mb: a 2.5 MB body reaches the Sync server (Hawk refuses it),
+# never the gate's 413.
+code=$(head -c 2621440 /dev/zero | tr '\0' 'a' | curl -sk --max-time 30 --resolve "$SYNC_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' --data-binary @- "https://$SYNC_HOST/1.5/x/storage/bookmarks" || true)
+[ "$code" = 401 ] && pass "sync_body_2_5mb: a 2.5 MB POST to /1.5/x/storage/bookmarks -> 401 (Hawk), not 413" \
+  || fail "sync_body_2_5mb: -> $code (want 401)"
+
+# pairing_websocket: the upgrade goes through Traefik and the gate.
+code=$(curl -sk --http1.1 --max-time 5 --resolve "$G_PAIR_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  -H "Origin: https://$G_ACC_HOST" "https://$G_PAIR_HOST/v1/ws/" 2>/dev/null || true)
+[ "${code:0:3}" = 101 ] && pass "pairing_websocket: wss://$G_PAIR_HOST/v1/ws/ upgrade -> 101" || fail "pairing_websocket: -> ${code:-none}"
+
+# signup_path_variants_refused: an address not on the sign-up allowlist,
+# through Traefik, on every spelling of the sign-up path: never 200, no account.
+bad=""
+for path in /v1/account/create/ //v1/account/create /v1//account/create '/v1/account/create?keys=true' /v1/account/create; do
+  code=$(curl -sk --path-as-is --max-time 15 --resolve "$API_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' -d "{\"email\":\"nobody@example.org\",\"authPW\":\"$(printf '0%.0s' $(seq 1 64))\"}" \
+    "https://$API_HOST$path" || echo 000)
+  [ "$code" != 200 ] || bad="$bad $path->200"
+  codes_sv="${codes_sv:-} $path=$code"
+done
+ROWS=$(echo "SELECT COUNT(*) FROM fxa.accounts WHERE normalizedEmail = 'nobody@example.org';" | mysql_root 2>&1)
+if [ -z "$bad" ] && [ "$ROWS" = 0 ]; then
+  pass "signup_path_variants_refused: nobody@example.org never 200 ($codes_sv), no fxa.accounts row"
+else
+  fail "signup_path_variants_refused:$bad; fxa.accounts rows for nobody@example.org: $ROWS ($codes_sv)"
+fi
+
 # ══ Admin (Task 16), live: the admin UI as the instance starts it, then a
 # probe of the same image and environment that signs in at a stand-in
 # OpenID provider (Keycloak can't sign the test users in without a browser:
 # passkeys only), which shows whom the admin UI lets in by the groups claim
-# and, signed in, that access is managed elsewhere. Until Task 12's gate the
-# admin UI is reached over the instance's network. ══
+# and, signed in, that access is managed elsewhere. The probe is reached over
+# the instance's network, and through a copy of fxa-gate in front of it. ══
 section "Firefox Sync + own accounts (admin, live)"
 ADMIN_C=portcullis-ffs-admin-1
 ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN"
@@ -1843,13 +2141,58 @@ grep -q 'Access managed elsewhere ok' <<< "$HOME_TEXT" \
   && pass "allowlist_read_only: the setup check Access managed elsewhere is ok (the admin UI and both inits agree)" \
   || fail "allowlist_read_only: no Access managed elsewhere ok on the overview: $(grep -o 'Access managed elsewhere.\{0,120\}' <<< "$HOME_TEXT" | head -1)"
 BEFORE=$(policy_state)
-for form in "/accounts/signups mode=open&allowlist=" "/accounts/max-accounts max_accounts=1" \
-            "/accounts/invite email=fxa-invite-test@$DOMAIN" "/accounts/allowlist/remove entry=$SYNC_USER" \
-            "/sync/max-users max_users=1" "/sync/allowlist/allow uid=$OUTSIDER"; do
+FORMS=("/accounts/signups mode=open&allowlist=" "/accounts/max-accounts max_accounts=1"
+       "/accounts/invite email=fxa-invite-test@$DOMAIN" "/accounts/allowlist/remove entry=$SYNC_USER"
+       "/sync/max-users max_users=1" "/sync/allowlist/allow uid=$OUTSIDER" "/sync/allowlist/reject uid=$OUTSIDER"
+       "/sync/allowlist/remove uid=$OUTSIDER")
+# Through the gate (T16 -> Task 12): a copy of fxa-gate with the instance's
+# hosts and admin group in front of the signed-in probe (which answers there
+# as ffs-admin-internal), on a throwaway network whose fixed "Traefik"
+# address the copy trusts; the admin's session cookie and group-gate's
+# groups header as Traefik would pass them (headers on stdin, never argv).
+AG="portcullis-fxa-test-agate-$$"
+AG_NET="$AG-net"
+FXA_TEST_CONTAINERS="$FXA_TEST_CONTAINERS $AG"
+FXA_TEST_NETWORKS="$FXA_TEST_NETWORKS $AG_NET"
+docker network create --subnet 10.254.79.0/24 --ip-range 10.254.79.128/25 "$AG_NET" > /dev/null
+docker network connect --alias ffs-admin-internal "$AG_NET" "$PROBE_C"
+docker run -d --name "$AG" --network "$AG_NET" --ip 10.254.79.20 "${GATE_RUN[@]}" \
+  -e PORTCULLIS_TRAEFIK_SOURCE=10.254.79.2/32 -e GATE_LISTEN=8080 -e GATE_HOST_ACCOUNTS="$ACC_HOST" -e GATE_HOST_API="$API_HOST" \
+  -e GATE_HOST_PROFILE="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE" -e GATE_HOST_SYNC="$SYNC_HOST" -e GATE_HOST_ADMIN="$ADMIN_HOST" \
+  -e GATE_HOST_PAIRING="$PAIRING_HOST" -e GATE_ADMIN_GROUP="$ADMIN_GROUP_M" "$NGINX_IMAGE" /portcullis/fxa-gate.sh > /dev/null
+SESSION=$(awk -F'\t' '(!/^#/ || /^#HttpOnly_/) && NF >= 7 { printf "%s%s=%s", (n++ ? "; " : ""), $6, $7 }' "$JAR")
+ag() {  # $1 groups header value, rest: curl args -> "<status> <body text>"
+  local groups=$1
+  shift
+  printf 'Cookie: %s\nX-Auth-Request-Groups: %s\n' "$SESSION" "$groups" \
+    | docker run --rm -i --network "$AG_NET" --ip 10.254.79.2 --entrypoint curl "$NGINX_IMAGE" -s --max-time 15 -H @- \
+      -H "Host: $ADMIN_HOST" -w '\n%{http_code}' "$@" 2>/dev/null | { body=$(cat); printf '%s %s' "$(tail -1 <<< "$body")" "$(sed '$d' <<< "$body" | sed 's/<[^>]*>/ /g' | tr -s ' \n' ' ')"; } || true
+}
+for _ in $(seq 1 20); do [ "$(ag "$ADMIN_GROUP_M" -o /dev/null http://10.254.79.20:8080/healthz)" != "000 " ] && break; sleep 1; done
+OUT=$(ag "$ADMIN_GROUP_M" http://10.254.79.20:8080/)
+[ "${OUT%% *}" = 200 ] && grep -q 'Access managed elsewhere' <<< "$OUT" \
+  && pass "admin_through_gate: the admin's session and the admin group pass the gate (the overview: 200)" \
+  || fail "admin_through_gate: the overview through the gate: ${OUT:0:200}"
+for g in "$ACCESS_GROUP_M" ""; do
+  OUT=$(ag "$g" -o /dev/null http://10.254.79.20:8080/)
+  [ "${OUT%% *}" = 403 ] && pass "admin_through_gate: the same session with groups '${g:-<none>}' -> 403 at the gate" \
+    || fail "admin_through_gate: groups '${g:-<none>}' -> ${OUT:0:120}"
+done
+for form in "${FORMS[@]}"; do
+  set -- $form
+  OUT=$(ag "$ADMIN_GROUP_M" -o /dev/null -d "csrf=$CSRF&$2" "http://10.254.79.20:8080$1")
+  [ "${OUT%% *}" = 403 ] && pass "allowlist_read_only: POST $1 through the gate -> 403 (signed-in admin, valid CSRF token)" \
+    || fail "allowlist_read_only: POST $1 through the gate -> ${OUT:0:120} (want 403)"
+done
+docker rm -f "$AG" > /dev/null 2>&1 || true
+docker network disconnect "$AG_NET" "$PROBE_C" > /dev/null 2>&1 || true
+docker network rm "$AG_NET" > /dev/null 2>&1 || true
+# Underneath, the admin UI refuses them itself (and ffs_admin's grants below).
+for form in "${FORMS[@]}"; do
   set -- $form
   RESP=$(curl -s -L -b "$JAR" -c "$JAR" -w '\n%{http_code}' -d "csrf=$CSRF&$2" "$PB$1" || true)
   if grep -q 'managed outside the admin UI (ADMIN_ACCESS_EXTERNAL): nothing changed here' <<< "$RESP"; then
-    pass "allowlist_read_only: POST $1 refused (managed outside the admin UI: nothing changed)"
+    pass "allowlist_read_only: POST $1 straight at the admin UI: refused underneath (managed outside the admin UI: nothing changed)"
   else
     fail "allowlist_read_only: POST $1 not refused (csrf ${#CSRF} chars; status $(tail -1 <<< "$RESP"); $(sed 's/<[^>]*>/ /g' <<< "$RESP" | tr -s ' \n' ' ' | grep -o -i -E '.{0,60}(refus|error|managed|invalid)[^.]{0,80}' | head -2 | tr '\n' ' '))"
   fi

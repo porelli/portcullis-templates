@@ -2,8 +2,11 @@
 """A Firefox, as far as the tests need one: PyFxA against firefox-sync-fxa.
 
 tests/apps/firefox-sync-fxa.sh runs it in the template's pinned
-syncstorage-rs image (which ships PyFxA, requests and hawkauthlib), in a
-container on the instance's network:
+syncstorage-rs image (which ships PyFxA, requests and hawkauthlib) the way a
+Firefox on the internet reaches the instance: through Traefik and fxa-gate
+at the public hosts (a container on portcullis-proxy, where CI's public-DNS
+stand-in resolves them to Traefik), trusting Portcullis's CA bundle
+(REQUESTS_CA_BUNDLE):
 
   signup <email>            create the account, verify it with the code the
                             mail catcher got (FXA_MAIL_DIR)
@@ -18,12 +21,14 @@ password is ever printed: each command prints one JSON object of results
 (statuses, uids, URLs) and exits 0 when everything it did succeeded, 1 when
 the server refused, 2 on a usage or setup error.
 
-Base URLs (environment):
-  FXA_AUTH_URL    the accounts API              (http://fxa-auth:9000)
-  FXA_TOKEN_URL   the tokenserver's origin      (http://firefox-sync-fxa-internal:8000)
+Base URLs (environment; the test sets the public ones):
+  FXA_AUTH_URL    the accounts API              (https://<API host>; default http://fxa-auth:9000)
+  FXA_TOKEN_URL   the tokenserver's origin      (https://<Sync host>)
   FXA_NODE_URL    the node the tokenserver must hand out (https://<Sync host>)
-  FXA_SYNC_URL    where storage is reached; empty = the api_endpoint as is,
-                  else the api_endpoint's origin FXA_NODE_URL replaced by it
+  FXA_SYNC_URL    where storage is reached; empty (the test) = the
+                  api_endpoint as is, else the api_endpoint's origin
+                  FXA_NODE_URL replaced by it
+  REQUESTS_CA_BUNDLE  the CA bundle every request trusts (Portcullis's)
 """
 
 import base64
@@ -181,7 +186,9 @@ def hawk(method, url, token, body=None):
     req = requests.Request(method, url, data=body,
                            headers={"Content-Type": "application/json"} if body is not None else {}).prepare()
     hawkauthlib.sign_request(req, token["id"], token["key"])
-    return requests.Session().send(req, timeout=TIMEOUT)
+    s = requests.Session()
+    # Session.send skips the environment (REQUESTS_CA_BUNDLE): merge it.
+    return s.send(req, timeout=TIMEOUT, **s.merge_environment_settings(req.url, {}, None, None, None))
 
 
 def cmd_sync(address):

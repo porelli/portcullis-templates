@@ -34,6 +34,8 @@ filmcraft/compose.yml	nginx allow (portcullis-allow.conf written at start)	CIDR 
 filmcraft/nginx.conf	comment over include /tmp/portcullis-allow.conf	CIDR ok (the include holds nginx allow <cidr>)
 firefly-iii/compose.yml	nginx 403 for X-Forwarded-User/-Email from other peers; Laravel TRUSTED_PROXIES	nginx: single IP (if $realip_remote_addr != ip) -> gate: geo $realip_remote_addr $portcullis_from_traefik in conf.d (http context, ngx_http_geo_module: CIDR); TRUSTED_PROXIES: CIDR ok (Symfony Request::setTrustedProxies / IpUtils::checkIp)
 firefly-iii/manifest.yaml	notes text	docs only
+firefox-sync-fxa/compose.yml	the fxa-gate service env PORTCULLIS_TRAEFIK_SOURCE	CIDR ok (feeds fxa-gate.sh)
+firefox-sync-fxa/fxa-gate.sh	nginx allow ${src}; deny all;	CIDR ok (nginx ngx_http_access_module: allow address | CIDR); cidr_ok checked (esphome/gate.sh's, byte-identical)
 gitea/compose.yml	GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES	CIDR ok (Gitea config cheat sheet: list of IP addresses and networks)
 grafana/compose.yml	GF_AUTH_PROXY_WHITELIST (via portcullis/trust.sh)	CIDR ok (Grafana auth proxy whitelist: IPs or CIDR)
 grafana/manifest.yaml	notes text	docs only

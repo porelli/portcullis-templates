@@ -519,6 +519,75 @@ networks:
                         f"Expected auth required for demo-special (no matching reason). Errors: {errors}")
 
 
+class TestRequiredBeforeRoutedGate(FxACase):
+    """T10-M4: every routed service of a template running the firefox-sync
+    image waits for <id>-init, the gate in front of it included."""
+
+    REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def load_real(self, mutate) -> list[str]:
+        import shutil
+        import yaml
+        dst = os.path.join(self.tmp.name, "firefox-sync-fxa")
+        shutil.copytree(os.path.join(self.REPO, "firefox-sync-fxa"), dst)
+        path = os.path.join(dst, "compose.yml")
+        with open(path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+        mutate(doc["services"])
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(doc, f, sort_keys=False)
+        t = v.Template("firefox-sync-fxa")
+        errors, _ = self.check_template(t)
+        return errors
+
+    def gate_errors(self, errors: list[str]) -> list[str]:
+        return [e for e in errors if "services.fxa-gate" in e and "firefox-sync-fxa-init" in e]
+
+    def test_real_template_passes(self) -> None:
+        errors = self.load_real(lambda s: None)
+        self.assertEqual(self.gate_errors(errors), [], errors)
+
+    def test_gate_without_init_fails(self) -> None:
+        def drop(s):
+            del s["fxa-gate"]["depends_on"]["firefox-sync-fxa-init"]
+        self.assertTrue(self.gate_errors(self.load_real(drop)))
+
+    def test_gate_started_condition_fails(self) -> None:
+        def weaken(s):
+            s["fxa-gate"]["depends_on"]["firefox-sync-fxa-init"] = {"condition": "service_started"}
+        self.assertTrue(self.gate_errors(self.load_real(weaken)))
+
+
+class TestSigninAdminHost(FxACase):
+    """tests.signin.admin.host: the admin check on another host router."""
+
+    COMPOSE = BASE_COMPOSE.replace(
+        "      traefik.http.services.demo.loadbalancer.server.port",
+        "      traefik.http.routers.demo-admin.rule: Host(`${PORTCULLIS_HOST_DEMO_ADMIN:-demo-admin.portcullis.local}`)\n"
+        "      traefik.http.routers.demo-admin.entrypoints: websecure\n"
+        "      traefik.http.routers.demo-admin.tls.options: default\n"
+        "      traefik.http.routers.demo-admin.middlewares: portcullis-auth@docker,portcullis-groups@docker\n"
+        "      traefik.http.services.demo.loadbalancer.server.port")
+
+    def test_known_host_passes(self) -> None:
+        m = BASE_MANIFEST.replace("      reach: /admin", "      reach: /admin\n      host: \"{{HOST_DEMO_ADMIN}}\"")
+        errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
+        self.assertFalse([e for e in errors if "admin.host" in e or "signin" in e], errors)
+
+    def test_unknown_host_fails(self) -> None:
+        m = BASE_MANIFEST.replace("      reach: /admin", "      reach: /admin\n      host: \"{{HOST_NOPE}}\"")
+        errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
+        self.assertTrue(any("tests.signin.admin.host" in e for e in errors), errors)
+
+    def test_bad_form_fails_schema(self) -> None:
+        m = BASE_MANIFEST.replace("      reach: /admin", "      reach: /admin\n      host: demo-admin.example.org")
+        errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
+        self.assertTrue(any("admin" in e and "host" in e for e in errors), errors)
+
+    def test_host_only_on_admin(self) -> None:
+        m = BASE_MANIFEST.replace("      text: \"{{username}}\"", "      text: \"{{username}}\"\n      host: \"{{HOST_DEMO_ADMIN}}\"")
+        errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
+        self.assertTrue(any("signed_in" in e and "host" in e for e in errors), errors)
 
 
 if __name__ == "__main__":

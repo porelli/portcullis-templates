@@ -5,9 +5,10 @@
 # every running accounts service.
 #
 # Network: every service is on the instance's own default network only.
-# fxa-gate (a Traefik-only nginx) is the only service on portcullis-proxy
-# and carries every router, so no other app can reach fxa-auth:9000 and
-# skip the sign-up gate (ffs-admin:8081).
+# fxa-gate (a Traefik-only nginx, fxa-gate.sh) is the only service on
+# portcullis-proxy and carries every router, so no other app can reach
+# fxa-auth:9000 and skip the sign-up gate (ffs-admin:8081). It calls each
+# service by a default-only -internal alias.
 #
 # Start order: fxa-db -> fxa-migrations -> fxa-policy -> fxa-auth (with
 # fxa-keys-owner and fxa-redis) -> fxa-profile -> fxa-content; Sync:
@@ -379,6 +380,12 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    # fxa-gate calls it as fxa-auth-internal (a name only this instance's
+    # default network has); the alias Service on Kubernetes carries the port.
+    expose: ["9000"]
+    networks:
+      default:
+        aliases: [fxa-auth-internal]
     restart: unless-stopped
 
   # The accounts web pages (FXA_CONTENT_URL = the accounts host). Not
@@ -451,6 +458,10 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    expose: ["3030"]
+    networks:
+      default:
+        aliases: [fxa-content-internal]
     restart: unless-stopped
 
   # The profile server (FXA_PROFILE_URL = the profile host): names, avatars.
@@ -518,6 +529,10 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    expose: ["1111"]
+    networks:
+      default:
+        aliases: [fxa-profile-internal]
     restart: unless-stopped
 
   # Resizes the uploaded avatars (port 1113, internal only).
@@ -608,6 +623,10 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    expose: ["1112"]
+    networks:
+      default:
+        aliases: [fxa-profile-static-internal]
     restart: unless-stopped
 
   # The channel server for pairing a phone by QR code (a websocket relay; it
@@ -650,14 +669,20 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    expose: ["8000"]
+    networks:
+      default:
+        aliases: [fxa-pairing-internal]
     restart: unless-stopped
 
   # porelli/firefox-sync's admin UI (:8080) and the sign-up gate (:8081, POST
   # /v1/account/create of the API host). The admin host
   # (${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN}) is behind Portcullis sign-in
-  # and group-gate (fxa-gate's router), then the admin UI's own OpenID
-  # Connect sign-in with Portcullis's Keycloak admits only the instance's
-  # admin group (ADMIN_ALLOWED_GROUPS, by the groups claim; never by email).
+  # and group-gate (fxa-gate's router); fxa-gate lets only the instance's
+  # admin group through (group-gate's X-Auth-Request-Groups), and the admin
+  # UI's own OpenID Connect sign-in with Portcullis's Keycloak admits only
+  # that group again (ADMIN_ALLOWED_GROUPS, by the groups claim; never by
+  # email).
   # No password sign-in (ADMIN_PASSWORD empty: no form, POST /login 403), no
   # trusted header, no mail of its own, no published port.
   #
@@ -765,6 +790,12 @@ services:
       firefox-sync-fxa-init:
         condition: service_completed_successfully
         restart: true
+    # The admin UI (8080) and the sign-up gate (8081), called by fxa-gate as
+    # ffs-admin-internal.
+    expose: ["8080", "8081"]
+    networks:
+      default:
+        aliases: [ffs-admin-internal]
     restart: unless-stopped
 
   # Portcullis's access group to the sign-up allowlist (ffs_access); the
@@ -1003,20 +1034,68 @@ services:
     restart: unless-stopped
 
   # The only service on portcullis-proxy: a Traefik-only nginx (the
-  # esphome/gate.sh pattern) in front of every host. Until its gate.sh lands
-  # nothing listens on 8080, so Traefik routes nothing (fail closed), and
-  # every host router carries the Portcullis sign-in.
+  # esphome/gate.sh pattern, fxa-gate.sh) in front of every host, each to
+  # its service under a default-only -internal name; Traefik's address range
+  # alone (any other peer: 403). The admin host only for the admin group
+  # (group-gate's X-Auth-Request-Groups), the sign-up endpoint only through
+  # the sign-up gate. Unprivileged nginx (the image's nginx user), read-only,
+  # no capabilities; it writes only its /tmp. It starts once every one-shot
+  # has finished and the services behind it answer.
   fxa-gate:
     image: nginx:1.31.8-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
+    user: "101:101"
+    read_only: true
     tmpfs:
       - /tmp:size=16m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [CHOWN, SETGID, SETUID]
     mem_limit: 64m
     pids_limit: 64
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["exec sleep infinity"]
+    environment:
+      PORTCULLIS_TRAEFIK_SOURCE: ${PORTCULLIS_TRAEFIK_SOURCE:-172.31.250.2/32}
+      GATE_LISTEN: "8080"
+      GATE_HOST_SYNC: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+      GATE_HOST_ACCOUNTS: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}
+      GATE_HOST_API: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}
+      GATE_HOST_PROFILE: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}
+      GATE_HOST_ADMIN: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin.portcullis.local}
+      GATE_HOST_PAIRING: ${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING:-firefox-sync-fxa-pairing.portcullis.local}
+      # The admin host's group (as ffs-admin's ADMIN_ALLOWED_GROUPS).
+      GATE_ADMIN_GROUP: ${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}
+    entrypoint: ["/bin/sh", "/portcullis/fxa-gate.sh"]
+    volumes:
+      - ./templates/firefox-sync-fxa/fxa-gate.sh:/portcullis/fxa-gate.sh:ro
+    depends_on:
+      fxa-db-users:
+        condition: service_completed_successfully
+      fxa-keys-owner:
+        condition: service_completed_successfully
+      fxa-migrations:
+        condition: service_completed_successfully
+      fxa-policy:
+        condition: service_completed_successfully
+      fxa-mail-check:
+        condition: service_completed_successfully
+      firefox-sync-fxa-migrate:
+        condition: service_completed_successfully
+      firefox-sync-fxa-db-init:
+        condition: service_completed_successfully
+      firefox-sync-fxa-init:
+        condition: service_completed_successfully
+      fxa-auth:
+        condition: service_healthy
+      fxa-content:
+        condition: service_healthy
+      fxa-profile:
+        condition: service_healthy
+      fxa-profile-static:
+        condition: service_healthy
+      fxa-pairing:
+        condition: service_healthy
+      ffs-admin:
+        condition: service_healthy
+      firefox-sync-fxa:
+        condition: service_healthy
     networks:
       - default
       - portcullis-proxy

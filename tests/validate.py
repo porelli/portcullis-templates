@@ -368,14 +368,16 @@ REQUIRED_INIT_JOBS = [
      "on the Sync database (roles, grants, firefox-sync's allowlist trigger) keeps the others off"),
 ]
 
-# image prefix -> (one-shot the image's Traefik-routed services must wait for, message)
+# image prefix -> (one-shot that every Traefik-routed service of a template
+# running that image must wait for, message): the image's own routed
+# service, and a gate in front of it (firefox-sync-fxa's fxa-gate) too.
 REQUIRED_BEFORE_ROUTED = [
     ("ghcr.io/librechat-ai/librechat:", "config",
      "LibreChat must start only after config rendered librechat.yaml (depends_on: config: condition: "
      "service_completed_successfully); without it LibreChat starts on its defaults"),
     ("ghcr.io/porelli/firefox-sync:", "{id}-init",
-     "the public Sync server must start only after {id}-init installed its guard "
-     "(depends_on: {id}-init: condition: service_completed_successfully)"),
+     "a routed service (the public Sync server, or the gate in front of it) must start only after {id}-init "
+     "installed its guard (depends_on: {id}-init: condition: service_completed_successfully)"),
 ]
 
 # (regex over every scalar of compose.yml and every text file in the template, message)
@@ -1808,7 +1810,8 @@ def check_identity(t: Template, services: Dict[str, Any], r: Report) -> None:
                 r.error(where, msg, EMAIL_HINT)
         for prefix, job, msg in REQUIRED_BEFORE_ROUTED:
             job, msg = job.replace("{id}", t.id), msg.replace("{id}", t.id)
-            if image.startswith(prefix) and str(labels_of(svc).get("traefik.enable", "")).lower() == "true":
+            runs = any(isinstance(o, dict) and str(o.get("image", "")).startswith(prefix) for o in services.values())
+            if runs and str(labels_of(svc).get("traefik.enable", "")).lower() == "true":
                 dep = svc.get("depends_on")
                 cond = dep.get(job) if isinstance(dep, dict) else None
                 if not (isinstance(cond, dict) and cond.get("condition") == "service_completed_successfully"):
@@ -2257,12 +2260,16 @@ def check_signin_test(t: Template, r: Report) -> None:
     for lf in si.get("log_files") or []:
         if isinstance(lf, dict) and lf.get("service") not in services:
             r.error(t.m_where, f"tests.signin.log_files service {lf.get('service')!r} is not a compose service")
-    host = si.get("host")
-    if isinstance(host, str):
-        var = "PORTCULLIS_HOST_" + host[len("{{HOST_"):-2]
-        if t.host_vars and var not in t.host_vars:
-            r.error(t.m_where, f"tests.signin.host {host} is not a host router of compose.yml",
-                    f"use one of {', '.join('{{HOST_' + v[len('PORTCULLIS_HOST_'):] + '}}' for v in sorted(t.host_vars))}")
+    for key, host in (("host", si.get("host")), ("admin.host", (si.get("admin") or {}).get("host")
+                                                if isinstance(si.get("admin"), dict) else None)):
+        if isinstance(host, str):
+            var = "PORTCULLIS_HOST_" + host[len("{{HOST_"):-2]
+            if t.host_vars and var not in t.host_vars:
+                r.error(t.m_where, f"tests.signin.{key} {host} is not a host router of compose.yml",
+                        f"use one of {', '.join('{{HOST_' + v[len('PORTCULLIS_HOST_'):] + '}}' for v in sorted(t.host_vars))}")
+    if isinstance(si.get("signed_in"), dict) and "host" in si["signed_in"]:
+        r.error(t.m_where, "tests.signin.signed_in.host: the sign-in host is tests.signin.host",
+                f"host is for tests.signin.admin only (an admin UI on a host of its own); {SIGNIN_HINT}")
     env_keys = {e.get("key") for e in m.get("env") or [] if isinstance(e, dict)} | set(settings_env_names(m))
     for st in si.get("setup") or []:
         if isinstance(st, dict) and st.get("save_env") and st["save_env"] not in env_keys:

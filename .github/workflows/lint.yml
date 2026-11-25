@@ -134,7 +134,7 @@ jobs:
         run: |
           shopt -s nullglob
           shellcheck --version
-          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh tests/mail/*.sh ./*/bin/* ./*/vpn/*.sh ./*/gate/*.sh
+          shellcheck -S warning tests/apps/*.sh ./*/*.sh ./*/portcullis/*.sh .github/automerge/*.sh tests/sync/*.sh tests/trust/*.sh tests/mail/*.sh ./*/bin/* ./*/vpn/*.sh ./*/gate/*.sh tests/e2e/prep/*.sh
 
       # portcullis-sync (the file-sharing templates' converge script) with
       # stubbed Samba / account tools: no root, no Docker.

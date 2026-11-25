@@ -1024,6 +1024,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "host": {
+          "type": "string",
+          "pattern": "^\\{\\{HOST_[A-Z0-9_]+\\}\\}$",
+          "description": "admin only: run the check on this host router instead of tests.signin.host (an admin UI on a host of its own); the outsider must be refused there too"
+        },
         "text": {
           "type": "string",
           "minLength": 1,

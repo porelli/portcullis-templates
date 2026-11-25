@@ -29,6 +29,16 @@ CONTRIBUTING.md, "Sign-in test"):
 reported, not fatal; if it passes, the run fails so the marker gets removed.
 `skip: reason` (public / custom / mtls apps only, validate.py) skips the app.
 
+`admin.host` runs the admin check on another host router (an admin UI on a
+host of its own); the outsider must then be refused there too (group-gate's
+403), and the member's "not admin" is checked there.
+
+Per-app preparation: tests/e2e/prep/<app>.sh <work dir>, when it exists,
+runs before the app starts (with PROJECT_DIR, TEMPLATES_DIR,
+PORTCULLIS_DOMAIN) and prints NAME=value lines that go into the app's
+environment (e.g. a test mail server's settings, COMPOSE_OVERRIDE). Values
+are never logged.
+
 Environment: PROJECT_DIR (core checkout with .env, certs/, the CLI),
 TEMPLATES_DIR (this repo), PORTCULLIS_DOMAIN, KEYCLOAK_ADMIN,
 KEYCLOAK_ADMIN_PASSWORD, LLDAP_ADMIN_PASSWORD (from core's .env if unset),
@@ -230,13 +240,23 @@ def subst(s: str, user: str = "") -> str:
     return re.sub(r"\{\{HOST_([A-Za-z0-9_]+)\}\}", lambda m: HOSTS.get(m.group(1).upper(), m.group(0)), s)
 
 
+def host_ref(want: str, what: str) -> str:
+    key = re.sub(r"^\{\{HOST_|\}\}$", "", want).upper()
+    if key not in HOSTS:
+        raise SystemExit(f"{what} {want}: no such host router in compose.yml ({sorted(HOSTS)})")
+    return HOSTS[key]
+
+
+def admin_host(default: str) -> str:
+    """Where the admin check runs: tests.signin.admin.host, else the sign-in host."""
+    want = (SIGNIN.get("admin") or {}).get("host")
+    return host_ref(want, "tests.signin.admin.host") if want else default
+
+
 def main_host() -> str:
     want = SIGNIN.get("host")
     if want:
-        key = re.sub(r"^\{\{HOST_|\}\}$", "", want).upper()
-        if key not in HOSTS:
-            raise SystemExit(f"tests.signin.host {want}: no such host router in compose.yml ({sorted(HOSTS)})")
-        return HOSTS[key]
+        return host_ref(want, "tests.signin.host")
     for u in MANIFEST.get("urls") or []:
         m = re.search(r"\{\{HOST_([A-Za-z0-9_]+)\}\}", str(u.get("url", "")))
         if m and m.group(1).upper() in HOSTS:
@@ -653,6 +673,36 @@ def run_setup() -> None:
         sh("compose_up", APP)
 
 
+ENV_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+
+
+def app_prep() -> None:
+    """tests/e2e/prep/<app>.sh <work dir>: per-app preparation (see the
+    module docstring). Its NAME=value lines go into the environment; only
+    the names are logged."""
+    script = os.path.join(TEMPLATES_DIR, "tests", "e2e", "prep", f"{APP}.sh")
+    if not os.path.isfile(script):
+        return
+    work = tempfile.mkdtemp(prefix=f"e2e-prep-{APP}-")
+    p = subprocess.run(["bash", script, work], cwd=TEMPLATES_DIR, capture_output=True, text=True, timeout=300,
+                       env=dict(os.environ, PROJECT_DIR=PROJECT_DIR, TEMPLATES_DIR=TEMPLATES_DIR, PORTCULLIS_DOMAIN=DOMAIN))
+    if p.returncode != 0:
+        raise RuntimeError(f"tests/e2e/prep/{APP}.sh failed ({p.returncode}): {p.stderr[-1000:]}")
+    names = []
+    for line in p.stdout.splitlines():
+        m = ENV_LINE_RE.match(line)
+        if not m:
+            raise RuntimeError(f"tests/e2e/prep/{APP}.sh printed a line that is not NAME=value")
+        name, value = m.groups()
+        if name == "COMPOSE_OVERRIDE" and os.environ.get("COMPOSE_OVERRIDE"):
+            raise RuntimeError(f"tests/e2e/prep/{APP}.sh: COMPOSE_OVERRIDE is already set (one override only)")
+        if os.environ.get("GITHUB_ACTIONS") and re.search(r"PASSWORD|SECRET|TOKEN|KEY", name) and value:
+            print(f"::add-mask::{value}", flush=True)
+        os.environ[name] = value
+        names.append(name)
+    log(f"prep: tests/e2e/prep/{APP}.sh set {', '.join(names) or 'nothing'}")
+
+
 def ai_page_delivery() -> None:
     """An AI page (manifest ai.chat) reads the Hub's ai-providers.json at
     every start: deliver it like the Hub does for an instance with no
@@ -1016,6 +1066,30 @@ class Flow:
         return False, last or f"stuck at {page.url.split('?')[0]}"
 
 
+def outsider_refused_on(flow: "Flow", host: str) -> Tuple[bool, str]:
+    """The outsider, signed in to Portcullis, opens the admin host: refused
+    there too; behind group-gate, by group-gate itself (its 403, its page,
+    its DENIED log line)."""
+    from playwright.sync_api import Error as PWError
+    marks = log_marks()
+    path = (SIGNIN.get("admin") or {}).get("reach") or "/"
+    try:
+        resp = flow.page.goto(f"https://{host}{subst(path, flow.user)}", wait_until="domcontentloaded")
+    except PWError as e:
+        return False, f"{flow.user} on {host}: {str(e).splitlines()[0]}"
+    code = resp.status if resp else 0
+    shot(flow.page, "outsider-admin-host")
+    if code != 403:
+        return False, f"{flow.user} on {host}{path}: HTTP {code} at {flow.page.url.split('?')[0]} (want 403)"
+    if GATED:
+        page_says = "not authorized to access" in body_text(flow.page)
+        logged = gate_denied(flow.user, host, marks)
+        if not (page_says and logged):
+            return False, f"{flow.user} on {host}: 403, but not group-gate's (its page: {page_says}, its DENIED log line: {logged})"
+        return True, f"{flow.user} refused on {host}: HTTP 403, group-gate DENIED user={flow.user} host={host}"
+    return True, f"{flow.user} refused on {host}: HTTP 403"
+
+
 def invite(user: str, landing: str) -> str:
     out = subprocess.run([os.path.join(PROJECT_DIR, "portcullis"), "invite", user, "--to", landing, "--json"],
                          cwd=PROJECT_DIR, capture_output=True, text=True, timeout=120)
@@ -1077,6 +1151,9 @@ def run_role(browser, role: str, host: str, user: str = "") -> None:
                       (f"{user} signed in: {ev}" if ok else f"{user}: {how}")) + pw_note
             # An expected failure here is "the outsider got in", nothing else.
             record(check, refused, detail, xf if (ok or refused) else None, flow.page, flow.seen, flow.marks)
+            ahost = admin_host(host)
+            if role == "outsider" and refused and ahost != host and SIGNED_IN:
+                record("outsider_admin_host", *outsider_refused_on(flow, ahost))
             return
         if ok:
             SIGNED_IN.append(role)
@@ -1089,14 +1166,14 @@ def run_role(browser, role: str, host: str, user: str = "") -> None:
         if role == "member":
             record("member", ok, f"{user}: {ev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
             if ok and SIGNIN.get("admin"):
-                is_admin, aev = flow.check(SIGNIN["admin"], host)
+                is_admin, aev = flow.check(SIGNIN["admin"], admin_host(host))
                 record("member_not_admin", not is_admin, f"{user} admin check: {aev}")
             return
         # admin
         if not ok:
             record("admin", False, f"{user} not signed in: {ev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
         elif SIGNIN.get("admin"):
-            is_admin, aev = flow.check(SIGNIN["admin"], host)
+            is_admin, aev = flow.check(SIGNIN["admin"], admin_host(host))
             record("admin", is_admin, f"{user} signed in ({ev}); admin: {aev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
         else:
             record("admin", True, f"{user} signed in ({ev}); no admin role in this app{pw_note}", xf)
@@ -1171,6 +1248,7 @@ def main() -> int:
         keycloak_setup()
         write_policy()
         ai_page_delivery()
+        app_prep()
         fresh_start()
         log(sh("compose_up", APP))
         wait_containers(int(SIGNIN.get("boot_timeout", 600)))
