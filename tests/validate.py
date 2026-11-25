@@ -114,7 +114,13 @@ VPN_HINT = f"see {DOCS_URL}/integration-contracts/ (§3.3, the vpn: block) and C
 VAR_VPN_PREFIX = "PORTCULLIS_VPN_"
 # Mail (§2, §19): the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and
 # PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables.
+# NEW (Firefox own accounts): PORTCULLIS_MAIL_SENDER_* are instance variables
+# the Hub writes, only when mail_sender is declared (§19.14).
 VAR_MAIL_PREFIX = "PORTCULLIS_MAIL"
+VAR_MAIL_SENDER_PREFIX = "PORTCULLIS_MAIL_SENDER_"
+MAIL_SENDER_VARS = ("PORTCULLIS_MAIL_SENDER_HOST", "PORTCULLIS_MAIL_SENDER_PORT",
+                    "PORTCULLIS_MAIL_SENDER_USER", "PORTCULLIS_MAIL_SENDER_PASSWORD",
+                    "PORTCULLIS_MAIL_SENDER_FROM")
 MAIL_HINT = f"see {DOCS_URL}/integration-contracts/ (§2, Mail; §19)"
 INSTANCE_VARS = {"PORTCULLIS_INSTANCE", "PORTCULLIS_OIDC_CLIENT_ID", "PORTCULLIS_ACCESS_GROUP", "PORTCULLIS_ADMIN_GROUP",
                  VAR_LOCAL_NETWORKS}
@@ -1425,6 +1431,8 @@ def check_compose(t: Template, r: Report) -> None:
 
     check_routers(t, routers, r)
     check_immutable_hosts(t, r)
+    check_hosts_reasons(t, r)
+    check_mail_sender(t, r)
     check_instance_vars(t, r)
     check_own_hosts(t, services, r)
     check_public_access(t, services, routers, r)
@@ -1564,6 +1572,56 @@ def check_immutable_hosts(t: Template, r: Report) -> None:
                     f"{why}: the Hub must refuse to change that hostname once the instance exists")
 
 
+def check_mail_sender(t: Template, r: Report) -> None:
+    """NEW (Firefox own accounts): mail_sender.label validation (contracts §3, §19.14)."""
+    if not t.manifest:
+        return
+    mail_sender = t.manifest.get("mail_sender")
+    if not isinstance(mail_sender, dict):
+        return
+    label = mail_sender.get("label")
+    if not isinstance(label, str):
+        return
+    # Check label: 1-64 characters on one line, without ' or \
+    if not label or len(label) > 64:
+        r.error(t.m_where, "mail_sender.label must be one line of 1-64 characters without ' or \\")
+        return
+    # Check for newline, CR, tab, single quote or backslash
+    if '\n' in label or '\r' in label or '\t' in label or "'" in label or '\\' in label:
+        r.error(t.m_where, "mail_sender.label must be one line of 1-64 characters without ' or \\")
+
+
+def check_hosts_reasons(t: Template, r: Report) -> None:
+    """NEW (Firefox own accounts): hosts.reasons validation (contracts §3, §11.7)."""
+    if not t.manifest:
+        return
+    hosts = t.manifest.get("hosts")
+    if not isinstance(hosts, dict):
+        return
+    reasons = hosts.get("reasons")
+    if not isinstance(reasons, dict):
+        return
+    for router, reason in reasons.items():
+        # Check router is a known host router
+        router_var = "PORTCULLIS_HOST_" + var_key(router)
+        if router_var not in t.host_vars:
+            r.error(t.m_where, f"hosts.reasons: {router} is not a host router")
+            continue
+        if not isinstance(reason, str):
+            continue
+        # Check reason is not empty
+        if not reason:
+            r.error(t.m_where, f"hosts.reasons[{router}]: reason is empty")
+            continue
+        # Check length (200 runes max)
+        rune_count = len(reason)  # Python's len() counts unicode characters (runes)
+        if rune_count > 200:
+            r.error(t.m_where, f"hosts.reasons[{router}]: reason is {rune_count} runes, at most 200 allowed")
+        # Check for control characters (newlines not allowed)
+        if any(ord(c) < 32 or ord(c) == 127 for c in reason):
+            r.error(t.m_where, f"hosts.reasons[{router}]: reason has a control character (newlines are not allowed)")
+
+
 def check_instance_vars(t: Template, r: Report) -> None:
     """Instance variables: default form, the default instance's value, the same default everywhere."""
     m = t.manifest or {}
@@ -1624,7 +1682,7 @@ def check_instance_vars(t: Template, r: Report) -> None:
 
 
 INSTANCE_VAR_TEXT_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(PORTCULLIS_(?:INSTANCE|HOST_[A-Z0-9_]+|OIDC_CLIENT_ID(?:_[A-Z0-9_]+)?|ACCESS_GROUP|ADMIN_GROUP))(?![A-Za-z0-9_])")
+    r"(?<![A-Za-z0-9_])(PORTCULLIS_(?:INSTANCE|HOST_[A-Z0-9_]+|OIDC_CLIENT_ID(?:_[A-Z0-9_]+)?|ACCESS_GROUP|ADMIN_GROUP|MAIL_SENDER_(?:HOST|PORT|USER|PASSWORD|FROM)))(?![A-Za-z0-9_])")
 _HOST_VAR_REF_RE = re.compile(r"\$\{PORTCULLIS_HOST_[A-Z0-9_]+:-[^}]*\}")
 _OWN_HOST_SUFFIX = r"\.(?:\$+\{?PORTCULLIS_DOMAIN\b|PORTCULLIS_DOMAIN_PLACEHOLDER)"
 
@@ -3206,8 +3264,8 @@ HOSTNAME_RE = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0
 ID_NORMAL_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 BUILTIN_TYPES = {"string", "int", "size", "duration", "bool", "enum", "multi_enum", "list", "table", "path",
-                 "secret", "group", "groups", "user", "users", "person_secret", "person_id"}
-PERSON_TYPES = ("person_secret", "person_id")   # file sharing (§13.2): one value per person, set by the Hub
+                 "secret", "group", "groups", "user", "users", "person_secret", "person_id", "verified_email"}
+PERSON_TYPES = ("person_secret", "person_id", "verified_email")   # file sharing (§13.2) + verified_email (Firefox own accounts): one value per person, set by the Hub
 OLD_TYPES = {"text": "use string", "boolean": "use bool", "select": "use enum (options: [{value, label}])",
              "paths": "use path (one option per directory)"}
 SCOPES = ("instance", "person", "group", "person_entered")
@@ -5566,9 +5624,17 @@ class _SpecCheck:
                     return
         # Mail (§2, §19): PORTCULLIS_MAIL* (PORTCULLIS_MAIL_* and PORTCULLIS_MAILCTL_*
         # included) are core.env-only, not template variables; the Hub doesn't copy them.
+        # NEW (Firefox own accounts): PORTCULLIS_MAIL_SENDER_* are allowed when mail_sender is declared (§19.14).
         for sc in self.scalars:
             for name, _ in go_var_refs(sc):
                 if name.startswith(VAR_MAIL_PREFIX):
+                    # Allow PORTCULLIS_MAIL_SENDER_* when mail_sender is declared
+                    if name.startswith(VAR_MAIL_SENDER_PREFIX) and self.m.get("mail_sender"):
+                        continue  # Allowed
+                    if name.startswith(VAR_MAIL_SENDER_PREFIX):
+                        self.cerr(f"${{{name}}} needs mail_sender: the PORTCULLIS_MAIL_SENDER_* variables are "
+                                  "written only when the manifest declares mail_sender (§19.14)", MAIL_HINT)
+                        return
                     self.cerr(f"${{{name}}} is reserved: the whole prefix PORTCULLIS_MAIL (PORTCULLIS_MAIL_* and "
                               "PORTCULLIS_MAILCTL_* included) is reserved for core: not template variables, the Hub "
                               "doesn't copy them into instances", MAIL_HINT)
@@ -5710,6 +5776,44 @@ class _SpecCheck:
         for f, on in fs + list(extra):
             if on:
                 raise _Refuse(f"{o.get('type')} takes no {f} (the Hub sets one value per person)")
+
+    def verified_email(self, o: Dict[str, Any]) -> None:
+        """NEW (Firefox own accounts): verified_email validation (contracts §13.2, §9.8)."""
+        # Check group_access and access_group
+        auth = self.m.get("auth") or {}
+        if not auth.get("group_access") or not auth.get("access_group"):
+            raise _Refuse("a verified_email needs group_access: true and an auth.access_group "
+                          "(whose members' emails it delivers)")
+        # Refuse admin-valued person option fields
+        self.person_fields_refused(o,
+            ("scope", _has(o, "scope")),
+            ("default", _has(o, "default")),
+            ("required", _has(o, "required")),
+            ("resolve", _has(o, "resolve")),
+            ("resolve_choices", _has(o, "resolve_choices")),
+            ("group_values", _has(o, "group_values")),
+            ("privileged", _has(o, "privileged")),
+            ("requires", _has(o, "requires")),
+            ("requires_any", _has(o, "requires_any")),
+            ("env", _has(o, "env")),
+            ("claim", _has(o, "claim")),
+            ("header", _has(o, "header")),
+            ("hook", _has(o, "hook")))
+        # Check self_visible is exactly false
+        if o.get("self_visible") is not False:
+            raise _Refuse("a verified_email needs self_visible: false (never shown on My apps)")
+        # Check deliveries: only file deliveries allowed
+        delivery = o.get("delivery")
+        if not delivery or not isinstance(delivery, list):
+            raise _Refuse("a verified_email needs a file delivery ({file: {name, field}}: "
+                          "the people section of a data file)")
+        for d in delivery:
+            if not isinstance(d, dict) or not d.get("file"):
+                raise _Refuse("a verified_email takes only file deliveries ({file: {name, field}}); "
+                              "env, claim, header and hook deliveries are refused")
+            if d.get("env") or d.get("claim") or d.get("header") or d.get("hook"):
+                raise _Refuse("a verified_email takes only file deliveries ({file: {name, field}}); "
+                              "env, claim, header and hook deliveries are refused")
 
     def person_secret(self, o: Dict[str, Any]) -> None:
         self.file_sharing_template(o)
@@ -6063,6 +6167,8 @@ class _SpecCheck:
             return self.person_secret(o)
         if o.get("type") == "person_id":
             return self.person_id(o)
+        if o.get("type") == "verified_email":
+            return self.verified_email(o)
         scope = scope_of(o)
         if scope not in SCOPES:
             raise _Refuse(f"scope {json.dumps(_str(o, 'scope'))} must be instance, person, group or person_entered")

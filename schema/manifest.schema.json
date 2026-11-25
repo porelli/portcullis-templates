@@ -124,6 +124,11 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"}
+        },
+        "reasons": {
+          "description": "NEW (Firefox own accounts; contracts §3, §11.7): per-host reason for open routers (bypass badges). Each key is a host router; each value is one line, at most 200 runes. For an open_router bypass badge on that host, Note = this reason (fallback: first paragraph of auth.notes). Manifest reference.",
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/singleLine"}
         }
       }
     },
@@ -140,6 +145,15 @@
     },
     "vpn": {"$ref": "#/$defs/vpn"},
     "mail": {"$ref": "#/$defs/mail"},
+    "mail_sender": {
+      "description": "NEW (Firefox own accounts; contracts §3, §19.14): the template's app sends outbound mail (sign-up codes, notifications). The Hub asks the wired mail provider for a submission-only sender account and delivers the five PORTCULLIS_MAIL_SENDER_* variables. Manifest reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": {"description": "The sender's display name (the From: header's name): one line of 1-64 characters.", "$ref": "#/$defs/singleLine", "minLength": 1, "maxLength": 64}
+      }
+    },
     "jobs": {
       "description": "Contracts §3 (NEW, apps): compose services that run once and exit (a setup or migration container). The Hub counts a job's container done when it exited 0 and failed when it exited non-zero. A service another one depends on with condition: service_completed_successfully is a job without being listed. Each entry is a compose service, listed once, with no Traefik router (tests/validate.py check_setup).",
       "type": "array",
@@ -613,7 +627,7 @@
       }
     },
     "option": {
-      "description": "One setting (contracts §13.1). Types: string int size duration bool enum multi_enum list table path secret group groups user users person_secret person_id (folder is reserved: a shared folder is a path option with a folder block; person_secret and person_id only on router-less custom templates, §13.2). The structure is checked here; tests/validate.py check_settings applies the Hub's rules.",
+      "description": "One setting (contracts §13.1). Types: string int size duration bool enum multi_enum list table path secret group groups user users person_secret person_id verified_email (folder is reserved: a shared folder is a path option with a folder block; person_secret and person_id only on router-less custom templates, §13.2; verified_email NEW Firefox own accounts). The structure is checked here; tests/validate.py check_settings applies the Hub's rules.",
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "type"],
