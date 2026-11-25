@@ -62,6 +62,9 @@ check_dep fxa-policy fxa-migrations service_completed_successfully
 check_dep fxa-migrations fxa-db service_healthy
 check_dep fxa-content fxa-auth service_healthy
 check_dep fxa-content fxa-profile service_healthy
+check_dep fxa-db-users fxa-db service_healthy
+check_dep fxa-auth fxa-db-users service_completed_successfully
+check_dep fxa-profile fxa-db-users service_completed_successfully
 check_dep firefox-sync-fxa firefox-sync-fxa-init service_completed_successfully
 check_dep firefox-sync-fxa-init firefox-sync-fxa-db-init service_completed_successfully
 check_dep firefox-sync-fxa-db-init firefox-sync-fxa-migrate service_completed_successfully
@@ -96,7 +99,7 @@ fxa-profile=$FXA_IMAGE fxa-profile-worker=$FXA_IMAGE fxa-profile-static=$FXA_IMA
 fxa-policy=$ADMIN_IMAGE ffs-admin=$ADMIN_IMAGE
 firefox-sync-fxa=$SYNC_IMAGE firefox-sync-fxa-migrate=$SYNC_IMAGE
 firefox-sync-fxa-db-init=$SYNC_INIT_IMAGE fxa-pairing=$PAIRING_IMAGE
-fxa-db=$MYSQL_IMAGE fxa-access-sync=$MYSQL_IMAGE
+fxa-db=$MYSQL_IMAGE fxa-db-users=$MYSQL_IMAGE fxa-access-sync=$MYSQL_IMAGE
 fxa-redis=$REDIS_IMAGE fxa-mail-check=$REDIS_IMAGE
 firefox-sync-fxa-db=$POSTGRES_IMAGE firefox-sync-fxa-init=$POSTGRES_IMAGE
 fxa-gate=$NGINX_IMAGE"
@@ -160,6 +163,36 @@ for svc in firefox-sync-fxa firefox-sync-fxa-migrate; do
   check_env "$svc" SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL http://fxa-auth:9000/v1
   check_env "$svc" SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN '${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}'
 done
+
+# no_root_db_credential: no internet-facing service holds the accounts'
+# root password or connects as root; root stays with the one-shots
+# fxa-migrations, fxa-policy and fxa-db-users (and the server itself).
+ROOT_HOLDERS=$(yq -r '[.services | to_entries[] | select(.value.environment // {} | to_entries | any_c(.value | tostring | test("FXA_MYSQL_PASSWORD"))) | .key] | sort | join(" ")' "$COMPOSE")
+[ "$ROOT_HOLDERS" = "fxa-db fxa-db-users fxa-migrations fxa-policy" ] \
+  && pass "no_root_db_credential: the root password only in fxa-db, fxa-db-users, fxa-migrations, fxa-policy" \
+  || fail "no_root_db_credential: the root password is in: $ROOT_HOLDERS"
+bad=""
+for svc in fxa-auth fxa-content fxa-profile fxa-profile-worker fxa-profile-static fxa-pairing firefox-sync-fxa ffs-admin; do
+  roots=$(yq -r ".services[\"$svc\"].environment // {} | to_entries[] | select(.key | test(\"USER\")) | select(.value == \"root\") | .key" "$COMPOSE")
+  [ -z "$roots" ] || bad="$bad $svc($roots)"
+done
+[ -z "$bad" ] && pass "no_root_db_credential: no internet-facing service connects as root" \
+  || fail "no_root_db_credential: root user in:$bad"
+check_env fxa-auth AUTH_MYSQL_USERNAME fxa_auth
+check_env fxa-auth MYSQL_USERNAME fxa_auth
+check_env fxa-auth PUSHBOX_MYSQL_USERNAME fxa_auth
+check_env fxa-profile MYSQL_USERNAME fxa_profile
+# db-users.sh grants exactly DML + EXECUTE on the services' own databases.
+DBU="$(dirname "$COMPOSE")/db-users.sh"
+if [ "$(grep -c 'GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON' "$DBU")" = 1 ] \
+    && [ "$(grep -o 'GRANT [A-Z ,]* ON' "$DBU" | sort -u)" = "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON" ] \
+    && grep -q '^  user fxa_auth "$FXA_AUTH_DB_PASSWORD" fxa fxa_oauth pushbox$' "$DBU" \
+    && grep -q '^  user fxa_profile "$FXA_PROFILE_DB_PASSWORD" fxa_profile$' "$DBU" \
+    && ! grep -Eq 'GRANT OPTION TO|WITH GRANT|ffs' <(grep -v '^#' "$DBU"); then
+  pass "db-users.sh: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile), DML + EXECUTE only"
+else
+  fail "db-users.sh: grants changed"
+fi
 
 # volumes
 VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')

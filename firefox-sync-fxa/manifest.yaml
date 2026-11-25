@@ -39,7 +39,13 @@ auth:
 
 env:
   - key: FXA_MYSQL_PASSWORD
-    description: Accounts database (MySQL) root password
+    description: Accounts database (MySQL) root password, for the one-shots only (migrations, policy, database users)
+    generate: random
+  - key: FXA_AUTH_DB_PASSWORD
+    description: Accounts database password of the auth server (fxa_auth; not root, nothing on ffs)
+    generate: random
+  - key: FXA_PROFILE_DB_PASSWORD
+    description: Accounts database password of the profile server (fxa_profile; its own database only)
     generate: random
   - key: FXA_ADMIN_DB_PASSWORD
     description: Accounts database password of the admin UI (ffs_admin)

@@ -61,6 +61,33 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # One-shot, every start: the least-privilege database users of the
+  # internet-facing accounts services (db-users.sh): fxa_auth and
+  # fxa_profile. Root stays with this job, fxa-migrations and fxa-policy,
+  # none of them reachable.
+  fxa-db-users:
+    image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    entrypoint: ["/bin/sh", "/portcullis-bin/db-users.sh"]
+    environment:
+      MYSQL_HOST: fxa-db
+      MYSQL_PWD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      FXA_AUTH_DB_PASSWORD: ${FXA_AUTH_DB_PASSWORD:?FXA_AUTH_DB_PASSWORD must be set}
+      FXA_PROFILE_DB_PASSWORD: ${FXA_PROFILE_DB_PASSWORD:?FXA_PROFILE_DB_PASSWORD must be set}
+    volumes:
+      - ./templates/firefox-sync-fxa/db-users.sh:/portcullis-bin/db-users.sh:ro
+    depends_on:
+      fxa-db:
+        condition: service_healthy
+    restart: "no"
+
   # One-shot: the accounts image runs as app (10001); a new volume is root's.
   fxa-keys-owner:
     image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
@@ -248,17 +275,19 @@ services:
       DB: mysql
       AUTH_MYSQL_HOST: fxa-db
       AUTH_MYSQL_PORT: "3306"
-      AUTH_MYSQL_USERNAME: root
-      AUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      # fxa_auth (db-users.sh): DML and EXECUTE on fxa, fxa_oauth and
+      # pushbox only, nothing on ffs.
+      AUTH_MYSQL_USERNAME: fxa_auth
+      AUTH_MYSQL_PASSWORD: ${FXA_AUTH_DB_PASSWORD:?FXA_AUTH_DB_PASSWORD must be set}
       MYSQL_HOST: fxa-db
       MYSQL_PORT: "3306"
-      MYSQL_USERNAME: root
-      MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      MYSQL_USERNAME: fxa_auth
+      MYSQL_PASSWORD: ${FXA_AUTH_DB_PASSWORD:?FXA_AUTH_DB_PASSWORD must be set}
       PUSHBOX_ENABLED: "true"
       PUSHBOX_MYSQL_HOST: fxa-db
       PUSHBOX_MYSQL_PORT: "3306"
-      PUSHBOX_MYSQL_USERNAME: root
-      PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      PUSHBOX_MYSQL_USERNAME: fxa_auth
+      PUSHBOX_MYSQL_PASSWORD: ${FXA_AUTH_DB_PASSWORD:?FXA_AUTH_DB_PASSWORD must be set}
       DB_AUTO_UPDATE_CLIENTS: "true"
       REDIS_HOST: fxa-redis
       ACCESS_TOKEN_REDIS_HOST: fxa-redis
@@ -286,6 +315,8 @@ services:
       - ./templates/firefox-sync-fxa/fxa-config:/fxa-config:ro
       - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
     depends_on:
+      fxa-db-users:
+        condition: service_completed_successfully
       fxa-keys-owner:
         condition: service_completed_successfully
       fxa-policy:
@@ -408,8 +439,9 @@ services:
       DB: mysql
       MYSQL_HOST: fxa-db
       MYSQL_PORT: "3306"
-      MYSQL_USERNAME: root
-      MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+      # fxa_profile (db-users.sh): DML and EXECUTE on fxa_profile only.
+      MYSQL_USERNAME: fxa_profile
+      MYSQL_PASSWORD: ${FXA_PROFILE_DB_PASSWORD:?FXA_PROFILE_DB_PASSWORD must be set}
       PUBLIC_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}
       AUTH_SERVER_URL: http://fxa-auth:9000/v1
       OAUTH_SERVER_URL: http://fxa-auth:9000/v1
@@ -424,6 +456,8 @@ services:
       - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public
       - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
     depends_on:
+      fxa-db-users:
+        condition: service_completed_successfully
       fxa-migrations:
         condition: service_completed_successfully
       fxa-redis:
