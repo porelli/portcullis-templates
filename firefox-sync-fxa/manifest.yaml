@@ -35,7 +35,7 @@ auth:
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
 
-    **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why.
+    **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why. STARTTLS is required, never opportunistic: a server that doesn't offer it gets no mail and no password.
 
     **What runs:** Mozilla's accounts (auth, content, profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.1 on PostgreSQL and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>).
 

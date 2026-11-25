@@ -250,7 +250,7 @@ fi
 CA_PATH=/etc/ssl/certs/portcullis-ca-bundle.crt
 for svc in fxa-migrations fxa-auth fxa-content fxa-profile fxa-profile-worker fxa-profile-static; do
   if [ "$(ENV "$svc" NODE_EXTRA_CA_CERTS)" = "$CA_PATH" ] \
-      && yq -r ".services[\"$svc\"].volumes[]" "$COMPOSE" | grep -qx "./certs/ca-bundle.crt:$CA_PATH:ro"; then
+      && grep -qx "./certs/ca-bundle.crt:$CA_PATH:ro" <<< "$(yq -r ".services[\"$svc\"].volumes[]" "$COMPOSE")"; then
     pass "node_trusts_ca: $svc"
   else
     fail "node_trusts_ca: $svc needs NODE_EXTRA_CA_CERTS=$CA_PATH and ./certs/ca-bundle.crt:$CA_PATH:ro"
@@ -265,15 +265,15 @@ for svc in $SERVICES; do
   s=".services[\"$svc\"]"
   [ "$(yq -r "$s | has(\"ports\") or has(\"container_name\") or has(\"env_file\") or has(\"build\")" "$COMPOSE")" = false ] || bad="$bad $svc:forbidden-key"
   [ "$(yq -r "$s.cap_drop // [] | join(\",\")" "$COMPOSE")" = ALL ] || bad="$bad $svc:cap_drop"
-  yq -r "$s.security_opt // [] | .[]" "$COMPOSE" | grep -qx 'no-new-privileges:true' || bad="$bad $svc:no-new-privileges"
-  [ "$(yq -r "$s.tmpfs // [] | length" "$COMPOSE")" -gt 0 ] && ! yq -r "$s.tmpfs[]" "$COMPOSE" | grep -qv ':size=' || bad="$bad $svc:tmpfs"
+  grep -qx 'no-new-privileges:true' <<< "$(yq -r "$s.security_opt // [] | .[]" "$COMPOSE")" || bad="$bad $svc:no-new-privileges"
+  [ "$(yq -r "$s.tmpfs // [] | length" "$COMPOSE")" -gt 0 ] && ! grep -qv ':size=' <<< "$(yq -r "$s.tmpfs[]" "$COMPOSE")" || bad="$bad $svc:tmpfs"
   [ "$(yq -r "$s.mem_limit // \"\"" "$COMPOSE")" != "" ] || bad="$bad $svc:mem_limit"
 done
 [ -z "$bad" ] && pass "hardening: every service" || fail "hardening:$bad"
 
 # Upstream's config files, vendored unmodified from 7216405.
 for f in oauth-clients.js content-server.js; do
-  if head -n 2 "$(dirname "$COMPOSE")/fxa-config/$f" | grep -q '7216405'; then
+  if grep -q '7216405' <<< "$(head -n 2 "$(dirname "$COMPOSE")/fxa-config/$f")"; then
     pass "fxa-config/$f names its upstream commit"
   else
     fail "fxa-config/$f has no header naming porelli/firefox-sync 7216405"
@@ -434,15 +434,15 @@ MC='.services["fxa-mail-check"]'
   && [ "$(yq -r "$MC.cap_drop | join(\",\")" "$COMPOSE")" = ALL ] && [ "$(yq -r "$MC | has(\"cap_add\")" "$COMPOSE")" = false ] \
   && [ "$(yq -r "$MC.restart" "$COMPOSE")" = no ] && [ "$(yq -r "$MC | has(\"command\")" "$COMPOSE")" = false ] \
   && [ "$(yq -r "$MC.entrypoint | join(\" \")" "$COMPOSE")" = "/bin/sh /portcullis-bin/mail-check.sh" ] \
-  && [ "$(yq -r "$MC.volumes | join(\" \")" "$COMPOSE")" = "./templates/firefox-sync-fxa/mail-check.sh:/portcullis-bin/mail-check.sh:ro ./templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro" ] \
-  && pass "fxa-mail-check: one-shot, no network, read-only, no capability, runs mail-check.sh (both scripts read-only)" \
+  && [ "$(yq -r "$MC.volumes | join(\" \")" "$COMPOSE")" = "./templates/firefox-sync-fxa/mail-check.sh:/portcullis-bin/mail-check.sh:ro ./templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro ./templates/firefox-sync-fxa/fxa-config/smtp-require-tls.json:/fxa-config/smtp-require-tls.json:ro" ] \
+  && pass "fxa-mail-check: one-shot, no network, read-only, no capability, runs mail-check.sh (both scripts and the requireTLS overlay read-only)" \
   || fail "fxa-mail-check: $(yq -r "$MC" "$COMPOSE" -o json | tr -d '\n ')"
 AUTH_CMD=$(yq -r '.services["fxa-auth"].command | join(" ")' "$COMPOSE")
 case "$AUTH_CMD" in
   "sh -c . /portcullis-bin/mail-select.sh && node "*) pass "fxa-auth: its sh -c sources mail-select.sh first, every step after it" ;;
   *) fail "fxa-auth: command '$AUTH_CMD' doesn't start with '. /portcullis-bin/mail-select.sh &&'" ;;
 esac
-yq -r '.services["fxa-auth"].volumes[]' "$COMPOSE" | grep -qx './templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro' \
+grep -qx './templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro' <<< "$(yq -r '.services["fxa-auth"].volumes[]' "$COMPOSE")" \
   && pass "fxa-auth: mail-select.sh mounted read-only" || fail "fxa-auth: mail-select.sh not mounted read-only"
 # Both get the same inputs, every one with an empty (or the setting's) default.
 WANT_MAIL_ENV="EXT_SMTP_HOST=\${EXT_SMTP_HOST:-}
@@ -471,6 +471,21 @@ HOLDERS=$(yq -r '[.services | to_entries[] | select(.value.environment // {} | t
 SET_SMTP=$(yq -r '[.services | to_entries[] | select(.key != "ffs-admin") | .key as $s | .value.environment // {} | keys[] | select(test("^SMTP_(HOST|PORT|USER|PASS|SECURE|SENDER)$")) | $s + ":" + .] | join(" ")' "$COMPOSE")
 [ -z "$SET_SMTP" ] && pass "SMTP_* never set in compose (mail-select.sh exports them)" || fail "SMTP_* set in compose: $SET_SMTP"
 check_env fxa-auth SMTP_IGNORE_TLS false
+# starttls_required (static): the overlay is exactly nodemailer's requireTLS,
+# both services find it at FXA_SMTP_REQUIRE_TLS_FILE (fxa-auth through its
+# read-only fxa-config mount), and CONFIG_FILES keeps oauth-clients.json.
+RT_FILE="$(dirname "$COMPOSE")/fxa-config/smtp-require-tls.json"
+if [ -f "$RT_FILE" ] && cmp -s "$RT_FILE" <(printf '%s\n' '{"smtp":{"requireTLS":true}}'); then
+  pass 'starttls_required: fxa-config/smtp-require-tls.json is exactly {"smtp":{"requireTLS":true}}'
+else
+  fail "starttls_required: fxa-config/smtp-require-tls.json isn't exactly {\"smtp\":{\"requireTLS\":true}}"
+fi
+check_env fxa-auth FXA_SMTP_REQUIRE_TLS_FILE /fxa-config/smtp-require-tls.json
+check_env fxa-mail-check FXA_SMTP_REQUIRE_TLS_FILE /fxa-config/smtp-require-tls.json
+check_env fxa-auth CONFIG_FILES /fxa-keys/oauth-clients.json
+grep -qx './templates/firefox-sync-fxa/fxa-config:/fxa-config:ro' <<< "$(yq -r '.services["fxa-auth"].volumes[]' "$COMPOSE")" \
+  && pass "starttls_required: fxa-auth reads the overlay from its read-only fxa-config mount" \
+  || fail "starttls_required: fxa-auth doesn't mount fxa-config read-only"
 check_env ffs-admin SMTP_HOST ""
 
 # mail-select.sh, sourced by the host's sh (dash in CI; MAIL_SELECT_SH picks
@@ -478,16 +493,20 @@ check_env ffs-admin SMTP_HOST ""
 # pointed at the checkout's mail-select.sh.
 MS_SH="${MAIL_SELECT_SH:-sh}"
 MS_TMP=$(mktemp -d)
+RT="$MS_TMP/smtp-require-tls.json"
+cp "$RT_FILE" "$RT"
+CF0=/fxa-keys/oauth-clients.json
 sed "s#/portcullis-bin/mail-select.sh#$MAIL_SELECT#" "$MAIL_CHECK" > "$MS_TMP/mail-check.sh"
 # $1.. VAR=value; prints the exit status, stderr, and the SMTP_* (password
 # as set/unset) and whether the input passwords survived.
 ms_run() {
-  env -i PATH="$PATH" "$@" "$MS_SH" -c '
+  env -i PATH="$PATH" CONFIG_FILES="$CF0" FXA_SMTP_REQUIRE_TLS_FILE="$RT" "$@" "$MS_SH" -c '
     . "$1" 2> "$2/err"; rc=$?
     printf "rc=%s\nerr=%s\n" "$rc" "$(cat "$2/err")"
     for v in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_SENDER; do eval "printf \"%s=%s\n\" $v \"\${$v-<unset>}\""; done
     printf "SMTP_PASS=%s\n" "${SMTP_PASS:+set}"
-    printf "inputs=%s%s\n" "${PORTCULLIS_MAIL_SENDER_PASSWORD+provider-pw}" "${EXT_SMTP_PASSWORD+ext-pw}"' _ "$MAIL_SELECT" "$MS_TMP"
+    printf "inputs=%s%s\n" "${PORTCULLIS_MAIL_SENDER_PASSWORD+provider-pw}" "${EXT_SMTP_PASSWORD+ext-pw}"
+    printf "CONFIG_FILES=%s\n" "${CONFIG_FILES-<unset>}"' _ "$MAIL_SELECT" "$MS_TMP"
 }
 ms_case() {  # $1 name, $2 want (lines), rest: env
   local name=$1 want=$2 got
@@ -496,7 +515,7 @@ ms_case() {  # $1 name, $2 want (lines), rest: env
   if [ "$got" = "$want" ]; then pass "mail-select.sh: $name"; else fail "mail-select.sh: $name:
 $(diff <(echo "$want") <(echo "$got") || true)"; fi
 }
-REFUSED() { printf 'rc=1\nerr=%s\nSMTP_HOST=<unset>\nSMTP_PORT=<unset>\nSMTP_SECURE=<unset>\nSMTP_USER=<unset>\nSMTP_SENDER=<unset>\nSMTP_PASS=\ninputs=%s' "$1" "${2:-}"; }
+REFUSED() { printf 'rc=1\nerr=%s\nSMTP_HOST=<unset>\nSMTP_PORT=<unset>\nSMTP_SECURE=<unset>\nSMTP_USER=<unset>\nSMTP_SENDER=<unset>\nSMTP_PASS=\ninputs=%s\nCONFIG_FILES=%s' "$1" "${2:-}" "${3:-$CF0}"; }
 PROV=(PORTCULLIS_MAIL_SENDER_HOST=mail.example.org PORTCULLIS_MAIL_SENDER_PORT=587
   PORTCULLIS_MAIL_SENDER_USER=portcullis-app-x@example.org PORTCULLIS_MAIL_SENDER_PASSWORD=pw-provider
   'PORTCULLIS_MAIL_SENDER_FROM="Firefox accounts" <portcullis-app-x@example.org>')
@@ -518,7 +537,8 @@ SMTP_SECURE=false
 SMTP_USER=portcullis-app-x@example.org
 SMTP_SENDER="Firefox accounts" <portcullis-app-x@example.org>
 SMTP_PASS=set
-inputs=' "${PROV[@]}"
+inputs=
+CONFIG_FILES='"$CF0,$RT" "${PROV[@]}"
 ms_case "provider: mode provider ignores EXT_SMTP_*" \
   'rc=0
 err=
@@ -528,7 +548,8 @@ SMTP_SECURE=false
 SMTP_USER=portcullis-app-x@example.org
 SMTP_SENDER="Firefox accounts" <portcullis-app-x@example.org>
 SMTP_PASS=set
-inputs=' "${PROV[@]}" EXT_SMTP_HOST=smtp.example.net EXT_SMTP_PASSWORD=pw-ext
+inputs=
+CONFIG_FILES='"$CF0,$RT" "${PROV[@]}" EXT_SMTP_HOST=smtp.example.net EXT_SMTP_PASSWORD=pw-ext
 ms_case "external_used: starttls = SMTP_SECURE=false on 587, the sender as a name-addr" \
   'rc=0
 err=
@@ -538,7 +559,8 @@ SMTP_SECURE=false
 SMTP_USER=fxa
 SMTP_SENDER=Firefox accounts <accounts@example.net>
 SMTP_PASS=set
-inputs=' "${EXT[@]}" "${PROV[@]}"
+inputs=
+CONFIG_FILES='"$CF0,$RT" "${EXT[@]}" "${PROV[@]}"
 ms_case "external: tls = SMTP_SECURE=true" \
   'rc=0
 err=
@@ -548,7 +570,8 @@ SMTP_SECURE=true
 SMTP_USER=fxa
 SMTP_SENDER=Firefox accounts <accounts@example.net>
 SMTP_PASS=set
-inputs=' "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=465
+inputs=
+CONFIG_FILES='"$CF0" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=465
 ms_case "external: no user and no password (a relay that takes mail as is)" \
   'rc=0
 err=
@@ -558,7 +581,8 @@ SMTP_SECURE=false
 SMTP_USER=
 SMTP_SENDER=Firefox accounts <accounts@example.net>
 SMTP_PASS=
-inputs=' "${EXT[@]}" EXT_SMTP_USER= EXT_SMTP_PASSWORD=
+inputs=
+CONFIG_FILES='"$CF0,$RT" "${EXT[@]}" EXT_SMTP_USER= EXT_SMTP_PASSWORD=
 EXT_NEEDS="portcullis: no mail: the external SMTP server needs a host and a sender address (settings: Mail)"
 ms_case "external without a host exits 1" "$(REFUSED "$EXT_NEEDS" ext-pw)" "${EXT[@]}" EXT_SMTP_HOST=
 ms_case "external without a sender exits 1" "$(REFUSED "$EXT_NEEDS" ext-pw)" "${EXT[@]}" EXT_SMTP_SENDER=
@@ -587,20 +611,42 @@ RCPT TO:<x@y.z>"
 ms_case "provider: a line break in the From refused" \
   "$(REFUSED "portcullis: no mail: the sender holds a control character" provider-pw)" "${PROV[@]}" "PORTCULLIS_MAIL_SENDER_FROM=a <a@b.c>
 Bcc: x@y.z"
+RT_REFUSED="portcullis: no mail: STARTTLS can't be required: FXA_SMTP_REQUIRE_TLS_FILE isn't a readable {\"smtp\":{\"requireTLS\":true}}"
+ms_case "starttls_required: no overlay file = refused (never opportunistic)" "$(REFUSED "$RT_REFUSED" ext-pw)" "${EXT[@]}" FXA_SMTP_REQUIRE_TLS_FILE="$MS_TMP/none.json"
+ms_case "starttls_required: FXA_SMTP_REQUIRE_TLS_FILE unset = refused" "$(REFUSED "$RT_REFUSED" provider-pw)" "${PROV[@]}" FXA_SMTP_REQUIRE_TLS_FILE=
+printf '{"smtp":{"requireTLS":false}}\n' > "$MS_TMP/false.json"
+ms_case "starttls_required: an overlay that isn't requireTLS true = refused" "$(REFUSED "$RT_REFUSED" provider-pw)" "${PROV[@]}" FXA_SMTP_REQUIRE_TLS_FILE="$MS_TMP/false.json"
+ms_case "starttls_required: tls (465) needs no overlay (implicit TLS)" \
+  'rc=0
+err=
+SMTP_HOST=smtp.example.net
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=fxa
+SMTP_SENDER=Firefox accounts <accounts@example.net>
+SMTP_PASS=set
+inputs=
+CONFIG_FILES='"$CF0" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=465 FXA_SMTP_REQUIRE_TLS_FILE=
+ms_case "starttls_required: empty CONFIG_FILES = the overlay alone" \
+  "$(printf 'rc=0\nerr=\nSMTP_HOST=mail.example.org\nSMTP_PORT=587\nSMTP_SECURE=false\nSMTP_USER=portcullis-app-x@example.org\nSMTP_SENDER="Firefox accounts" <portcullis-app-x@example.org>\nSMTP_PASS=set\ninputs=\nCONFIG_FILES=%s' "$RT")" \
+  "${PROV[@]}" CONFIG_FILES=
+ms_case "starttls_required: the overlay already listed is not added twice" \
+  "$(printf 'rc=0\nerr=\nSMTP_HOST=mail.example.org\nSMTP_PORT=587\nSMTP_SECURE=false\nSMTP_USER=portcullis-app-x@example.org\nSMTP_SENDER="Firefox accounts" <portcullis-app-x@example.org>\nSMTP_PASS=set\ninputs=\nCONFIG_FILES=%s' "$RT,/a.json")" \
+  "${PROV[@]}" CONFIG_FILES="$RT,/a.json"
 ms_case "unknown mail source" "$(REFUSED "portcullis: no mail: the mail source must be provider or external")" MAIL_SOURCE=both
 # mail-check.sh: exit 1 with the exact line; on success one line, no secret.
-if out=$(env -i PATH="$PATH" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
+if out=$(env -i PATH="$PATH" FXA_SMTP_REQUIRE_TLS_FILE="$RT" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
   fail "mail-check.sh: exit 0 without a mail server"
 else
   [ "$out" = "$NO_MAIL_LINE" ] && pass "mail-check.sh: exit 1, logs exactly '$NO_MAIL_LINE'" || fail "mail-check.sh: logged '$out'"
 fi
-if out=$(env -i PATH="$PATH" "${EXT[@]}" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
+if out=$(env -i PATH="$PATH" FXA_SMTP_REQUIRE_TLS_FILE="$RT" "${EXT[@]}" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
   [ "$out" = "portcullis: mail: the external SMTP server (smtp.example.net:587, STARTTLS)" ] \
     && pass "mail-check.sh: external, exit 0: '$out' (no user, no password)" || fail "mail-check.sh: external printed '$out'"
 else
   fail "mail-check.sh: external exited non-zero: $out"
 fi
-if out=$(env -i PATH="$PATH" "${PROV[@]}" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
+if out=$(env -i PATH="$PATH" FXA_SMTP_REQUIRE_TLS_FILE="$RT" "${PROV[@]}" "$MS_SH" "$MS_TMP/mail-check.sh" 2>&1); then
   [ "$out" = "portcullis: mail: the server's mail provider (mail.example.org:587, STARTTLS)" ] \
     && pass "mail-check.sh: provider, exit 0: '$out'" || fail "mail-check.sh: provider printed '$out'"
 else
@@ -664,6 +710,8 @@ redact() { local s=$1; s=${s//"$PROVIDER_PW"/<provider password>}; s=${s//"$EXT_
 cleanup_live() {
   docker rm -f "$CATCHER" > /dev/null 2>&1 || true
   compose_down "$APP_ID" > /dev/null 2>&1 || true
+  rm -rf "${TLS_DIR:-/nonexistent}"
+  unset COMPOSE_OVERRIDE
 }
 
 started_at() { docker inspect -f '{{.State.StartedAt}}' "$1" 2>/dev/null || echo none; }
@@ -682,41 +730,57 @@ mysql_root() {  # SQL on stdin; the root password stays in fxa-db's own environm
   docker exec -i "$DB_C" sh -c 'MYSQL_PWD=$MYSQL_ROOT_PASSWORD exec mysql -uroot -h127.0.0.1 --protocol=tcp -N -B'
 }
 # The SMTP catcher: a small SMTP server (node, the accounts image) on the
-# instance's network; no STARTTLS, AUTH PLAIN/LOGIN checked against
-# CATCHER_USER / CATCHER_PASS (environment), every message saved in its /tmp.
+# instance's network. CATCHER_TLS=1: it offers STARTTLS (a certificate of a
+# test CA the auth server trusts through its CA bundle, see TLS_DIR); else
+# it offers none and stands for a server whose STARTTLS was stripped. AUTH
+# PLAIN/LOGIN is checked against CATCHER_USER / CATCHER_PASS (environment).
+# It logs CONNECT, EHLO, STARTTLS, every AUTH command, "PASSWORD SEEN" when
+# any line (or a base64 word of it) holds the password, and each message,
+# saved in its /tmp with whether it came over TLS.
 CATCHER_JS='
-const net = require("net"), fs = require("fs");
+const net = require("net"), tls = require("tls"), fs = require("fs");
 const U = process.env.CATCHER_USER || "", P = process.env.CATCHER_PASS || "";
+const TLS = process.env.CATCHER_TLS === "1";
+const ctx = TLS ? tls.createSecureContext({key: fs.readFileSync("/tls/key.pem"), cert: fs.readFileSync("/tls/cert.pem")}) : null;
 fs.mkdirSync("/tmp/mail", {recursive: true});
 let n = 0;
-net.createServer(c => {
+const seen = line => P && (line.includes(P) || line.split(/[ :]/).some(t => { try { return Buffer.from(t, "base64").toString("latin1").includes(P); } catch (e) { return false; } }));
+function session(c, secure) {
   let buf = "", data = false, from = "", rcpt = [], authed = false, step = null, user = "";
   const w = s => c.write(s + "\r\n");
-  const check = (u, p) => { authed = u === U && p === P; console.log("AUTH " + (authed ? "ok" : "refused") + " user=" + u); w(authed ? "235 2.7.0 ok" : "535 5.7.8 refused"); };
+  const check = (u, p) => { authed = u === U && p === P; console.log("AUTH " + (authed ? "ok" : "refused") + " user=" + u + (secure ? " tls" : " plain")); w(authed ? "235 2.7.0 ok" : "535 5.7.8 refused"); };
   const plain = b => { const p = Buffer.from(b, "base64").toString().split("\0"); check(p[1] || "", p[2] || ""); };
-  w("220 catcher ESMTP");
   c.on("error", () => {});
-  c.on("data", d => {
+  c.on("data", function onData(d) {
     buf += d.toString("latin1");
     for (;;) {
       if (data) {
         const i = buf.indexOf("\r\n.\r\n");
         if (i < 0) return;
         n++;
-        fs.writeFileSync("/tmp/mail/" + n + ".eml", "MAIL FROM " + from + "\nRCPT " + rcpt.join(",") + "\nAUTH " + (authed ? "ok" : "none") + "\n\n" + buf.slice(0, i));
-        console.log("MESSAGE " + n + " from=" + from + " rcpt=" + rcpt.join(","));
+        fs.writeFileSync("/tmp/mail/" + n + ".eml", "MAIL FROM " + from + "\nRCPT " + rcpt.join(",") + "\nAUTH " + (authed ? "ok" : "none") + "\nTLS " + (secure ? "yes" : "no") + "\n\n" + buf.slice(0, i));
+        console.log("MESSAGE " + n + " from=" + from + " rcpt=" + rcpt.join(",") + (secure ? " tls" : " plain"));
         buf = buf.slice(i + 5); data = false; w("250 2.0.0 queued");
         continue;
       }
       const i = buf.indexOf("\r\n");
       if (i < 0) return;
       const line = buf.slice(0, i); buf = buf.slice(i + 2);
+      if (seen(line)) console.log("PASSWORD SEEN" + (secure ? " tls" : " plain"));
       if (step === "plain") { step = null; plain(line); continue; }
       if (step === "user") { user = Buffer.from(line, "base64").toString(); step = "pass"; w("334 UGFzc3dvcmQ6"); continue; }
       if (step === "pass") { step = null; check(user, Buffer.from(line, "base64").toString()); continue; }
       const a = line.split(" "), cmd = a[0].toUpperCase(), m = (a[1] || "").toUpperCase();
-      if (cmd === "EHLO") c.write("250-catcher\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n");
+      if (cmd === "AUTH") console.log("AUTH command " + m + (secure ? " tls" : " plain"));
+      if (cmd === "EHLO") { console.log("EHLO" + (secure ? " tls" : " plain")); c.write("250-catcher\r\n" + (TLS && !secure ? "250-STARTTLS\r\n" : "") + "250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n"); }
       else if (cmd === "HELO") w("250 catcher");
+      else if (cmd === "STARTTLS" && TLS && !secure) {
+        w("220 2.0.0 ready");
+        c.removeListener("data", onData);
+        console.log("STARTTLS");
+        session(new tls.TLSSocket(c, {isServer: true, secureContext: ctx}), true);
+        return;
+      }
       else if (cmd === "AUTH" && m === "PLAIN") { if (a[2]) plain(a[2]); else { step = "plain"; w("334 "); } }
       else if (cmd === "AUTH" && m === "LOGIN") { if (a[2]) { user = Buffer.from(a[2], "base64").toString(); step = "pass"; w("334 UGFzc3dvcmQ6"); } else { step = "user"; w("334 VXNlcm5hbWU6"); } }
       else if (cmd === "MAIL") { if (U && !authed) w("530 5.7.0 authentication required"); else { from = line.slice(10).trim(); rcpt = []; w("250 ok"); } }
@@ -728,14 +792,38 @@ net.createServer(c => {
       else w("502 5.5.2 not implemented");
     }
   });
-}).listen(587, "0.0.0.0", () => console.log("catcher listening on 587"));
+}
+net.createServer(c => { console.log("CONNECT"); c.write("220 catcher ESMTP\r\n"); session(c, false); })
+  .listen(587, "0.0.0.0", () => console.log("catcher listening on 587" + (TLS ? " (STARTTLS)" : " (no STARTTLS)")));
 '
-start_catcher() {  # $1 user, $2 password (exported as CATCHER_USER / CATCHER_PASS)
+# A test CA and the catcher's certificate (CN/SAN fxa-test-smtp), and the
+# auth server's CA bundle = core's bundle + the test CA (an override of its
+# read-only bundle mount, as the Hub's CA bundle would carry a real
+# server's CA).
+TLS_DIR=$(mktemp -d)
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.crt" -days 2 \
+  -subj /CN=fxa-test-ca -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign > /dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/srv.csr" -subj /CN=fxa-test-smtp > /dev/null 2>&1
+printf 'subjectAltName=DNS:fxa-test-smtp\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' > "$TLS_DIR/ext.cnf"
+openssl x509 -req -in "$TLS_DIR/srv.csr" -CA "$TLS_DIR/ca.crt" -CAkey "$TLS_DIR/ca.key" -CAcreateserial -days 2 \
+  -extfile "$TLS_DIR/ext.cnf" -out "$TLS_DIR/cert.pem" > /dev/null 2>&1
+mkdir -p "$TLS_DIR/catcher"
+cp "$TLS_DIR/key.pem" "$TLS_DIR/cert.pem" "$TLS_DIR/catcher/"
+chmod 0755 "$TLS_DIR" "$TLS_DIR/catcher"
+chmod 0644 "$TLS_DIR/catcher/key.pem" "$TLS_DIR/catcher/cert.pem"
+cat "$PROJECT_DIR/certs/ca-bundle.crt" "$TLS_DIR/ca.crt" > "$TLS_DIR/bundle.crt"
+chmod 0644 "$TLS_DIR/bundle.crt"
+[ -s "$TLS_DIR/catcher/cert.pem" ] && [ -s "$TLS_DIR/catcher/key.pem" ] || fail "the catcher's test certificate wasn't created"
+COMPOSE_OVERRIDE="$TLS_DIR/override.yml"
+printf 'services:\n  fxa-auth:\n    volumes:\n      - %s:/etc/ssl/certs/portcullis-ca-bundle.crt:ro\n' "$TLS_DIR/bundle.crt" > "$COMPOSE_OVERRIDE"
+export COMPOSE_OVERRIDE
+start_catcher() {  # $1 user, $2 password, $3 tls (1 = offers STARTTLS)
   docker rm -f "$CATCHER" > /dev/null 2>&1 || true
-  CATCHER_USER=$1 CATCHER_PASS=$2 docker run -d --name "$CATCHER" --network "$NET" --network-alias fxa-test-smtp \
+  CATCHER_USER=$1 CATCHER_PASS=$2 CATCHER_TLS=${3:-1} docker run -d --name "$CATCHER" --network "$NET" --network-alias fxa-test-smtp \
     --user 10001:10001 --read-only --tmpfs /tmp:size=8m --cap-drop ALL --security-opt no-new-privileges:true \
-    -e CATCHER_USER -e CATCHER_PASS --entrypoint node "$FXA_IMAGE" -e "$CATCHER_JS" > /dev/null
-  for _ in $(seq 1 30); do docker logs "$CATCHER" 2>&1 | grep -q 'catcher listening' && return 0; sleep 1; done
+    -v "$TLS_DIR/catcher:/tls:ro" -e CATCHER_USER -e CATCHER_PASS -e CATCHER_TLS \
+    --entrypoint node "$FXA_IMAGE" -e "$CATCHER_JS" > /dev/null
+  for _ in $(seq 1 30); do grep -q 'catcher listening' <<< "$(docker logs "$CATCHER" 2>&1)" && return 0; sleep 1; done
   fail "the SMTP catcher did not start: $(docker logs "$CATCHER" 2>&1 | tail -5)"
   return 1
 }
@@ -772,13 +860,57 @@ code_arrives() {  # $1 label, $2 address, $3 envelope sender, $4 From header add
     fail "$1: no message for $2 reached the catcher; catcher: $(docker logs "$CATCHER" 2>&1 | tail -5 | tr '\n' ' '); auth: $(redact "$(docker logs --tail 15 "$AUTH_C" 2>&1 | grep -i -E 'mail|smtp' | tail -5)")"
     return 0
   fi
-  if printf '%s\n' "$msg" | grep -q '^AUTH ok$' && printf '%s\n' "$msg" | grep -q "^MAIL FROM <$3>" \
-      && printf '%s\n' "$msg" | grep -qi "^From: .*<$4>" \
-      && printf '%s\n' "$msg" | grep -qiE '^X-Verify-(Short-)?Code: *[0-9A-Za-z]+'; then
-    pass "$1: the sign-up code for $2 arrived (authenticated, MAIL FROM $3, From <$4>, $(printf '%s\n' "$msg" | grep -iE '^X-Verify-(Short-)?Code:' | head -1 | cut -d: -f1) header)"
+  if grep -q '^AUTH ok$' <<< "$msg" && grep -q '^TLS yes$' <<< "$msg" \
+      && grep -q "^MAIL FROM <$3>" <<< "$msg" \
+      && grep -qi "^From: .*<$4>" <<< "$msg" \
+      && grep -qiE '^X-Verify-(Short-)?Code: *[0-9A-Za-z]+' <<< "$msg"; then
+    pass "$1: the sign-up code for $2 arrived (over STARTTLS, authenticated, MAIL FROM $3, From <$4>, $(printf '%s\n' "$msg" | grep -iE '^X-Verify-(Short-)?Code:' | head -1 | cut -d: -f1) header)"
   else
-    fail "$1: the message for $2 lacks the AUTH, MAIL FROM <$3>, From <$4> or the code header: $(redact "$(printf '%s\n' "$msg" | grep -iE '^(AUTH|MAIL FROM|RCPT|From:|X-Verify)' | tr '\n' ' ')")"
+    fail "$1: the message for $2 lacks TLS, the AUTH, MAIL FROM <$3>, From <$4> or the code header: $(redact "$(printf '%s\n' "$msg" | grep -iE '^(AUTH|TLS|MAIL FROM|RCPT|From:|X-Verify)' | tr '\n' ' ')")"
   fi
+  # Nothing of the credential before the TLS handshake.
+  local log
+  log=$(docker logs "$CATCHER" 2>&1)
+  if grep -qE '^(AUTH|PASSWORD SEEN).* plain$' <<< "$log"; then
+    fail "$1: the catcher saw an AUTH or the password before STARTTLS: $(printf '%s\n' "$log" | grep -E '^(AUTH|PASSWORD SEEN)' | tr '\n' ' ')"
+  elif grep -q '^STARTTLS$' <<< "$log" && grep -q '^AUTH ok user=.* tls$' <<< "$log"; then
+    pass "$1: STARTTLS first, then AUTH (no AUTH, no password in the clear)"
+  else
+    fail "$1: the catcher logged no STARTTLS + AUTH over TLS: $(printf '%s\n' "$log" | grep -vE '^MESSAGE' | tr '\n' ' ')"
+  fi
+}
+# starttls_required: the catcher offers no STARTTLS (stripped): the auth
+# server connects (EHLO) and stops; the catcher never gets an AUTH, the
+# password or a message. A pinned image that drops the requireTLS
+# passthrough (an undeclared config key: smtp.requireTLS) turns this red:
+# nodemailer then authenticates in the clear.
+starttls_required() {  # $1 label, $2 address, $3 password
+  local out log i
+  out=$(signup "$2")
+  for i in $(seq 1 30); do
+    grep -q '^EHLO plain$' <<< "$(docker logs "$CATCHER" 2>&1)" && break
+    sleep 2
+  done
+  sleep 5
+  log=$(docker logs "$CATCHER" 2>&1)
+  if ! grep -q '^EHLO plain$' <<< "$log"; then
+    fail "starttls_required: $1: the auth server never reached the catcher (sign-up: $(redact "$out")): $(printf '%s\n' "$log" | tr '\n' ' ')"
+  elif grep -qE '^(AUTH|PASSWORD SEEN|MESSAGE)' <<< "$log"; then
+    fail "starttls_required: $1: without STARTTLS the catcher still got: $(printf '%s\n' "$log" | grep -E '^(AUTH|PASSWORD SEEN|MESSAGE)' | tr '\n' ' ')"
+  elif grep -q . <<< "$(docker exec "$CATCHER" sh -c 'ls /tmp/mail' 2>/dev/null)"; then
+    fail "starttls_required: $1: a message was saved without STARTTLS"
+  else
+    pass "starttls_required: $1: no STARTTLS offered: the auth server stopped after EHLO (sign-up answered ${out%% *}); the catcher got no AUTH, no password, no message"
+  fi
+}
+# The auth server's effective SMTP config (no secret printed): its own
+# CONFIG_FILES (from PID 1), loaded by its own config module.
+effective_smtp() {
+  local cf
+  cf=$(envval "$(auth_environ)" CONFIG_FILES)
+  docker exec -e CONFIG_FILES="$cf" "$AUTH_C" node --no-deprecation -e '
+    const s = require("./config").default.get("smtp");
+    console.log("RESULT requireTLS=" + s.requireTLS + " ignoreTLS=" + s.ignoreTLS)' 2>/dev/null | sed -n 's/^RESULT //p'
 }
 # secret_not_in_argv: no container's Path / Args / Cmd / Entrypoint, no
 # process of the auth server's container, and neither service's log holds
@@ -842,7 +974,7 @@ got=$(EXT_SMTP_PASSWORD=$EXT_PW mc_run -e MAIL_SOURCE=external -e EXT_SMTP_HOST=
 # ── provider_used: the Hub's PORTCULLIS_MAIL_SENDER_* (the catcher stands in
 # for the provider's submission listener).
 PROVIDER_USER="portcullis-app-$APP_ID@$DOMAIN"
-start_catcher "$PROVIDER_USER" "$PROVIDER_PW" || true
+start_catcher "$PROVIDER_USER" "$PROVIDER_PW" 1 || true
 export PORTCULLIS_MAIL_SENDER_HOST=fxa-test-smtp PORTCULLIS_MAIL_SENDER_PORT=587 \
   PORTCULLIS_MAIL_SENDER_USER="$PROVIDER_USER" PORTCULLIS_MAIL_SENDER_PASSWORD="$PROVIDER_PW" \
   PORTCULLIS_MAIL_SENDER_FROM="\"Firefox accounts\" <$PROVIDER_USER>"
@@ -860,11 +992,18 @@ if wait_healthy "$AUTH_C" 600; then
   else
     fail "provider_used: SMTP_HOST=$(envval "$E" SMTP_HOST) SMTP_SECURE=$(envval "$E" SMTP_SECURE) SMTP_PORT=$(envval "$E" SMTP_PORT) SMTP_SENDER=$(envval "$E" SMTP_SENDER) SMTP_USER=$(envval "$E" SMTP_USER) SMTP_PASS $([ "$(envval "$E" SMTP_PASS)" = "$PROVIDER_PW" ] && echo matches || echo differs)"
   fi
-  if printf '%s\n' "$E" | grep -q '^PORTCULLIS_MAIL_SENDER_PASSWORD='; then
+  if grep -q '^PORTCULLIS_MAIL_SENDER_PASSWORD=' <<< "$E"; then
     fail "provider_used: the input PORTCULLIS_MAIL_SENDER_PASSWORD is still in the auth server's environment"
   else
     pass "provider_used: the password once in the auth server's environment (SMTP_PASS; the input unset)"
   fi
+  CF=$(envval "$E" CONFIG_FILES)
+  [ "$CF" = /fxa-keys/oauth-clients.json,/fxa-config/smtp-require-tls.json ] \
+    && pass "starttls_required: provider: CONFIG_FILES = $CF (oauth-clients.json kept, the overlay last)" \
+    || fail "starttls_required: provider: CONFIG_FILES '$CF'"
+  EFF=$(effective_smtp)
+  [ "$EFF" = "requireTLS=true ignoreTLS=false" ] && pass "starttls_required: provider: the auth server's effective smtp config: $EFF" \
+    || fail "starttls_required: provider: effective smtp config '$EFF'"
   code_arrives "provider_used" "fxa-provider-test@$DOMAIN" "$PROVIDER_USER" "$PROVIDER_USER"
   secret_not_in_argv provider "$PROVIDER_PW"
 else
@@ -878,7 +1017,7 @@ MAXA=$(max_accounts_setting)
 # shellcheck disable=SC2086
 unset $MAIL_VARS
 EXT_USER=fxa-ext
-start_catcher "$EXT_USER" "$EXT_PW" || true
+start_catcher "$EXT_USER" "$EXT_PW" 0 || true
 export MAIL_SOURCE=external EXT_SMTP_HOST=fxa-test-smtp EXT_SMTP_PORT=587 EXT_SMTP_SECURITY=starttls \
   EXT_SMTP_USER="$EXT_USER" EXT_SMTP_PASSWORD="$EXT_PW" EXT_SMTP_SENDER="fxa-accounts@example.net" MAX_ACCOUNTS=5
 OLD_AUTH=$(docker inspect -f '{{.Id}}' "$AUTH_C" 2>/dev/null || echo none)
@@ -893,11 +1032,16 @@ if wait_healthy "$AUTH_C" 600; then
   if [ "$(envval "$E" SMTP_HOST)" = fxa-test-smtp ] && [ "$(envval "$E" SMTP_SECURE)" = false ] \
       && [ "$(envval "$E" SMTP_PORT)" = 587 ] && [ "$(envval "$E" SMTP_SENDER)" = "Firefox accounts <fxa-accounts@example.net>" ] \
       && [ "$(envval "$E" SMTP_USER)" = "$EXT_USER" ] && [ "$(envval "$E" SMTP_PASS)" = "$EXT_PW" ] \
-      && ! printf '%s\n' "$E" | grep -q '^EXT_SMTP_PASSWORD='; then
+      && ! grep -q '^EXT_SMTP_PASSWORD=' <<< "$E"; then
     pass "external_used: starttls: SMTP_SECURE=false, SMTP_PORT=587, SMTP_HOST the external server, SMTP_SENDER Firefox accounts <fxa-accounts@example.net>, the password once"
   else
     fail "external_used: SMTP_HOST=$(envval "$E" SMTP_HOST) SMTP_SECURE=$(envval "$E" SMTP_SECURE) SMTP_PORT=$(envval "$E" SMTP_PORT) SMTP_SENDER=$(envval "$E" SMTP_SENDER) SMTP_USER=$(envval "$E" SMTP_USER) SMTP_PASS $([ "$(envval "$E" SMTP_PASS)" = "$EXT_PW" ] && echo matches || echo differs)"
   fi
+  EFF=$(effective_smtp)
+  [ "$EFF" = "requireTLS=true ignoreTLS=false" ] && pass "starttls_required: external: the auth server's effective smtp config: $EFF" \
+    || fail "starttls_required: external: effective smtp config '$EFF'"
+  starttls_required external "fxa-stripped-test@$DOMAIN" "$EXT_PW"
+  start_catcher "$EXT_USER" "$EXT_PW" 1 || true
   code_arrives "external_used" "fxa-external-test@$DOMAIN" "fxa-accounts@example.net" "fxa-accounts@example.net"
   secret_not_in_argv external "$EXT_PW"
 else

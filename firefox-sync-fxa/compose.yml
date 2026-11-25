@@ -214,9 +214,12 @@ services:
       EXT_SMTP_USER: ${EXT_SMTP_USER:-}
       EXT_SMTP_PASSWORD: ${EXT_SMTP_PASSWORD:-}
       EXT_SMTP_SENDER: ${EXT_SMTP_SENDER:-}
+      # The requireTLS overlay (mail-select.sh: STARTTLS required).
+      FXA_SMTP_REQUIRE_TLS_FILE: /fxa-config/smtp-require-tls.json
     volumes:
       - ./templates/firefox-sync-fxa/mail-check.sh:/portcullis-bin/mail-check.sh:ro
       - ./templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro
+      - ./templates/firefox-sync-fxa/fxa-config/smtp-require-tls.json:/fxa-config/smtp-require-tls.json:ro
     restart: "no"
 
   # The accounts API and OAuth server (FXA_AUTH_URL = the API host). Its keys
@@ -337,8 +340,11 @@ services:
       LOG_LEVEL: INFO
       # Mail: mail-select.sh exports SMTP_HOST, SMTP_PORT, SMTP_USER,
       # SMTP_PASS, SMTP_SECURE and SMTP_SENDER from these (as fxa-mail-check
-      # read them). STARTTLS whenever the server offers it.
+      # read them). STARTTLS required, never opportunistic: with SMTP_SECURE
+      # false mail-select.sh appends FXA_SMTP_REQUIRE_TLS_FILE (nodemailer's
+      # requireTLS, which the auth server has no setting for) to CONFIG_FILES.
       SMTP_IGNORE_TLS: "false"
+      FXA_SMTP_REQUIRE_TLS_FILE: /fxa-config/smtp-require-tls.json
       MAIL_SOURCE: ${MAIL_SOURCE:-provider}
       PORTCULLIS_MAIL_SENDER_HOST: ${PORTCULLIS_MAIL_SENDER_HOST:-}
       PORTCULLIS_MAIL_SENDER_PORT: ${PORTCULLIS_MAIL_SENDER_PORT:-}
