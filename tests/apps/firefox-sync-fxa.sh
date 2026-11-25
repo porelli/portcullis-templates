@@ -183,31 +183,56 @@ check_env fxa-auth MYSQL_USERNAME fxa_auth
 check_env fxa-auth PUSHBOX_MYSQL_USERNAME fxa_auth
 check_env fxa-profile MYSQL_USERNAME fxa_profile
 # db-users.sh grants exactly DML + EXECUTE on the services' own databases.
-# M1: test that GRANTs target the right users/databases (grep each grant's target)
-# and that any REVOKE is present as designed. M3: escape `_` in database names.
+# M1/M3: Run the script with a stub mysql and verify exact GRANT statements.
 DBU="$(dirname "$COMPOSE")/db-users.sh"
-if [ "$(grep -c 'GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON' "$DBU")" = 1 ] \
-    && [ "$(grep -o 'GRANT [A-Z ,]* ON' "$DBU" | sort -u)" = "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON" ] \
-    && grep -q '^  user fxa_auth "$FXA_AUTH_DB_PASSWORD" fxa fxa_oauth pushbox$' "$DBU" \
-    && grep -q '^  user fxa_profile "$FXA_PROFILE_DB_PASSWORD" fxa_profile$' "$DBU" \
-    && ! grep -Eq 'GRANT OPTION TO|WITH GRANT|ffs' <(grep -v '^#' "$DBU"); then
-  pass "db-users.sh: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile), DML + EXECUTE only"
-else
-  fail "db-users.sh: grants changed"
-fi
-# M1: Check GRANT targets are correct (the script creates GRANTs for these users)
-# Check the script references both users in the user() calls
-if grep -q "user fxa_auth" "$DBU" && grep -q "user fxa_profile" "$DBU"; then
-  pass "db-users.sh M1: script creates GRANTs for fxa_auth and fxa_profile users"
-else
-  fail "db-users.sh M1: GRANT targets missing or incorrect"
-fi
-# M3: Check that _ in database names is escaped in GRANT patterns
-if grep -q '`fxa\\_' "$DBU" || grep -q '`pushbox\\_' "$DBU" || ! grep -Eq 'GRANT.*ON `(fxa|pushbox)_[^\\]' "$DBU"; then
-  pass "db-users.sh M3: underscore escaped in database name patterns (or no wildcard grants)"
-else
-  fail "db-users.sh M3: underscore not escaped in database names (wildcard risk)"
-fi
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+cat > "$TMPDIR/mysql" <<'STUB_EOF'
+#!/bin/sh
+cat
+STUB_EOF
+chmod +x "$TMPDIR/mysql"
+# Run db-users.sh with stub mysql on PATH and dummy env
+SQL=$(PATH="$TMPDIR:$PATH" MYSQL_HOST=localhost FXA_MYSQL_PASSWORD=dummy FXA_AUTH_DB_PASSWORD=p1 FXA_PROFILE_DB_PASSWORD=p2 sh "$DBU" 2>&1)
+db_users_ok=true
+
+# Check the exact statements: CREATE/ALTER/REVOKE, GRANTs with escaped underscores, nothing else
+echo "$SQL" | grep -q "CREATE USER IF NOT EXISTS 'fxa_auth'@'%'" || { fail "db-users.sh M1: missing CREATE fxa_auth"; db_users_ok=false; }
+echo "$SQL" | grep -q "ALTER USER 'fxa_auth'@'%' IDENTIFIED BY 'p1'" || { fail "db-users.sh M1: missing ALTER fxa_auth"; db_users_ok=false; }
+echo "$SQL" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_auth'@'%'" || { fail "db-users.sh M1: missing REVOKE for fxa_auth"; db_users_ok=false; }
+echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa to fxa_auth"; db_users_ok=false; }
+echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_oauth\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa\\_oauth to fxa_auth"; db_users_ok=false; }
+echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`pushbox\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT pushbox to fxa_auth"; db_users_ok=false; }
+
+echo "$SQL" | grep -q "CREATE USER IF NOT EXISTS 'fxa_profile'@'%'" || { fail "db-users.sh M1: missing CREATE fxa_profile"; db_users_ok=false; }
+echo "$SQL" | grep -q "ALTER USER 'fxa_profile'@'%' IDENTIFIED BY 'p2'" || { fail "db-users.sh M1: missing ALTER fxa_profile"; db_users_ok=false; }
+echo "$SQL" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_profile'@'%'" || { fail "db-users.sh M1: missing REVOKE for fxa_profile"; db_users_ok=false; }
+echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_profile\`.\\* TO 'fxa_profile'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa\\_profile to fxa_profile"; db_users_ok=false; }
+
+# Reject dangerous patterns: *. *, root, unescaped underscore in db name
+echo "$SQL" | grep -qE 'ON \*\.\*|TO.*root|GRANT.*ON `(fxa|pushbox)_[^\\]' && { fail "db-users.sh M1/M3: dangerous pattern (*. *, root, or unescaped _ in GRANT)"; db_users_ok=false; }
+
+$db_users_ok && pass "db-users.sh M1/M3: exact GRANTs with escaped underscores, REVOKE present, no *. * or root"
+
+# Test mutations that should make it FAIL
+test_mutation() {
+  local desc=$1 mutation=$2
+  local tmp_dbu="$TMPDIR/db-users-mut.sh"
+  cp "$DBU" "$tmp_dbu"
+  eval "$mutation" "$tmp_dbu"
+  local sql_mut=$(PATH="$TMPDIR:$PATH" MYSQL_HOST=localhost FXA_MYSQL_PASSWORD=dummy FXA_AUTH_DB_PASSWORD=p1 FXA_PROFILE_DB_PASSWORD=p2 sh "$tmp_dbu" 2>&1)
+  if echo "$sql_mut" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_oauth\`.\\* TO 'fxa_auth'@'%'" && \
+     echo "$sql_mut" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_auth'@'%'" && \
+     ! echo "$sql_mut" | grep -qE 'ON \*\.\*|TO.*root'; then
+    fail "db-users.sh mutation: $desc did NOT fail the checks (test is vacuous)"
+  fi
+}
+test_mutation "remove escaping" "sed -i.bak 's/\\\\\\\\_/_/g'"
+test_mutation "sed→cat" "sed -i.bak '/sed.*_/s/sed.*/cat/'"
+test_mutation "delete REVOKE" "sed -i.bak '/REVOKE ALL/d'"
+test_mutation "grant to root" "sed -i.bak 's/user fxa_auth/user root/'"
+test_mutation "grant ON *.*" "sed -i.bak 's/\\\\\\`%s\\\\\\`\\.\\*/\\*.*/''"
+pass "db-users.sh mutations: all 5 regressions make checks fail"
 
 # volumes
 VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
@@ -217,7 +242,11 @@ VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
   && pass "volumes: fxa-redis has none" || fail "volumes: fxa-redis mounts a volume"
 
 # M2: test that no service uses network_mode
-if yq -r '.services[] | select(has("network_mode")) | keys' "$COMPOSE" 2>/dev/null | grep -q .; then
+NETMODE_CHECK=$(yq -r '.services[] | select(has("network_mode")) | keys' "$COMPOSE")
+YQ_EXIT=$?
+if [ $YQ_EXIT -ne 0 ]; then
+  fail "M2: yq error checking network_mode (exit $YQ_EXIT)"
+elif echo "$NETMODE_CHECK" | grep -q .; then
   fail "M2: some services use network_mode (not allowed)"
 else
   pass "M2: no service uses network_mode"
@@ -265,7 +294,7 @@ done
 
 # routers_exact: exactly the six host routers + three path routers.
 ACTUAL_ROUTERS=$(yq -r '[.services["fxa-gate"].labels // {} | to_entries[] | select(.key | test("^traefik[.]http[.]routers[.][^.]+[.]rule$")) | .key | capture("routers[.](?<r>[^.]+)[.]rule").r] | sort | join(" ")' "$COMPOSE")
-WANT_ALL="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-accounts-open firefox-sync-fxa-admin firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile firefox-sync-fxa-signup firefox-sync-fxa-token"
+WANT_ALL="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-accounts-change-password firefox-sync-fxa-accounts-config firefox-sync-fxa-accounts-metrics firefox-sync-fxa-accounts-root firefox-sync-fxa-admin firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile firefox-sync-fxa-signup firefox-sync-fxa-token"
 if [ "$ACTUAL_ROUTERS" = "$WANT_ALL" ]; then
   pass "routers_exact: $WANT_ALL"
 else
@@ -292,37 +321,45 @@ for r in firefox-sync-fxa-accounts firefox-sync-fxa-admin; do
   fi
 done
 
-# accounts_open_paths: the accounts-open router exactly the four Path()s, priority 100, rate-limit.
-OPEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.rule"] // ""' "$COMPOSE")
-OPEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.middlewares"] // ""' "$COMPOSE")
-OPEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-accounts-open.priority"] // ""' "$COMPOSE")
-WANT_OPEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && ( Path(`/`) || Path(`/.well-known/change-password`) || Path(`/.well-known/fxa-client-configuration`) || Path(`/metrics-flow`) )'
-if [ "$OPEN_RULE" = "$WANT_OPEN_RULE" ] && [ "$OPEN_MW" = "rate-limit@file,security-headers@file" ] && [ "$OPEN_PRIO" = "100" ]; then
-  pass "accounts_open_paths: exactly the four Path()s, priority 100, rate-limit@file"
-else
-  fail "accounts_open_paths: rule='$OPEN_RULE' mws='$OPEN_MW' prio='$OPEN_PRIO'"
-fi
+# accounts_open_paths: four separate path routers on the accounts host, priority 990, rate-limit.
+declare -A ACCOUNTS_PATHS=(
+  [firefox-sync-fxa-accounts-root]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/`)'
+  [firefox-sync-fxa-accounts-change-password]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/.well-known/change-password`)'
+  [firefox-sync-fxa-accounts-config]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/.well-known/fxa-client-configuration`)'
+  [firefox-sync-fxa-accounts-metrics]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/metrics-flow`)'
+)
+accounts_open_ok=true
+for router in firefox-sync-fxa-accounts-root firefox-sync-fxa-accounts-change-password firefox-sync-fxa-accounts-config firefox-sync-fxa-accounts-metrics; do
+  rule=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.rule\"] // \"\"" "$COMPOSE")
+  mws=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.middlewares\"] // \"\"" "$COMPOSE")
+  prio=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.priority\"] // \"\"" "$COMPOSE")
+  if [ "$rule" != "${ACCOUNTS_PATHS[$router]}" ] || [ "$mws" != "rate-limit@file,security-headers@file" ] || [ "$prio" != "990" ]; then
+    fail "accounts_open_paths: $router rule='$rule' mws='$mws' prio='$prio' (want 990)"
+    accounts_open_ok=false
+  fi
+done
+$accounts_open_ok && pass "accounts_open_paths: four routers on accounts host, priority 990, rate-limit@file"
 
-# signup router: API host && Path(/v1/account/create), priority 100, rate-limit-auth.
+# signup router: API host && Path(/v1/account/create), priority 990, rate-limit-auth.
 SIGNUP_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.rule"] // ""' "$COMPOSE")
 SIGNUP_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.middlewares"] // ""' "$COMPOSE")
 SIGNUP_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-signup.priority"] // ""' "$COMPOSE")
 WANT_SIGNUP_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}`) && Path(`/v1/account/create`)'
-if [ "$SIGNUP_RULE" = "$WANT_SIGNUP_RULE" ] && [ "$SIGNUP_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$SIGNUP_PRIO" = "100" ]; then
-  pass "signup router: API host && Path(/v1/account/create), priority 100, rate-limit-auth@file"
+if [ "$SIGNUP_RULE" = "$WANT_SIGNUP_RULE" ] && [ "$SIGNUP_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$SIGNUP_PRIO" = "990" ]; then
+  pass "signup router: API host && Path(/v1/account/create), priority 990, rate-limit-auth@file"
 else
   fail "signup router: rule='$SIGNUP_RULE' mws='$SIGNUP_MW' prio='$SIGNUP_PRIO'"
 fi
 
-# token router: Sync host && PathPrefix(/1.0/), rate-limit-auth, priority 100 for consistency.
+# token router: Sync host && PathPrefix(/1.0/), rate-limit-auth, priority 990.
 TOKEN_RULE=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.rule"] // ""' "$COMPOSE")
 TOKEN_MW=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.middlewares"] // ""' "$COMPOSE")
 TOKEN_PRIO=$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-token.priority"] // ""' "$COMPOSE")
 WANT_TOKEN_RULE='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}`) && PathPrefix(`/1.0/`)'
-if [ "$TOKEN_RULE" = "$WANT_TOKEN_RULE" ] && [ "$TOKEN_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$TOKEN_PRIO" = "100" ]; then
-  pass "token router: Sync host && PathPrefix(/1.0/), rate-limit-auth@file, priority 100"
+if [ "$TOKEN_RULE" = "$WANT_TOKEN_RULE" ] && [ "$TOKEN_MW" = "rate-limit-auth@file,security-headers@file" ] && [ "$TOKEN_PRIO" = "990" ]; then
+  pass "token router: Sync host && PathPrefix(/1.0/), rate-limit-auth@file, priority 990"
 else
-  fail "token router: rule='$TOKEN_RULE' mws='$TOKEN_MW' prio='$TOKEN_PRIO' (want 100)"
+  fail "token router: rule='$TOKEN_RULE' mws='$TOKEN_MW' prio='$TOKEN_PRIO' (want 990)"
 fi
 
 # manifest_auth: method forward-auth, group_access true, no admin_paths.

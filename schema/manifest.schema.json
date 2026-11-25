@@ -128,7 +128,13 @@
         "reasons": {
           "description": "NEW (Firefox own accounts; contracts §3, §11.7): per-host reason for open routers (bypass badges). Each key is a host router; each value is one line, at most 200 runes. For an open_router bypass badge on that host, Note = this reason (fallback: first paragraph of auth.notes). Manifest reference.",
           "type": "object",
-          "additionalProperties": {"$ref": "#/$defs/singleLine"}
+          "propertyNames": {"pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\\x00-\\x1f]*$"
+          }
         }
       }
     },

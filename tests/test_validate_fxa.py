@@ -395,10 +395,6 @@ networks:
                          f"Path router on reasoned host should not require auth. Errors: {errors}")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestHostsReasonsRoutersBypassAddendum(FxACase):
     """Additional security tests for the addendum parsing rules."""
 
@@ -499,3 +495,7 @@ networks:
                         f"Expected auth required for demo-special (no matching reason). Errors: {errors}")
 
 
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2480,7 +2480,7 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
                     captured_var = match.group(1)
                     path_part = match.group(2)
                     # Optional path part must be valid: Path/PathPrefix or ( ... || ... )
-                    if path_part is None or PATH_PART_RE.match(path_part.strip()):
+                    if path_part is None or PATH_PART_RE.fullmatch(path_part.strip()):
                         # For each reason key, compute "PORTCULLIS_HOST_" + var_key(key)
                         # and compare with captured variable for exact equality
                         for reason_key in host_reasons_keys:
