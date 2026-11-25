@@ -1343,6 +1343,8 @@ def check_compose(t: Template, r: Report) -> None:
     for name, op, rest in iter_var_refs(t.compose_values):
         if is_instance_var(name) or name.startswith(FOLDER_VAR_PREFIX) or name.startswith(VAR_AI_PREFIX):
             continue  # check_instance_vars; check_settings (reserved variable forms, F36); check_ai
+        if name in MAIL_SENDER_VARS:
+            continue  # check_instance_vars (with mail_sender); check_hub_rules (without it)
         if name in SOURCE_VARS:
             if (op, rest) != (":-", CORE_VARS[name]):
                 r.error(t.c_where, f"${{{name}}} must be exactly the default form ${{{name}:-{CORE_VARS[name]}}}",
@@ -1643,6 +1645,11 @@ def check_instance_vars(t: Template, r: Report) -> None:
             expected[var] = auth[field]
     for var, sub in t.host_vars.items():
         expected[var] = f"{sub}.portcullis.local"
+    # NEW (Firefox own accounts): the app mail sender's five variables, empty
+    # while no provider is wired (§19.14), so their default is empty.
+    if isinstance(m.get("mail_sender"), dict):
+        for var in MAIL_SENDER_VARS:
+            expected[var] = ""
     reported: Set[Tuple[str, str]] = set()
     # Support files see instance variables only through a service's
     # environment: (the Hub writes them into the instance's .env, which
@@ -1663,7 +1670,9 @@ def check_instance_vars(t: Template, r: Report) -> None:
                         "(or under the app's own name), and substitute it when the file is rendered")
     for where, text in [(t.c_where, t.compose_values)]:
         for name, op, rest in iter_var_refs(text):
-            if not is_instance_var(name) or name == VAR_LOCAL_NETWORKS:
+            if name in MAIL_SENDER_VARS and name in expected:
+                pass       # with mail_sender: exactly ${PORTCULLIS_MAIL_SENDER_<X>:-}
+            elif not is_instance_var(name) or name == VAR_LOCAL_NETWORKS:
                 continue   # PORTCULLIS_LOCAL_NETWORKS: exactly ${PORTCULLIS_LOCAL_NETWORKS} (check_settings)
             want = expected.get(name)
             if want is None:

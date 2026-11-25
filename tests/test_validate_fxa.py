@@ -182,6 +182,30 @@ class TestMailSender(FxACase):
         self.assertTrue(any("PORTCULLIS_MAIL_SENDER_HOST" in e and "needs mail_sender" in e for e in errors),
                         f"Expected 'needs mail_sender' error. Errors: {errors}")
 
+    def test_mail_sender_vars_with_block(self) -> None:
+        """With mail_sender, the five variables pass in the empty default form, also in support files."""
+        env = "".join(f"\n      {n}: ${{{n}:-}}" for n in v.MAIL_SENDER_VARS)
+        compose = BASE_COMPOSE.replace("image: demo/demo", "environment:" + env + "\n    image: demo/demo", 1)
+        manifest = BASE_MANIFEST + "mail_sender:\n  label: Demo\n"
+        t = self.write_template(manifest, compose)
+        with open(os.path.join(self.tmp.name, "demo", "mail.sh"), "w", encoding="utf-8") as f:
+            f.write('echo "$PORTCULLIS_MAIL_SENDER_HOST"\n')
+        t = v.Template("demo")
+        errors, _ = self.check_template(t)
+        self.assertFalse([e for e in errors if "MAIL_SENDER" in e], errors)
+
+    def test_mail_sender_vars_empty_default(self) -> None:
+        """With mail_sender, a variable needs the empty default (the Hub writes them empty without a provider)."""
+        compose = BASE_COMPOSE.replace(
+            "image: demo/demo",
+            "environment:\n      MAIL_HOST: ${PORTCULLIS_MAIL_SENDER_HOST:-mail.example.org}\n"
+            "      MAIL_PORT: ${PORTCULLIS_MAIL_SENDER_PORT}\n    image: demo/demo", 1)
+        manifest = BASE_MANIFEST + "mail_sender:\n  label: Demo\n"
+        t = self.write_template(manifest, compose)
+        errors, _ = self.check_template(t)
+        self.assertTrue(any("PORTCULLIS_MAIL_SENDER_HOST" in e and "default must be" in e for e in errors), errors)
+        self.assertTrue(any("PORTCULLIS_MAIL_SENDER_PORT" in e and "default form" in e for e in errors), errors)
+
     def test_mail_sender_label_bounds(self) -> None:
         """mail_sender.label must be one line of 1-64 characters without ' or \\."""
         # Test empty label - this will fail schema validation, so test with space instead

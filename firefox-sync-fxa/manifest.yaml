@@ -35,7 +35,14 @@ auth:
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
 
+    **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why.
+
     **What runs:** Mozilla's accounts (auth, content, profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.1 on PostgreSQL and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>).
+
+# The accounts' mail (sign-up and sign-in codes, notices): the server's mail
+# provider by default (the Hub's PORTCULLIS_MAIL_SENDER_*, contracts §19.14).
+mail_sender:
+  label: Firefox accounts
 
 hosts:
   reasons:
@@ -44,6 +51,86 @@ hosts:
     firefox-sync-fxa-profile: "Firefox loads account profiles and avatars in the background, without cookies."
     firefox-sync-fxa-pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
     firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
+
+settings:
+  sections: [Mail, Accounts]
+  options:
+    - key: mail_source
+      label: Send mail through
+      description: >-
+        Where the sign-up and sign-in codes go out. The server's mail provider
+        needs one wired (Settings, Mail); without a working mail server the
+        accounts server doesn't start.
+      section: Mail
+      type: enum
+      options:
+        - {value: provider, label: "The server's mail provider"}
+        - {value: external, label: Another SMTP server}
+      default: provider
+      applies: restart
+      delivery: [{env: MAIL_SOURCE}]
+    - key: smtp_host
+      label: SMTP server
+      description: Another SMTP server only. Its host name.
+      section: Mail
+      type: string
+      format: hostname
+      applies: restart
+      delivery: [{env: EXT_SMTP_HOST}]
+    - key: smtp_port
+      label: SMTP port
+      description: Another SMTP server only. 587 for STARTTLS, 465 for TLS.
+      section: Mail
+      type: int
+      min: 1
+      max: 65535
+      default: 587
+      applies: restart
+      delivery: [{env: EXT_SMTP_PORT}]
+    - key: smtp_security
+      label: SMTP security
+      description: Another SMTP server only. STARTTLS on 587 or TLS from the start on 465.
+      section: Mail
+      type: enum
+      options:
+        - {value: starttls, label: STARTTLS (587)}
+        - {value: tls, label: TLS (465)}
+      default: starttls
+      applies: restart
+      delivery: [{env: EXT_SMTP_SECURITY}]
+    - key: smtp_user
+      label: SMTP user
+      description: Another SMTP server only. Empty when it takes mail without signing in.
+      section: Mail
+      type: string
+      requires: [smtp_host, smtp_sender]
+      applies: restart
+      delivery: [{env: EXT_SMTP_USER}]
+    - key: smtp_password
+      label: SMTP password
+      description: Another SMTP server only. The password of the SMTP user.
+      section: Mail
+      type: secret
+      applies: restart
+      delivery: [{env: EXT_SMTP_PASSWORD}]
+    - key: smtp_sender
+      label: Sender address
+      description: Another SMTP server only. The address the mail comes from, shown as Firefox accounts.
+      section: Mail
+      type: string
+      format: email
+      applies: restart
+      delivery: [{env: EXT_SMTP_SENDER}]
+    - key: max_accounts
+      label: Maximum accounts
+      description: >-
+        At most this many accounts; sign-ups are refused once they exist.
+        Empty: no limit, the access group decides.
+      section: Accounts
+      type: int
+      min: 1
+      applies: restart
+      delivery: [{env: MAX_ACCOUNTS}]
 
 env:
   - key: FXA_MYSQL_PASSWORD

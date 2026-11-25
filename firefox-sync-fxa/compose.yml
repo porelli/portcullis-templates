@@ -174,27 +174,49 @@ services:
       FXA_ACCESS_DB_PASSWORD: ${FXA_ACCESS_DB_PASSWORD:?FXA_ACCESS_DB_PASSWORD must be set}
       ADMIN_ACCESS_EXTERNAL: "1"
       FXA_SIGNUPS: allowlist
-      # No account cap by default: the access group decides.
-      FXA_MAX_ACCOUNTS: unlimited
+      # No account cap by default: the access group decides (setting
+      # max_accounts: at most that many accounts).
+      FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}
     depends_on:
       fxa-migrations:
         condition: service_completed_successfully
     restart: "no"
 
-  # Validates the mail settings before the auth server starts (filled in
-  # with the mail settings).
+  # One-shot, every start, validate only (no network): the mail settings,
+  # with the mail-select.sh fxa-auth sources. Without a mail server (no
+  # provider wired, mail off, or an incomplete external server) it exits 1
+  # and the auth server doesn't start: it can't send a sign-up code.
   fxa-mail-check:
     image: redis:8.12.0-alpine@sha256:5af80107c1eeecb484a2269b80a26d12bfa6521787da4663bd9f19f60a163483
     user: "10001:10001"
     read_only: true
+    network_mode: none
     tmpfs:
       - /tmp:size=1m
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 32m
     pids_limit: 16
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["exit 0"]
+    entrypoint: ["/bin/sh", "/portcullis-bin/mail-check.sh"]
+    environment:
+      # The source (setting mail_source): provider (default) or external.
+      MAIL_SOURCE: ${MAIL_SOURCE:-provider}
+      # The Hub's app mail sender (contracts §19.14; empty: no provider).
+      PORTCULLIS_MAIL_SENDER_HOST: ${PORTCULLIS_MAIL_SENDER_HOST:-}
+      PORTCULLIS_MAIL_SENDER_PORT: ${PORTCULLIS_MAIL_SENDER_PORT:-}
+      PORTCULLIS_MAIL_SENDER_USER: ${PORTCULLIS_MAIL_SENDER_USER:-}
+      PORTCULLIS_MAIL_SENDER_PASSWORD: ${PORTCULLIS_MAIL_SENDER_PASSWORD:-}
+      PORTCULLIS_MAIL_SENDER_FROM: ${PORTCULLIS_MAIL_SENDER_FROM:-}
+      # Another SMTP server (settings smtp_*).
+      EXT_SMTP_HOST: ${EXT_SMTP_HOST:-}
+      EXT_SMTP_PORT: ${EXT_SMTP_PORT:-587}
+      EXT_SMTP_SECURITY: ${EXT_SMTP_SECURITY:-starttls}
+      EXT_SMTP_USER: ${EXT_SMTP_USER:-}
+      EXT_SMTP_PASSWORD: ${EXT_SMTP_PASSWORD:-}
+      EXT_SMTP_SENDER: ${EXT_SMTP_SENDER:-}
+    volumes:
+      - ./templates/firefox-sync-fxa/mail-check.sh:/portcullis-bin/mail-check.sh:ro
+      - ./templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro
     restart: "no"
 
   # The accounts API and OAuth server (FXA_AUTH_URL = the API host). Its keys
@@ -211,10 +233,13 @@ services:
     working_dir: /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server
     # As upstream: oauth-clients.js first (the key scripts load the config,
     # which needs mfa.jwt.secretKey, derived from OAUTH_SERVER_SECRET_KEY).
+    # mail-select.sh first: the SMTP_* of the mail source (fxa-mail-check
+    # validated them), the passwords from the environment, never argv.
     command:
       - sh
       - -c
       - >-
+        . /portcullis-bin/mail-select.sh &&
         node /fxa-config/oauth-clients.js /fxa-keys/oauth-clients.json &&
         node scripts/gen_keys.js &&
         node scripts/oauth_gen_keys.js &&
@@ -310,14 +335,33 @@ services:
       # Never skip the sign-in code for a known IP address.
       IP_PROFILING_RECENCY: 0
       LOG_LEVEL: INFO
+      # Mail: mail-select.sh exports SMTP_HOST, SMTP_PORT, SMTP_USER,
+      # SMTP_PASS, SMTP_SECURE and SMTP_SENDER from these (as fxa-mail-check
+      # read them). STARTTLS whenever the server offers it.
+      SMTP_IGNORE_TLS: "false"
+      MAIL_SOURCE: ${MAIL_SOURCE:-provider}
+      PORTCULLIS_MAIL_SENDER_HOST: ${PORTCULLIS_MAIL_SENDER_HOST:-}
+      PORTCULLIS_MAIL_SENDER_PORT: ${PORTCULLIS_MAIL_SENDER_PORT:-}
+      PORTCULLIS_MAIL_SENDER_USER: ${PORTCULLIS_MAIL_SENDER_USER:-}
+      PORTCULLIS_MAIL_SENDER_PASSWORD: ${PORTCULLIS_MAIL_SENDER_PASSWORD:-}
+      PORTCULLIS_MAIL_SENDER_FROM: ${PORTCULLIS_MAIL_SENDER_FROM:-}
+      EXT_SMTP_HOST: ${EXT_SMTP_HOST:-}
+      EXT_SMTP_PORT: ${EXT_SMTP_PORT:-587}
+      EXT_SMTP_SECURITY: ${EXT_SMTP_SECURITY:-starttls}
+      EXT_SMTP_USER: ${EXT_SMTP_USER:-}
+      EXT_SMTP_PASSWORD: ${EXT_SMTP_PASSWORD:-}
+      EXT_SMTP_SENDER: ${EXT_SMTP_SENDER:-}
     volumes:
       - fxa-keys:/fxa-keys
+      - ./templates/firefox-sync-fxa/mail-select.sh:/portcullis-bin/mail-select.sh:ro
       - ./templates/firefox-sync-fxa/fxa-config:/fxa-config:ro
       - ./certs/ca-bundle.crt:/etc/ssl/certs/portcullis-ca-bundle.crt:ro
     depends_on:
       fxa-db-users:
         condition: service_completed_successfully
       fxa-keys-owner:
+        condition: service_completed_successfully
+      fxa-mail-check:
         condition: service_completed_successfully
       fxa-policy:
         condition: service_completed_successfully
@@ -630,7 +674,8 @@ services:
       FXA_DB_HOST: fxa-db
       FXA_DB_PORT: "3306"
       FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:?FXA_ADMIN_DB_PASSWORD must be set}
-      FXA_MAX_ACCOUNTS: unlimited
+      # As fxa-policy set it (shown on the overview).
+      FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}
       FXA_AUTH_UPSTREAM: http://fxa-auth:9000
       FXA_ACCOUNT_EVENTS: "false"
       FXA_CLIENT_ADDRESS_DEPTH: "2"
