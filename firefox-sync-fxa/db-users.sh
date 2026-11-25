@@ -41,7 +41,9 @@ user() {  # $1 user, $2 password, $3... databases
   printf "ALTER USER '%s'@'%%' IDENTIFIED BY '%s';\n" "$u" "$p"
   printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%%';\n" "$u"
   for db in "$@"; do
-    printf "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`%s\`.* TO '%s'@'%%';\n" "$db" "$u"
+    # M3: escape _ in database names so the grant isn't a wildcard match
+    escaped=$(printf '%s' "$db" | sed 's/_/\\_/g')
+    printf "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`%s\`.* TO '%s'@'%%';\n" "$escaped" "$u"
   done
 }
 
