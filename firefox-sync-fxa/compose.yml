@@ -664,8 +664,13 @@ services:
   # Access managed elsewhere (ADMIN_ACCESS_EXTERNAL, here, in fxa-policy and
   # in firefox-sync-fxa-db-init): who may sign up is Portcullis's access group
   # (fxa-access-sync). The sign-up policy, its allowlist, the account cap and
-  # Sync's max users are read-only here and every change is refused server
-  # side; its database user ffs_admin (fxa-policy) may only read them.
+  # Sync's max users are read-only here: the admin UI refuses its forms for
+  # them, and its database user ffs_admin (fxa-policy) can't write them
+  # directly. Not covered: ffs_admin keeps EXECUTE on porelli's SECURITY
+  # DEFINER incident procedures. ffs.delete_account also deletes the
+  # account's allowlist row (until the next access sync puts it back), and
+  # ffs.enable_account re-enables any disabled account, a leaver's too. The
+  # next access sync decides again.
   ffs-admin:
     image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
     read_only: true
@@ -701,7 +706,8 @@ services:
       # The accounts as ffs_admin, its own database user (fxa-policy, porelli's
       # fxa-init): it reads the accounts (some columns of fxa.accounts, ffs's
       # views) and changes them only through ffs's procedures; with access
-      # managed elsewhere the sign-up policy and allowlist read-only.
+      # managed elsewhere no direct write of the sign-up policy or allowlist
+      # (delete_account still drops the account's allowlist row: above).
       FXA_DB: mysql
       FXA_DB_HOST: fxa-db
       FXA_DB_PORT: "3306"

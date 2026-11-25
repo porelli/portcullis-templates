@@ -42,8 +42,8 @@ auth:
 
     **Admin UI** (porelli/firefox-sync's admin UI): on its own host (default `firefox-sync-fxa-admin.<domain>`), behind two sign-ins. First Portcullis sign-in and the access group (group-gate). Then the admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the instance's **admin group** (`admin_firefox-sync-fxa`, from the `groups` claim; never by email, which is user-editable and unverified). No password sign-in (`POST /login` answers 403), no trusted identity header, no mail of its own, no update check.
 
-    - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*, `ADMIN_ACCESS_EXTERNAL`): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and every change of them is refused. Its database user `ffs_admin` may only read them.
-    - Kept: monitoring, the event log, account pages and notes, per-account sign-out and disable / enable (for incidents), and the Sync data tools. The Connect a device page gives `identity.fxaccounts.autoconfig.uri` = the accounts host.
+    - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*, `ADMIN_ACCESS_EXTERNAL`): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and the admin UI's forms for them are refused. Its database user `ffs_admin` can't write them directly.
+    - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. Two of these reach past the access group: **deleting an account also removes its email from the sign-up allowlist** (that person can't sign up again until the next access sync puts the email back), and **enable re-enables any disabled account**, whether or not that person is still in the access group. The next access sync decides again who may sign up. The Connect a device page gives `identity.fxaccounts.autoconfig.uri` = the accounts host.
 
     **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why. STARTTLS is required, never opportunistic: a server that doesn't offer it gets no mail and no password.
 
@@ -122,7 +122,7 @@ settings:
       label: SMTP password
       description: >-
         Another SMTP server only. The password of the SMTP user; it can't
-        contain ' or \.
+        contain ', \ or a line break.
       section: Mail
       type: secret
       applies: restart

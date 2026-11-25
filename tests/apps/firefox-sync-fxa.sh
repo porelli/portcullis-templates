@@ -14,8 +14,13 @@ TEST_NAME="firefox-sync-fxa"
 # 3.2 reports 0 for an eval syntax error under an EXIT trap). Chains lib.sh's
 # report, which exits 1 on any failure; never replace this trap.
 FXA_DONE=0
+# The test's own helper containers (they carry the instance's secrets) go
+# on every exit, timeouts and aborts included.
+FXA_TEST_CONTAINERS=""
 fxa_exit() {
   local rc=$?
+  # shellcheck disable=SC2086
+  [ -z "$FXA_TEST_CONTAINERS" ] || docker rm -f $FXA_TEST_CONTAINERS > /dev/null 2>&1 || true
   [ "$FXA_DONE" = 1 ] || fail "aborted before the last check (exit status $rc)"
   report
 }
@@ -648,8 +653,8 @@ SMTP_SENDER=Firefox accounts <accounts@example.net>
 SMTP_PASS=set
 inputs=
 CONFIG_FILES='"$CF0" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=2465
-[ "$(OPT smtp_password .description)" = "Another SMTP server only. The password of the SMTP user; it can't contain ' or \\." ] \
-  && pass "settings: smtp_password's description says ' and \\ aren't allowed (the Hub's env quoting refuses them)" \
+[ "$(OPT smtp_password .description)" = "Another SMTP server only. The password of the SMTP user; it can't contain ', \\ or a line break." ] \
+  && pass "settings: smtp_password's description says ', \\ and line breaks aren't allowed (the Hub's env quoting, mail-select.sh)" \
   || fail "settings: smtp_password description '$(OPT smtp_password .description)'"
 RT_REFUSED="portcullis: no mail: STARTTLS can't be required: FXA_SMTP_REQUIRE_TLS_FILE isn't a readable {\"smtp\":{\"requireTLS\":true}}"
 ms_case "starttls_required: no overlay file = refused (never opportunistic)" "$(REFUSED "$RT_REFUSED" ext-pw)" "${EXT[@]}" FXA_SMTP_REQUIRE_TLS_FILE="$MS_TMP/none.json"
@@ -1491,6 +1496,13 @@ if [ "$(jget "$OUT" .verified)" = true ] && [[ "$FXA_UID" =~ ^[0-9a-f]{32}$ ]]; 
 else
   fail "first_sync: sign-up of $SYNC_USER: $(redact "$OUT")"
 fi
+# A second account, for the admin section's delete / enable checks.
+DEL_USER="fxa-delete-test@$DOMAIN"
+printf "INSERT IGNORE INTO ffs.signup_allowlist (entry) VALUES ('%s');\n" "$DEL_USER" | mysql_root > /dev/null
+OUT=$(fxa_client signup "$DEL_USER" || true)
+DEL_UID=$(jget "$OUT" '.uid // ""')
+[[ "$DEL_UID" =~ ^[0-9a-f]{32}$ ]] && info "second account $DEL_USER (uid $DEL_UID)" \
+  || fail "first_sync: sign-up of $DEL_USER: $(redact "$OUT")"
 USERS_BEFORE=$(sdb "SELECT count(*) FROM users")
 OUT=$(fxa_client sync "$SYNC_USER" || true)
 EP=$(jget "$OUT" '.api_endpoint // ""')
@@ -1593,19 +1605,40 @@ else
   fail "redirect_uri_matches: /auth/login -> ${LOC:-<none>} (discovery of https://auth.$DOMAIN/realms/portcullis failed? $(docker logs --tail 5 "$ADMIN_C" 2>&1 | grep -i oidc | tr '\n' ' '))"
 fi
 KC_TOKEN=$(keycloak_admin_token || true)
+[ -n "$KC_TOKEN" ] && [ "$KC_TOKEN" != null ] || fail "redirect_uri_matches: no Keycloak admin token"
+kc_api() {  # $1 method, $2 path under the realm, rest: curl arguments; the token never on argv
+  local m=$1 p=$2
+  shift 2
+  curl -s -X "$m" "$KEYCLOAK_URL/admin/realms/portcullis$p" -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") "$@"
+}
+kc_client_id() { kc_api GET "/clients?clientId=$CID_M" | jq -r '.[0].id // empty' 2>/dev/null || true; }
 REG_REDIRECT=$(yq -r '.keycloak_clients[0].redirect_uri' "$MANIFEST")
 REG_REDIRECT=${REG_REDIRECT/'{{HOST_FIREFOX_SYNC_FXA_ADMIN}}'/$ADMIN_HOST}
-# The secret from this shell's environment (jq's env), never an argv.
-REG=$(jq -n --arg uri "$REG_REDIRECT" --arg cid "$CID_M" --arg name "$(yq -r '.keycloak_clients[0].name' "$MANIFEST")" \
-  '{clientId: $cid, name: $name, enabled: true, protocol: "openid-connect", publicClient: false,
-    secret: env.FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET, redirectUris: [$uri], standardFlowEnabled: true, directAccessGrantsEnabled: false,
-    defaultClientScopes: ["openid", "profile", "email", "acr", "groups"]}' \
-  | curl -s -o /dev/null -w '%{http_code}' -X POST "$KEYCLOAK_URL/admin/realms/portcullis/clients" \
-      -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") -H 'Content-Type: application/json' -d @- || echo 000)
-case "$REG" in
-  201 | 409) pass "redirect_uri_matches: Keycloak client $CID_M registered as the Hub does (redirect URI $REG_REDIRECT)" ;;
-  *) fail "redirect_uri_matches: registering the Keycloak client answered $REG" ;;
-esac
+REG=none
+if [ -z "${FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET:-}" ]; then
+  # Keycloak would generate a secret of its own: never register without ours.
+  fail "redirect_uri_matches: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET is empty or unset: the client isn't registered"
+else
+  # A client left from an earlier run never stands in: deleted, then created.
+  OLD_ID=$(kc_client_id)
+  [ -z "$OLD_ID" ] || kc_api DELETE "/clients/$OLD_ID" -o /dev/null || true
+  # The secret from this shell's environment (jq's env), never an argv.
+  REG=$(jq -n --arg uri "$REG_REDIRECT" --arg cid "$CID_M" --arg name "$(yq -r '.keycloak_clients[0].name' "$MANIFEST")" \
+    '{clientId: $cid, name: $name, enabled: true, protocol: "openid-connect", publicClient: false,
+      secret: env.FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET, redirectUris: [$uri], standardFlowEnabled: true, directAccessGrantsEnabled: false,
+      defaultClientScopes: ["openid", "profile", "email", "acr", "groups"]}' \
+    | kc_api POST /clients -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d @- || echo 000)
+fi
+KC_ID=$(kc_client_id)
+KC_URIS=$([ -z "$KC_ID" ] || kc_api GET "/clients/$KC_ID" | jq -c '[.redirectUris[]] | sort' 2>/dev/null || true)
+KC_SECRET_OK=false
+[ -z "$KC_ID" ] || [ "$(kc_api GET "/clients/$KC_ID/client-secret" | jq -r '.value // empty' 2>/dev/null || true)" != "$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET" ] \
+  || KC_SECRET_OK=true
+if [ "$REG" = 201 ] && [ "$KC_URIS" = "$(jq -cn --arg u "$REG_REDIRECT" '[$u]')" ] && [ "$KC_SECRET_OK" = true ]; then
+  pass "redirect_uri_matches: Keycloak client $CID_M created fresh (201) as the Hub does; read back: redirect URIs exactly [$REG_REDIRECT], the secret ours"
+else
+  fail "redirect_uri_matches: registering $CID_M answered $REG (want 201); read back: redirect URIs ${KC_URIS:-<none>}, secret ours: $KC_SECRET_OK"
+fi
 [ "$REG_REDIRECT" = "$REDIRECT" ] && pass "redirect_uri_matches: the registered redirect URI is the one the admin UI sends" \
   || fail "redirect_uri_matches: registered $REG_REDIRECT, sent $REDIRECT"
 AUTH_PATH="/${LOC#https://auth.$DOMAIN/}"
@@ -1623,10 +1656,8 @@ if [ "$BAD_PATH" != "$AUTH_PATH" ] && grep -Eqi "$KC_ERR" <<< "$(kc_page "$BAD_P
 else
   fail "redirect_uri_matches: Keycloak did not refuse another redirect URI"
 fi
-KC_ID=$(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=$CID_M" \
-  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -r '.[0].id // empty' || true)
-[ -z "$KC_ID" ] || curl -s -o /dev/null -X DELETE "$KEYCLOAK_URL/admin/realms/portcullis/clients/$KC_ID" \
-  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") || true
+KC_ID=$(kc_client_id)
+[ -z "$KC_ID" ] || kc_api DELETE "/clients/$KC_ID" -o /dev/null || true
 
 # The stand-in OpenID provider (node, the accounts image) on the instance's
 # network: discovery, JWKS (a fresh RSA key), an authorization endpoint that
@@ -1710,6 +1741,7 @@ http.createServer((req, res) => {
 '
 STUB_ISS=http://fxa-test-oidc:8090
 docker rm -f "$OIDC_C" "$PROBE_C" > /dev/null 2>&1 || true
+FXA_TEST_CONTAINERS="$FXA_TEST_CONTAINERS $OIDC_C $PROBE_C"
 OIDC_CLIENT_SECRET="$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET" docker run -d --name "$OIDC_C" --network "$NET" --network-alias fxa-test-oidc \
   --user 10001:10001 --read-only --tmpfs /tmp:size=8m --cap-drop ALL --security-opt no-new-privileges:true \
   -e OIDC_ISSUER="$STUB_ISS" -e OIDC_CLIENT_ID="$CID_M" -e OIDC_CLIENT_SECRET -e OIDC_REDIRECT="$REDIRECT" \
@@ -1831,10 +1863,16 @@ AFTER=$(policy_state)
 # sign-up policy and its allowlist), nothing of ffs_access's.
 GRANTEE="'ffs_admin'@'%'"
 GRANTS=$(printf '%s\n' "SELECT CONCAT('global ', PRIVILEGE_TYPE) FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
-  UNION ALL SELECT CONCAT('global ', PRIV) FROM mysql.global_grants WHERE USER = 'ffs_admin'
-  UNION ALL SELECT CONCAT('schema ', TABLE_SCHEMA, ' ', PRIVILEGE_TYPE) FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('global ', PRIV, IF(WITH_GRANT_OPTION = 'Y', ' grantable', '')) FROM mysql.global_grants WHERE USER = 'ffs_admin'
+  UNION ALL SELECT 'global grant option' FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\" AND IS_GRANTABLE = 'YES'
+  UNION ALL SELECT CONCAT('schema ', TABLE_SCHEMA, ' ', PRIVILEGE_TYPE, IF(IS_GRANTABLE = 'YES', ' grantable', '')) FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('role granted ', FROM_USER, '@', FROM_HOST, IF(WITH_ADMIN_OPTION = 'Y', ' admin', '')) FROM mysql.role_edges WHERE TO_USER = 'ffs_admin'
+  UNION ALL SELECT CONCAT('role holder ', TO_USER, '@', TO_HOST) FROM mysql.role_edges WHERE FROM_USER = 'ffs_admin'
+  UNION ALL SELECT CONCAT('default role ', DEFAULT_ROLE_USER, '@', DEFAULT_ROLE_HOST) FROM mysql.default_roles WHERE USER = 'ffs_admin'
+  UNION ALL SELECT CONCAT('proxy ', Proxied_user, '@', Proxied_host) FROM mysql.proxies_priv WHERE User = 'ffs_admin'
+  UNION ALL SELECT CONCAT('applicable role ', ROLE_NAME) FROM information_schema.APPLICABLE_ROLES WHERE GRANTEE = 'ffs_admin'
   UNION ALL SELECT CONCAT('table ', TABLE_SCHEMA, '.', TABLE_NAME, ' ', PRIVILEGE_TYPE, IF(IS_GRANTABLE = 'YES', ' grantable', '')) FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
-  UNION ALL SELECT CONCAT('column ', TABLE_SCHEMA, '.', TABLE_NAME, '.', COLUMN_NAME, ' ', PRIVILEGE_TYPE) FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('column ', TABLE_SCHEMA, '.', TABLE_NAME, '.', COLUMN_NAME, ' ', PRIVILEGE_TYPE, IF(IS_GRANTABLE = 'YES', ' grantable', '')) FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
   UNION ALL SELECT CONCAT('routine ', Db, '.', Routine_name, ' ', Routine_type, ' ', Proc_priv) FROM mysql.procs_priv WHERE User = 'ffs_admin';" \
   | mysql_root 2>&1 | LC_ALL=C sort)
 WANT_GRANTS=$(printf '%s\n' "global USAGE" \
@@ -1852,10 +1890,20 @@ WANT_GRANTS=$(printf '%s\n' "global USAGE" \
   "table ffs.security_events SELECT" "table ffs.sessions SELECT" "table ffs.settings SELECT" "table ffs.signup_allowlist SELECT" \
   | LC_ALL=C sort)
 if [ "$GRANTS" = "$WANT_GRANTS" ]; then
-  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema or grant option)"
+  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema, role, proxy or grant option)"
 else
   fail "ffs_admin_grants: differ:
 $(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
+fi
+# The server's own account of it: every line a plain GRANT ... ON ... TO
+# ffs_admin (a granted role has no ON), no WITH GRANT OPTION; 27 lines =
+# USAGE, the 11 tables / views, one for the 5 columns, the 14 routines.
+SHOWN=$(printf '%s\n' "SHOW GRANTS FOR 'ffs_admin'@'%';" | mysql_root 2>&1)
+if [ "$(grep -c . <<< "$SHOWN")" = 27 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
+    && ! grep -vqE '^GRANT .+ ON .+ TO `ffs_admin`@`%`$' <<< "$SHOWN"; then
+  pass "ffs_admin_grants: SHOW GRANTS: $(grep -c . <<< "$SHOWN") GRANT ... ON lines, no role, no WITH GRANT OPTION"
+else
+  fail "ffs_admin_grants: SHOW GRANTS: $(tr '\n' ';' <<< "$SHOWN")"
 fi
 ffs_admin_sql() {  # SQL on stdin, as ffs_admin (its password through the environment)
   MYSQL_PWD="$FXA_ADMIN_DB_PASSWORD" docker exec -i -e MYSQL_PWD "$DB_C" mysql -uffs_admin -h127.0.0.1 --protocol=tcp -N -B 2>&1
@@ -1885,14 +1933,56 @@ else
   pass "ffs_admin_grants: ffs_admin reads the allowlist and the accounts and may ask the sign-up policy"
 fi
 
+# What ffs_admin can still do past the access group, pinned as upstream
+# behaves today (porelli/firefox-sync 37a15d0, both SQL SECURITY DEFINER,
+# kept for incidents): ffs.enable_account re-enables any disabled account,
+# ffs.delete_account also deletes the account's allowlist row. An upstream
+# fix (external mode: delete leaves the allowlist alone, enable checks the
+# sign-up policy) turns these red on purpose: update them with it. The
+# access sync (Task 13) puts the row back and disables non-members again.
+acct_state() {  # the second account: <rows>:<disabled 1/0, x = none>:<allowlist rows>
+  printf '%s\n' "SELECT CONCAT((SELECT COUNT(*) FROM fxa.accounts WHERE uid = UNHEX('$DEL_UID')), ':',
+    IFNULL((SELECT disabledAt IS NOT NULL FROM fxa.accounts WHERE uid = UNHEX('$DEL_UID')), 'x'), ':',
+    (SELECT COUNT(*) FROM ffs.signup_allowlist WHERE entry = '$DEL_USER'));" | mysql_root 2>&1
+}
+if [[ "$DEL_UID" =~ ^[0-9a-f]{32}$ ]]; then
+  S0=$(acct_state)
+  ffs_admin_sql <<< "CALL ffs.disable_account(UNHEX('$DEL_UID'));" > /dev/null || true
+  S1=$(acct_state)
+  OUT=$(ffs_admin_sql <<< "CALL ffs.enable_account(UNHEX('$DEL_UID'));" || true)
+  S2=$(acct_state)
+  if [ "$S0:$S1:$S2" = "1:0:1:1:1:1:1:0:1" ] && ! grep -qi error <<< "$OUT"; then
+    pass "admin_reaches_past_access (pinned): ffs_admin's ffs.enable_account re-enables a disabled account, no access-group check ($S1 -> $S2)"
+  else
+    fail "admin_reaches_past_access: enable: states $S0 -> $S1 -> $S2 (want 1:0:1 -> 1:1:1 -> 1:0:1): $OUT"
+  fi
+  ffs_admin_sql <<< "CALL ffs.disable_account(UNHEX('$DEL_UID'));" > /dev/null || true
+  OUT=$(ffs_admin_sql <<< "CALL ffs.delete_account(UNHEX('$DEL_UID'));" || true)
+  S3=$(acct_state)
+  if [ "$S3" = "0:x:0" ] && ! grep -qi error <<< "$OUT"; then
+    pass "admin_reaches_past_access (pinned): ffs_admin's ffs.delete_account deletes the account and its sign-up allowlist row ($DEL_USER: $S3)"
+  else
+    fail "admin_reaches_past_access: delete: state $S3 (want 0:x:0): $OUT"
+  fi
+else
+  fail "admin_reaches_past_access: no second account to check delete / enable on"
+fi
+
 # Fail closed: without its admin group the admin UI doesn't start (an OIDC
 # sign-in with no group would let any Portcullis account in).
+# A name of its own, removed on every path (the EXIT trap for aborts): a
+# probe that started instead would keep running with the instance's secrets.
+CLOSED_C="portcullis-fxa-test-closed-$$"
+FXA_TEST_CONTAINERS="$FXA_TEST_CONTAINERS $CLOSED_C"
 umask 077
 ENVF=$(probe_env 'ADMIN_ALLOWED_GROUPS' ADMIN_ALLOWED_GROUPS=)
-OUT=$(timeout 60 docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=64m --cap-drop ALL \
-  --security-opt no-new-privileges:true --env-file "$ENVF" "$ADMIN_IMAGE" 2>&1) && RC=0 || RC=$?
+docker run -d --name "$CLOSED_C" --network "$NET" --read-only --tmpfs /tmp:size=64m --cap-drop ALL \
+  --security-opt no-new-privileges:true --env-file "$ENVF" "$ADMIN_IMAGE" > /dev/null 2>&1 || true
 rm -f "$ENVF"
 umask "$umask_was"
+RC=$(timeout 60 docker wait "$CLOSED_C" 2>/dev/null) || RC=124
+OUT=$(docker logs "$CLOSED_C" 2>&1 || true)
+docker rm -f "$CLOSED_C" > /dev/null 2>&1 || true
 if [ "$RC" != 0 ] && [ "$RC" != 124 ] && grep -q 'needs ADMIN_ALLOWED_USERS or ADMIN_ALLOWED_GROUPS' <<< "$OUT"; then
   pass "admin_group_fails_closed: an empty ADMIN_ALLOWED_GROUPS stops the admin UI (exit $RC: $(tail -1 <<< "$OUT"))"
 else
@@ -1911,7 +2001,7 @@ case "$(docker logs "$ADMIN_C" 2>&1; docker logs "$PROBE_C" 2>&1; docker logs "$
   *"$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET"*) bad="$bad logs" ;;
 esac
 [ -z "$bad" ] && pass "admin secret: the OIDC client secret on no container's argv, in no log" || fail "admin secret: found in:$bad"
-docker rm -f "$OIDC_C" "$PROBE_C" > /dev/null 2>&1 || true
+docker rm -f "$OIDC_C" "$PROBE_C" "$CLOSED_C" > /dev/null 2>&1 || true
 rm -rf "$PROBE_DIR"
 
 cleanup_live
