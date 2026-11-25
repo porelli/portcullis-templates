@@ -776,6 +776,10 @@ services:
       SYNC_HUMAN_LOGS: "1"
       RUST_LOG: info
       SYNC_MASTER_SECRET: ${FIREFOX_SYNC_FXA_MASTER_SECRET:?FIREFOX_SYNC_FXA_MASTER_SECRET must be set}
+      # Connects as firefoxsync_app (guard.sql): owns no table, no superuser,
+      # may create no database object. No SYNC_TOKENSERVER__INIT_NODE_URL:
+      # firefox-sync-fxa-migrate creates the node row; this role may only
+      # update a node's load.
       SYNC_SYNCSTORAGE__DATABASE_URL: postgres://firefoxsync_app:${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync
       SYNC_TOKENSERVER__ENABLED: "true"
       # Migrations run in firefox-sync-fxa-migrate (as the owner), never here.
@@ -897,10 +901,16 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # One-shot, every start: Portcullis's guard on the Sync database (the
-  # roles and grants; guard.sql, revoke.sql, admin-db.sql). Until those land
-  # it only checks the database answers, so the Sync server never starts
-  # before it.
+  # One-shot, every start: Portcullis's guard on the Sync database, as in
+  # firefox-sync/ without its allowlist (who may have an account is decided
+  # on the accounts side): the roles and grants, this hostname's node
+  # (guard.sql, one transaction). Fails closed: on any error the Sync server
+  # does not start. First, in a transaction of its own that guard.sql's
+  # rollback can't undo, revoke.sql: no role but the owner may run porelli's
+  # SECURITY DEFINER functions. Then, outside guard.sql's transaction
+  # (CREATE DATABASE can't run in one), admin-db.sql: the admin UI's own
+  # database, owned by its role and closed to every other. Passwords reach
+  # psql through the environment (\getenv), never argv.
   firefox-sync-fxa-init:
     image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     user: "70:70"
@@ -915,12 +925,21 @@ services:
     command:
       - |
         set -e
-        psql -X -q -t -v ON_ERROR_STOP=1 -c 'SELECT 1'
+        psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/revoke.sql
+        psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/guard.sql
+        psql -X -q -t -v ON_ERROR_STOP=1 -f /etc/portcullis/admin-db.sql
     environment:
       PGHOST: firefox-sync-fxa-db
       PGUSER: firefoxsync
       PGDATABASE: firefoxsync
       PGPASSWORD: ${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}
+      FIREFOX_SYNC_APP_DB_PASSWORD: ${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}
+      FIREFOX_SYNC_ADMIN_DB_PASSWORD: ${FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD must be set}
+      FIREFOX_SYNC_NODE_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}
+    volumes:
+      - ./templates/firefox-sync-fxa/revoke.sql:/etc/portcullis/revoke.sql:ro
+      - ./templates/firefox-sync-fxa/guard.sql:/etc/portcullis/guard.sql:ro
+      - ./templates/firefox-sync-fxa/admin-db.sql:/etc/portcullis/admin-db.sql:ro
     depends_on:
       firefox-sync-fxa-db-init:
         condition: service_completed_successfully

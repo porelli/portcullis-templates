@@ -677,6 +677,83 @@ fi
 [ "$(ENV fxa-policy FXA_MAX_ACCOUNTS)" = '${MAX_ACCOUNTS:-unlimited}' ] \
   && pass 'no_cap_default: fxa-policy FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}' || fail "no_cap_default: fxa-policy $(ENV fxa-policy FXA_MAX_ACCOUNTS)"
 
+# ── Sync (Task 15): our guard on the Sync database, its roles and the node.
+# As firefox-sync/ without its allowlist: who may have an account is
+# decided on the accounts side. ──
+TDIR=$(dirname "$COMPOSE")
+NODE_WANT='https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA:-firefox-sync-fxa.portcullis.local}'
+# node_url: one node, this instance's own Sync host (the router's default
+# subdomain), everywhere it is named; the public server creates none.
+check_env firefox-sync-fxa-migrate SYNC_TOKENSERVER__INIT_NODE_URL "$NODE_WANT"
+check_env firefox-sync-fxa-init FIREFOX_SYNC_NODE_URL "$NODE_WANT"
+check_env firefox-sync-fxa-db-init DOMAIN "$NODE_WANT"
+check_env ffs-admin SYNCSTORAGE_DOMAIN "$NODE_WANT"
+check_env firefox-sync-fxa SYNC_TOKENSERVER__INIT_NODE_URL "<unset>"
+check_env firefox-sync-fxa SYNC_TOKENSERVER__RUN_MIGRATIONS false
+check_env firefox-sync-fxa-migrate SYNC_TOKENSERVER__RUN_MIGRATIONS true
+# The public server as firefoxsync_app, the migrations as the owner.
+APP_URL='postgres://firefoxsync_app:${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync'
+OWNER_URL='postgres://firefoxsync:${FIREFOX_SYNC_FXA_DB_PASSWORD:?FIREFOX_SYNC_FXA_DB_PASSWORD must be set}@firefox-sync-fxa-db:5432/firefoxsync'
+for k in SYNC_SYNCSTORAGE__DATABASE_URL SYNC_TOKENSERVER__DATABASE_URL; do
+  check_env firefox-sync-fxa "$k" "$APP_URL"
+  check_env firefox-sync-fxa-migrate "$k" "$OWNER_URL"
+done
+OWNER_HOLDERS=$(yq -r '[.services | to_entries[] | select(.value.environment // {} | to_entries | any_c(.value | tostring | test("FIREFOX_SYNC_FXA_DB_PASSWORD"))) | .key] | sort | join(" ")' "$COMPOSE")
+[ "$OWNER_HOLDERS" = "firefox-sync-fxa-db firefox-sync-fxa-db-init firefox-sync-fxa-init firefox-sync-fxa-migrate" ] \
+  && pass "sync roles: the Sync database owner's password only in the database and its three one-shots" \
+  || fail "sync roles: the owner's password is in: $OWNER_HOLDERS"
+# porelli's init: access managed elsewhere, no list, no limit, no app role
+# to hand the tables to.
+check_env firefox-sync-fxa-db-init ADMIN_ACCESS_EXTERNAL 1
+check_env firefox-sync-fxa-db-init MAX_USERS unlimited
+check_env firefox-sync-fxa-db-init SYNC_ALLOWED_ACCOUNTS ""
+check_env firefox-sync-fxa-db-init POSTGRES_SYNC_USER ""
+check_dep ffs-admin firefox-sync-fxa-init service_completed_successfully
+# The init: revoke.sql, then guard.sql in one transaction, then admin-db.sql;
+# the files read-only, the values through the environment only.
+INIT_CMD=$(yq -r '.services["firefox-sync-fxa-init"].command[0]' "$COMPOSE")
+WANT_INIT_CMD='set -e
+psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/revoke.sql
+psql -X -q -t -v ON_ERROR_STOP=1 --single-transaction -f /etc/portcullis/guard.sql
+psql -X -q -t -v ON_ERROR_STOP=1 -f /etc/portcullis/admin-db.sql'
+[ "$INIT_CMD" = "$WANT_INIT_CMD" ] && pass "firefox-sync-fxa-init: revoke.sql, guard.sql (--single-transaction), admin-db.sql, ON_ERROR_STOP" \
+  || fail "firefox-sync-fxa-init command: $INIT_CMD"
+[ "$(yq -r '.services["firefox-sync-fxa-init"].volumes | join(" ")' "$COMPOSE")" = "./templates/firefox-sync-fxa/revoke.sql:/etc/portcullis/revoke.sql:ro ./templates/firefox-sync-fxa/guard.sql:/etc/portcullis/guard.sql:ro ./templates/firefox-sync-fxa/admin-db.sql:/etc/portcullis/admin-db.sql:ro" ] \
+  && [ "$(yq -r '.services["firefox-sync-fxa-init"] | has("group_add")' "$COMPOSE")" = false ] \
+  && pass "firefox-sync-fxa-init: the three SQL files read-only, no data file (no group_add)" \
+  || fail "firefox-sync-fxa-init: volumes / group_add"
+check_env firefox-sync-fxa-init FIREFOX_SYNC_APP_DB_PASSWORD '${FIREFOX_SYNC_FXA_APP_DB_PASSWORD:?FIREFOX_SYNC_FXA_APP_DB_PASSWORD must be set}'
+check_env firefox-sync-fxa-init FIREFOX_SYNC_ADMIN_DB_PASSWORD '${FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD:?FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD must be set}'
+GUARD="$TDIR/guard.sql"
+if [ ! -s "$GUARD" ] || grep -Eq 'allowlist\.json|portcullis_check_allowed_account|INSERT INTO (public\.)?sync_allowed_accounts|DELETE FROM (public\.)?sync_allowed_accounts|CREATE TABLE IF NOT EXISTS sync_allowed_accounts|CREATE (OR REPLACE )?TRIGGER' "$GUARD"; then
+  fail "guard.sql: still has firefox-sync's allowlist (data file, table writes or users trigger)"
+else
+  pass "guard.sql: no allowlist table, data file or users trigger (the accounts side decides who signs up)"
+fi
+grep -q '^CREATE EVENT TRIGGER portcullis_app_no_ddl ON ddl_command_end$' "$GUARD" \
+  && grep -q "^SET LOCAL log_statement = 'none';$" "$GUARD" \
+  && [ "$(grep -c '^\\getenv ' "$GUARD")" = 3 ] && ! grep -q '^\\set ' "$GUARD" \
+  && pass "guard.sql: the no-DDL event trigger, no statement logging, values only by \\getenv" \
+  || fail "guard.sql: event trigger / log_statement / \\getenv"
+# The admin UI's roles exactly as firefox-sync's: its guard.sql section, and
+# revoke.sql / admin-db.sql from their first statement on, byte for byte.
+admin_section() { awk '/^SELECT NOT EXISTS \(SELECT 1 FROM pg_roles WHERE rolname = .firefoxsync_admin.\)/ { on = 1 } /^SELECT .portcullis-guard: / { on = 0 } on' "$1"; }
+body() { sed -n '/^SET search_path = pg_catalog, pg_temp;$/,$p' "$1"; }
+FS_DIR="$TDIR/../firefox-sync"
+if [ -n "$(admin_section "$GUARD")" ] && [ "$(admin_section "$GUARD")" = "$(admin_section "$FS_DIR/guard.sql")" ]; then
+  pass "guard.sql: the admin UI's roles section is firefox-sync's, byte for byte"
+else
+  fail "guard.sql: the admin UI's roles differ from firefox-sync's:
+$(diff <(admin_section "$FS_DIR/guard.sql") <(admin_section "$GUARD") | head -20)"
+fi
+for f in revoke.sql admin-db.sql; do
+  [ -n "$(body "$TDIR/$f")" ] && [ "$(body "$TDIR/$f")" = "$(body "$FS_DIR/$f")" ] \
+    && pass "$f: firefox-sync's statements, byte for byte" || fail "$f differs from firefox-sync's"
+done
+# The helper Firefox (tests/fxa_client.py): a password never on argv.
+grep -q 'os.environ.get("FXA_PASSWORD"' tests/fxa_client.py && ! grep -Eq 'argv\[[2-9]\]' tests/fxa_client.py \
+  && pass "fxa_client.py: the password from FXA_PASSWORD only, never argv" || fail "fxa_client.py: password handling"
+
 FXA_DONE=1
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0
@@ -819,9 +896,13 @@ printf 'services:\n  fxa-auth:\n    volumes:\n      - %s:/etc/ssl/certs/portcull
 export COMPOSE_OVERRIDE
 start_catcher() {  # $1 user, $2 password, $3 tls (1 = offers STARTTLS)
   docker rm -f "$CATCHER" > /dev/null 2>&1 || true
+  # CATCHER_MAIL_DIR: a host directory for the saved messages (the
+  # helper Firefox reads its codes there), else they stay in its tmpfs.
+  local mailv=()
+  [ -z "${CATCHER_MAIL_DIR:-}" ] || mailv=(-v "$CATCHER_MAIL_DIR:/tmp/mail")
   CATCHER_USER=$1 CATCHER_PASS=$2 CATCHER_TLS=${3:-1} docker run -d --name "$CATCHER" --network "$NET" --network-alias fxa-test-smtp \
     --user 10001:10001 --read-only --tmpfs /tmp:size=8m --cap-drop ALL --security-opt no-new-privileges:true \
-    -v "$TLS_DIR/catcher:/tls:ro" -e CATCHER_USER -e CATCHER_PASS -e CATCHER_TLS \
+    ${mailv[@]+"${mailv[@]}"} -v "$TLS_DIR/catcher:/tls:ro" -e CATCHER_USER -e CATCHER_PASS -e CATCHER_TLS \
     --entrypoint node "$FXA_IMAGE" -e "$CATCHER_JS" > /dev/null
   for _ in $(seq 1 30); do grep -q 'catcher listening' <<< "$(docker logs "$CATCHER" 2>&1)" && return 0; sleep 1; done
   fail "the SMTP catcher did not start: $(docker logs "$CATCHER" 2>&1 | tail -5)"
@@ -1050,6 +1131,261 @@ fi
 MAXA=$(max_accounts_setting)
 [ "$MAXA" = 5 ] && pass "no_cap_default: ffs.settings max_accounts 5 with max_accounts 5" \
   || fail "no_cap_default: ffs.settings max_accounts '$MAXA' with the setting 5"
+
+# ══ Sync (Task 15), live: the guard's roles against the running database,
+# then a Firefox (tests/fxa_client.py, PyFxA) signs up, gets a Sync token
+# and round-trips a record. Until Task 12's gate the helper reaches fxa-auth
+# and the Sync server over the instance's network, from a container of the
+# pinned syncstorage-rs image (PyFxA, requests and hawkauthlib ship in it);
+# the base URLs are its parameters. ══
+section "Firefox Sync + own accounts (sync, live)"
+SYNC_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA"
+API_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API"
+SDB=portcullis-firefox-sync-fxa-db-1
+OUTSIDER=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+for job in firefox-sync-fxa-migrate firefox-sync-fxa-db-init firefox-sync-fxa-init; do
+  if RC=$(timeout 300 docker wait "portcullis-${job}-1" 2>/dev/null) && [ "$RC" = 0 ]; then
+    pass "$job exited 0"
+  else
+    fail "$job did not finish successfully (rc=${RC:-none}): $(docker logs "portcullis-${job}-1" 2>&1 | tail -5 | tr '\n' ' ')"
+  fi
+done
+GUARD_LOG=$(docker logs portcullis-firefox-sync-fxa-init-1 2>&1 | grep 'portcullis-guard' || true)
+info "init: $(echo "$GUARD_LOG" | tr '\n' ' ')"
+SYNC_IP=$(app_container_ip "$APP_ID" firefox-sync-fxa)
+wait_for_url "http://${SYNC_IP}:8000/__heartbeat__" 300 "firefox-sync-fxa" || true
+sdb() { docker exec "$SDB" psql -X -U firefoxsync -d firefoxsync -tAc "$1" 2>&1 || true; }
+as_role() { docker exec "$SDB" psql -X -U "$1" -d "$2" -tAc "$3" 2>&1; }  # socket, as the services connect
+
+# app_role_owns_nothing: no object of any kind, no attribute, no membership.
+OWN=$(sdb "SELECT (SELECT count(*) FROM pg_shdepend d JOIN pg_roles r ON r.oid = d.refobjid
+             WHERE r.rolname = 'firefoxsync_app' AND d.deptype = 'o')
+    || ':' || (SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolinherit
+               FROM pg_roles WHERE rolname = 'firefoxsync_app')
+    || ':' || (SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'firefoxsync_app')")
+[ "$OWN" = "0:false:0" ] \
+  && pass "app_role_owns_nothing: firefoxsync_app owns no object, has no superuser / createdb / createrole / replication / bypassrls / inherit, is a member of no role" \
+  || fail "app_role_owns_nothing: owned objects : attributes : memberships = $OWN (want 0:false:0)"
+for stmt in "DROP TRIGGER before_insert_user ON users" \
+            "ALTER TABLE users DISABLE TRIGGER ALL" \
+            "TRUNCATE users" \
+            "SET session_replication_role = replica" \
+            "SET event_triggers = off" \
+            "DROP EVENT TRIGGER portcullis_app_no_ddl" \
+            "ALTER ROLE firefoxsync_app SUPERUSER" \
+            "CREATE ROLE portcullis_x LOGIN" \
+            "UPDATE nodes SET node = 'https://evil.example'" \
+            "UPDATE nodes SET capacity = 0" \
+            "INSERT INTO nodes (service, node, available, current_load, capacity, downed, backoff) VALUES (1, 'https://evil.example', 1, 0, 1, 0, 0)" \
+            "DELETE FROM users" \
+            "UPDATE users SET uid = uid + 1000" \
+            "UPDATE users SET email = 'x@$API_HOST'" \
+            "UPDATE users SET nodeid = 0" \
+            "DELETE FROM __diesel_schema_migrations" \
+            "INSERT INTO services (service, pattern) VALUES ('x', 'y')" \
+            "SELECT setval('users_uid_seq', 1)" \
+            "UPDATE config SET config_value = '0' WHERE config_key = 'max_users'" \
+            "INSERT INTO sync_allowed_accounts (uid, added_at, added_by) VALUES ('$OUTSIDER', 1, 'x')" \
+            "INSERT INTO sync_refused_accounts (uid, first_at, last_at) VALUES ('x', 1, 1)" \
+            "SELECT ffs_allow_account('$OUTSIDER', 'x', 'x')" \
+            "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$" \
+            "CREATE TABLE public.portcullis_x (a int)" \
+            "CREATE VIEW public.portcullis_v AS SELECT 1"; do
+  OUT=$(as_role firefoxsync_app firefoxsync "$stmt" || true)
+  if echo "$OUT" | grep -Eqi 'permission denied|must be owner|may not create|must be superuser'; then
+    pass "app_role_owns_nothing: firefoxsync_app refused: ${stmt:0:50}"
+  else
+    fail "app_role_owns_nothing: firefoxsync_app could: $stmt -> $OUT"
+  fi
+done
+OUT=$(as_role firefoxsync_app firefoxsync "UPDATE nodes SET current_load = current_load, available = available WHERE node = 'https://$SYNC_HOST'; UPDATE users SET generation = generation, keys_changed_at = keys_changed_at, replaced_at = replaced_at WHERE false; SELECT count(*) FROM services; CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (version VARCHAR(50) PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)" || true)
+if echo "$OUT" | grep -qi 'error'; then
+  fail "firefoxsync_app lacks a grant the server needs (node load, users generation / keys, services, diesel's no-op check): $OUT"
+else
+  pass "firefoxsync_app may update a node's load and a user's generation / keys_changed_at / replaced_at, read services, run diesel's no-op check"
+fi
+# The admin UI's reader: reads, deletes Sync rows, nothing else.
+for stmt in "DROP TRIGGER before_insert_user ON users" \
+            "ALTER TABLE users DISABLE TRIGGER ALL" \
+            "SET session_replication_role = replica" \
+            "INSERT INTO users (service, email, generation, client_state, created_at, nodeid) VALUES (1, '$OUTSIDER@$API_HOST', 1, 'a', 1, 1)" \
+            "UPDATE users SET email = '$OUTSIDER@$API_HOST'" \
+            "UPDATE nodes SET capacity = 0" \
+            "DELETE FROM nodes" \
+            "UPDATE config SET config_value = '0' WHERE config_key = 'max_users'" \
+            "INSERT INTO sync_allowed_accounts (uid, added_at, added_by) VALUES ('$OUTSIDER', 1, 'x')" \
+            "SELECT ffs_allow_account('$OUTSIDER', 'x', 'x')" \
+            "SELECT ffs_reject_account('$OUTSIDER', 'x')" \
+            "CREATE TABLE public.portcullis_x (a int)" \
+            "CREATE FUNCTION public.split_part(varchar, text, integer) RETURNS text LANGUAGE sql AS \$\$ SELECT 'x' \$\$"; do
+  OUT=$(as_role firefoxsync_admin_sync firefoxsync "$stmt" || true)
+  if echo "$OUT" | grep -Eqi 'permission denied|must be owner'; then
+    pass "firefoxsync_admin_sync refused: ${stmt:0:50}"
+  else
+    fail "firefoxsync_admin_sync could: $stmt -> $OUT"
+  fi
+done
+OUT=$(as_role firefoxsync_admin_sync firefoxsync "SELECT count(*) FROM users; SELECT count(*) FROM nodes; DELETE FROM bsos WHERE false; DELETE FROM users WHERE false" || true)
+if echo "$OUT" | grep -qi 'error'; then
+  fail "firefoxsync_admin_sync can't read the Sync data or delete Sync rows: $OUT"
+else
+  pass "firefoxsync_admin_sync reads the Sync data and may delete users / storage rows"
+fi
+PRIV_SQL="SELECT count(DISTINCT p.proname) || ':' || COALESCE(bool_or(has_function_privilege(r, p.oid, 'EXECUTE')), false)
+  || ':' || bool_or(has_table_privilege(r, 'public.sync_allowed_accounts', 'INSERT,UPDATE,DELETE,TRUNCATE'))
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public',
+       unnest(ARRAY['firefoxsync_admin', 'firefoxsync_admin_sync', 'firefoxsync_app', 'public']) r
+  WHERE p.proname IN ('ffs_allow_account', 'ffs_remove_allowed_account', 'ffs_reject_account')"
+priv_check() {  # $1 = when
+  local out
+  out=$(sdb "$PRIV_SQL")
+  [ "$out" = "3:false:false" ] && pass "$1: no admin role, app role or PUBLIC may run porelli's SECURITY DEFINER account functions or write sync_allowed_accounts" \
+    || fail "$1: privileges $out (want 3:false:false: functions found, none executable, no write)"
+}
+priv_check "after both inits"
+TRIGGERS=$(sdb "SELECT COALESCE(string_agg(tgname, ',' ORDER BY tgname), '') FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND NOT tgisinternal")
+[ "$TRIGGERS" = before_insert_user ] && pass "users triggers: only porelli's max-users trigger (unlimited), no invite-only trigger" \
+  || fail "users triggers: $TRIGGERS"
+CONF=$(sdb "SELECT string_agg(config_key || '=' || config_value, ',' ORDER BY config_key) FROM config WHERE config_key IN ('allowed_accounts', 'max_users')")
+[ "$CONF" = "allowed_accounts=external,max_users=unlimited" ] && pass "config: $CONF (porelli's init, access managed elsewhere)" || fail "config: $CONF"
+
+# only_three_roles_connect: the Sync server's role and the admin UI's two,
+# each to its own database; the owner is the only superuser.
+LOGINS=$(sdb "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolcanlogin")
+SUPERS=$(sdb "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolsuper")
+CONN_SYNC=$(sdb "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE NOT rolsuper AND has_database_privilege(oid, 'firefoxsync', 'CONNECT')")
+CONN_ADMIN=$(sdb "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE NOT rolsuper AND has_database_privilege(oid, 'firefoxsync_admin', 'CONNECT')")
+if [ "$LOGINS" = firefoxsync,firefoxsync_admin,firefoxsync_admin_sync,firefoxsync_app ] && [ "$SUPERS" = firefoxsync ] \
+    && [ "$CONN_SYNC" = firefoxsync_admin_sync,firefoxsync_app ] && [ "$CONN_ADMIN" = firefoxsync_admin ]; then
+  pass "only_three_roles_connect: firefoxsync_app + firefoxsync_admin_sync to firefoxsync, firefoxsync_admin to firefoxsync_admin; the owner the only superuser"
+else
+  fail "only_three_roles_connect: login roles $LOGINS, superusers $SUPERS, CONNECT on firefoxsync $CONN_SYNC, on firefoxsync_admin $CONN_ADMIN"
+fi
+for who in "firefoxsync_admin firefoxsync" "firefoxsync_app firefoxsync_admin" "firefoxsync_admin_sync firefoxsync_admin" \
+           "firefoxsync_app postgres" "firefoxsync_app template1"; do
+  set -- $who
+  OUT=$(as_role "$1" "$2" "SELECT 1" || true)
+  if echo "$OUT" | grep -qi 'permission denied for database'; then
+    pass "only_three_roles_connect: $1 may not connect to $2"
+  else
+    fail "only_three_roles_connect: $1 connects to $2: $OUT"
+  fi
+done
+for who in "firefoxsync_app firefoxsync" "firefoxsync_admin_sync firefoxsync" "firefoxsync_admin firefoxsync_admin"; do
+  set -- $who
+  [ "$(as_role "$1" "$2" "SELECT 1" || true)" = 1 ] && pass "only_three_roles_connect: $1 connects to $2" \
+    || fail "only_three_roles_connect: $1 can't connect to $2"
+done
+
+# node_url (live): exactly one node in rotation, this instance's Sync host,
+# at the largest capacity.
+NODES=$(sdb "SELECT string_agg(node || '|' || capacity, ',' ORDER BY node) FROM nodes WHERE downed = 0")
+[ "$NODES" = "https://$SYNC_HOST|2147483647" ] && pass "node_url: the one node in rotation is https://$SYNC_HOST (capacity 2147483647)" \
+  || fail "node_url: nodes in rotation: $NODES"
+
+# Fail closed: an init with a bad value (as the Hub would start it, from the
+# checkout's files) exits non-zero and changes nothing; revoke.sql still
+# holds.
+init_with() {  # NAME=value... -> the init's output; returns its exit code
+  local cmd
+  cmd=$(yq -r '.services["firefox-sync-fxa-init"].command[0]' "$COMPOSE")
+  env PGPASSWORD="$FIREFOX_SYNC_FXA_DB_PASSWORD" FIREFOX_SYNC_APP_DB_PASSWORD="$FIREFOX_SYNC_FXA_APP_DB_PASSWORD" \
+    FIREFOX_SYNC_ADMIN_DB_PASSWORD="$FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD" FIREFOX_SYNC_NODE_URL="https://$SYNC_HOST" "$@" \
+    docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true --user 70:70 \
+      -e PGHOST=firefox-sync-fxa-db -e PGUSER=firefoxsync -e PGDATABASE=firefoxsync -e PGPASSWORD \
+      -e FIREFOX_SYNC_APP_DB_PASSWORD -e FIREFOX_SYNC_ADMIN_DB_PASSWORD -e FIREFOX_SYNC_NODE_URL \
+      -v "$PWD/$TDIR/revoke.sql:/etc/portcullis/revoke.sql:ro" -v "$PWD/$TDIR/guard.sql:/etc/portcullis/guard.sql:ro" \
+      -v "$PWD/$TDIR/admin-db.sql:/etc/portcullis/admin-db.sql:ro" \
+      --entrypoint /bin/sh "$POSTGRES_IMAGE" -c "$cmd" 2>&1
+}
+BEFORE=$(sdb "SELECT string_agg(node || '|' || downed || '|' || capacity, ',' ORDER BY id) FROM nodes")
+for bad in "FIREFOX_SYNC_APP_DB_PASSWORD=short|FIREFOX_SYNC_APP_DB_PASSWORD is missing or too short" \
+           "FIREFOX_SYNC_ADMIN_DB_PASSWORD=|FIREFOX_SYNC_ADMIN_DB_PASSWORD is missing or too short" \
+           "FIREFOX_SYNC_NODE_URL=http://$SYNC_HOST|FIREFOX_SYNC_NODE_URL is not https://<hostname>" \
+           "FIREFOX_SYNC_NODE_URL=https://other.$DOMAIN|no sync node for this hostname"; do
+  if OUT=$(init_with "${bad%%|*}"); then
+    fail "init_fails_closed: ${bad%%=*} '${bad#*=}' accepted (exit 0)"
+  elif echo "$OUT" | grep -qF "portcullis: ${bad#*|}"; then
+    pass "init_fails_closed: ${bad%%|*} -> exit non-zero ('${bad#*|}')"
+  else
+    fail "init_fails_closed: ${bad%%|*} -> failed without the expected reason: $(echo "$OUT" | tail -2 | tr '\n' ' ')"
+  fi
+done
+AFTER=$(sdb "SELECT string_agg(node || '|' || downed || '|' || capacity, ',' ORDER BY id) FROM nodes")
+APP_LOGIN=$(PGPASSWORD="$FIREFOX_SYNC_FXA_APP_DB_PASSWORD" docker exec -e PGPASSWORD "$SDB" psql -X -h 127.0.0.1 -U firefoxsync_app -d firefoxsync -tAc 'SELECT 1' 2>&1 || true)
+[ "$BEFORE" = "$AFTER" ] && [ "$APP_LOGIN" = 1 ] \
+  && pass "init_fails_closed: the refused runs changed nothing (nodes as before, firefoxsync_app's password unchanged)" \
+  || fail "init_fails_closed: nodes '$BEFORE' -> '$AFTER', app login with its password: $APP_LOGIN"
+priv_check "after the refused runs"
+OUT=$(init_with) && pass "init: a run with the instance's values exits 0 again" || fail "init with the instance's values: $(echo "$OUT" | tail -3 | tr '\n' ' ')"
+
+# A Firefox: sign up (the code from the mail catcher), then first_sync.
+FXA_PASSWORD=$(openssl rand -hex 16)
+[ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$FXA_PASSWORD"
+export FXA_PASSWORD
+MAIL_DIR=$(mktemp -d)
+chmod 0777 "$MAIL_DIR"
+CATCHER_MAIL_DIR="$MAIL_DIR" start_catcher "$EXT_USER" "$EXT_PW" 1 || true
+wait_healthy "$AUTH_C" 300 || fail "first_sync: fxa-auth not healthy: $(redact "$(docker logs --tail 10 "$AUTH_C" 2>&1)")"
+fxa_client() {  # the helper on the instance's network; the password by env
+  docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true \
+    --user 10001:10001 -v "$PWD/tests/fxa_client.py:/portcullis-test/fxa_client.py:ro" -v "$MAIL_DIR:/mail:ro" \
+    -e FXA_PASSWORD -e FXA_MAIL_DIR=/mail -e FXA_AUTH_URL=http://fxa-auth:9000 \
+    -e FXA_TOKEN_URL=http://firefox-sync-fxa-internal:8000 -e FXA_NODE_URL="https://$SYNC_HOST" \
+    -e FXA_SYNC_URL=http://firefox-sync-fxa-internal:8000 \
+    --entrypoint python3 "$SYNC_IMAGE" -I -B /portcullis-test/fxa_client.py "$@" 2>&1 | tail -1
+}
+jget() { printf '%s' "$1" | jq -r "$2" 2>/dev/null || echo "<not JSON>"; }
+SYNC_USER="fxa-sync-test@$DOMAIN"
+printf "INSERT IGNORE INTO ffs.signup_allowlist (entry) VALUES ('%s');\n" "$SYNC_USER" | mysql_root > /dev/null
+OUT=$(fxa_client signup "$SYNC_USER" || true)
+FXA_UID=$(jget "$OUT" '.uid // ""')
+if [ "$(jget "$OUT" .verified)" = true ] && [[ "$FXA_UID" =~ ^[0-9a-f]{32}$ ]]; then
+  pass "first_sync: $SYNC_USER signed up, verified with the mailed code (uid $FXA_UID)"
+else
+  fail "first_sync: sign-up of $SYNC_USER: $(redact "$OUT")"
+fi
+USERS_BEFORE=$(sdb "SELECT count(*) FROM users")
+OUT=$(fxa_client sync "$SYNC_USER" || true)
+EP=$(jget "$OUT" '.api_endpoint // ""')
+if [ "$(jget "$OUT" .token_http)" = 200 ] && [[ "$EP" =~ ^https://${SYNC_HOST//./\\.}/1\.5/[0-9]+$ ]]; then
+  pass "first_sync: OAuth token with the Sync scope -> tokenserver 200, api_endpoint $EP (the Sync host)"
+else
+  fail "first_sync: tokenserver: $(redact "$OUT")"
+fi
+if [ "$(jget "$OUT" .put_http)" = 200 ] && [ "$(jget "$OUT" .get_http)" = 200 ] && [ "$(jget "$OUT" .round_trip)" = true ] \
+    && [ "$(jget "$OUT" .unsigned_get_http)" = 401 ]; then
+  pass "first_sync: BSO PUT 200 / GET 200 round trip with the token's Hawk key; unsigned GET 401"
+else
+  fail "first_sync: storage: $(redact "$OUT")"
+fi
+ROW=$(sdb "SELECT count(*) || ':' || COALESCE(max(n.node), '') FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.email = '$FXA_UID@$API_HOST'")
+[ "$ROW" = "1:https://$SYNC_HOST" ] && pass "first_sync: one tokenserver row, $FXA_UID@$API_HOST on https://$SYNC_HOST (inserted as firefoxsync_app)" \
+  || fail "first_sync: tokenserver rows for $FXA_UID@$API_HOST: $ROW"
+
+# foreign_token_refused: another accounts server's token (a JWT signed by a
+# key this instance never saw) and one of ours without the Sync scope: 401,
+# no tokenserver row.
+OUT=$(fxa_client foreign-token "$SYNC_USER" || true)
+FSUB=$(jget "$OUT" '.foreign_sub // ""')
+[ "$(jget "$OUT" .foreign_http)" = 401 ] && pass "foreign_token_refused: a foreign accounts server's token -> 401 ($(jget "$OUT" .foreign_status))" \
+  || fail "foreign_token_refused: foreign token: $(redact "$OUT")"
+[ "$(jget "$OUT" .wrong_scope_http)" = 401 ] && pass "foreign_token_refused: our own token without the Sync scope -> 401" \
+  || fail "foreign_token_refused: wrong-scope token: $(redact "$OUT")"
+[ -n "$FSUB" ] && [ "$(sdb "SELECT count(*) FROM users WHERE email LIKE '$FSUB@%'")" = 0 ] \
+  && [ "$(sdb "SELECT count(*) FROM users")" = "$((USERS_BEFORE + 1))" ] \
+  && pass "foreign_token_refused: no tokenserver row for the foreign account (only the first sync's)" \
+  || fail "foreign_token_refused: users rows changed: $(sdb "SELECT count(*) FROM users") (before the first sync $USERS_BEFORE)"
+# The password never on a container's argv.
+bad=""
+for c in $(docker ps -aq); do
+  case "$(docker inspect -f '{{json .Path}} {{json .Args}} {{json .Config.Cmd}} {{json .Config.Entrypoint}}' "$c" 2>/dev/null)" in
+    *"$FXA_PASSWORD"*) bad="$bad $c" ;;
+  esac
+done
+[ -z "$bad" ] && pass "first_sync: the account password on no container's argv" || fail "first_sync: the account password on argv:$bad"
+rm -rf "$MAIL_DIR"
+unset FXA_PASSWORD
 
 cleanup_live
 # shellcheck disable=SC2086
