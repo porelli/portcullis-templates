@@ -1287,15 +1287,16 @@ NODES=$(sdb "SELECT string_agg(node || '|' || capacity, ',' ORDER BY node) FROM 
 # checkout's files) exits non-zero and changes nothing; revoke.sql still
 # holds.
 init_with() {  # NAME=value... -> the init's output; returns its exit code
-  local cmd
+  local cmd sql
+  sql=$(cd "$TDIR" && pwd)
   cmd=$(yq -r '.services["firefox-sync-fxa-init"].command[0]' "$COMPOSE")
   env PGPASSWORD="$FIREFOX_SYNC_FXA_DB_PASSWORD" FIREFOX_SYNC_APP_DB_PASSWORD="$FIREFOX_SYNC_FXA_APP_DB_PASSWORD" \
     FIREFOX_SYNC_ADMIN_DB_PASSWORD="$FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD" FIREFOX_SYNC_NODE_URL="https://$SYNC_HOST" "$@" \
     docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true --user 70:70 \
       -e PGHOST=firefox-sync-fxa-db -e PGUSER=firefoxsync -e PGDATABASE=firefoxsync -e PGPASSWORD \
       -e FIREFOX_SYNC_APP_DB_PASSWORD -e FIREFOX_SYNC_ADMIN_DB_PASSWORD -e FIREFOX_SYNC_NODE_URL \
-      -v "$PWD/$TDIR/revoke.sql:/etc/portcullis/revoke.sql:ro" -v "$PWD/$TDIR/guard.sql:/etc/portcullis/guard.sql:ro" \
-      -v "$PWD/$TDIR/admin-db.sql:/etc/portcullis/admin-db.sql:ro" \
+      -v "$sql/revoke.sql:/etc/portcullis/revoke.sql:ro" -v "$sql/guard.sql:/etc/portcullis/guard.sql:ro" \
+      -v "$sql/admin-db.sql:/etc/portcullis/admin-db.sql:ro" \
       --entrypoint /bin/sh "$POSTGRES_IMAGE" -c "$cmd" 2>&1
 }
 BEFORE=$(sdb "SELECT string_agg(node || '|' || downed || '|' || capacity, ',' ORDER BY id) FROM nodes")
