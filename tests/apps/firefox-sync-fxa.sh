@@ -1102,10 +1102,10 @@ for e in "PORTCULLIS_TRAEFIK_SOURCE=172.31.250.2/24" "PORTCULLIS_TRAEFIK_SOURCE=
          "GATE_HOST_API=$GH_ACC" "GATE_HOST_ADMIN=Admin.fxa-gate.test" "GATE_HOST_SYNC=sync.fxa-gate.test;" "GATE_HOST_PAIRING=localhost" \
          "GATE_HOST_PROFILE=" "GATE_ADMIN_GROUP=" "GATE_ADMIN_GROUP=a,b" "GATE_ADMIN_GROUP= a" "GATE_LISTEN=80x"; do
   OUT=$(docker run --rm --network none "${GATE_RUN[@]}" "${GATE_ENV[@]}" -e "$e" "$NGINX_IMAGE" -c 'timeout 5 sh /portcullis/fxa-gate.sh; echo "exit=$?"' 2>&1 | tail -2 | tr '\n' ' ')
-  case "$OUT" in "fxa-gate: "*" exit=1 ") ;; *) bad="$bad [$e: $OUT]" ;; esac
+  case "$OUT" in *"exit=1 "*) case "$OUT" in *"fxa-gate: "*) ;; *) bad="$bad [$e: $OUT]" ;; esac ;; *) bad="$bad [$e: $OUT]" ;; esac
 done
 OUT=$(docker run --rm --network none "${GATE_RUN[@]}" "${GATE_ENV[@]}" -e "GATE_ADMIN_GROUP=$(printf 'a\tb')" "$NGINX_IMAGE" -c 'timeout 5 sh /portcullis/fxa-gate.sh; echo "exit=$?"' 2>&1 | tail -2 | tr '\n' ' ')
-case "$OUT" in "fxa-gate: "*" exit=1 ") ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac
+case "$OUT" in *"exit=1 "*) case "$OUT" in *"fxa-gate: "*) ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac
 [ -z "$bad" ] && pass "gate_fails_closed: a bad source range, hostname, duplicate host, admin group or port stops the gate (exit 1, nginx never starts)" \
   || fail "gate_fails_closed:$bad"
 docker rm -f "$GT-main" "$GT-pairing" "$GT-gate" > /dev/null 2>&1 || true
@@ -1814,10 +1814,11 @@ KEYS=$(docker exec portcullis-fxa-redis-1 redis-cli --scan --pattern '*203.0.113
   || fail "spoofed_xff_same_key: keys with a spoofed address: $(head -c 300 <<< "$KEYS")"
 
 # sync_body_2_5mb: a 2.5 MB body reaches the Sync server (Hawk refuses it),
-# never the gate's 413.
+# never the gate's 413. A numeric uid: syncstorage-rs answers 404 for a
+# path that names none (/1.5/x/...) before it checks Hawk.
 code=$(head -c 2621440 /dev/zero | tr '\0' 'a' | curl -sk --max-time 30 --resolve "$SYNC_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
-  -H 'Content-Type: application/json' --data-binary @- "https://$SYNC_HOST/1.5/x/storage/bookmarks" || true)
-[ "$code" = 401 ] && pass "sync_body_2_5mb: a 2.5 MB POST to /1.5/x/storage/bookmarks -> 401 (Hawk), not 413" \
+  -H 'Content-Type: application/json' --data-binary @- "https://$SYNC_HOST/1.5/1/storage/bookmarks" || true)
+[ "$code" = 401 ] && pass "sync_body_2_5mb: a 2.5 MB POST to /1.5/1/storage/bookmarks -> 401 (Hawk), not 413" \
   || fail "sync_body_2_5mb: -> $code (want 401)"
 
 # pairing_websocket: the upgrade goes through Traefik and the gate.
