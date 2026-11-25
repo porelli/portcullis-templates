@@ -9,6 +9,17 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 source tests/lib.sh
 TEST_NAME="firefox-sync-fxa"
+# Fail closed: an exit before the last check (set -e, a syntax error, any
+# unexpected failure) counts as a failure, whatever bash's exit status (bash
+# 3.2 reports 0 for an eval syntax error under an EXIT trap). Chains lib.sh's
+# report, which exits 1 on any failure; never replace this trap.
+FXA_DONE=0
+fxa_exit() {
+  local rc=$?
+  [ "$FXA_DONE" = 1 ] || fail "aborted before the last check (exit status $rc)"
+  report
+}
+trap fxa_exit EXIT
 section "Firefox Sync + own accounts (static)"
 
 APP_ID=firefox-sync-fxa
@@ -183,56 +194,34 @@ check_env fxa-auth MYSQL_USERNAME fxa_auth
 check_env fxa-auth PUSHBOX_MYSQL_USERNAME fxa_auth
 check_env fxa-profile MYSQL_USERNAME fxa_profile
 # db-users.sh grants exactly DML + EXECUTE on the services' own databases.
-# M1/M3: Run the script with a stub mysql and verify exact GRANT statements.
+# M1/M3: run the script with a stub mysql (prints its stdin) and check the
+# exact statements it generates.
 DBU="$(dirname "$COMPOSE")/db-users.sh"
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
-cat > "$TMPDIR/mysql" <<'STUB_EOF'
-#!/bin/sh
-cat
-STUB_EOF
-chmod +x "$TMPDIR/mysql"
-# Run db-users.sh with stub mysql on PATH and dummy env
-SQL=$(PATH="$TMPDIR:$PATH" MYSQL_HOST=localhost FXA_MYSQL_PASSWORD=dummy FXA_AUTH_DB_PASSWORD=p1 FXA_PROFILE_DB_PASSWORD=p2 sh "$DBU" 2>&1)
-db_users_ok=true
-
-# Check the exact statements: CREATE/ALTER/REVOKE, GRANTs with escaped underscores, nothing else
-echo "$SQL" | grep -q "CREATE USER IF NOT EXISTS 'fxa_auth'@'%'" || { fail "db-users.sh M1: missing CREATE fxa_auth"; db_users_ok=false; }
-echo "$SQL" | grep -q "ALTER USER 'fxa_auth'@'%' IDENTIFIED BY 'p1'" || { fail "db-users.sh M1: missing ALTER fxa_auth"; db_users_ok=false; }
-echo "$SQL" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_auth'@'%'" || { fail "db-users.sh M1: missing REVOKE for fxa_auth"; db_users_ok=false; }
-echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa to fxa_auth"; db_users_ok=false; }
-echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_oauth\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa\\_oauth to fxa_auth"; db_users_ok=false; }
-echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`pushbox\`.\\* TO 'fxa_auth'@'%'" || { fail "db-users.sh M1/M3: missing GRANT pushbox to fxa_auth"; db_users_ok=false; }
-
-echo "$SQL" | grep -q "CREATE USER IF NOT EXISTS 'fxa_profile'@'%'" || { fail "db-users.sh M1: missing CREATE fxa_profile"; db_users_ok=false; }
-echo "$SQL" | grep -q "ALTER USER 'fxa_profile'@'%' IDENTIFIED BY 'p2'" || { fail "db-users.sh M1: missing ALTER fxa_profile"; db_users_ok=false; }
-echo "$SQL" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_profile'@'%'" || { fail "db-users.sh M1: missing REVOKE for fxa_profile"; db_users_ok=false; }
-echo "$SQL" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_profile\`.\\* TO 'fxa_profile'@'%'" || { fail "db-users.sh M1/M3: missing GRANT fxa\\_profile to fxa_profile"; db_users_ok=false; }
-
-# Reject dangerous patterns: *. *, root, unescaped underscore in db name
-echo "$SQL" | grep -qE 'ON \*\.\*|TO.*root|GRANT.*ON `(fxa|pushbox)_[^\\]' && { fail "db-users.sh M1/M3: dangerous pattern (*. *, root, or unescaped _ in GRANT)"; db_users_ok=false; }
-
-$db_users_ok && pass "db-users.sh M1/M3: exact GRANTs with escaped underscores, REVOKE present, no *. * or root"
-
-# Test mutations that should make it FAIL
-test_mutation() {
-  local desc=$1 mutation=$2
-  local tmp_dbu="$TMPDIR/db-users-mut.sh"
-  cp "$DBU" "$tmp_dbu"
-  eval "$mutation" "$tmp_dbu"
-  local sql_mut=$(PATH="$TMPDIR:$PATH" MYSQL_HOST=localhost FXA_MYSQL_PASSWORD=dummy FXA_AUTH_DB_PASSWORD=p1 FXA_PROFILE_DB_PASSWORD=p2 sh "$tmp_dbu" 2>&1)
-  if echo "$sql_mut" | grep -q "GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\\\_oauth\`.\\* TO 'fxa_auth'@'%'" && \
-     echo "$sql_mut" | grep -q "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_auth'@'%'" && \
-     ! echo "$sql_mut" | grep -qE 'ON \*\.\*|TO.*root'; then
-    fail "db-users.sh mutation: $desc did NOT fail the checks (test is vacuous)"
+DBU_TMP=$(mktemp -d)
+printf '#!/bin/sh\ncat\n' > "$DBU_TMP/mysql"
+chmod +x "$DBU_TMP/mysql"
+if SQL=$(PATH="$DBU_TMP:$PATH" MYSQL_HOST=localhost FXA_AUTH_DB_PASSWORD=p1 FXA_PROFILE_DB_PASSWORD=p2 sh "$DBU" 2>&1); then
+  WANT_SQL="CREATE USER IF NOT EXISTS 'fxa_auth'@'%' IDENTIFIED BY 'p1';
+ALTER USER 'fxa_auth'@'%' IDENTIFIED BY 'p1';
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_auth'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\`.* TO 'fxa_auth'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\_oauth\`.* TO 'fxa_auth'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`pushbox\`.* TO 'fxa_auth'@'%';
+CREATE USER IF NOT EXISTS 'fxa_profile'@'%' IDENTIFIED BY 'p2';
+ALTER USER 'fxa_profile'@'%' IDENTIFIED BY 'p2';
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_profile'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\_profile\`.* TO 'fxa_profile'@'%';
+db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set"
+  if [ "$SQL" = "$WANT_SQL" ]; then
+    pass "db-users.sh M1/M3: exactly CREATE, ALTER, REVOKE and the DML + EXECUTE grants on fxa, fxa\\_oauth, pushbox (fxa_auth) and fxa\\_profile (fxa_profile)"
+  else
+    fail "db-users.sh M1/M3: generated SQL differs from the expected statements:
+$(diff <(echo "$WANT_SQL") <(echo "$SQL") || true)"
   fi
-}
-test_mutation "remove escaping" "sed -i.bak 's/\\\\\\\\_/_/g'"
-test_mutation "sed→cat" "sed -i.bak '/sed.*_/s/sed.*/cat/'"
-test_mutation "delete REVOKE" "sed -i.bak '/REVOKE ALL/d'"
-test_mutation "grant to root" "sed -i.bak 's/user fxa_auth/user root/'"
-test_mutation "grant ON *.*" "sed -i.bak 's/\\\\\\`%s\\\\\\`\\.\\*/\\*.*/''"
-pass "db-users.sh mutations: all 5 regressions make checks fail"
+else
+  fail "db-users.sh M1/M3: the script failed with the stub mysql: $SQL"
+fi
+rm -rf "$DBU_TMP"
 
 # volumes
 VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
@@ -241,11 +230,9 @@ VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
 [ "$(yq -r '.services["fxa-redis"].volumes // [] | length' "$COMPOSE")" = 0 ] \
   && pass "volumes: fxa-redis has none" || fail "volumes: fxa-redis mounts a volume"
 
-# M2: test that no service uses network_mode
-NETMODE_CHECK=$(yq -r '.services[] | select(has("network_mode")) | keys' "$COMPOSE")
-YQ_EXIT=$?
-if [ $YQ_EXIT -ne 0 ]; then
-  fail "M2: yq error checking network_mode (exit $YQ_EXIT)"
+# M2: test that no service uses network_mode (a yq error fails).
+if ! NETMODE_CHECK=$(yq -r '.services[] | select(has("network_mode")) | keys' "$COMPOSE"); then
+  fail "M2: yq error checking network_mode"
 elif echo "$NETMODE_CHECK" | grep -q .; then
   fail "M2: some services use network_mode (not allowed)"
 else
@@ -292,7 +279,7 @@ for f in oauth-clients.js content-server.js; do
   fi
 done
 
-# routers_exact: exactly the six host routers + three path routers.
+# routers_exact: exactly the six host routers + six path routers.
 ACTUAL_ROUTERS=$(yq -r '[.services["fxa-gate"].labels // {} | to_entries[] | select(.key | test("^traefik[.]http[.]routers[.][^.]+[.]rule$")) | .key | capture("routers[.](?<r>[^.]+)[.]rule").r] | sort | join(" ")' "$COMPOSE")
 WANT_ALL="firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-accounts-change-password firefox-sync-fxa-accounts-config firefox-sync-fxa-accounts-metrics firefox-sync-fxa-accounts-root firefox-sync-fxa-admin firefox-sync-fxa-api firefox-sync-fxa-pairing firefox-sync-fxa-profile firefox-sync-fxa-signup firefox-sync-fxa-token"
 if [ "$ACTUAL_ROUTERS" = "$WANT_ALL" ]; then
@@ -322,18 +309,21 @@ for r in firefox-sync-fxa-accounts firefox-sync-fxa-admin; do
 done
 
 # accounts_open_paths: four separate path routers on the accounts host, priority 990, rate-limit.
-declare -A ACCOUNTS_PATHS=(
-  [firefox-sync-fxa-accounts-root]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/`)'
-  [firefox-sync-fxa-accounts-change-password]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/.well-known/change-password`)'
-  [firefox-sync-fxa-accounts-config]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/.well-known/fxa-client-configuration`)'
-  [firefox-sync-fxa-accounts-metrics]='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`) && Path(`/metrics-flow`)'
-)
+ACCOUNTS_HOST='Host(`${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}`)'
+accounts_path() {  # $1 router -> its one Path()
+  case "$1" in
+    firefox-sync-fxa-accounts-root) echo '/' ;;
+    firefox-sync-fxa-accounts-change-password) echo '/.well-known/change-password' ;;
+    firefox-sync-fxa-accounts-config) echo '/.well-known/fxa-client-configuration' ;;
+    firefox-sync-fxa-accounts-metrics) echo '/metrics-flow' ;;
+  esac
+}
 accounts_open_ok=true
 for router in firefox-sync-fxa-accounts-root firefox-sync-fxa-accounts-change-password firefox-sync-fxa-accounts-config firefox-sync-fxa-accounts-metrics; do
   rule=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.rule\"] // \"\"" "$COMPOSE")
   mws=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.middlewares\"] // \"\"" "$COMPOSE")
   prio=$(yq -r ".services[\"fxa-gate\"].labels[\"traefik.http.routers.$router.priority\"] // \"\"" "$COMPOSE")
-  if [ "$rule" != "${ACCOUNTS_PATHS[$router]}" ] || [ "$mws" != "rate-limit@file,security-headers@file" ] || [ "$prio" != "990" ]; then
+  if [ "$rule" != "$ACCOUNTS_HOST && Path(\`$(accounts_path "$router")\`)" ] || [ "$mws" != "rate-limit@file,security-headers@file" ] || [ "$prio" != "990" ]; then
     fail "accounts_open_paths: $router rule='$rule' mws='$mws' prio='$prio' (want 990)"
     accounts_open_ok=false
   fi
@@ -396,6 +386,7 @@ ACCOUNTS_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MA
 [ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
   && pass "host_reasons: firefox-sync-fxa-accounts text matches" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
 
+FXA_DONE=1
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0
 fi
