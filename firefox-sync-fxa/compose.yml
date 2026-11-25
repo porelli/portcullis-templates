@@ -653,9 +653,19 @@ services:
     restart: unless-stopped
 
   # porelli/firefox-sync's admin UI (:8080) and the sign-up gate (:8081, POST
-  # /v1/account/create of the API host). Access managed elsewhere: who may
-  # sign up is Portcullis's access group (fxa-access-sync). No password
-  # sign-in, no mail of its own, no published port.
+  # /v1/account/create of the API host). The admin host
+  # (${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN}) is behind Portcullis sign-in
+  # and group-gate (fxa-gate's router), then the admin UI's own OpenID
+  # Connect sign-in with Portcullis's Keycloak admits only the instance's
+  # admin group (ADMIN_ALLOWED_GROUPS, by the groups claim; never by email).
+  # No password sign-in (ADMIN_PASSWORD empty: no form, POST /login 403), no
+  # trusted header, no mail of its own, no published port.
+  #
+  # Access managed elsewhere (ADMIN_ACCESS_EXTERNAL, here, in fxa-policy and
+  # in firefox-sync-fxa-db-init): who may sign up is Portcullis's access group
+  # (fxa-access-sync). The sign-up policy, its allowlist, the account cap and
+  # Sync's max users are read-only here and every change is refused server
+  # side; its database user ffs_admin (fxa-policy) may only read them.
   ffs-admin:
     image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
     read_only: true
@@ -666,19 +676,36 @@ services:
     mem_limit: 256m
     pids_limit: 128
     environment:
+      # Who may sign up and sync is Portcullis's: read-only here.
       ADMIN_ACCESS_EXTERNAL: "1"
+      # Sign-in: OpenID Connect only, with Portcullis's Keycloak (the
+      # Hub-registered client keycloak_clients firefox-sync-fxa-admin; the
+      # realm's groups scope sends the LLDAP groups by name). Admins by group
+      # only: no ADMIN_ALLOWED_USERS, and the user-editable, unverified LLDAP
+      # email is never trusted. The client secret by environment only.
       ADMIN_PASSWORD: ""
+      ADMIN_OIDC_ISSUER: https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis
+      ADMIN_OIDC_CLIENT_ID: ${PORTCULLIS_OIDC_CLIENT_ID_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin}
+      ADMIN_OIDC_CLIENT_SECRET: ${FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET:?FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET must be set}
+      ADMIN_OIDC_REDIRECT_URL: https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin.portcullis.local}/auth/callback
+      ADMIN_OIDC_SCOPES: openid email profile
+      ADMIN_OIDC_NAME: Portcullis
       ADMIN_OIDC_GROUPS_CLAIM: groups
-      ADMIN_ALLOWED_GROUPS: ${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}
       ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL: "false"
       ADMIN_ALLOWED_USERS: ""
+      ADMIN_ALLOWED_GROUPS: ${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}
       ADMIN_AUTH_HEADER: ""
-      # Go reads SSL_CERT_FILE: Portcullis's CA bundle.
+      # Discovery, JWKS and the token exchange go to auth.<domain> through
+      # Traefik: trust Portcullis's CA bundle (Go reads SSL_CERT_FILE).
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
-      # The accounts (ffs_admin, made by fxa-policy).
+      # The accounts as ffs_admin, its own database user (fxa-policy, porelli's
+      # fxa-init): it reads the accounts (some columns of fxa.accounts, ffs's
+      # views) and changes them only through ffs's procedures; with access
+      # managed elsewhere the sign-up policy and allowlist read-only.
       FXA_DB: mysql
       FXA_DB_HOST: fxa-db
       FXA_DB_PORT: "3306"
+      FXA_DB_USER: ffs_admin
       FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:?FXA_ADMIN_DB_PASSWORD must be set}
       # As fxa-policy set it (shown on the overview).
       FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}

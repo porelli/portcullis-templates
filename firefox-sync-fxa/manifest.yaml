@@ -25,15 +25,25 @@ resources:
 
 auth:
   method: forward-auth
-  sso: false
+  # The admin UI signs in with Portcullis's Keycloak (keycloak_clients);
+  # Firefox and the account pages use the instance's own Mozilla accounts.
+  sso: partial
   group_access: true
-  # true once the admin UI admits the admin group (its OIDC sign-in), with
-  # tests.signin.admin.
+  # The admin UI admits only the admin group (its OIDC sign-in,
+  # ADMIN_ALLOWED_GROUPS; tests/apps/firefox-sync-fxa.sh "admin"). Still
+  # false: group_admin needs a tests.signin.admin check, and the sign-in e2e
+  # checks one host (the accounts host), where the admin group changes
+  # nothing; the admin UI is on a host of its own.
   group_admin: false
   access_group: users_firefox-sync-fxa
   admin_group: admin_firefox-sync-fxa
   notes: |
     Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
+
+    **Admin UI** (porelli/firefox-sync's admin UI): on its own host (default `firefox-sync-fxa-admin.<domain>`), behind two sign-ins. First Portcullis sign-in and the access group (group-gate). Then the admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the instance's **admin group** (`admin_firefox-sync-fxa`, from the `groups` claim; never by email, which is user-editable and unverified). No password sign-in (`POST /login` answers 403), no trusted identity header, no mail of its own, no update check.
+
+    - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*, `ADMIN_ACCESS_EXTERNAL`): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and every change of them is refused. Its database user `ffs_admin` may only read them.
+    - Kept: monitoring, the event log, account pages and notes, per-account sign-out and disable / enable (for incidents), and the Sync data tools. The Connect a device page gives `identity.fxaccounts.autoconfig.uri` = the accounts host.
 
     **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why. STARTTLS is required, never opportunistic: a server that doesn't offer it gets no mail and no password.
 
@@ -79,7 +89,9 @@ settings:
       delivery: [{env: EXT_SMTP_HOST}]
     - key: smtp_port
       label: SMTP port
-      description: Another SMTP server only. 587 for STARTTLS, 465 for TLS.
+      description: >-
+        Another SMTP server only. 587 for STARTTLS, 465 for TLS; the accounts
+        server doesn't start with TLS on 587 or STARTTLS on 465.
       section: Mail
       type: int
       min: 1
@@ -108,7 +120,9 @@ settings:
       delivery: [{env: EXT_SMTP_USER}]
     - key: smtp_password
       label: SMTP password
-      description: Another SMTP server only. The password of the SMTP user.
+      description: >-
+        Another SMTP server only. The password of the SMTP user; it can't
+        contain ' or \.
       section: Mail
       type: secret
       applies: restart
@@ -182,8 +196,14 @@ env:
     description: tokenserver metrics hash secret
     generate: random
   - key: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET
-    description: OpenID Connect client secret of the admin UI
+    description: OpenID Connect client secret of the admin UI (Keycloak client firefox-sync-fxa-admin)
     generate: random
+
+keycloak_clients:
+  - client_id: firefox-sync-fxa-admin
+    secret_env: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET
+    redirect_uri: "https://{{HOST_FIREFOX_SYNC_FXA_ADMIN}}/auth/callback"
+    name: Firefox Sync + own accounts admin UI
 
 urls:
   - label: Accounts (identity.fxaccounts.autoconfig.uri)

@@ -27,8 +27,10 @@
 SET LOCAL log_statement = 'none';
 SET LOCAL log_min_error_statement = 'panic';
 
--- An unset variable stays as the literal text :'node_url' (and so on): it
--- fails the checks below (fail closed).
+-- An unset variable (its environment variable unset) isn't substituted:
+-- psql sends :'node_url' (and so on) as it is, and the statement fails with
+-- a syntax error at the ':' (fail closed; compose's ${...:?} already refuses
+-- to start the job without them). An empty one fails the checks below.
 CREATE TEMP TABLE portcullis_node ON COMMIT DROP AS SELECT :'node_url'::text AS url;
 CREATE TEMP TABLE portcullis_pw ON COMMIT DROP AS SELECT length(:'app_password') AS len, length(:'admin_password') AS admin_len;
 

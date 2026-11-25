@@ -14,6 +14,8 @@
 #   MAIL_SOURCE=external: the admin's SMTP server, EXT_SMTP_HOST,
 #     EXT_SMTP_PORT (587), EXT_SMTP_SECURITY (starttls | tls), EXT_SMTP_USER,
 #     EXT_SMTP_PASSWORD, EXT_SMTP_SENDER (an address).
+#   Either source: tls on 587 and starttls on 465 are refused (each port
+#   speaks the other mode); any other port takes either.
 #
 # STARTTLS (the provider, and starttls for an external server) is required,
 # never opportunistic: the auth server has no setting for nodemailer's
@@ -130,6 +132,12 @@ _pm_select() {
   esac
   _pm_host_ok "$_pm_host" || { _pm_refuse "the SMTP host isn't a host name"; return 1; }
   _pm_port_ok "$_pm_port" || { _pm_refuse "the SMTP port isn't 1-65535"; return 1; }
+  # 465 is TLS from the start (RFC 8314), 587 STARTTLS (RFC 6409): the other
+  # mode on them only fails at the first code sent. Other ports take either.
+  case "$_pm_secure:$_pm_port" in
+    true:587) _pm_refuse "port 587 is for STARTTLS, not TLS from the start: choose STARTTLS, or port 465 for TLS (settings: Mail)"; return 1 ;;
+    false:465) _pm_refuse "port 465 is for TLS from the start, not STARTTLS: choose TLS, or port 587 for STARTTLS (settings: Mail)"; return 1 ;;
+  esac
   _pm_plain "$_pm_user" || { _pm_refuse "the SMTP user holds a control character"; return 1; }
   _pm_plain "$_pm_pass" || { _pm_refuse "the SMTP password holds a control character"; return 1; }
   _pm_plain "$_pm_sender" || { _pm_refuse "the sender holds a control character"; return 1; }

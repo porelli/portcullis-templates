@@ -611,6 +611,46 @@ RCPT TO:<x@y.z>"
 ms_case "provider: a line break in the From refused" \
   "$(REFUSED "portcullis: no mail: the sender holds a control character" provider-pw)" "${PROV[@]}" "PORTCULLIS_MAIL_SENDER_FROM=a <a@b.c>
 Bcc: x@y.z"
+ms_case "external: a line break in the password refused" \
+  "$(REFUSED "portcullis: no mail: the SMTP password holds a control character" ext-pw)" "${EXT[@]}" "EXT_SMTP_PASSWORD=pw-ext
+RCPT TO:<x@y.z>"
+ms_case "external: a tab in the password refused" \
+  "$(REFUSED "portcullis: no mail: the SMTP password holds a control character" ext-pw)" "${EXT[@]}" "EXT_SMTP_PASSWORD=pw"$'\t'"ext"
+# port_mode_mismatch: 587 is STARTTLS's, 465 TLS's from the start; the other
+# mode on them is refused before the auth server starts (it would fail at the
+# first code sent). Other ports take either mode.
+TLS_ON_587="portcullis: no mail: port 587 is for STARTTLS, not TLS from the start: choose STARTTLS, or port 465 for TLS (settings: Mail)"
+STARTTLS_ON_465="portcullis: no mail: port 465 is for TLS from the start, not STARTTLS: choose TLS, or port 587 for STARTTLS (settings: Mail)"
+ms_case "port_mode_mismatch: tls on 587 refused" "$(REFUSED "$TLS_ON_587" ext-pw)" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=587
+ms_case "port_mode_mismatch: tls with the port left at its default (587) refused" "$(REFUSED "$TLS_ON_587" ext-pw)" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=
+ms_case "port_mode_mismatch: starttls on 465 refused" "$(REFUSED "$STARTTLS_ON_465" ext-pw)" "${EXT[@]}" EXT_SMTP_SECURITY=starttls EXT_SMTP_PORT=465
+ms_case "port_mode_mismatch: the provider on 465 refused (its listener is STARTTLS)" "$(REFUSED "$STARTTLS_ON_465" provider-pw)" \
+  "${PROV[@]}" PORTCULLIS_MAIL_SENDER_PORT=465
+ms_case "port_mode_mismatch: starttls on another port (2525) accepted" \
+  'rc=0
+err=
+SMTP_HOST=smtp.example.net
+SMTP_PORT=2525
+SMTP_SECURE=false
+SMTP_USER=fxa
+SMTP_SENDER=Firefox accounts <accounts@example.net>
+SMTP_PASS=set
+inputs=
+CONFIG_FILES='"$CF0,$RT" "${EXT[@]}" EXT_SMTP_PORT=2525
+ms_case "port_mode_mismatch: tls on another port (2465) accepted" \
+  'rc=0
+err=
+SMTP_HOST=smtp.example.net
+SMTP_PORT=2465
+SMTP_SECURE=true
+SMTP_USER=fxa
+SMTP_SENDER=Firefox accounts <accounts@example.net>
+SMTP_PASS=set
+inputs=
+CONFIG_FILES='"$CF0" "${EXT[@]}" EXT_SMTP_SECURITY=tls EXT_SMTP_PORT=2465
+[ "$(OPT smtp_password .description)" = "Another SMTP server only. The password of the SMTP user; it can't contain ' or \\." ] \
+  && pass "settings: smtp_password's description says ' and \\ aren't allowed (the Hub's env quoting refuses them)" \
+  || fail "settings: smtp_password description '$(OPT smtp_password .description)'"
 RT_REFUSED="portcullis: no mail: STARTTLS can't be required: FXA_SMTP_REQUIRE_TLS_FILE isn't a readable {\"smtp\":{\"requireTLS\":true}}"
 ms_case "starttls_required: no overlay file = refused (never opportunistic)" "$(REFUSED "$RT_REFUSED" ext-pw)" "${EXT[@]}" FXA_SMTP_REQUIRE_TLS_FILE="$MS_TMP/none.json"
 ms_case "starttls_required: FXA_SMTP_REQUIRE_TLS_FILE unset = refused" "$(REFUSED "$RT_REFUSED" provider-pw)" "${PROV[@]}" FXA_SMTP_REQUIRE_TLS_FILE=
@@ -754,6 +794,84 @@ done
 grep -q 'os.environ.get("FXA_PASSWORD"' tests/fxa_client.py && ! grep -Eq 'argv\[[2-9]\]' tests/fxa_client.py \
   && pass "fxa_client.py: the password from FXA_PASSWORD only, never argv" || fail "fxa_client.py: password handling"
 
+# ── Admin (Task 16): the admin UI with OpenID Connect, only the admin group,
+# access managed elsewhere. As firefox-sync's firefox-sync-admin, with this
+# template's names. ──
+FS_COMPOSE="$FS_DIR/compose.yml"
+FS_ENV() { yq -r ".services[\"firefox-sync-admin\"].environment.$1 // \"<unset>\"" "$FS_COMPOSE"; }
+ADMIN_HOST_DEFAULT='${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin.portcullis.local}'
+# admin_env: the values the brief fixes.
+check_env ffs-admin ADMIN_ACCESS_EXTERNAL 1
+check_env ffs-admin ADMIN_PASSWORD ""
+check_env ffs-admin ADMIN_ALLOWED_GROUPS '${PORTCULLIS_ADMIN_GROUP:-admin_firefox-sync-fxa}'
+check_env ffs-admin ADMIN_OIDC_GROUPS_CLAIM groups
+check_env ffs-admin ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL false
+check_env ffs-admin ADMIN_OIDC_ISSUER 'https://auth.${PORTCULLIS_DOMAIN:-portcullis.local}/realms/portcullis'
+check_env ffs-admin ADMIN_OIDC_CLIENT_ID '${PORTCULLIS_OIDC_CLIENT_ID_FIREFOX_SYNC_FXA_ADMIN:-firefox-sync-fxa-admin}'
+check_env ffs-admin ADMIN_OIDC_CLIENT_SECRET '${FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET:?FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET must be set}'
+check_env ffs-admin ADMIN_OIDC_REDIRECT_URL "https://$ADMIN_HOST_DEFAULT/auth/callback"
+check_env ffs-admin FXA_DB_HOST fxa-db
+check_env ffs-admin FXA_DB_USER ffs_admin
+check_env ffs-admin FXA_DB_PASSWORD '${FXA_ADMIN_DB_PASSWORD:?FXA_ADMIN_DB_PASSWORD must be set}'
+check_env ffs-admin FXA_AUTH_UPSTREAM http://fxa-auth:9000
+check_env ffs-admin FXA_CONTENT_URL 'https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS:-firefox-sync-fxa-accounts.portcullis.local}'
+check_env ffs-admin FXA_AUTH_URL 'https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_API:-firefox-sync-fxa-api.portcullis.local}'
+check_env ffs-admin FXA_PROFILE_URL 'https://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE:-firefox-sync-fxa-profile.portcullis.local}'
+check_env ffs-admin FXA_PAIRING_URL 'wss://${PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING:-firefox-sync-fxa-pairing.portcullis.local}'
+check_env ffs-admin FXA_ACCOUNT_EVENTS false
+[ "$(yq -r '.services["ffs-admin"].environment.FXA_ACCOUNT_EVENTS | tag' "$COMPOSE")" = '!!str' ] \
+  && [ "$(yq -r '.services["ffs-admin"].environment.FXA_CLIENT_ADDRESS_DEPTH | tag' "$COMPOSE")" = '!!str' ] \
+  && pass 'admin_env: FXA_ACCOUNT_EVENTS "false", FXA_CLIENT_ADDRESS_DEPTH "2" (strings)' \
+  || fail "admin_env: FXA_ACCOUNT_EVENTS / FXA_CLIENT_ADDRESS_DEPTH not strings"
+# firefox-sync's admin env block: every key it sets is set here, and the
+# settings that don't name the instance are the same.
+bad=""
+for k in $(yq -r '.services["firefox-sync-admin"].environment | keys | .[]' "$FS_COMPOSE"); do
+  [ "$(ENV ffs-admin "$k")" != "<unset>" ] || bad="$bad $k(unset)"
+done
+for k in ADMIN_ACCESS_EXTERNAL MAX_USERS SYNC_ALLOWED_ACCOUNTS ADMIN_PASSWORD ADMIN_OIDC_ISSUER ADMIN_OIDC_SCOPES \
+         ADMIN_OIDC_NAME ADMIN_OIDC_GROUPS_CLAIM ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL ADMIN_ALLOWED_USERS ADMIN_AUTH_HEADER \
+         SSL_CERT_FILE TOKENSERVER_DB_TYPE TOKENSERVER_DB_PORT TOKENSERVER_DB_NAME TOKENSERVER_DB_USER ADMIN_DB_USER \
+         ADMIN_DB_SYNC_USER ADMIN_DB_NAME ALERT_EMAIL ADMIN_NOTIFY SMTP_HOST ADMIN_UPDATE_CHECK ADMIN_PUBLIC_CHECK ADMIN_EXPORT_PORT; do
+  [ "$(ENV ffs-admin "$k")" = "$(FS_ENV "$k")" ] || bad="$bad $k($(ENV ffs-admin "$k") != $(FS_ENV "$k"))"
+done
+[ -z "$bad" ] && pass "admin_env: firefox-sync's admin env block (every key, the instance-free values identical)" \
+  || fail "admin_env: differs from firefox-sync-admin's:$bad"
+[ "$(ENV ffs-admin ADMIN_INSECURE_COOKIE)" = "<unset>" ] && pass "admin_env: no ADMIN_INSECURE_COOKIE (Secure cookies)" \
+  || fail "admin_env: ADMIN_INSECURE_COOKIE is set"
+grep -qx './certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro' <<< "$(yq -r '.services["ffs-admin"].volumes[]' "$COMPOSE")" \
+  && pass "admin_env: Portcullis's CA bundle at SSL_CERT_FILE, read-only (discovery and token exchange through Traefik)" \
+  || fail "admin_env: the CA bundle isn't mounted at SSL_CERT_FILE"
+# The OIDC client secret: generated, only in ffs-admin, by environment only.
+[ "$(yq -r '.env[] | select(.key == "FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET") | .generate' "$MANIFEST")" = random ] \
+  && pass "admin secret: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET declared with generate: random" \
+  || fail "admin secret: FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET isn't a generated env entry"
+OIDC_HOLDERS=$(yq -r '[.services | to_entries[] | select(.value | tostring | test("FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET")) | .key] | join(" ")' "$COMPOSE")
+OIDC_ENV_ONLY=$(yq -r '[.services["ffs-admin"] | del(.environment) | tostring | test("OIDC_SECRET")] | .[0]' "$COMPOSE")
+[ "$OIDC_HOLDERS" = ffs-admin ] && [ "$OIDC_ENV_ONLY" = false ] \
+  && pass "admin secret: the OIDC client secret only in ffs-admin's environment (no command, entrypoint or other service)" \
+  || fail "admin secret: in $OIDC_HOLDERS; outside the environment: $OIDC_ENV_ONLY"
+# redirect_uri_matches: one Keycloak client, its one redirect URI the one the
+# admin UI sends (ADMIN_OIDC_REDIRECT_URL), its id the client id default.
+KC_CLIENTS=$(yq -o=json -I=0 '.keycloak_clients' "$MANIFEST")
+WANT_KC='[{"client_id":"firefox-sync-fxa-admin","secret_env":"FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET","redirect_uri":"https://{{HOST_FIREFOX_SYNC_FXA_ADMIN}}/auth/callback","name":"Firefox Sync + own accounts admin UI"}]'
+[ "$KC_CLIENTS" = "$WANT_KC" ] && pass "redirect_uri_matches: keycloak_clients is exactly the admin UI's client (one redirect URI, the secret by env)" \
+  || fail "redirect_uri_matches: keycloak_clients $KC_CLIENTS"
+REG_URI=$(yq -r '.keycloak_clients[0].redirect_uri' "$MANIFEST")
+[ "${REG_URI/'{{HOST_FIREFOX_SYNC_FXA_ADMIN}}'/$ADMIN_HOST_DEFAULT}" = "$(ENV ffs-admin ADMIN_OIDC_REDIRECT_URL)" ] \
+  && pass "redirect_uri_matches: the registered redirect URI = ADMIN_OIDC_REDIRECT_URL (https://<admin host>/auth/callback)" \
+  || fail "redirect_uri_matches: registered $REG_URI, the admin UI sends $(ENV ffs-admin ADMIN_OIDC_REDIRECT_URL)"
+# The admin host stays behind Portcullis sign-in and group-gate (Task 11),
+# on fxa-gate; ffs-admin itself is on default only, with no published port.
+[ "$(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-admin.rule"]' "$COMPOSE")" = "Host(\`$ADMIN_HOST_DEFAULT\`)" ] \
+  && pass "admin host: firefox-sync-fxa-admin router on fxa-gate (gated: gated_routers_gateway)" \
+  || fail "admin host: router rule $(yq -r '.services["fxa-gate"].labels["traefik.http.routers.firefox-sync-fxa-admin.rule"]' "$COMPOSE")"
+[ "$(yq -r '.auth.sso' "$MANIFEST")" = partial ] && [ "$(yq -r '.auth.group_admin' "$MANIFEST")" = false ] \
+  && pass "manifest: sso partial (the admin UI signs in with Portcullis's Keycloak); group_admin false until the sign-in e2e can check a second host" \
+  || fail "manifest: sso $(yq -r '.auth.sso' "$MANIFEST"), group_admin $(yq -r '.auth.group_admin' "$MANIFEST")"
+[ "$(yq -r '.tests.signin.host + " " + .tests.signin.path' "$MANIFEST")" = "{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}} /settings" ] \
+  && pass "tests.signin: the accounts host, /settings" || fail "tests.signin: $(yq -o=json -I=0 '.tests.signin' "$MANIFEST")"
+
 FXA_DONE=1
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0
@@ -785,7 +903,7 @@ EXT_PW=$(openssl rand -hex 24)
 if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::$PROVIDER_PW"; echo "::add-mask::$EXT_PW"; fi
 redact() { local s=$1; s=${s//"$PROVIDER_PW"/<provider password>}; s=${s//"$EXT_PW"/<external password>}; printf '%s' "$s"; }
 cleanup_live() {
-  docker rm -f "$CATCHER" > /dev/null 2>&1 || true
+  docker rm -f "$CATCHER" portcullis-fxa-test-oidc portcullis-fxa-test-admin > /dev/null 2>&1 || true
   compose_down "$APP_ID" > /dev/null 2>&1 || true
   rm -rf "${TLS_DIR:-/nonexistent}"
   unset COMPOSE_OVERRIDE
@@ -893,6 +1011,11 @@ chmod 0644 "$TLS_DIR/bundle.crt"
 [ -s "$TLS_DIR/catcher/cert.pem" ] && [ -s "$TLS_DIR/catcher/key.pem" ] || fail "the catcher's test certificate wasn't created"
 COMPOSE_OVERRIDE="$TLS_DIR/override.yml"
 printf 'services:\n  fxa-auth:\n    volumes:\n      - %s:/etc/ssl/certs/portcullis-ca-bundle.crt:ro\n' "$TLS_DIR/bundle.crt" > "$COMPOSE_OVERRIDE"
+# CI only: the admin UI reaches auth.<domain> as through public DNS in
+# production. CI's public-DNS stand-in (Traefik aliases) is on
+# portcullis-proxy, and ffs-admin is on the instance's default network only:
+# auth.<domain> -> the host's published 443 (Traefik), as ai-chat does.
+printf '  ffs-admin:\n    extra_hosts:\n      - "auth.%s:host-gateway"\n' "$DOMAIN" >> "$COMPOSE_OVERRIDE"
 export COMPOSE_OVERRIDE
 start_catcher() {  # $1 user, $2 password, $3 tls (1 = offers STARTTLS)
   docker rm -f "$CATCHER" > /dev/null 2>&1 || true
@@ -1051,6 +1174,12 @@ got=$(EXT_SMTP_PASSWORD=$EXT_PW mc_run -e MAIL_SOURCE=external -e EXT_SMTP_HOST=
   -e EXT_SMTP_SECURITY=tls -e EXT_SMTP_USER=u -e EXT_SMTP_PASSWORD -e EXT_SMTP_SENDER=a@example.net)
 [ "$got" = "0 portcullis: mail: the external SMTP server (smtp.example.net:465, TLS)" ] \
   && pass "fxa-mail-check (busybox): a complete external server: exit 0, '${got#0 }'" || fail "fxa-mail-check (busybox): complete external: '$(redact "$got")'"
+got=$(mc_run -e MAIL_SOURCE=external -e EXT_SMTP_HOST=smtp.example.net -e EXT_SMTP_PORT=587 -e EXT_SMTP_SECURITY=tls -e EXT_SMTP_SENDER=a@example.net)
+[ "$got" = "1 $TLS_ON_587" ] && pass "port_mode_mismatch (busybox): fxa-mail-check refuses tls on 587: exit 1" \
+  || fail "port_mode_mismatch (busybox): tls on 587: '$got'"
+got=$(mc_run -e MAIL_SOURCE=external -e EXT_SMTP_HOST=smtp.example.net -e EXT_SMTP_PORT=465 -e EXT_SMTP_SECURITY=starttls -e EXT_SMTP_SENDER=a@example.net)
+[ "$got" = "1 $STARTTLS_ON_465" ] && pass "port_mode_mismatch (busybox): fxa-mail-check refuses starttls on 465: exit 1" \
+  || fail "port_mode_mismatch (busybox): starttls on 465: '$got'"
 
 # ── provider_used: the Hub's PORTCULLIS_MAIL_SENDER_* (the catcher stands in
 # for the provider's submission listener).
@@ -1198,6 +1327,16 @@ for stmt in "DROP TRIGGER before_insert_user ON users" \
     fail "app_role_owns_nothing: firefoxsync_app could: $stmt -> $OUT"
   fi
 done
+# No sequence privilege at all (identity columns: an INSERT needs none), on
+# every sequence of the database, not only the one setval tries.
+SEQ=$(sdb "SELECT count(*) || ':' || count(*) FILTER (WHERE has_sequence_privilege('firefoxsync_app', c.oid, 'USAGE')
+             OR has_sequence_privilege('firefoxsync_app', c.oid, 'SELECT') OR has_sequence_privilege('firefoxsync_app', c.oid, 'UPDATE'))
+           FROM pg_class c WHERE c.relkind = 'S'")
+if [[ "$SEQ" =~ ^[1-9][0-9]*:0$ ]]; then
+  pass "app_role_owns_nothing: firefoxsync_app has no USAGE, SELECT or UPDATE on any of the ${SEQ%%:*} sequences"
+else
+  fail "app_role_owns_nothing: sequences : with a firefoxsync_app privilege = $SEQ (want n:0, n > 0)"
+fi
 OUT=$(as_role firefoxsync_app firefoxsync "UPDATE nodes SET current_load = current_load, available = available WHERE node = 'https://$SYNC_HOST'; UPDATE users SET generation = generation, keys_changed_at = keys_changed_at, replaced_at = replaced_at WHERE false; SELECT count(*) FROM services; CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (version VARCHAR(50) PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)" || true)
 if echo "$OUT" | grep -qi 'error'; then
   fail "firefoxsync_app lacks a grant the server needs (node load, users generation / keys, services, diesel's no-op check): $OUT"
@@ -1290,14 +1429,20 @@ init_with() {  # NAME=value... -> the init's output; returns its exit code
   local cmd sql
   sql=$(cd "$TDIR" && pwd)
   cmd=$(yq -r '.services["firefox-sync-fxa-init"].command[0]' "$COMPOSE")
-  env PGPASSWORD="$FIREFOX_SYNC_FXA_DB_PASSWORD" FIREFOX_SYNC_APP_DB_PASSWORD="$FIREFOX_SYNC_FXA_APP_DB_PASSWORD" \
-    FIREFOX_SYNC_ADMIN_DB_PASSWORD="$FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD" FIREFOX_SYNC_NODE_URL="https://$SYNC_HOST" "$@" \
+  # The values by this subshell's environment (docker -e NAME), never on an
+  # argv: not even env's (the bad values are test values, set the same way).
+  (
+    export PGPASSWORD="$FIREFOX_SYNC_FXA_DB_PASSWORD" FIREFOX_SYNC_APP_DB_PASSWORD="$FIREFOX_SYNC_FXA_APP_DB_PASSWORD" \
+      FIREFOX_SYNC_ADMIN_DB_PASSWORD="$FIREFOX_SYNC_FXA_ADMIN_DB_PASSWORD" FIREFOX_SYNC_NODE_URL="https://$SYNC_HOST"
+    local a
+    for a in "$@"; do export "${a%%=*}=${a#*=}"; done
     docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true --user 70:70 \
       -e PGHOST=firefox-sync-fxa-db -e PGUSER=firefoxsync -e PGDATABASE=firefoxsync -e PGPASSWORD \
       -e FIREFOX_SYNC_APP_DB_PASSWORD -e FIREFOX_SYNC_ADMIN_DB_PASSWORD -e FIREFOX_SYNC_NODE_URL \
       -v "$sql/revoke.sql:/etc/portcullis/revoke.sql:ro" -v "$sql/guard.sql:/etc/portcullis/guard.sql:ro" \
       -v "$sql/admin-db.sql:/etc/portcullis/admin-db.sql:ro" \
       --entrypoint /bin/sh "$POSTGRES_IMAGE" -c "$cmd" 2>&1
+  )
 }
 BEFORE=$(sdb "SELECT string_agg(node || '|' || downed || '|' || capacity, ',' ORDER BY id) FROM nodes")
 for bad in "FIREFOX_SYNC_APP_DB_PASSWORD=short|FIREFOX_SYNC_APP_DB_PASSWORD is missing or too short" \
@@ -1387,6 +1532,387 @@ done
 [ -z "$bad" ] && pass "first_sync: the account password on no container's argv" || fail "first_sync: the account password on argv:$bad"
 rm -rf "$MAIL_DIR"
 unset FXA_PASSWORD
+
+# ══ Admin (Task 16), live: the admin UI as the instance starts it, then a
+# probe of the same image and environment that signs in at a stand-in
+# OpenID provider (Keycloak can't sign the test users in without a browser:
+# passkeys only), which shows whom the admin UI lets in by the groups claim
+# and, signed in, that access is managed elsewhere. Until Task 12's gate the
+# admin UI is reached over the instance's network. ══
+section "Firefox Sync + own accounts (admin, live)"
+ADMIN_C=portcullis-ffs-admin-1
+ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN"
+ACC_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS"
+PAIRING_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PAIRING"
+ADMIN_GROUP_M=$(yq -r '.auth.admin_group' "$MANIFEST")
+ACCESS_GROUP_M=$(yq -r '.auth.access_group' "$MANIFEST")
+CID_M=$(yq -r '.keycloak_clients[0].client_id' "$MANIFEST")
+OIDC_C=portcullis-fxa-test-oidc
+PROBE_C=portcullis-fxa-test-admin
+if wait_healthy "$ADMIN_C" 300; then
+  pass "ffs-admin healthy (its OIDC sign-in configured, it starts)"
+else
+  fail "ffs-admin not healthy: $(docker logs --tail 20 "$ADMIN_C" 2>&1 | tr '\n' ' ')"
+fi
+AIP=$(app_container_ip "$APP_ID" ffs-admin)
+AB="http://$AIP:8080"
+
+# post_login_403: no password sign-in; forged identity headers sign nobody in.
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'password=aaaaaaaaaaaaaaaa' "$AB/login" || echo 000)
+[ "$CODE" = 403 ] && pass "post_login_403: POST /login -> 403 (no password sign-in)" || fail "post_login_403: POST /login -> $CODE"
+LOGIN_PAGE=$(curl -s "$AB/login" || true)
+if grep -q 'type="password"' <<< "$LOGIN_PAGE"; then
+  fail "post_login_403: the login page has a password form"
+elif grep -q 'href="/auth/login' <<< "$LOGIN_PAGE" && grep -q 'Portcullis' <<< "$LOGIN_PAGE"; then
+  pass "post_login_403: the login page has no password form, only the Portcullis sign-in (/auth/login)"
+else
+  fail "post_login_403: the login page offers no Portcullis sign-in: $(sed 's/<[^>]*>/ /g' <<< "$LOGIN_PAGE" | tr -s ' \n' ' ' | head -c 300)"
+fi
+CODE=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Forwarded-User: e2eadmin' -H 'X-Auth-Request-Preferred-Username: e2eadmin' \
+  -H "X-Auth-Request-Groups: $ADMIN_GROUP_M" -H "X-Forwarded-Groups: $ADMIN_GROUP_M" -H 'Remote-Email: e2eadmin@example.org' \
+  -H "Remote-Groups: $ADMIN_GROUP_M" "$AB/" || echo 000)
+[[ "$CODE" == "303 "*"/login"* ]] && pass "post_login_403: forged identity headers -> $CODE (not signed in)" \
+  || fail "post_login_403: forged identity headers -> $CODE"
+
+# redirect_uri_matches: discovery at Portcullis's issuer (through Traefik,
+# trusting Portcullis's CA), then Keycloak, with exactly the redirect URI the
+# Hub registers (keycloak_clients). Keycloak must accept it and refuse any
+# other; a failed registration fails (never a pass without the client).
+REDIRECT="https://$ADMIN_HOST/auth/callback"
+LOC=""
+for _ in $(seq 1 20); do
+  LOC=$(curl -s -o /dev/null -w '%{redirect_url}' "$AB/auth/login" || true)
+  case "$LOC" in "https://auth.$DOMAIN/"*) break ;; *) sleep 3 ;; esac
+done
+ENC=$(jq -rn --arg u "$REDIRECT" '$u | @uri')
+if [[ "$LOC" == "https://auth.$DOMAIN/realms/portcullis/protocol/openid-connect/auth?"* ]] \
+    && grep -q "redirect_uri=$ENC\(&\|$\)" <<< "$LOC" && grep -q "client_id=$CID_M\(&\|$\)" <<< "$LOC" \
+    && grep -q 'code_challenge_method=S256' <<< "$LOC" && grep -q 'scope=openid+email+profile\(&\|$\)' <<< "$LOC"; then
+  pass "redirect_uri_matches: /auth/login -> Keycloak, client $CID_M, redirect_uri $REDIRECT, scope openid email profile, PKCE S256"
+else
+  fail "redirect_uri_matches: /auth/login -> ${LOC:-<none>} (discovery of https://auth.$DOMAIN/realms/portcullis failed? $(docker logs --tail 5 "$ADMIN_C" 2>&1 | grep -i oidc | tr '\n' ' '))"
+fi
+KC_TOKEN=$(keycloak_admin_token || true)
+REG_REDIRECT=$(yq -r '.keycloak_clients[0].redirect_uri' "$MANIFEST")
+REG_REDIRECT=${REG_REDIRECT/'{{HOST_FIREFOX_SYNC_FXA_ADMIN}}'/$ADMIN_HOST}
+# The secret from this shell's environment (jq's env), never an argv.
+REG=$(jq -n --arg uri "$REG_REDIRECT" --arg cid "$CID_M" --arg name "$(yq -r '.keycloak_clients[0].name' "$MANIFEST")" \
+  '{clientId: $cid, name: $name, enabled: true, protocol: "openid-connect", publicClient: false,
+    secret: env.FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET, redirectUris: [$uri], standardFlowEnabled: true, directAccessGrantsEnabled: false,
+    defaultClientScopes: ["openid", "profile", "email", "acr", "groups"]}' \
+  | curl -s -o /dev/null -w '%{http_code}' -X POST "$KEYCLOAK_URL/admin/realms/portcullis/clients" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") -H 'Content-Type: application/json' -d @- || echo 000)
+case "$REG" in
+  201 | 409) pass "redirect_uri_matches: Keycloak client $CID_M registered as the Hub does (redirect URI $REG_REDIRECT)" ;;
+  *) fail "redirect_uri_matches: registering the Keycloak client answered $REG" ;;
+esac
+[ "$REG_REDIRECT" = "$REDIRECT" ] && pass "redirect_uri_matches: the registered redirect URI is the one the admin UI sends" \
+  || fail "redirect_uri_matches: registered $REG_REDIRECT, sent $REDIRECT"
+AUTH_PATH="/${LOC#https://auth.$DOMAIN/}"
+kc_page() { curl -sk --max-time 15 --resolve "auth.$DOMAIN:443:127.0.0.1" "https://auth.$DOMAIN$1" 2>/dev/null || true; }
+KC_ERR='Invalid parameter: redirect_uri|Client not found|Invalid redirect uri|invalid_redirect_uri|unauthorized_client'
+PAGE=$(kc_page "$AUTH_PATH")
+if [ -n "$PAGE" ] && [ "$AUTH_PATH" != "/" ] && ! grep -Eqi "$KC_ERR" <<< "$PAGE"; then
+  pass "redirect_uri_matches: Keycloak accepts the admin UI's authorization request (client and registered redirect URI)"
+else
+  fail "redirect_uri_matches: Keycloak refused the admin UI's request: $(grep -Eoi "$KC_ERR" <<< "$PAGE" | head -1) (request ${AUTH_PATH%%&state=*})"
+fi
+BAD_PATH=${AUTH_PATH/"redirect_uri=$ENC"/"redirect_uri=$(jq -rn --arg u "https://$ACC_HOST/auth/callback" '$u | @uri')"}
+if [ "$BAD_PATH" != "$AUTH_PATH" ] && grep -Eqi "$KC_ERR" <<< "$(kc_page "$BAD_PATH")"; then
+  pass "redirect_uri_matches: Keycloak refuses another redirect URI (the accounts host's)"
+else
+  fail "redirect_uri_matches: Keycloak did not refuse another redirect URI"
+fi
+KC_ID=$(curl -s "$KEYCLOAK_URL/admin/realms/portcullis/clients?clientId=$CID_M" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") | jq -r '.[0].id // empty' || true)
+[ -z "$KC_ID" ] || curl -s -o /dev/null -X DELETE "$KEYCLOAK_URL/admin/realms/portcullis/clients/$KC_ID" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$KC_TOKEN") || true
+
+# The stand-in OpenID provider (node, the accounts image) on the instance's
+# network: discovery, JWKS (a fresh RSA key), an authorization endpoint that
+# checks the client, the redirect URI, PKCE and the nonce, and signs in the
+# person the test names (the profile parameter it adds), a token endpoint
+# that checks the client secret (from ffs-admin's environment) and the PKCE
+# verifier, and userinfo. It logs the profile of every code redeemed, never a
+# secret.
+OIDC_JS='
+const http = require("http"), crypto = require("crypto");
+const ISS = process.env.OIDC_ISSUER, CID = process.env.OIDC_CLIENT_ID, SECRET = process.env.OIDC_CLIENT_SECRET;
+const REDIRECT = process.env.OIDC_REDIRECT, ADMIN = process.env.OIDC_ADMIN_GROUP, ACCESS = process.env.OIDC_ACCESS_GROUP;
+const D = process.env.OIDC_DOMAIN;
+const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+const jwk = Object.assign(publicKey.export({ format: "jwk" }), { kid: "stub", alg: "RS256", use: "sig" });
+const b64 = o => Buffer.from(JSON.stringify(o)).toString("base64url");
+const P = {
+  admin: { sub: "s-admin", email: "e2eadmin@" + D, email_verified: false, groups: [ACCESS, ADMIN] },
+  member: { sub: "s-member", email: "e2emember@" + D, email_verified: false, groups: [ACCESS] },
+  "member-verified": { sub: "s-member-v", email: "e2emember@" + D, email_verified: true, groups: [ACCESS] },
+  "no-groups": { sub: "s-nogroups", email: "e2eadmin@" + D, email_verified: true },
+  "other-claim": { sub: "s-other", email: "e2eadmin@" + D, email_verified: true, roles: [ADMIN], group: ADMIN },
+  "near-miss": { sub: "s-near", email: "e2eadmin@" + D, email_verified: true, groups: [ADMIN.toUpperCase(), "/" + ADMIN, ADMIN + "-x", " " + ADMIN] }
+};
+const codes = new Map(), tokens = new Map();
+const send = (res, code, obj, headers) => { res.writeHead(code, Object.assign({ "content-type": "application/json" }, headers || {})); res.end(obj === undefined ? "" : JSON.stringify(obj)); };
+http.createServer((req, res) => {
+  const u = new URL(req.url, ISS);
+  if (u.pathname === "/.well-known/openid-configuration") return send(res, 200, { issuer: ISS,
+    authorization_endpoint: ISS + "/auth", token_endpoint: ISS + "/token", userinfo_endpoint: ISS + "/userinfo",
+    jwks_uri: ISS + "/jwks", response_types_supported: ["code"], subject_types_supported: ["public"],
+    id_token_signing_alg_values_supported: ["RS256"], code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"] });
+  if (u.pathname === "/jwks") return send(res, 200, { keys: [jwk] });
+  if (u.pathname === "/auth") {
+    const q = u.searchParams, name = q.get("profile"), p = P[name];
+    const bad = !p ? "profile" : q.get("client_id") !== CID ? "client_id" : q.get("redirect_uri") !== REDIRECT ? "redirect_uri"
+      : q.get("response_type") !== "code" ? "response_type" : q.get("code_challenge_method") !== "S256" || !q.get("code_challenge") ? "pkce"
+      : !q.get("nonce") ? "nonce" : !q.get("state") ? "state" : "";
+    if (bad) { console.log("AUTH refused " + bad); return send(res, 400, { error: "invalid_request", what: bad }); }
+    const code = crypto.randomBytes(16).toString("hex");
+    codes.set(code, { name, p, nonce: q.get("nonce"), challenge: q.get("code_challenge") });
+    console.log("AUTH " + name);
+    return send(res, 302, undefined, { location: REDIRECT + "?code=" + code + "&state=" + encodeURIComponent(q.get("state")) });
+  }
+  if (u.pathname === "/token" && req.method === "POST") {
+    let body = "";
+    req.on("data", d => { body += d; });
+    req.on("end", () => {
+      const f = new URLSearchParams(body);
+      let id = f.get("client_id") || "", secret = f.get("client_secret") || "";
+      const h = req.headers.authorization || "";
+      if (h.startsWith("Basic ")) {
+        const [a, b] = Buffer.from(h.slice(6), "base64").toString().split(":");
+        id = decodeURIComponent(a || ""); secret = decodeURIComponent(b || "");
+      }
+      const c = codes.get(f.get("code") || ""); codes.delete(f.get("code") || "");
+      const verifier = f.get("code_verifier") || "";
+      const bad = !c ? "code" : id !== CID ? "client_id" : !SECRET || secret !== SECRET ? "client_secret"
+        : f.get("grant_type") !== "authorization_code" ? "grant_type" : f.get("redirect_uri") !== REDIRECT ? "redirect_uri"
+        : crypto.createHash("sha256").update(verifier).digest("base64url") !== c.challenge ? "code_verifier" : "";
+      if (bad) { console.log("TOKEN refused " + bad); return send(res, 400, { error: "invalid_grant", what: bad }); }
+      const now = Math.floor(Date.now() / 1000);
+      const head = b64({ alg: "RS256", kid: "stub", typ: "JWT" });
+      const body2 = b64(Object.assign({}, c.p, { iss: ISS, aud: CID, iat: now, exp: now + 300, nonce: c.nonce }));
+      const sig = crypto.sign("sha256", Buffer.from(head + "." + body2), privateKey).toString("base64url");
+      const access = crypto.randomBytes(16).toString("hex");
+      tokens.set(access, c.p);
+      console.log("TOKEN " + c.name + " client secret ok");
+      send(res, 200, { access_token: access, token_type: "Bearer", expires_in: 300, id_token: head + "." + body2 + "." + sig });
+    });
+    return;
+  }
+  if (u.pathname === "/userinfo") {
+    const p = tokens.get((req.headers.authorization || "").replace(/^Bearer /, ""));
+    console.log("USERINFO " + (p ? p.sub : "refused"));
+    return p ? send(res, 200, p) : send(res, 401, { error: "invalid_token" });
+  }
+  send(res, 404, { error: "not_found" });
+}).listen(8090, "0.0.0.0", () => console.log("oidc stub listening"));
+'
+STUB_ISS=http://fxa-test-oidc:8090
+docker rm -f "$OIDC_C" "$PROBE_C" > /dev/null 2>&1 || true
+OIDC_CLIENT_SECRET="$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET" docker run -d --name "$OIDC_C" --network "$NET" --network-alias fxa-test-oidc \
+  --user 10001:10001 --read-only --tmpfs /tmp:size=8m --cap-drop ALL --security-opt no-new-privileges:true \
+  -e OIDC_ISSUER="$STUB_ISS" -e OIDC_CLIENT_ID="$CID_M" -e OIDC_CLIENT_SECRET -e OIDC_REDIRECT="$REDIRECT" \
+  -e OIDC_ADMIN_GROUP="$ADMIN_GROUP_M" -e OIDC_ACCESS_GROUP="$ACCESS_GROUP_M" -e OIDC_DOMAIN="$DOMAIN" \
+  --entrypoint node "$FXA_IMAGE" -e "$OIDC_JS" > /dev/null
+for _ in $(seq 1 30); do grep -q 'oidc stub listening' <<< "$(docker logs "$OIDC_C" 2>&1)" && break; sleep 1; done
+STUB_IP=$(docker inspect "$OIDC_C" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')
+grep -q 'oidc stub listening' <<< "$(docker logs "$OIDC_C" 2>&1)" && info "OpenID stand-in at $STUB_ISS ($STUB_IP)" \
+  || fail "the OpenID stand-in did not start: $(docker logs "$OIDC_C" 2>&1 | tail -5 | tr '\n' ' ')"
+
+# A probe of ffs-admin: the real container's environment (secrets in a file
+# only this user reads, removed once the container has it; never argv), the
+# issuer the stand-in, cookies without Secure (plain http here). $1: env
+# names to drop; rest: NAME=value lines to add. Prints the container id.
+probe_env() {  # $1 drop regex, rest: lines to add -> the env file's path
+  local f="$PROBE_DIR/env"
+  docker inspect "$ADMIN_C" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -v -E "^(PATH|HOME|$1)=" > "$f"
+  shift
+  printf '%s\n' "$@" >> "$f"
+  printf '%s' "$f"
+}
+PROBE_DIR=$(mktemp -d)
+chmod 700 "$PROBE_DIR"
+umask_was=$(umask); umask 077
+ENVF=$(probe_env 'ADMIN_OIDC_ISSUER|ADMIN_INSECURE_COOKIE' "ADMIN_OIDC_ISSUER=$STUB_ISS" ADMIN_INSECURE_COOKIE=1)
+docker run -d --name "$PROBE_C" --network "$NET" --read-only --tmpfs /tmp:size=64m --cap-drop ALL \
+  --security-opt no-new-privileges:true --env-file "$ENVF" "$ADMIN_IMAGE" > /dev/null || fail "the admin UI probe did not start"
+rm -f "$ENVF"
+umask "$umask_was"
+wait_healthy "$PROBE_C" 120 || fail "the admin UI probe is not healthy: $(docker logs --tail 10 "$PROBE_C" 2>&1 | tr '\n' ' ')"
+PIP=$(docker inspect "$PROBE_C" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')
+PB="http://$PIP:8080"
+# One sign-in as $1 (a stand-in profile) with cookie jar $2: the admin UI's
+# /auth/login, the provider's answer, the callback, then /. Prints
+# "<callback status> <its redirect> | <GET / status> <its redirect>".
+oidc_signin() {
+  local loc cb
+  loc=$(curl -s -c "$2" -b "$2" -o /dev/null -w '%{redirect_url}' "$PB/auth/login" || true)
+  case "$loc" in "$STUB_ISS/auth?"*) ;; *) printf 'no provider redirect: %s' "$loc"; return 0 ;; esac
+  cb=$(curl -s -o /dev/null -w '%{redirect_url}' "http://$STUB_IP:8090${loc#"$STUB_ISS"}&profile=$1" || true)
+  case "$cb" in "$REDIRECT?"*) ;; *) printf 'provider refused: %s %s' "$cb" "$(docker logs --tail 1 "$OIDC_C" 2>&1)"; return 0 ;; esac
+  printf '%s | %s' "$(curl -s -c "$2" -b "$2" -o /dev/null -w '%{http_code} %{redirect_url}' "$PB/auth/callback?${cb#*\?}" || echo 000)" \
+    "$(curl -s -c "$2" -b "$2" -o /dev/null -w '%{http_code} %{redirect_url}' "$PB/" || echo 000)"
+}
+# oidc_member_not_admin_refused: a member of the access group only, with or
+# without a verified email, no groups claim (nor in userinfo), the admin
+# group under another claim, or near-miss names: refused after a valid
+# sign-in (the code redeemed with the client secret), no session.
+for profile in member member-verified no-groups other-claim near-miss; do
+  OUT=$(oidc_signin "$profile" "$PROBE_DIR/jar-$profile")
+  if [[ "$OUT" == "303 $PB/login?"*"error=sso"*" | 303 $PB/login"* ]] \
+      && grep -qx "TOKEN $profile client secret ok" <<< "$(docker logs "$OIDC_C" 2>&1)"; then
+    pass "oidc_member_not_admin_refused: $profile: signed in at the provider, the admin UI refuses it (no session: / -> sign-in)"
+  else
+    fail "oidc_member_not_admin_refused: $profile: $OUT; provider: $(docker logs "$OIDC_C" 2>&1 | grep -E "(AUTH|TOKEN).*" | tail -2 | tr '\n' ' ')"
+  fi
+done
+JAR="$PROBE_DIR/jar-admin"
+OUT=$(oidc_signin admin "$JAR")
+if [[ "$OUT" == "200  | 200 "* ]] && grep -qx 'TOKEN admin client secret ok' <<< "$(docker logs "$OIDC_C" 2>&1)"; then
+  pass "oidc admin: a member of $ADMIN_GROUP_M (email unverified) is signed in (the groups claim alone)"
+else
+  fail "oidc admin: $OUT; provider: $(docker logs "$OIDC_C" 2>&1 | tail -3 | tr '\n' ' '); probe: $(docker logs --tail 5 "$PROBE_C" 2>&1 | tr '\n' ' ')"
+fi
+# The real container (its own issuer) has no stand-in: a callback with the
+# stand-in's answer is no sign-in there.
+OUT=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$AB/auth/callback?code=x&state=y" || echo 000)
+[[ "$OUT" == "303 "*"/login?error=sso" ]] && pass "oidc: the admin UI's callback without its own state -> $OUT (no session)" \
+  || fail "oidc: the admin UI's callback without its state -> $OUT"
+
+# connect_page_values: Firefox on a computer gets
+# identity.fxaccounts.autoconfig.uri = the accounts host; the page names the
+# accounts, Sync (tokenserver) and pairing servers.
+USERJS=$(curl -s -b "$JAR" "$PB/connect/user.js" || true)
+grep -qxF "user_pref(\"identity.fxaccounts.autoconfig.uri\", \"https://$ACC_HOST\");" <<< "$USERJS" \
+  && pass "connect_page_values: user.js sets identity.fxaccounts.autoconfig.uri = https://$ACC_HOST" \
+  || fail "connect_page_values: user.js is '$(head -c 400 <<< "$USERJS" | tr '\n' ' ')'"
+CONNECT=$(curl -s -b "$JAR" "$PB/connect" | sed 's/<[^>]*>/ /g' | tr -s ' \n' ' ' || true)
+if grep -qF "Accounts server https://$ACC_HOST " <<< "$CONNECT" && grep -qF "Sync server https://$SYNC_HOST/1.0/sync/1.5 " <<< "$CONNECT" \
+    && grep -qF "Pairing server wss://$PAIRING_HOST " <<< "$CONNECT" && grep -qF "identity.fxaccounts.autoconfig.uri" <<< "$CONNECT"; then
+  pass "connect_page_values: Connect a device names https://$ACC_HOST (autoconfig), https://$SYNC_HOST/1.0/sync/1.5 and wss://$PAIRING_HOST"
+else
+  fail "connect_page_values: the Connect a device page: $(grep -oE '(Accounts|Sync|Pairing) server [^ ]+' <<< "$CONNECT" | tr '\n' ' ')"
+fi
+
+# allowlist_read_only: signed in as an admin, every form that changes who
+# may sign up or sync is refused server side (the admin UI answers with its
+# refusal, not the change), and nothing changed in either database.
+policy_state() {
+  printf '%s\n' "SELECT CONCAT(name, '=', value) FROM ffs.settings ORDER BY name;" \
+    "SELECT CONCAT('allow:', entry) FROM ffs.signup_allowlist ORDER BY entry;" | mysql_root 2>&1 | tr '\n' ' '
+  sdb "SELECT string_agg(config_key || '=' || config_value, ',' ORDER BY config_key) FROM config"
+  sdb "SELECT 'sync allowlist rows: ' || count(*) FROM sync_allowed_accounts"
+}
+HOME_PAGE=$(curl -s -b "$JAR" -c "$JAR" "$PB/" || true)
+CSRF=$(grep -o 'name="csrf" value="[^"]*"' <<< "$HOME_PAGE" | head -1 | sed 's/.*value="//;s/"$//')
+HOME_TEXT=$(sed 's/<[^>]*>/ /g' <<< "$HOME_PAGE" | tr -s ' \n' ' ')
+grep -q 'Access managed elsewhere ok' <<< "$HOME_TEXT" \
+  && pass "allowlist_read_only: the setup check Access managed elsewhere is ok (the admin UI and both inits agree)" \
+  || fail "allowlist_read_only: no Access managed elsewhere ok on the overview: $(grep -o 'Access managed elsewhere.\{0,120\}' <<< "$HOME_TEXT" | head -1)"
+BEFORE=$(policy_state)
+for form in "/accounts/signups mode=open&allowlist=" "/accounts/max-accounts max_accounts=1" \
+            "/accounts/invite email=fxa-invite-test@$DOMAIN" "/accounts/allowlist/remove entry=$SYNC_USER" \
+            "/sync/max-users max_users=1" "/sync/allowlist/allow uid=$OUTSIDER"; do
+  set -- $form
+  RESP=$(curl -s -L -b "$JAR" -c "$JAR" -w '\n%{http_code}' -d "csrf=$CSRF&$2" "$PB$1" || true)
+  if grep -q 'managed outside the admin UI (ADMIN_ACCESS_EXTERNAL): nothing changed here' <<< "$RESP"; then
+    pass "allowlist_read_only: POST $1 refused (managed outside the admin UI: nothing changed)"
+  else
+    fail "allowlist_read_only: POST $1 not refused (csrf ${#CSRF} chars; status $(tail -1 <<< "$RESP"); $(sed 's/<[^>]*>/ /g' <<< "$RESP" | tr -s ' \n' ' ' | grep -o -i -E '.{0,60}(refus|error|managed|invalid)[^.]{0,80}' | head -2 | tr '\n' ' '))"
+  fi
+done
+AFTER=$(policy_state)
+[ -n "$BEFORE" ] && [ "$BEFORE" = "$AFTER" ] && pass "allowlist_read_only: the sign-up policy, its allowlist and Sync's config unchanged after the refused forms" \
+  || fail "allowlist_read_only: changed: '$BEFORE' -> '$AFTER'"
+
+# ffs_admin, the admin UI's own accounts-database user (fxa-policy):
+# exactly porelli's grant set with access managed elsewhere (read-only on the
+# sign-up policy and its allowlist), nothing of ffs_access's.
+GRANTEE="'ffs_admin'@'%'"
+GRANTS=$(printf '%s\n' "SELECT CONCAT('global ', PRIVILEGE_TYPE) FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('global ', PRIV) FROM mysql.global_grants WHERE USER = 'ffs_admin'
+  UNION ALL SELECT CONCAT('schema ', TABLE_SCHEMA, ' ', PRIVILEGE_TYPE) FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('table ', TABLE_SCHEMA, '.', TABLE_NAME, ' ', PRIVILEGE_TYPE, IF(IS_GRANTABLE = 'YES', ' grantable', '')) FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('column ', TABLE_SCHEMA, '.', TABLE_NAME, '.', COLUMN_NAME, ' ', PRIVILEGE_TYPE) FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = \"$GRANTEE\"
+  UNION ALL SELECT CONCAT('routine ', Db, '.', Routine_name, ' ', Routine_type, ' ', Proc_priv) FROM mysql.procs_priv WHERE User = 'ffs_admin';" \
+  | mysql_root 2>&1 | LC_ALL=C sort)
+WANT_GRANTS=$(printf '%s\n' "global USAGE" \
+  "column fxa.accounts.createdAt SELECT" "column fxa.accounts.disabledAt SELECT" "column fxa.accounts.email SELECT" \
+  "column fxa.accounts.emailVerified SELECT" "column fxa.accounts.uid SELECT" \
+  "routine ffs.confirm_email PROCEDURE Execute" "routine ffs.confirm_session PROCEDURE Execute" \
+  "routine ffs.delete_account PROCEDURE Execute" "routine ffs.delete_unconfirmed PROCEDURE Execute" \
+  "routine ffs.disable_account PROCEDURE Execute" "routine ffs.enable_account PROCEDURE Execute" \
+  "routine ffs.prune PROCEDURE Execute" "routine ffs.remove_recovery_key PROCEDURE Execute" \
+  "routine ffs.remove_totp PROCEDURE Execute" "routine ffs.sign_out_all PROCEDURE Execute" \
+  "routine ffs.sign_out_device PROCEDURE Execute" "routine ffs.sign_out_session PROCEDURE Execute" \
+  "routine ffs.signup_allowed FUNCTION Execute" "routine ffs.signup_refusal FUNCTION Execute" \
+  "table ffs.account_security SELECT" "table ffs.database_sizes SELECT" "table ffs.devices SELECT" "table ffs.emails SELECT" \
+  "table ffs.ffs_setup_migrations SELECT" "table ffs.ffs_setup_state SELECT" "table ffs.schema_levels SELECT" \
+  "table ffs.security_events SELECT" "table ffs.sessions SELECT" "table ffs.settings SELECT" "table ffs.signup_allowlist SELECT" \
+  | LC_ALL=C sort)
+if [ "$GRANTS" = "$WANT_GRANTS" ]; then
+  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema or grant option)"
+else
+  fail "ffs_admin_grants: differ:
+$(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
+fi
+ffs_admin_sql() {  # SQL on stdin, as ffs_admin (its password through the environment)
+  MYSQL_PWD="$FXA_ADMIN_DB_PASSWORD" docker exec -i -e MYSQL_PWD "$DB_C" mysql -uffs_admin -h127.0.0.1 --protocol=tcp -N -B 2>&1
+}
+for stmt in "INSERT INTO ffs.signup_allowlist (entry) VALUES ('fxa-admin-test@$DOMAIN')" \
+            "DELETE FROM ffs.signup_allowlist" \
+            "UPDATE ffs.settings SET value = 'open' WHERE name = 'signups'" \
+            "UPDATE ffs.settings SET value = '0' WHERE name = 'max_accounts'" \
+            "CALL ffs.disable_account_by_email('$SYNC_USER')" \
+            "CALL ffs.delete_account_by_email('$SYNC_USER')" \
+            "SELECT authSalt FROM fxa.accounts LIMIT 1" \
+            "SELECT count(*) FROM fxa.sessionTokens" \
+            "UPDATE fxa.accounts SET disabledAt = 1" \
+            "DROP TRIGGER fxa.ffs_signup_policy" \
+            "CREATE USER 'portcullis_x'@'%'"; do
+  OUT=$(ffs_admin_sql <<< "$stmt;" || true)
+  if grep -Eqi 'ERROR (1142|1143|1044|1045|1227|1370|1419)|command denied|access denied' <<< "$OUT"; then
+    pass "ffs_admin_grants: refused: ${stmt:0:60} ($(grep -o 'ERROR [0-9]*' <<< "$OUT" | head -1))"
+  else
+    fail "ffs_admin_grants: ffs_admin could: $stmt -> $OUT"
+  fi
+done
+OUT=$(ffs_admin_sql <<< "SELECT count(*) FROM ffs.signup_allowlist; SELECT count(*) FROM fxa.accounts; SELECT ffs.signup_allowed('$SYNC_USER');" || true)
+if grep -qi 'error' <<< "$OUT"; then
+  fail "ffs_admin_grants: ffs_admin can't read what the admin UI shows: $OUT"
+else
+  pass "ffs_admin_grants: ffs_admin reads the allowlist and the accounts and may ask the sign-up policy"
+fi
+
+# Fail closed: without its admin group the admin UI doesn't start (an OIDC
+# sign-in with no group would let any Portcullis account in).
+umask 077
+ENVF=$(probe_env 'ADMIN_ALLOWED_GROUPS' ADMIN_ALLOWED_GROUPS=)
+OUT=$(timeout 60 docker run --rm --network "$NET" --read-only --tmpfs /tmp:size=64m --cap-drop ALL \
+  --security-opt no-new-privileges:true --env-file "$ENVF" "$ADMIN_IMAGE" 2>&1) && RC=0 || RC=$?
+rm -f "$ENVF"
+umask "$umask_was"
+if [ "$RC" != 0 ] && [ "$RC" != 124 ] && grep -q 'needs ADMIN_ALLOWED_USERS or ADMIN_ALLOWED_GROUPS' <<< "$OUT"; then
+  pass "admin_group_fails_closed: an empty ADMIN_ALLOWED_GROUPS stops the admin UI (exit $RC: $(tail -1 <<< "$OUT"))"
+else
+  fail "admin_group_fails_closed: an empty ADMIN_ALLOWED_GROUPS: exit $RC: $(tail -3 <<< "$OUT" | tr '\n' ' ')"
+fi
+
+# The OIDC client secret on no container's argv and in no log of the admin
+# UI, the probe or the stand-in (its value only compared here).
+bad=""
+for c in $(docker ps -aq); do
+  case "$(docker inspect -f '{{.Name}} {{json .Path}} {{json .Args}} {{json .Config.Cmd}} {{json .Config.Entrypoint}}' "$c" 2>/dev/null)" in
+    *"$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET"*) bad="$bad $c(argv)" ;;
+  esac
+done
+case "$(docker logs "$ADMIN_C" 2>&1; docker logs "$PROBE_C" 2>&1; docker logs "$OIDC_C" 2>&1)" in
+  *"$FIREFOX_SYNC_FXA_ADMIN_OIDC_SECRET"*) bad="$bad logs" ;;
+esac
+[ -z "$bad" ] && pass "admin secret: the OIDC client secret on no container's argv, in no log" || fail "admin secret: found in:$bad"
+docker rm -f "$OIDC_C" "$PROBE_C" > /dev/null 2>&1 || true
+rm -rf "$PROBE_DIR"
 
 cleanup_live
 # shellcheck disable=SC2086
