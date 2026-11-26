@@ -53,7 +53,7 @@ trigger() {  # $1 table, $2 INSERT | UPDATE
     "$name" "$2" "$1" "$cond" "$MSG"
 }
 
-sql() { mysql --protocol=tcp -h "${MYSQL_HOST:?}" -u root --batch --silent --skip-column-names; }
+sql() { mysql --no-defaults --protocol=tcp -h "${MYSQL_HOST:?}" -u root --batch --silent --skip-column-names; }
 
 {
   echo "CREATE DATABASE IF NOT EXISTS ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"

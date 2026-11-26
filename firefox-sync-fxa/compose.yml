@@ -669,9 +669,19 @@ services:
     restart: unless-stopped
 
   # The channel server for pairing a phone by QR code (a websocket relay; it
-  # can't read what it relays).
+  # can't read what it relays). One worker: actix starts one per CPU it may
+  # run on, each loading the 61 MB GeoIP database, so on a host with more
+  # than 2 CPUs it outgrows its 128m and is killed (and fxa-gate, which waits
+  # for it, never starts). The server has no setting for it, and compose's
+  # cpus: isn't carried to Kubernetes: it runs pinned to the first CPU it
+  # may use (taskset; Rust's available_parallelism counts the affinity
+  # mask), on every runtime. No CPU found = no start.
   fxa-pairing:
     image: ghcr.io/porelli/firefox-sync:fxa-channelserver-1.6.0@sha256:cfc3319d79ba46bdc7b32922170bbfa5ea5eec3cb6549519ac0996309f320f74
+    entrypoint:
+      - /bin/bash
+      - -c
+      - 'cpu=$$(sed -n "s/^Cpus_allowed_list:[[:space:]]*\([0-9]*\).*/\1/p" /proc/self/status) && [ -n "$$cpu" ] && exec taskset -c "$$cpu" /app/bin/channelserver'
     read_only: true
     tmpfs:
       - /tmp:size=16m

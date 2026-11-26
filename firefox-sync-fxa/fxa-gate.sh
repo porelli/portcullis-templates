@@ -233,7 +233,7 @@ http {
   # looked at. No first-party client sends one (Sync record ids are short
   # base64url ids; the account pages' URLs carry their encoded values in the
   # query).
-  map \$request_uri \$pc_bad_path { "~*^[^?]*(?:%2f|%5c|\\x5c|/(?:\.|%2e){1,2}(?:[/?]|\$))" 1; default 0; }
+  map \$request_uri \$pc_bad_path { "~*^[^?]*(?:%2f|%5c|\\x5c|/(?:\.|%2e){1,2}(?:[/?#]|\$))" 1; default 0; }
   # 1 only when group-gate's groups list the admin group exactly.
   map \$http_x_auth_request_groups \$pc_admin { "~^(?:[^,]*,)*[ \t]*${group_re}[ \t]*(?:,[^,]*)*\$" 1; default 0; }
   include $run/upstreams.conf;

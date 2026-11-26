@@ -15,7 +15,9 @@ stand-in resolves them to Traefik), trusting Portcullis's CA bundle
   foreign-token <email>     tokens the tokenserver must refuse: a JWT of
                             another accounts server, and one of ours without
                             the Sync scope
-  session-status <email>    the session token signup saved (FXA_STATE_DIR)
+  session <email>           sign in (the code the catcher got when asked)
+                            and keep the session as signup does
+  session-status <email>    the session token signup / session saved (FXA_STATE_DIR)
                             asks /session/status: its HTTP status (200, or
                             401 once the account is disabled)
 
@@ -163,6 +165,12 @@ def save_session(address, session):
         json.dump({"uid": session.uid, "token": session.token}, f)
 
 
+def cmd_session(address):
+    session = login(address)
+    save_session(address, session)
+    return out({"uid": session.uid, "saved": True}, True)
+
+
 def cmd_session_status(address):
     try:
         with open(session_file(address)) as f:
@@ -280,12 +288,12 @@ def cmd_foreign_token(address):
 
 
 COMMANDS = {"signup": cmd_signup, "sync": cmd_sync, "foreign-token": cmd_foreign_token,
-            "session-status": cmd_session_status}
+            "session": cmd_session, "session-status": cmd_session_status}
 
 
 def main(argv):
     if len(argv) != 2 or argv[0] not in COMMANDS or "@" not in argv[1]:
-        return usage("usage: fxa_client.py signup|sync|foreign-token|session-status <email> (password in FXA_PASSWORD)")
+        return usage("usage: fxa_client.py signup|sync|foreign-token|session|session-status <email> (password in FXA_PASSWORD)")
     try:
         return COMMANDS[argv[0]](argv[1])
     except (ClientError, ServerError) as e:

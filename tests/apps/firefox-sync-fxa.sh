@@ -328,6 +328,14 @@ else
   pass "M2: no service uses network_mode, but fxa-mail-check (none)"
 fi
 
+# pairing_one_worker (fix round 2, N1): the channel server pinned to one CPU
+# (one actix worker, one 61 MB GeoIP copy) under its 128m, on every runtime.
+PAIR_EP='cpu=$$(sed -n "s/^Cpus_allowed_list:[[:space:]]*\([0-9]*\).*/\1/p" /proc/self/status) && [ -n "$$cpu" ] && exec taskset -c "$$cpu" /app/bin/channelserver'
+[ "$(yq -o=json -I=0 '.services["fxa-pairing"].entrypoint' "$COMPOSE")" = "$(jq -cn --arg c "$PAIR_EP" '["/bin/bash", "-c", $c]')" ] \
+  && [ "$(yq -r '.services["fxa-pairing"] | has("command")' "$COMPOSE")" = false ] && [ "$(yq -r '.services["fxa-pairing"].mem_limit' "$COMPOSE")" = 128m ] \
+  && pass "pairing_one_worker: fxa-pairing runs channelserver under taskset on its first allowed CPU (one worker), mem_limit 128m" \
+  || fail "pairing_one_worker: entrypoint $(yq -o=json -I=0 '.services["fxa-pairing"].entrypoint' "$COMPOSE"), mem_limit $(yq -r '.services["fxa-pairing"].mem_limit' "$COMPOSE")"
+
 # resources
 [ "$(yq -r '.resources.min_memory_mib' "$MANIFEST")" = 4096 ] && [ "$(yq -r '.resources.min_disk_gib' "$MANIFEST")" = 18 ] \
   && pass "resources: min_memory_mib 4096, min_disk_gib 18" \
@@ -1099,6 +1107,7 @@ i=$(($(ls "$d" | grep -c '^call\.[0-9]*\.sql$') + 1))
 printf '%s\n' "$@" > "$d/call.$i.argv"
 printf '%s' "${MYSQL_PWD-<unset>}" > "$d/call.$i.pwd"
 cat > "$d/call.$i.sql"
+[ "$(cat "$d/fail" 2> /dev/null)" = warning ] && echo "mysql: [Warning] a line that names no statement" >&2
 if grep -q '^START TRANSACTION;$' "$d/call.$i.sql"; then
   if [ "$(cat "$d/fail" 2> /dev/null)" = tx ]; then
     echo "ERROR 1142 (42000) at line 4: DELETE command denied to user 'ffs_access'@'172.18.0.9' for table 'signup_allowlist'" >&2
@@ -1287,6 +1296,14 @@ OUT=$(as_run "$(adoc bob=bob@example.org)")
   && grep -q 'still failed after 3 tries' <<< "$OUT" \
   && pass "access-sync.sh: a call refused for another reason: tried 3 times, then exit 1, the state unchanged ($(tail -2 <<< "$OUT" | head -1))" \
   || fail "access-sync.sh: a refused call: $OUT; calls $(as_calls); state $(as_state)"
+# An error line that names no statement (a client warning, say): every
+# call is tried again, 3 times in all, then exit 1 (fail closed).
+echo warning > "$AS_TMP/stub/fail"
+OUT=$(as_run "$(adoc bob=bob@example.org)")
+[ "${OUT##*$'\n'}" = rc=1 ] && [ "$(as_state)" = "$STATE1" ] && [ "$(as_calls)" = 4 ] \
+  && [ "$(cat "$AS_TMP/stub/call.2.sql")" = "$(cat "$AS_TMP/stub/call.4.sql")" ] && grep -q 'still failed after 3 tries' <<< "$OUT" \
+  && pass "access-sync.sh: an error that names no statement: every call tried again (3 tries), then exit 1, the state unchanged" \
+  || fail "access-sync.sh: unattributed error: $(tr '\n' ' ' <<< "$OUT"); calls $(as_calls); state $(as_state)"
 # A deadlock on the first try: that call alone again, then applied.
 echo deadlock-once > "$AS_TMP/stub/fail"
 rm -f "$AS_TMP/stub/deadlocked"
@@ -1477,7 +1494,12 @@ for h in "$GH_API" "$GH_ACC" "$GH_PROF" "$GH_SYNC" "$GH_ADMIN" "$GH_PAIR"; do
  [400]" ] || bad="$bad $h$p($OUT)"
   done
 done
-[ -z "$bad" ] && pass "ambiguous_paths: %2F, %5C, a backslash or a dot segment (%-encoded or not) anywhere in the path -> the gate's 400 on all six hosts (the review's /v1/a%2Fb/../mfa/recovery_email and /v1/a%2Fb/../account/create included)" \
+for t in '/v1/x/..#' '/v1/x/.#y' '/v1/x/%2e%2e#/mfa/recovery_email'; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" --request-target "$t" "$G/")
+  [ "$OUT" = "$BAD_PATH
+ [400]" ] || bad="$bad target:$t($OUT)"
+done
+[ -z "$bad" ] && pass "ambiguous_paths: %2F, %5C, a backslash or a dot segment (%-encoded or not, ended by /, ?, # or the end) anywhere in the path -> the gate's 400 on all six hosts (the review's /v1/a%2Fb/../mfa/recovery_email and /v1/a%2Fb/../account/create included)" \
   || fail "ambiguous_paths: not refused:$bad"
 bad=""
 for p in '/v1/account/status?uid=%2F..%2F' /v1/x/...y /v1/.well-known /v1/a.b/c..d '/v1/recovery_email/status?x=%5C'; do
@@ -2195,6 +2217,19 @@ unset FXA_PASSWORD
 # the CI host (via_traefik) and from another container on portcullis-proxy. ══
 section "Firefox Sync + own accounts (gate, live)"
 GATE_C=portcullis-fxa-gate-1
+# pairing_one_worker (live, N1): one actix worker, one CPU, well under 128m,
+# never restarted.
+PAIR_C=portcullis-fxa-pairing-1
+PW=$(docker exec "$PAIR_C" sh -c 'cat /proc/1/task/*/comm' 2>/dev/null | grep -c '^actix-rt|system$' || true)
+PCPU=$(docker exec "$PAIR_C" sh -c 'sed -n "s/^Cpus_allowed_list:[[:space:]]*//p" /proc/1/status' 2>/dev/null || true)
+PMEM=$(docker stats --no-stream --format '{{.MemUsage}}' "$PAIR_C" 2>/dev/null | awk '{print $1}')
+PMIB=$(awk -v m="$PMEM" 'BEGIN { v = m + 0; if (m ~ /GiB$/) v *= 1024; else if (m ~ /KiB$/) v /= 1024; else if (m !~ /MiB$/) v = 9999; printf "%d", v }')
+PRS=$(docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}}' "$PAIR_C" 2>/dev/null || echo none)
+if [ "$PW" = 1 ] && [[ "$PCPU" =~ ^[0-9]+$ ]] && [ "$PMIB" -lt 96 ] && [ "$PRS" = "0 false" ]; then
+  pass "pairing_one_worker: fxa-pairing runs 1 worker on CPU $PCPU, $PMEM of its 128m, never restarted or OOM-killed (host CPUs: $(nproc))"
+else
+  fail "pairing_one_worker: workers $PW, CPUs '$PCPU', memory $PMEM, restarts / OOM $PRS"
+fi
 PROFILE_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_PROFILE"
 G_ACC_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ACCOUNTS"
 G_ADMIN_HOST="$PORTCULLIS_HOST_FIREFOX_SYNC_FXA_ADMIN"
@@ -3190,6 +3225,12 @@ fi
 # disables both and signs them out, logs the count only, and puts the
 # triggers back.
 GUARD_C=portcullis-fxa-db-guard-1
+# dave gets a live session first (enabled again, signed in through Traefik):
+# the guard's sign-out must end it.
+echo "UPDATE fxa.accounts SET disabledAt = NULL WHERE normalizedEmail = '$DAVE';" | mysql_root > /dev/null || true
+OUT=$(acc_client session "$DAVE" || true)
+[ "$(jget "$OUT" .saved)" = true ] && [ "$(jget "$(acc_client session-status "$DAVE" || true)" .http)" = 200 ] \
+  || fail "existing_nonascii_disabled: $DAVE's sign-in for a live session: $(redact "$OUT"); $(signup_diag)"
 SYNC_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$SYNC_USER';" | mysql_root 2>/dev/null || true)
 DAVE_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$DAVE';" | mysql_root 2>/dev/null || true)
 printf '%s\n' "SET NAMES utf8mb4;" \
@@ -3201,11 +3242,13 @@ state_of() { echo "SELECT CONCAT(IFNULL(disabledAt IS NOT NULL, 'x'), ':', (SELE
 B1=$(state_of "$DAVE_UID"); B2=$(state_of "$SYNC_UID")
 GOUT=$(timeout 120 docker start -a "$GUARD_C" 2>&1) && GRC=0 || GRC=$?
 TRIGS=$(echo "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'fxa' AND TRIGGER_NAME LIKE 'portcullis\_ascii\_email\_%';" | mysql_root 2>&1)
-if [ "$GRC" = 0 ] && [ "${B1%%:*}:${B2%%:*}" = "0:0" ] && [ "$(state_of "$DAVE_UID")" = "1:0" ] && [ "$(state_of "$SYNC_UID")" = "1:0" ] \
+DAVE_SESSION=$(jget "$(acc_client session-status "$DAVE" || true)" .http)
+if [ "$GRC" = 0 ] && [ "${B1%%:*}" = 0 ] && [ "${B1#*:}" -ge 1 ] 2> /dev/null && [ "${B2%%:*}" = 0 ] \
+    && [ "$(state_of "$DAVE_UID")" = "1:0" ] && [ "$(state_of "$SYNC_UID")" = "1:0" ] && [ "$DAVE_SESSION" = 401 ] \
     && grep -q '; 2 accounts with a non-ASCII email disabled and signed out$' <<< "$GOUT" && ! grep -q '@' <<< "$GOUT" && [ "$TRIGS" = 4 ]; then
-  pass "existing_nonascii_disabled: fxa-db-guard disabled and signed out both accounts (a non-ASCII account email, a non-ASCII fxa.emails row), logged the count only, and the 4 triggers are back"
+  pass "existing_nonascii_disabled: fxa-db-guard disabled and signed out both accounts (a non-ASCII account email, a non-ASCII fxa.emails row): dave's live session (${B1#*:} before) gone, its token 401; the count logged only; the 4 triggers back"
 else
-  fail "existing_nonascii_disabled: guard exit $GRC '$(tail -1 <<< "$GOUT")'; dave $B1 -> $(state_of "$DAVE_UID"), sync user $B2 -> $(state_of "$SYNC_UID"); triggers $TRIGS"
+  fail "existing_nonascii_disabled: guard exit $GRC '$(tail -1 <<< "$GOUT")'; dave $B1 -> $(state_of "$DAVE_UID") (session token $DAVE_SESSION), sync user $B2 -> $(state_of "$SYNC_UID"); triggers $TRIGS"
 fi
 
 # ffs_access_grants: exactly what access-sync.sh needs (porelli's fxa-policy
