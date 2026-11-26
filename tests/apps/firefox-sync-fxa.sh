@@ -1356,10 +1356,11 @@ rm -rf "$AS_TMP"
 # ── The texts (Task 17) ──
 # notes_render: auth.notes and long_description pass validate.py's Markdown
 # lint (the Hub's notes rules, contract §3). It needs tests/requirements.txt
-# (markdown-it-py), which Lint installs; without it this says so and Lint's
-# validate.py run is the check.
-if python3 -c 'import markdown_it, yaml' 2> /dev/null; then
-  NR=$(python3 - "$MANIFEST" <<'PY'
+# (validate.py imports all of it: markdown-it-py, PyYAML, jsonschema,
+# google-re2, defusedxml), which Lint installs; without it this says so and
+# Lint's validate.py run is the check.
+if python3 -c 'import markdown_it, yaml, jsonschema, re2, defusedxml' 2> /dev/null; then
+  NR=$(python3 - "$MANIFEST" 2>&1 <<'PY'
 import sys
 sys.path.insert(0, "tests")
 import yaml
@@ -1372,7 +1373,7 @@ PY
   ) || NR="the lint itself failed: $NR"
   [ -z "$NR" ] && pass "notes_render: auth.notes and long_description pass the notes lint" || fail "notes_render: $NR"
 else
-  info "notes_render: markdown-it-py isn't installed here; Lint's validate.py checks it"
+  info "notes_render: validate.py's dependencies (tests/requirements.txt) aren't installed here; Lint's validate.py checks it"
 fi
 # long_description_resources: upstream's sizes, word for word.
 LD=$(yq -r '.long_description' "$MANIFEST")
