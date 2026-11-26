@@ -15,9 +15,13 @@ stand-in resolves them to Traefik), trusting Portcullis's CA bundle
   foreign-token <email>     tokens the tokenserver must refuse: a JWT of
                             another accounts server, and one of ours without
                             the Sync scope
+  session-status <email>    the session token signup saved (FXA_STATE_DIR)
+                            asks /session/status: its HTTP status (200, or
+                            401 once the account is disabled)
 
-The password comes from FXA_PASSWORD only, never argv. No token, key or
-password is ever printed: each command prints one JSON object of results
+The password comes from FXA_PASSWORD only, never argv. With FXA_STATE_DIR
+set, signup keeps the new session (uid and session token) in a 0600 file
+there, for session-status. No token, key or password is ever printed: each command prints one JSON object of results
 (statuses, uids, URLs) and exits 0 when everything it did succeeded, 1 when
 the server refused, 2 on a usage or setup error.
 
@@ -46,7 +50,7 @@ import jwt
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fxa.core import Client
+from fxa.core import Client, Session
 from fxa.errors import ClientError, ServerError
 from fxa.oauth import Client as OAuthClient
 
@@ -142,7 +146,35 @@ def cmd_signup(address):
         return out({"step": "verify", "uid": session.uid, "error": err}, False)
     status = session.get_email_status()
     ok = bool(status.get("verified"))
+    if ok and os.environ.get("FXA_STATE_DIR"):
+        save_session(address, session)
     return out({"step": "done", "uid": session.uid, "verified": ok}, ok)
+
+
+def session_file(address):
+    name = hashlib.sha256(address.lower().encode()).hexdigest()[:32]
+    return os.path.join(env("FXA_STATE_DIR"), f"session-{name}.json")
+
+
+def save_session(address, session):
+    path = session_file(address)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"uid": session.uid, "token": session.token}, f)
+
+
+def cmd_session_status(address):
+    try:
+        with open(session_file(address)) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return out({"error": "no saved session (signup with FXA_STATE_DIR first)"}, False)
+    session = Session(auth_client(), address, b"", saved["uid"], saved["token"])
+    try:
+        session.apiclient.get("/session/status", auth=session._auth)
+    except ClientError as e:
+        return out({"uid": saved["uid"], "http": getattr(e, "code", None), "errno": getattr(e, "errno", None)}, False)
+    return out({"uid": saved["uid"], "http": 200}, True)
 
 
 def login(address):
@@ -247,12 +279,13 @@ def cmd_foreign_token(address):
     return out(result, foreign.status_code == 401 and wrong_scope.status_code == 401)
 
 
-COMMANDS = {"signup": cmd_signup, "sync": cmd_sync, "foreign-token": cmd_foreign_token}
+COMMANDS = {"signup": cmd_signup, "sync": cmd_sync, "foreign-token": cmd_foreign_token,
+            "session-status": cmd_session_status}
 
 
 def main(argv):
     if len(argv) != 2 or argv[0] not in COMMANDS or "@" not in argv[1]:
-        return usage("usage: fxa_client.py signup|sync|foreign-token <email> (password in FXA_PASSWORD)")
+        return usage("usage: fxa_client.py signup|sync|foreign-token|session-status <email> (password in FXA_PASSWORD)")
     try:
         return COMMANDS[argv[0]](argv[1])
     except (ClientError, ServerError) as e:

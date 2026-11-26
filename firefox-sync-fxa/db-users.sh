@@ -9,6 +9,13 @@
 #                             fxa, fxa_oauth and pushbox
 #   fxa_profile  fxa-profile  the same on fxa_profile
 #
+# and, after fxa-policy (porelli's fxa-init) made ffs_access, the user of
+# fxa-access-sync: its EXECUTE on ffs.delete_account_by_email taken away.
+# What is left is what access-sync.sh needs: SELECT, INSERT, DELETE on
+# ffs.signup_allowlist and EXECUTE on ffs.disable_account_by_email /
+# ffs.enable_account_by_email (IF EXISTS: a grant already gone is fine; a
+# missing ffs_access fails the job).
+#
 # Nothing else: no GRANT OPTION, no server-wide privilege (SUPER, EVENT,
 # CREATE USER, FILE), no TRIGGER, CREATE ROUTINE, ALTER ROUTINE or DDL, and
 # no right on ffs (the sign-up policy, the allowlist and its procedures).
@@ -50,6 +57,7 @@ user() {  # $1 user, $2 password, $3... databases
 {
   user fxa_auth "$FXA_AUTH_DB_PASSWORD" fxa fxa_oauth pushbox
   user fxa_profile "$FXA_PROFILE_DB_PASSWORD" fxa_profile
+  printf "REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.delete_account_by_email FROM 'ffs_access'@'%%';\n"
 } | mysql --protocol=tcp -h "${MYSQL_HOST:?}" -u root --batch --silent
 
-echo "db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set"
+echo "db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set; ffs_access narrowed (no delete_account_by_email)"

@@ -64,8 +64,9 @@ services:
 
   # One-shot, every start: the least-privilege database users of the
   # internet-facing accounts services (db-users.sh): fxa_auth and
-  # fxa_profile. Root stays with this job, fxa-migrations and fxa-policy,
-  # none of them reachable.
+  # fxa_profile; then ffs_access (fxa-policy's) narrowed to what
+  # fxa-access-sync needs, so it runs after fxa-policy. Root stays with this
+  # job, fxa-migrations and fxa-policy, none of them reachable.
   fxa-db-users:
     image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
     user: "10001:10001"
@@ -87,9 +88,13 @@ services:
     depends_on:
       fxa-db:
         condition: service_healthy
+      fxa-policy:
+        condition: service_completed_successfully
     restart: "no"
 
-  # One-shot: the accounts image runs as app (10001); a new volume is root's.
+  # One-shot: the accounts image and fxa-access-sync run as 10001; a new
+  # volume is root's (fxa-keys, and fxa-access-state: the access sync's
+  # state).
   fxa-keys-owner:
     image: ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
     user: "0:10001"
@@ -101,9 +106,10 @@ services:
     cap_add: [CHOWN]
     mem_limit: 64m
     pids_limit: 16
-    command: [chown, "10001:10001", /fxa-keys]
+    command: [chown, "10001:10001", /fxa-keys, /fxa-access-state]
     volumes:
       - fxa-keys:/fxa-keys
+      - fxa-access-state:/fxa-access-state
     restart: "no"
 
   # One-shot, every start: the accounts' database migrations (auth, oauth,
@@ -148,12 +154,15 @@ services:
 
   # One-shot, every start (porelli's fxa-init): the sign-up policy, enforced
   # by the accounts database itself, and the database users of the admin UI
-  # (ffs_admin) and of Portcullis's access sync (ffs_access). Access managed
-  # elsewhere: with ADMIN_ACCESS_EXTERNAL and FXA_ACCESS_DB_PASSWORD it
-  # forces FXA_SIGNUPS=allowlist; the list is fxa-access-sync's alone, so
-  # FXA_SIGNUP_ALLOWLIST is never set.
+  # (ffs_admin) and of Portcullis's access sync (ffs_access; fxa-db-users
+  # then takes its EXECUTE on ffs.delete_account_by_email away). Access
+  # managed elsewhere: with ADMIN_ACCESS_EXTERNAL and FXA_ACCESS_DB_PASSWORD
+  # it forces FXA_SIGNUPS=allowlist, and the admin UI's procedures leave who
+  # has access alone (enable refuses an email off the list, delete keeps the
+  # list); the list is fxa-access-sync's alone, so FXA_SIGNUP_ALLOWLIST is
+  # never set.
   fxa-policy:
-    image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
+    image: ghcr.io/porelli/firefox-sync:admin-213576ce106e@sha256:432aba9c2f7a5b9293cdd1fb5fed1be92f1ba4f08c83dc56a6e73d7005f96d2d
     read_only: true
     tmpfs:
       - /tmp:size=16m
@@ -691,13 +700,13 @@ services:
   # (fxa-access-sync). The sign-up policy, its allowlist, the account cap and
   # Sync's max users are read-only here: the admin UI refuses its forms for
   # them, and its database user ffs_admin (fxa-policy) can't write them
-  # directly. Not covered: ffs_admin keeps EXECUTE on porelli's SECURITY
-  # DEFINER incident procedures. ffs.delete_account also deletes the
-  # account's allowlist row (until the next access sync puts it back), and
-  # ffs.enable_account re-enables any disabled account, a leaver's too. The
-  # next access sync decides again.
+  # directly. Its incident procedures (porelli's SECURITY DEFINER ones) don't
+  # reach past it either: ffs.enable_account refuses an account whose email
+  # the sign-up policy refuses (SQLSTATE 45000 "not on the access list
+  # managed elsewhere", a leaver's included), and ffs.delete_account leaves
+  # the account's allowlist row alone.
   ffs-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-37a15d0a5ba2@sha256:fb1c3d96136d8367f131f99fefbd81d39f47c338902fb8de5530c778c7030dc5
+    image: ghcr.io/porelli/firefox-sync:admin-213576ce106e@sha256:432aba9c2f7a5b9293cdd1fb5fed1be92f1ba4f08c83dc56a6e73d7005f96d2d
     read_only: true
     tmpfs:
       - /tmp:size=64m
@@ -731,8 +740,8 @@ services:
       # The accounts as ffs_admin, its own database user (fxa-policy, porelli's
       # fxa-init): it reads the accounts (some columns of fxa.accounts, ffs's
       # views) and changes them only through ffs's procedures; with access
-      # managed elsewhere no direct write of the sign-up policy or allowlist
-      # (delete_account still drops the account's allowlist row: above).
+      # managed elsewhere no write of the sign-up policy or allowlist, direct
+      # or through a procedure (above).
       FXA_DB: mysql
       FXA_DB_HOST: fxa-db
       FXA_DB_PORT: "3306"
@@ -798,8 +807,13 @@ services:
         aliases: [ffs-admin-internal]
     restart: unless-stopped
 
-  # Portcullis's access group to the sign-up allowlist (ffs_access); the
-  # hook runs the sync in here.
+  # Portcullis's access group to the sign-up allowlist: the hook access-sync
+  # (manifest hooks[], start and membership_change) runs access-sync.sh in
+  # here, as ffs_access (SELECT, INSERT, DELETE on ffs.signup_allowlist,
+  # EXECUTE on ffs.disable_account_by_email / enable_account_by_email,
+  # nothing else). The data file access.json (the access group's verified
+  # emails) is mounted read-only at /portcullis by the Hub; the state of the
+  # last applied run in fxa-access-state. The password only in MYSQL_PWD.
   fxa-access-sync:
     image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
     user: "10001:10001"
@@ -813,12 +827,23 @@ services:
     pids_limit: 32
     entrypoint: []
     command: [sleep, infinity]
+    environment:
+      MYSQL_HOST: fxa-db
+      MYSQL_PWD: ${FXA_ACCESS_DB_PASSWORD:?FXA_ACCESS_DB_PASSWORD must be set}
+      # The data file must name this instance.
+      PORTCULLIS_INSTANCE: ${PORTCULLIS_INSTANCE:-firefox-sync-fxa}
     volumes:
       - fxa-access-state:/state
+      - ./templates/firefox-sync-fxa/access-sync.sh:/portcullis-bin/access-sync.sh:ro
     depends_on:
       fxa-policy:
         condition: service_completed_successfully
         restart: true
+      fxa-db-users:
+        condition: service_completed_successfully
+        restart: true
+      fxa-keys-owner:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Mozilla's syncstorage-rs (Sync storage + tokenserver), PostgreSQL build of
@@ -826,7 +851,7 @@ services:
   # this instance's own auth server, internally, and knows the accounts as
   # <uid>@<API host>.
   firefox-sync-fxa:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.2@sha256:e31d2d17d136f5e87ccd1c88ba6e53270c3c11d1c321d22d7d31c9ed5e3d623d
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -877,7 +902,7 @@ services:
   # One-shot, every start: the Sync migrations and this host's node, as in
   # firefox-sync/ (stopped as soon as its heartbeat answers).
   firefox-sync-fxa-migrate:
-    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.1@sha256:e67e05fab539e94c81ce6991d01309c2996db1178dcad8c5cd7640eca48c7e95
+    image: ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.2@sha256:e31d2d17d136f5e87ccd1c88ba6e53270c3c11d1c321d22d7d31c9ed5e3d623d
     read_only: true
     tmpfs:
       - /tmp:size=256m
