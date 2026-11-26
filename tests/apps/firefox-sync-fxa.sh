@@ -1030,7 +1030,8 @@ done
 bad=""
 for p in /v1/account/create/ //v1/account/create /v1//account/create /V1/Account/Create /v1/account/%63reate \
          /v1/./account/create /v1/x/../account/create /v1/account/create.json /v1/account/create/x '/v1/account/create/?keys=true' \
-         /v1/account/create%2F; do
+         /v1/account/create%2F /v1/account%2Fcreate /v1/account/%43reate /v1/%2e/account/create /v1/account/%2e/create \
+         /v1/x/%2e%2e/account/create /v1/account/create%2f; do
   OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
   [ "$OUT" = "fxa-gate: not found
  [404]" ] || bad="$bad $p($OUT)"
@@ -1897,18 +1898,23 @@ CANON=$(api_post /v1/account/create "$NB_BODY")
 case "$CANON" in 200*) fail "signup_path_variants_refused: /v1/account/create -> 200 for an address off the allowlist" ;;
   *) pass "signup_path_variants_refused: /v1/account/create (the sign-up gate) refuses nobody@example.org: ${CANON:0:160}" ;; esac
 bad=""
-for path in /v1/account/create/ /V1/Account/Create /v1/account/%63reate /v1/account/create.json '/v1/account/create/?keys=true' \
+for path in /v1/account/create/ /V1/Account/Create /v1/account/create.json '/v1/account/create/?keys=true' \
+            /v1/account/%63reate /v1/account/%43reate /v1/account%2Fcreate /v1/account/create%2F /v1/%2e/account/create \
             //v1/account/create /v1//account/create; do
   OUT=$(api_post "$path" "$NB_BODY")
   if [ "$OUT" = "404 fxa-gate: not found" ]; then
     sv="${sv:-} $path=gate-404"
-  elif [ "$OUT" = "$CANON" ] && case "$path" in *//*) true ;; *) false ;; esac; then
-    sv="${sv:-} $path=merged-by-traefik"
+  elif [ "$OUT" = "$CANON" ] && case "$path" in *//* | *%[0-9a-fA-F][0-9a-fA-F]*) true ;; *) false ;; esac; then
+    # Traefik routes on the cleaned, decoded path and forwards it so: the
+    # request reached the gate as exactly /v1/account/create (else the
+    # gate's raw-URI check answers 404, gate_signup_variants above), on
+    # the signup router (rate-limit-auth), and the sign-up gate refused it.
+    sv="${sv:-} $path=canonical-after-traefik"
   else
     bad="$bad $path->${OUT:0:120}"
   fi
 done
-[ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404 (never fxa-auth):$sv" \
+[ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404, or (Traefik cleans // and decodes %xx first) the canonical path's own refusal; never fxa-auth, never 200:$sv" \
   || fail "signup_path_variants_refused:$bad"
 bad=""
 for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/linked_account/login \
