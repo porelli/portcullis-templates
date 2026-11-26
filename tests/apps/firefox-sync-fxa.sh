@@ -2809,12 +2809,14 @@ if docker exec "$ACCESS_C" cat /portcullis/access.json > /dev/null 2>&1 \
 else
   fail "access: fxa-access-sync: $(docker inspect -f '{{.State.Status}} {{.Config.User}} {{.HostConfig.GroupAdd}}' "$ACCESS_C" 2>&1); the data file: $(docker exec "$ACCESS_C" ls -l /portcullis 2>&1 | tr '\n' ' ')"
 fi
-HOOK_OUTS=""
+# Every hook output, for the secret / email checks (a file: the hook runs in
+# command substitutions, whose variables don't come back).
+HOOK_LOG=$(mktemp)
 access_hook() {  # $1 trigger -> the hook's output, "rc=<n>" last
   local doc rc=0
   doc=$(jq -c --arg t "$1" '{trigger: $t} + .' "$APPFILES_DIR/$APP_ID/access/access.json" 2>/dev/null || printf '{"trigger":"%s"}' "$1")
   OUT=$(printf '%s' "$doc" | docker exec -i "$ACCESS_C" "${HOOK_CMD[@]}" 2>&1) || rc=$?
-  HOOK_OUTS="$HOOK_OUTS$OUT"$'\n'
+  printf '%s\n' "$OUT" >> "$HOOK_LOG"
   printf '%s\nrc=%s' "$OUT" "$rc"
 }
 hook_ok() {  # $1 label, $2 trigger
@@ -2974,7 +2976,8 @@ hook_ok "state_lost_still_disables" membership_change || true
 OUT=$(acc_client signup "$CAROL" || true)
 [ "$(jget "$OUT" .verified)" = true ] && [ "$(acct "$CAROL")" = "1:0:1" ] || fail "state_lost_still_disables: $CAROL's sign-up: $(redact "$OUT"); $(signup_diag)"
 STATE_VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/state"}}{{.Name}}{{end}}{{end}}' "$ACCESS_C" 2>/dev/null || true)
-docker rm -f "$ACCESS_C" > /dev/null 2>&1 || true
+# fxa-keys-owner (exited) mounts it too.
+docker rm -f "$ACCESS_C" portcullis-fxa-keys-owner-1 > /dev/null 2>&1 || true
 [ -n "$STATE_VOL" ] && docker volume rm "$STATE_VOL" > /dev/null 2>&1 || fail "state_lost_still_disables: couldn't remove the state volume '$STATE_VOL'"
 people alice="$ALICE2" bob="$BOB"
 compose_up "$APP_ID" > /dev/null 2>&1 || true
@@ -3057,6 +3060,8 @@ for c in $(docker ps -aq); do
     *"$FXA_ACCESS_DB_PASSWORD"*) bad="$bad $c(argv)" ;;
   esac
 done
+HOOK_OUTS=$(cat "$HOOK_LOG")
+rm -f "$HOOK_LOG"
 case "$HOOK_OUTS$(docker logs "$ACCESS_C" 2>&1)" in *"$FXA_ACCESS_DB_PASSWORD"*) bad="$bad hook-output/logs" ;; esac
 [ -z "$bad" ] && [ -n "$HOOK_OUTS" ] && pass "access secret: ffs_access's password on no container's argv, in no hook output or log" \
   || fail "access secret: found in:$bad"
