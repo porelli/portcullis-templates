@@ -16,7 +16,8 @@
 #   api       -> fxa-auth-internal:9000; exactly /v1/account/create goes
 #                to the sign-up gate, ffs-admin-internal:8081, any other
 #                spelling of it is 404; the other routes that create
-#                accounts (passwordless, linked_account) are 403
+#                accounts (passwordless, linked_account, the old stub-account
+#                routes) are 403
 #   profile   -> fxa-profile-internal:1111; /img/ -> fxa-profile-static-
 #                internal:1112 with the prefix stripped
 #   sync      -> firefox-sync-fxa-internal:8000 (bodies up to 10 MB)
@@ -246,7 +247,10 @@ $(proxy 0 0)
   # slash or suffix, case, //, %-encoding, dot segments) is 404 here, so it
   # reaches neither fxa-auth nor the looser API router's rate limit. The
   # other ways fxa-auth v1.350.0 creates an account (db.createAccount
-  # callers: passwordless confirm_code, linked_account login) are refused.
+  # callers: passwordless confirm_code, linked_account login) are refused,
+  # and so are the stub-account routes older releases had (account/stub,
+  # finish_setup, set_password: gone in v1.350.0, refused in case an image
+  # brings them back; no first-party sign-up uses them).
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_API};
@@ -257,7 +261,7 @@ $(proxy 1 0)
       if (\$request_uri !~ "^/v1/account/create(?:\\?|\$)") { return 404 "fxa-gate: not found\\n"; }
       proxy_pass \$pc_signup/v1/account/create\$is_args\$args;
     }
-    location ~* ^/v1/(account/passwordless|linked_account)(?:/|\$) {
+    location ~* ^/v1/(account/(passwordless|stub|finish_setup|set_password)|linked_account)(?:/|\$) {
       return 403 "fxa-gate: accounts are created through the sign-up gate only\\n";
     }
     location / { proxy_pass \$pc_up; }

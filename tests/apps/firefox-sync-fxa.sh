@@ -1043,12 +1043,13 @@ done
 bad=""
 for p in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/account/passwordless/resend_code \
          /v1/linked_account/login /v1/linked_account/unlink /V1/Linked_Account/Login //v1/linked_account/login \
-         /v1/account/%70asswordless/confirm_code /v1/account/passwordless; do
+         /v1/account/%70asswordless/confirm_code /v1/account/passwordless /v1/account/stub /v1/account/finish_setup \
+         /v1/account/set_password /V1/Account/Stub /v1/account/stub/ //v1/account/finish_setup; do
   OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
   [ "$OUT" = "fxa-gate: accounts are created through the sign-up gate only
  [403]" ] || bad="$bad $p($OUT)"
 done
-[ -z "$bad" ] && pass "account_creation_routes: passwordless and linked-account (third-party) sign-in / sign-up -> the gate's 403, every spelling" \
+[ -z "$bad" ] && pass "account_creation_routes: passwordless, linked-account (third-party) and the old stub-account routes (stub, finish_setup, set_password) -> the gate's 403, every spelling" \
   || fail "account_creation_routes: not refused:$bad"
 OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G/v1/account/passwordlessx")
 case "$OUT" in "up=main port=9000 "*) pass "account_creation_routes: a neighbouring path (/v1/account/passwordlessx) still reaches fxa-auth" ;; *) fail "account_creation_routes: neighbour: $OUT" ;; esac
@@ -1910,12 +1911,25 @@ done
 [ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404 (never fxa-auth):$sv" \
   || fail "signup_path_variants_refused:$bad"
 bad=""
-for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/linked_account/login; do
-  OUT=$(api_post "$path" "{\"email\":\"nobody@example.org\",\"code\":\"12345678\",\"provider\":\"google\",\"idToken\":\"x\"}")
+for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/linked_account/login \
+            /v1/account/stub /v1/account/finish_setup /v1/account/set_password; do
+  OUT=$(api_post "$path" "{\"email\":\"nobody@example.org\",\"code\":\"12345678\",\"provider\":\"google\",\"idToken\":\"x\",\"clientId\":\"5882386c6d801776\",\"authPW\":\"$(printf '0%.0s' $(seq 1 64))\"}")
   [ "$OUT" = "403 fxa-gate: accounts are created through the sign-up gate only" ] || bad="$bad $path->${OUT:0:120}"
 done
-[ -z "$bad" ] && pass "account_creation_routes: passwordless send / confirm and linked_account login -> the gate's 403" \
+[ -z "$bad" ] && pass "account_creation_routes: passwordless send / confirm, linked_account login, account/stub, finish_setup, set_password -> the gate's 403" \
   || fail "account_creation_routes:$bad"
+# The pinned image itself: the stub-account routes are gone from fxa-auth
+# (404 straight at it, inside its container), the others are its own.
+bad=""
+for path in /v1/account/stub /v1/account/finish_setup /v1/account/set_password; do
+  code=$(docker exec "$AUTH_C" node -e '
+    fetch("http://127.0.0.1:9000" + process.argv[1], {method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({email: "nobody@example.org", clientId: "5882386c6d801776"})})
+      .then(r => console.log(r.status), e => console.log("error"))' "$path" 2>&1 || echo error)
+  [ "$code" = 404 ] || bad="$bad $path->$code"
+done
+[ -z "$bad" ] && pass "account_creation_routes: fxa-auth v1.350.0 has no account/stub, finish_setup or set_password route (404 straight at it)" \
+  || fail "account_creation_routes: straight at fxa-auth:$bad"
 # Routes that reach fxa-auth and act on existing accounts only.
 bad=""
 for path in /v1/account/login '/v1/account/login?keys=true' /v1/password/forgot/send_otp /v1/account/status; do
