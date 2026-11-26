@@ -82,6 +82,8 @@ check_dep fxa-migrations fxa-db service_healthy
 check_dep fxa-content fxa-auth service_healthy
 check_dep fxa-content fxa-profile service_healthy
 check_dep fxa-db-users fxa-db service_healthy
+check_dep fxa-db-guard fxa-migrations service_completed_successfully
+check_dep fxa-policy fxa-db-guard service_completed_successfully
 check_dep fxa-auth fxa-db-users service_completed_successfully
 check_dep fxa-profile fxa-db-users service_completed_successfully
 check_dep firefox-sync-fxa firefox-sync-fxa-init service_completed_successfully
@@ -119,7 +121,7 @@ fxa-profile=$FXA_IMAGE fxa-profile-worker=$FXA_IMAGE fxa-profile-static=$FXA_IMA
 fxa-policy=$ADMIN_IMAGE ffs-admin=$ADMIN_IMAGE
 firefox-sync-fxa=$SYNC_IMAGE firefox-sync-fxa-migrate=$SYNC_IMAGE
 firefox-sync-fxa-db-init=$SYNC_INIT_IMAGE fxa-pairing=$PAIRING_IMAGE
-fxa-db=$MYSQL_IMAGE fxa-db-users=$MYSQL_IMAGE fxa-access-sync=$MYSQL_IMAGE
+fxa-db=$MYSQL_IMAGE fxa-db-users=$MYSQL_IMAGE fxa-db-guard=$MYSQL_IMAGE fxa-access-sync=$MYSQL_IMAGE
 fxa-redis=$REDIS_IMAGE fxa-mail-check=$REDIS_IMAGE
 firefox-sync-fxa-db=$POSTGRES_IMAGE firefox-sync-fxa-init=$POSTGRES_IMAGE
 fxa-gate=$NGINX_IMAGE"
@@ -188,8 +190,8 @@ done
 # root password or connects as root; root stays with the one-shots
 # fxa-migrations, fxa-policy and fxa-db-users (and the server itself).
 ROOT_HOLDERS=$(yq -r '[.services | to_entries[] | select(.value.environment // {} | to_entries | any_c(.value | tostring | test("FXA_MYSQL_PASSWORD"))) | .key] | sort | join(" ")' "$COMPOSE")
-[ "$ROOT_HOLDERS" = "fxa-db fxa-db-users fxa-migrations fxa-policy" ] \
-  && pass "no_root_db_credential: the root password only in fxa-db, fxa-db-users, fxa-migrations, fxa-policy" \
+[ "$ROOT_HOLDERS" = "fxa-db fxa-db-guard fxa-db-users fxa-migrations fxa-policy" ] \
+  && pass "no_root_db_credential: the root password only in fxa-db, fxa-db-guard, fxa-db-users, fxa-migrations, fxa-policy" \
   || fail "no_root_db_credential: the root password is in: $ROOT_HOLDERS"
 bad=""
 for svc in fxa-auth fxa-content fxa-profile fxa-profile-worker fxa-profile-static fxa-pairing firefox-sync-fxa ffs-admin; do
@@ -231,7 +233,38 @@ $(diff <(echo "$WANT_SQL") <(echo "$SQL") || true)"
 else
   fail "db-users.sh M1/M3: the script failed with the stub mysql: $SQL"
 fi
+# db-guard.sh (Task 13 fix round 1, C1): with a stub mysql, the statements
+# that make ffs compare byte for byte and the ASCII-only triggers.
+GUARD_SH="$(dirname "$COMPOSE")/db-guard.sh"
+if SQL=$(PATH="$DBU_TMP:$PATH" MYSQL_HOST=localhost sh "$GUARD_SH" 2>&1); then
+  bad=""
+  for want in "CREATE DATABASE IF NOT EXISTS ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
+              "ALTER DATABASE ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
+              "CREATE TABLE IF NOT EXISTS ffs.signup_allowlist (entry VARCHAR(255) PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" \
+              "ALTER TABLE ffs.signup_allowlist MODIFY entry VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;"; do
+    grep -qxF "$want" <<< "$SQL" || bad="$bad [$want]"
+  done
+  for t in accounts_insert:INSERT:accounts accounts_update:UPDATE:accounts emails_insert:INSERT:emails emails_update:UPDATE:emails; do
+    IFS=: read -r n ev tb <<< "$t"
+    grep -qxF "DROP TRIGGER IF EXISTS fxa.portcullis_ascii_email_$n//" <<< "$SQL" \
+      && grep -qxF "CREATE TRIGGER fxa.portcullis_ascii_email_$n BEFORE $ev ON fxa.$tb FOR EACH ROW" <<< "$SQL" || bad="$bad [trigger $n]"
+  done
+  [ "$(grep -c 'CHAR_LENGTH(CONVERT(NEW.normalizedEmail USING utf8mb4)) <> LENGTH(CONVERT(NEW.normalizedEmail USING utf8mb4))' <<< "$SQL")" = 4 ] \
+    && [ "$(grep -c "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Portcullis: an account email must be plain ASCII';" <<< "$SQL")" = 4 ] \
+    && [ "$(grep -c 'NOT (CAST(NEW.normalizedEmail AS BINARY) <=> CAST(OLD.normalizedEmail AS BINARY))' <<< "$SQL")" = 2 ] || bad="$bad [conditions]"
+  [ -z "$bad" ] && pass "db-guard.sh C1: ffs and its allowlist column utf8mb4_bin; INSERT / UPDATE triggers on fxa.accounts and fxa.emails refuse a non-ASCII email (updates only when it changes)" \
+    || fail "db-guard.sh C1: missing:$bad"
+else
+  fail "db-guard.sh: the script failed with the stub mysql: $SQL"
+fi
 rm -rf "$DBU_TMP"
+GD='.services["fxa-db-guard"]'
+[ "$(yq -o=json -I=0 "$GD.entrypoint" "$COMPOSE")" = '["/bin/sh","/portcullis-bin/db-guard.sh"]' ] \
+  && [ "$(yq -o=json -I=0 "$GD.volumes" "$COMPOSE")" = '["./templates/firefox-sync-fxa/db-guard.sh:/portcullis-bin/db-guard.sh:ro"]' ] \
+  && [ "$(yq -o=json -I=0 "$GD.environment" "$COMPOSE")" = '{"MYSQL_HOST":"fxa-db","MYSQL_PWD":"${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}"}' ] \
+  && [ "$(yq -r "$GD.restart" "$COMPOSE")" = no ] && [ "$(yq -r "$GD.read_only" "$COMPOSE")" = true ] \
+  && pass "fxa-db-guard: a read-only one-shot running db-guard.sh (read-only), the root password in MYSQL_PWD only" \
+  || fail "fxa-db-guard: $(yq -o=json -I=0 "$GD" "$COMPOSE")"
 
 # volumes
 VOLS=$(yq -r '.volumes | keys | .[]' "$COMPOSE" | LC_ALL=C sort | tr '\n' ' ')
@@ -455,7 +488,7 @@ done
   && pass "gate: Traefik's service port 8080 = GATE_LISTEN" || fail "gate: service port $(GS '.labels["traefik.http.services.firefox-sync-fxa-gate.loadbalancer.server.port"]')"
 # gate_waits_for_init (T10-M4): every one-shot completed, every service it
 # calls healthy.
-for job in fxa-db-users fxa-keys-owner fxa-migrations fxa-policy fxa-mail-check firefox-sync-fxa-migrate firefox-sync-fxa-db-init firefox-sync-fxa-init; do
+for job in fxa-db-users fxa-keys-owner fxa-migrations fxa-db-guard fxa-policy fxa-mail-check firefox-sync-fxa-migrate firefox-sync-fxa-db-init firefox-sync-fxa-init; do
   check_dep fxa-gate "$job" service_completed_successfully
 done
 for up in fxa-auth fxa-content fxa-profile fxa-profile-static fxa-pairing ffs-admin firefox-sync-fxa; do
@@ -1040,6 +1073,9 @@ while IFS= read -r l; do
         echo "ERROR 1644 (45000) at line $ln: no such account" >&2; rc=1
       elif [ "$(cat "$d/fail" 2> /dev/null)" = calls ]; then
         echo "ERROR 1370 (42000) at line $ln: execute command denied to user 'ffs_access'@'%' for routine 'ffs.disable_account_by_email'" >&2; rc=1
+      elif [ "$(cat "$d/fail" 2> /dev/null)" = deadlock-once ] && [ "$ln" = 1 ] && [ ! -e "$d/deadlocked" ]; then
+        : > "$d/deadlocked"
+        echo "ERROR 1213 (40001) at line $ln: Deadlock found when trying to get lock; try restarting transaction" >&2; rc=1
       fi ;;
     "SELECT 'portcullis-access-calls';") echo portcullis-access-calls ;;
   esac
@@ -1065,7 +1101,7 @@ as_run() {
     "<as written>") ;;
     *) printf '%s' "$data" > "$AS_TMP/access.json" ;;
   esac
-  env -i PATH="$AS_TMP/bin:$PATH" STUB_DIR="$AS_TMP/stub" MYSQL_HOST=fxa-db MYSQL_PWD=pw-access-unit \
+  env -i PATH="$AS_TMP/bin:$PATH" STUB_DIR="$AS_TMP/stub" MYSQL_HOST=fxa-db MYSQL_PWD=pw-access-unit FXA_ACCESS_BACKOFF=0 \
     PORTCULLIS_INSTANCE=firefox-sync-fxa FXA_ACCESS_FILE="$AS_TMP/access.json" FXA_ACCESS_STATE="$AS_STATE" "$@" \
     "$AS_SH" "$ACCESS_SH" < /dev/null 2>&1
   echo "rc=$?"
@@ -1140,6 +1176,9 @@ as_refused "larger than 4 MiB" "$(head -c 4194305 /dev/zero | tr '\0' ' ')$(adoc
 as_refused "MYSQL_PWD unset" "$(adoc a=a@example.org)" MYSQL_PWD=
 printf '{"version":1,"instance":"firefox-sync-fxa","people":{"a":{"email":"a\000@example.org"}}}' > "$AS_TMP/access.json"
 as_refused "a NUL byte" "<as written>"
+OUT=$(as_run "<as written>")
+grep -q 'the data file holds a NUL byte' <<< "$OUT" && pass "access-sync.sh: a NUL byte is refused by its own check (whatever the awk does with it)" \
+  || fail "access-sync.sh: a NUL byte: $OUT"
 rm -f "$AS_STATE"
 # join_allows / first run without a state: every member's row, the rows of
 # non-members deleted and their accounts disabled; emails lowercased,
@@ -1175,33 +1214,46 @@ CALL ffs.disable_account_by_email('carol@example.org');" \
 printf '%s\n' bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 echo carol@example.org > "$AS_TMP/stub/noacct"
 OUT=$(as_run "$(adoc bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
-as_case "routine run (no such account ignored)" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
+as_case "routine run (no such account ignored, the leaver without one dropped from the state)" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org"]}' "$OUT"
 grep -q '(1 without an account)' <<< "$OUT" && pass "access-sync.sh: routine run: 'no such account' counted, not an error" \
   || fail "access-sync.sh: routine run: $OUT"
 # rejoin_enables: alice back: her row, then her account enabled.
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
 as_case "rejoin" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
-  "CALL ffs.disable_account_by_email('carol@example.org');
-CALL ffs.enable_account_by_email('alice@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  "CALL ffs.enable_account_by_email('alice@example.org');" \
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}' "$OUT"
 # admin_disable_survives: the next run with the same file enables nobody (a
 # member an admin disabled stays disabled).
 printf '%s\n' alice@example.org bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
 as_case "admin_disable_survives (same file again)" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
-  "CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  "" \
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}' "$OUT"
 # A failed call (anything but "no such account") or a failed transaction:
 # exit 1, the state as it was (the next run does it all again).
 STATE1=$(as_state)
 echo calls > "$AS_TMP/stub/fail"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
-[ "${OUT##*$'\n'}" = rc=1 ] && [ "$(as_state)" = "$STATE1" ] && ! grep -q '@' <<< "$OUT" \
-  && pass "access-sync.sh: a call refused for another reason: exit 1, the state unchanged ($(head -1 <<< "$OUT"))" \
-  || fail "access-sync.sh: a refused call: $OUT; state $(as_state)"
+[ "${OUT##*$'\n'}" = rc=1 ] && [ "$(as_state)" = "$STATE1" ] && [ "$(as_calls)" = 4 ] && ! grep -q '@' <<< "$OUT" \
+  && grep -q 'still failed after 3 tries' <<< "$OUT" \
+  && pass "access-sync.sh: a call refused for another reason: tried 3 times, then exit 1, the state unchanged ($(tail -2 <<< "$OUT" | head -1))" \
+  || fail "access-sync.sh: a refused call: $OUT; calls $(as_calls); state $(as_state)"
+# A deadlock on the first try: that call alone again, then applied.
+echo deadlock-once > "$AS_TMP/stub/fail"
+rm -f "$AS_TMP/stub/deadlocked"
+OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
+if [ "${OUT##*$'\n'}" = rc=0 ] && [ "$(as_calls)" = 3 ] && grep -q '1 calls failed (ERROR 1213 (40001)): trying again' <<< "$OUT" \
+    && [ "$(cat "$AS_TMP/stub/call.3.sql")" = "CALL ffs.disable_account_by_email('shared@example.org');
+SELECT 'portcullis-access-calls';" ] \
+    && [ "$(as_state)" = '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["shared@example.org"]}' ]; then
+  pass "access-sync.sh: a deadlocked call is tried again alone, then the run is applied"
+else
+  fail "access-sync.sh: deadlock retry: $(tr '\n' ' ' <<< "$OUT"); calls $(as_calls); state $(as_state)"
+fi
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}\n' > "$AS_STATE"
 echo tx > "$AS_TMP/stub/fail"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
 [ "${OUT##*$'\n'}" = rc=1 ] && [ "$(as_calls)" = 1 ] && [ "$(as_state)" = "$STATE1" ] && grep -q 'nothing changed' <<< "$OUT" \
@@ -1216,12 +1268,12 @@ DELETE FROM ffs.signup_allowlist;
 $TX_TAIL" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('bob@example.org');
-CALL ffs.disable_account_by_email('carol@example.org');
 CALL ffs.disable_account_by_email('o''neil@example.org');
 CALL ffs.disable_account_by_email('shared@example.org');" \
-  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","carol@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT"
+  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT"
 # state_lost_still_disables: no state, carol's row in the database only.
 rm -f "$AS_STATE"
+: > "$AS_TMP/stub/noacct"
 printf '%s\n' bob@example.org carol@example.org > "$AS_TMP/stub/db"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
 as_case "state_lost_still_disables" "$(tx_for bob@example.org)" "CALL ffs.disable_account_by_email('carol@example.org');" \
@@ -1312,14 +1364,12 @@ done
   || fail "signup_path_variants: the canonical path not to the sign-up gate:$bad"
 bad=""
 for p in /v1/account/create/ //v1/account/create /v1//account/create /V1/Account/Create /v1/account/%63reate \
-         /v1/./account/create /v1/x/../account/create /v1/account/create.json /v1/account/create/x '/v1/account/create/?keys=true' \
-         /v1/account/create%2F /v1/account%2Fcreate /v1/account/%43reate /v1/%2e/account/create /v1/account/%2e/create \
-         /v1/x/%2e%2e/account/create /v1/account/create%2f; do
+         /v1/account/create.json /v1/account/create/x '/v1/account/create/?keys=true' /v1/account/%43reate; do
   OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
   [ "$OUT" = "fxa-gate: not found
  [404]" ] || bad="$bad $p($OUT)"
 done
-[ -z "$bad" ] && pass "signup_path_variants: every other spelling of /v1/account/create (trailing slash, a suffix, //, case, %-encoding, dot segments) -> the gate's 404, never fxa-auth or the sign-up gate" \
+[ -z "$bad" ] && pass "signup_path_variants: every other spelling of /v1/account/create (trailing slash, a suffix, //, case, %-encoding) -> the gate's 404, never fxa-auth or the sign-up gate" \
   || fail "signup_path_variants: not refused by the gate:$bad"
 # account_creation_routes: the other routes of fxa-auth v1.350.0 that call
 # db.createAccount (passwordless confirm_code, linked_account login) and
@@ -1345,7 +1395,7 @@ EMAIL_REFUSED="fxa-gate: an account's email is its Portcullis email: it can't be
 bad=""
 for p in /v1/mfa/recovery_email /v1/mfa/recovery_email/ /v1/mfa/recovery_email/destroy /v1/mfa/recovery_email/set_primary \
          /v1/mfa/recovery_email/secondary/verify_code /v1/mfa/recovery_email/secondary/resend_code /V1/MFA/Recovery_Email/Set_Primary \
-         //v1/mfa/recovery_email/set_primary /v1/mfa/%72ecovery_email/set_primary /v1/x/../mfa/recovery_email \
+         //v1/mfa/recovery_email/set_primary /v1/mfa/%72ecovery_email/set_primary \
          /v1/recovery_email /v1/recovery_email/ /v1/recovery_email/set_primary /v1/recovery_email/destroy \
          /v1/recovery_email/secondary/verify_code /v1/recovery_email/secondary/resend_code /v1/recovery_email//set_primary; do
   OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
@@ -1361,6 +1411,35 @@ for p in /v1/recovery_email/status /v1/recovery_email/verify_code /v1/recovery_e
 done
 [ -z "$bad" ] && pass "email_change_routes: recovery_email/status, verify_code, resend_code (sign-up and sign-in), recovery_emails (the list) and mfa/otp still reach fxa-auth" \
   || fail "email_change_routes: refused what sign-up / sign-in need:$bad"
+# ambiguous_paths (Task 13 fix round 1, I1): nginx decodes %2F before it
+# resolves dot segments and hapi doesn't, so /v1/a%2Fb/../mfa/recovery_email
+# would match no rule here and reach fxa-auth as /v1/mfa/recovery_email. A
+# raw path with %2F, %5C, a backslash or a dot segment (%-encoded or not) is
+# the gate's 400 on every host, before any location rule (no Traefik in
+# front here to clean it first).
+BAD_PATH="fxa-gate: no encoded slash, backslash or dot segment in the path"
+bad=""
+for h in "$GH_API" "$GH_ACC" "$GH_PROF" "$GH_SYNC" "$GH_ADMIN" "$GH_PAIR"; do
+  for p in /v1/a%2Fb/../mfa/recovery_email /v1/a%2Fb/%2E%2E/recovery_email/set_primary /v1/a%2Fb/../account/create \
+           /v1/a%2fb/../account/passwordless/confirm_code /v1/./account/create /v1/x/../account/create /v1/account/create%2F \
+           /v1/account%2Fcreate /v1/%2e/account/create /v1/account/%2E/create /v1/x/%2e%2e/account/create /v1/x/.%2E/mfa/recovery_email \
+           /v1/x/../mfa/recovery_email '/v1/a%5Cb' '/v1/a%5cb' '/v1/a\b' /v1/.. '/v1/x/..?y=1' /accounts/./invite /x/%2e; do
+    OUT=$(gt $T_IP -X POST -H "Host: $h" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+    [ "$OUT" = "$BAD_PATH
+ [400]" ] || bad="$bad $h$p($OUT)"
+  done
+done
+[ -z "$bad" ] && pass "ambiguous_paths: %2F, %5C, a backslash or a dot segment (%-encoded or not) anywhere in the path -> the gate's 400 on all six hosts (the review's /v1/a%2Fb/../mfa/recovery_email and /v1/a%2Fb/../account/create included)" \
+  || fail "ambiguous_paths: not refused:$bad"
+bad=""
+for p in '/v1/account/status?uid=%2F..%2F' /v1/x/...y /v1/.well-known /v1/a.b/c..d '/v1/recovery_email/status?x=%5C'; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  case "$OUT" in "up=main port=9000 "*) ;; *) bad="$bad $p($OUT)" ;; esac
+done
+OUT=$(gt $T_IP -H "Host: $GH_SYNC" "$G/1.5/1/storage/bookmarks/abc-DEF_123?ids=a,b&newer=1.5")
+case "$OUT" in "up=main port=8000 "*) ;; *) bad="$bad sync($OUT)" ;; esac
+[ -z "$bad" ] && pass "ambiguous_paths: the query isn't looked at, dots inside a segment pass, a Sync storage path passes" \
+  || fail "ambiguous_paths: refused what should pass:$bad"
 # no_upgrade_tunnel (I1): only the pairing host passes an Upgrade.
 bad=""
 for h in "$GH_ACC" "$GH_API" "$GH_PROF" "$GH_SYNC" "$GH_ADMIN"; do
@@ -1417,7 +1496,7 @@ case "$OUT" in "up=main port=8080 uri=/users/x host=$GH_ADMIN auth=[] xat=[] coo
 bad=""
 for p in /accounts/signups /accounts/max-accounts /accounts/invite /accounts/allowlist/remove /sync/max-users \
          /sync/allowlist/allow /sync/allowlist/reject /sync/allowlist/remove /accounts/signups/ /Accounts/Signups \
-         //accounts/signups /accounts/%73ignups /accounts/./invite /sync/allowlist; do
+         //accounts/signups /accounts/%73ignups /sync/allowlist; do
   for m in POST GET; do
     OUT=$(gt $T_IP -X $m -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
     [ "$OUT" = "fxa-gate: who may sign up and sync is managed in Portcullis, not in the admin UI
@@ -2211,6 +2290,8 @@ for path in /v1/account/create/ /V1/Account/Create /v1/account/create.json '/v1/
   OUT=$(api_post "$path" "$NB_BODY")
   if [ "$OUT" = "404 fxa-gate: not found" ]; then
     sv="${sv:-} $path=gate-404"
+  elif [ "$OUT" = "400 fxa-gate: no encoded slash, backslash or dot segment in the path" ]; then
+    sv="${sv:-} $path=gate-400"
   elif [ "$OUT" = "$CANON" ] && case "$path" in *//* | *%[0-9a-fA-F][0-9a-fA-F]*) true ;; *) false ;; esac; then
     # Traefik routes on the cleaned, decoded path and forwards it so: the
     # request reached the gate as exactly /v1/account/create (else the
@@ -2221,7 +2302,7 @@ for path in /v1/account/create/ /V1/Account/Create /v1/account/create.json '/v1/
     bad="$bad $path->${OUT:0:120}"
   fi
 done
-[ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404, or (Traefik cleans // and decodes %xx first) the canonical path's own refusal; never fxa-auth, never 200:$sv" \
+[ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404 or 400, or (Traefik cleans // and decodes %xx first) the canonical path's own refusal; never fxa-auth, never 200:$sv" \
   || fail "signup_path_variants_refused:$bad"
 bad=""
 for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/linked_account/login \
@@ -2812,6 +2893,7 @@ fi
 # Every hook output, for the secret / email checks (a file: the hook runs in
 # command substitutions, whose variables don't come back).
 HOOK_LOG=$(mktemp)
+HOOK_OK_N=0
 access_hook() {  # $1 trigger -> the hook's output, "rc=<n>" last
   local doc rc=0
   doc=$(jq -c --arg t "$1" '{trigger: $t} + .' "$APPFILES_DIR/$APP_ID/access/access.json" 2>/dev/null || printf '{"trigger":"%s"}' "$1")
@@ -2822,7 +2904,7 @@ access_hook() {  # $1 trigger -> the hook's output, "rc=<n>" last
 hook_ok() {  # $1 label, $2 trigger
   local out
   out=$(access_hook "$2")
-  if [ "${out##*$'\n'}" = rc=0 ]; then info "$1: $(head -1 <<< "$out")"; return 0; fi
+  if [ "${out##*$'\n'}" = rc=0 ]; then HOOK_OK_N=$((HOOK_OK_N + 1)); info "$1: $(head -1 <<< "$out")"; return 0; fi
   fail "$1: the hook ($2) failed: $(tr '\n' ' ' <<< "$out")"
   return 1
 }
@@ -2884,6 +2966,32 @@ for who in "$ALICE" "$BOB"; do
     fail "join_allows: $who: $(redact "$OUT"); account $(acct "$who"); $(signup_diag)"
   fi
 done
+# lookalike_refused (fix round 1, C1): with alice@example.org listed, an
+# accent or a full-width letter in the domain is no match: the policy
+# refuses it, the sign-up through Traefik is refused, no account appears;
+# and no account email can become non-ASCII.
+COLL=$(echo "SELECT CONCAT(DEFAULT_COLLATION_NAME, ' ', (SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = 'ffs' AND TABLE_NAME = 'signup_allowlist' AND COLUMN_NAME = 'entry')) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'ffs';" | mysql_root 2>&1)
+[ "$COLL" = "utf8mb4_bin utf8mb4_bin" ] && pass "lookalike_refused: the ffs database and the allowlist's column are utf8mb4_bin" \
+  || fail "lookalike_refused: collations '$COLL'"
+REF=$(printf '%s\n' "SET NAMES utf8mb4;" "SELECT CONCAT_WS('|', IFNULL(ffs.signup_refusal('$ALICE'), 'ok'), IFNULL(ffs.signup_refusal('alice@exámple.org'), 'ok'), IFNULL(ffs.signup_refusal('alíce@example.org'), 'ok'), IFNULL(ffs.signup_refusal('alice@ｅxample.org'), 'ok'), (SELECT COUNT(*) FROM ffs.signup_allowlist WHERE entry = 'alice@exämple.org'));" | mysql_root 2>&1)
+[ "$REF" = "ok|policy|policy|policy|0" ] && pass "lookalike_refused: ffs.signup_refusal: $ALICE allowed; alice@exámple.org, alíce@example.org, alice@ｅxample.org (full-width) refused ('policy'); a direct match finds no row" \
+  || fail "lookalike_refused: signup_refusal / match: $REF (want ok|policy|policy|policy|0)"
+ACCTS_BEFORE=$(echo "SELECT COUNT(*) FROM fxa.accounts;" | mysql_root 2>&1)
+for who in "alice@exámple.org" "alice@ｅxample.org"; do
+  OUT=$(acc_client signup "$who" || true)
+  if [ "$(jget "$OUT" .step)" = create ] && [ "$(jget "$OUT" .http)" = 400 ]; then
+    pass "lookalike_refused: the sign-up of $who through Traefik -> 400 (errno $(jget "$OUT" .errno))"
+  else
+    fail "lookalike_refused: the sign-up of $who: $(redact "$OUT")"
+  fi
+done
+NONASCII=$(echo "SELECT CONCAT((SELECT COUNT(*) FROM fxa.accounts), ':', (SELECT COUNT(*) FROM fxa.accounts WHERE CHAR_LENGTH(CONVERT(normalizedEmail USING utf8mb4)) <> LENGTH(CONVERT(normalizedEmail USING utf8mb4))));" | mysql_root 2>&1)
+[ "$NONASCII" = "$ACCTS_BEFORE:0" ] && pass "lookalike_refused: no fxa.accounts row appeared ($ACCTS_BEFORE accounts, none with a non-ASCII email)" \
+  || fail "lookalike_refused: accounts:non-ASCII = $NONASCII (want $ACCTS_BEFORE:0)"
+OUT=$(printf '%s\n' "SET NAMES utf8mb4;" "UPDATE fxa.accounts SET email = 'alice@exámple.org', normalizedEmail = 'alice@exámple.org' WHERE normalizedEmail = '$ALICE';" | mysql_root 2>&1 || true)
+grep -q "^ERROR 1644 (45000).*: Portcullis: an account email must be plain ASCII" <<< "$OUT" && [ "$(acct "$ALICE")" = "1:0:1" ] \
+  && pass "lookalike_refused: the database refuses turning an account's email non-ASCII (db-guard's trigger), even as root" \
+  || fail "lookalike_refused: a non-ASCII email update: $OUT; $ALICE $(acct "$ALICE")"
 OUT=$(acc_client session-status "$ALICE" || true)
 [ "$(jget "$OUT" .http)" = 200 ] && pass "join_allows: $ALICE's session token answers 200 (/session/status)" \
   || fail "join_allows: $ALICE's session: $(redact "$OUT")"
@@ -3021,6 +3129,9 @@ else
   fail "ffs_access_grants: differ:
 $(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
 fi
+ACC_USERS=$(echo "SELECT CONCAT(COUNT(*), ':', COALESCE(GROUP_CONCAT(Host), '')) FROM mysql.user WHERE User = 'ffs_access';" | mysql_root 2>&1)
+[ "$ACC_USERS" = "1:%" ] && pass "ffs_access_grants: one ffs_access account only ('ffs_access'@'%')" \
+  || fail "ffs_access_grants: ffs_access accounts: $ACC_USERS"
 SHOWN=$(printf '%s\n' "SHOW GRANTS FOR 'ffs_access'@'%';" | mysql_root 2>&1)
 if [ "$(grep -c . <<< "$SHOWN")" = 4 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
     && ! grep -vqE '^GRANT .+ ON .+ TO `ffs_access`@`%`$' <<< "$SHOWN"; then
@@ -3063,10 +3174,22 @@ done
 HOOK_OUTS=$(cat "$HOOK_LOG")
 rm -f "$HOOK_LOG"
 case "$HOOK_OUTS$(docker logs "$ACCESS_C" 2>&1)" in *"$FXA_ACCESS_DB_PASSWORD"*) bad="$bad hook-output/logs" ;; esac
-[ -z "$bad" ] && [ -n "$HOOK_OUTS" ] && pass "access secret: ffs_access's password on no container's argv, in no hook output or log" \
-  || fail "access secret: found in:$bad"
-grep -q '@' <<< "$HOOK_OUTS" && fail "access: a hook output names an email: $(grep '@' <<< "$HOOK_OUTS" | head -1)" \
-  || pass "access: the hook's outputs give counts, never an email ($(grep -c 'access-sync: applied' <<< "$HOOK_OUTS") applied runs)"
+# The checks below look at every run's output: at least one "applied" line
+# per successful run (a lost output fails them, never passes them).
+APPLIED=$(grep -c 'access-sync: applied' <<< "$HOOK_OUTS" || true)
+if [ "$HOOK_OK_N" -lt 13 ] || [ "$APPLIED" -lt "$HOOK_OK_N" ]; then
+  fail "access: the hook outputs weren't all collected ($APPLIED applied lines for $HOOK_OK_N successful runs)"
+else
+  pass "access: every successful run's output collected ($APPLIED applied lines, $HOOK_OK_N runs)"
+fi
+[ -z "$bad" ] && [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 13 ] \
+  && pass "access secret: ffs_access's password on no container's argv, in no hook output or log" \
+  || fail "access secret: found in:$bad (or outputs missing)"
+if [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 13 ] && ! grep -q '@' <<< "$HOOK_OUTS"; then
+  pass "access: the hook's outputs give counts, never an email ($APPLIED applied runs)"
+else
+  fail "access: a hook output names an email, or outputs are missing: $(grep '@' <<< "$HOOK_OUTS" | head -1)"
+fi
 rm -rf "$MAIL_DIR" "$ACC_SESS" 2>/dev/null || sudo -n rm -rf "$MAIL_DIR" "$ACC_SESS" 2>/dev/null || true
 unset FXA_PASSWORD
 

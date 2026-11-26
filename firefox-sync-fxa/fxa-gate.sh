@@ -28,6 +28,8 @@
 #   pairing   -> fxa-pairing-internal:8000 (websockets: the only host that
 #                passes an Upgrade; elsewhere one is 400)
 #   any other -> 421
+# On every host, a raw path with %2F, %5C, a backslash or a dot segment
+# (%-encoded or not) is 400 before any location rule.
 # Host and Traefik's X-Forwarded-For are passed unchanged (the accounts'
 # rate limits key on the client address Traefik put there:
 # CLIENT_ADDRESS_DEPTH 2); nothing is appended.
@@ -161,6 +163,7 @@ strip='"~*^(?<pre>.*?)(?:^|;)[ \t]*(?:_oauth2_proxy|__Host-portcullis_ext)[^=;]*
 # connection can turn into a tunnel past the gate's per-request rules.
 proxy() {
   cat << EOF
+  if (\$pc_bad_path) { return 400 "fxa-gate: no encoded slash, backslash or dot segment in the path\\n"; }
   proxy_http_version 1.1;
   proxy_set_header Host \$http_host;
 EOF
@@ -223,6 +226,14 @@ http {
   map \$pc_c5 \$pc_c6 { ${strip} default \$pc_c5; }
   map \$pc_c6 \$pc_cookie { "~^[ \t;]*(?<rest>.*)\$" "\$rest"; }
   map \$pc_cookie \$pc_cookie_left { "~*(?:^|;)[ \t]*(?:_oauth2_proxy|__Host-portcullis_ext)" 1; default 0; }
+  # 1 for a path nginx and the services could read differently (nginx
+  # decodes %2F before it resolves dot segments, hapi doesn't): %2F, %5C or
+  # a backslash anywhere in the raw path, or a dot segment, %-encoded or not.
+  # Every host refuses it (400) before any location rule; the query is not
+  # looked at. No first-party client sends one (Sync record ids are short
+  # base64url ids; the account pages' URLs carry their encoded values in the
+  # query).
+  map \$request_uri \$pc_bad_path { "~*^[^?]*(?:%2f|%5c|\\x5c|/(?:\.|%2e){1,2}(?:[/?]|\$))" 1; default 0; }
   # 1 only when group-gate's groups list the admin group exactly.
   map \$http_x_auth_request_groups \$pc_admin { "~^(?:[^,]*,)*[ \t]*${group_re}[ \t]*(?:,[^,]*)*\$" 1; default 0; }
   include $run/upstreams.conf;

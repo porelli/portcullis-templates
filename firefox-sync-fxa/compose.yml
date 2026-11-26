@@ -10,7 +10,7 @@
 # fxa-auth:9000 and skip the sign-up gate (ffs-admin:8081). It calls each
 # service by a default-only -internal alias.
 #
-# Start order: fxa-db -> fxa-migrations -> fxa-policy -> fxa-auth (with
+# Start order: fxa-db -> fxa-migrations -> fxa-db-guard -> fxa-policy -> fxa-auth (with
 # fxa-keys-owner and fxa-redis) -> fxa-profile -> fxa-content; Sync:
 # firefox-sync-fxa-db -> -migrate -> -db-init -> -init -> firefox-sync-fxa.
 services:
@@ -152,6 +152,34 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # One-shot, every start, after the migrations and before fxa-policy
+  # (db-guard.sh): the accounts database compares emails byte for byte. The
+  # ffs database and the allowlist's column utf8mb4_bin (fxa-policy then
+  # makes its routines under it), and triggers on fxa.accounts / fxa.emails
+  # that refuse an email that isn't plain ASCII, so no look-alike of a
+  # member's address (alice@exámple.org) can pass the allowlist. Root, like
+  # fxa-db-users; not reachable.
+  fxa-db-guard:
+    image: mysql:9.7.4@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    pids_limit: 32
+    entrypoint: ["/bin/sh", "/portcullis-bin/db-guard.sh"]
+    environment:
+      MYSQL_HOST: fxa-db
+      MYSQL_PWD: ${FXA_MYSQL_PASSWORD:?FXA_MYSQL_PASSWORD must be set}
+    volumes:
+      - ./templates/firefox-sync-fxa/db-guard.sh:/portcullis-bin/db-guard.sh:ro
+    depends_on:
+      fxa-migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
   # One-shot, every start (porelli's fxa-init): the sign-up policy, enforced
   # by the accounts database itself, and the database users of the admin UI
   # (ffs_admin) and of Portcullis's access sync (ffs_access; fxa-db-users
@@ -189,6 +217,8 @@ services:
       FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}
     depends_on:
       fxa-migrations:
+        condition: service_completed_successfully
+      fxa-db-guard:
         condition: service_completed_successfully
     restart: "no"
 
@@ -1096,6 +1126,8 @@ services:
       fxa-keys-owner:
         condition: service_completed_successfully
       fxa-migrations:
+        condition: service_completed_successfully
+      fxa-db-guard:
         condition: service_completed_successfully
       fxa-policy:
         condition: service_completed_successfully

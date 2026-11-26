@@ -13,7 +13,8 @@
 #                -> their rows deleted, then ffs.disable_account_by_email
 #   joins    = new - db -> inserted (every member's row made sure of)
 #   rejoins  = new & state.removed -> ffs.enable_account_by_email
-#   state    = {listed: new, removed: (state.removed + leaves) - new}
+#   state    = {listed: new, removed: (state.removed + leaves) - new
+#               - the leavers without an account}
 #
 # Every run (start and membership_change) disables every account of a
 # non-member it knows of, not only on a transition; "no such account" is
@@ -31,8 +32,9 @@
 # themselves: sign_out_all starts its own transaction). The state is written
 # atomically after both, so a failed run is redone in full by the next.
 #
-# Exit 0: applied. Exit 1: refused or failed (before the transaction:
-# nothing changed). Logs counts only, never an email or a password. The
+# Exit 0: applied. Exit 1: refused or failed: before the transaction
+# nothing changed; after it the allowlist is applied and a disable / enable
+# failed 3 times (the next run redoes them). Logs counts only, never an email or a password. The
 # password reaches mysql only through MYSQL_PWD (the service's environment),
 # never argv.
 #
@@ -285,36 +287,60 @@ comm -12 "$work/new" "$work/removed" > "$work/rejoins"
 left=$(comm -23 "$work/listed" "$work/new" | grep -c '')
 joined=$(grep -c '' "$work/joins")
 
-# ── the accounts: one CALL a line, "no such account" ignored, anything else
-# fails the run (the state stays as it was, the next run does it again) ──
-{
-  q < "$work/leaves" | sed "s/.*/CALL ffs.disable_account_by_email('&');/"
-  q < "$work/rejoins" | sed "s/.*/CALL ffs.enable_account_by_email('&');/"
-  echo "SELECT 'portcullis-access-calls';"
-} > "$work/calls.sql"
-ncalls=$(($(grep -c '' "$work/calls.sql") - 1))
-ndis=$(grep -c '' "$work/leaves")
-if [ "$ncalls" -gt 0 ]; then
+# ── the accounts: one CALL a line, "no such account" ignored; a call that
+# fails otherwise (a deadlock with fxa-auth's writes, a lost connection) is
+# tried again, up to ACCESS_TRIES times in all with a short backoff; if one
+# still fails the run fails (the state stays as it was: the next run does it
+# all again, and the Hub records the failed hook) ──
+ACCESS_TRIES=3
+NOACCT_RE='^ERROR 1644 \(45000\) at line [0-9]+: no such account$'
+{ sed 's/^/D /' "$work/leaves"; sed 's/^/E /' "$work/rejoins"; } > "$work/pending"
+: > "$work/noacct"
+try=1
+while [ -s "$work/pending" ]; do
+  {
+    sed -n 's/^D //p' "$work/pending" | q | sed "s/.*/CALL ffs.disable_account_by_email('&');/"
+    sed -n 's/^E //p' "$work/pending" | q | sed "s/.*/CALL ffs.enable_account_by_email('&');/"
+    echo "SELECT 'portcullis-access-calls';"
+  } > "$work/calls.sql"
+  # the statements in that order: line n of calls.sql = line n of order
+  { grep '^D ' "$work/pending"; grep '^E ' "$work/pending"; } > "$work/order"
   my --force < "$work/calls.sql" > "$work/calls.out" 2> "$work/calls.err"
-  if [ "$(tail -n 1 "$work/calls.out")" != portcullis-access-calls ]; then
-    say "disabling / enabling the accounts stopped ($(sed 's/at line [0-9]*: .*/(details withheld)/' "$work/calls.err" | head -1)); the allowlist is applied, the next run does the accounts again"
+  if [ "$(tail -n 1 "$work/calls.out")" = portcullis-access-calls ]; then
+    # done but for the lines that failed; "no such account" is done too
+    sed -n 's/^ERROR 1644 (45000) at line \([0-9]*\): no such account$/\1/p' "$work/calls.err" \
+      | awk 'NR == FNR { n[$1] = 1; next } (FNR in n)' - "$work/order" >> "$work/noacct"
+    grep -v -E "$NOACCT_RE" "$work/calls.err" | sed -n 's/^ERROR [0-9]* ([0-9A-Z]*) at line \([0-9]*\): .*/\1/p' \
+      | awk 'NR == FNR { n[$1] = 1; next } (FNR in n)' - "$work/order" > "$work/pending.next"
+    if grep -v -E "$NOACCT_RE" "$work/calls.err" | grep -v -E '^ERROR [0-9]+ \([0-9A-Z]+\) at line [0-9]+: ' | grep -q ''; then
+      cp "$work/order" "$work/pending.next"   # an error that names no line: all again
+    fi
+  else
+    cp "$work/order" "$work/pending.next"     # the session stopped: all again (idempotent)
+  fi
+  why=$(grep -v -E "$NOACCT_RE" "$work/calls.err" | sed 's/ at line [0-9]*: .*//; s/: .*//' | head -1)
+  mv -f "$work/pending.next" "$work/pending"
+  [ -s "$work/pending" ] || break
+  if [ "$try" -ge "$ACCESS_TRIES" ]; then
+    say "$(grep -c '^D ' "$work/pending") disables and $(grep -c '^E ' "$work/pending") enables still failed after $try tries (${why:-the session stopped}); the allowlist is applied, the next run does the accounts again"
     exit 1
   fi
-  if grep -v -E '^ERROR 1644 \(45000\) at line [0-9]+: no such account$' "$work/calls.err" | grep -q ''; then
-    say "disabling / enabling an account failed ($(grep -v -E '^ERROR 1644 \(45000\) at line [0-9]+: no such account$' "$work/calls.err" | sed 's/: .*//' | head -1)); the allowlist is applied, the next run does the accounts again"
-    exit 1
-  fi
-  noacct_dis=$(sed -n 's/^ERROR 1644 (45000) at line \([0-9]*\): no such account$/\1/p' "$work/calls.err" | awk -v d="$ndis" '$1 <= d' | grep -c '')
-  noacct_en=$(($(grep -c '' "$work/calls.err") - noacct_dis))
-else
-  noacct_dis=0 noacct_en=0
-fi
+  say "$(grep -c '' "$work/pending") calls failed (${why:-the session stopped}): trying again"
+  sleep $((try * ${FXA_ACCESS_BACKOFF:-2}))
+  try=$((try + 1))
+done
+ndis=$(grep -c '' "$work/leaves")
+noacct_dis=$(grep -c '^D ' "$work/noacct")
+noacct_en=$(grep -c '^E ' "$work/noacct")
+sed -n 's/^D //p' "$work/noacct" | sort -u > "$work/gone"
 
 # ── the state, atomically ──
 state_dir=$(dirname "$STATE_FILE")
 tmp="$state_dir/.applied.json.$$"
 json_list() { sed 's/.*/"&"/' "$1" | paste -sd, -; }
-sort -u "$work/removed" "$work/leaves" | comm -23 - "$work/new" > "$work/removed.next"
+# A leaver without an account ("no such account") isn't kept: none can
+# appear under that email while it is off the allowlist.
+sort -u "$work/removed" "$work/leaves" | comm -23 - "$work/new" | comm -23 - "$work/gone" > "$work/removed.next"
 if ! printf '{"version":1,"listed":[%s],"removed":[%s]}\n' "$(json_list "$work/new")" "$(json_list "$work/removed.next")" > "$tmp" \
     || ! mv -f "$tmp" "$STATE_FILE"; then
   rm -f "$tmp"
