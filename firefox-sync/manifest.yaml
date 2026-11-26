@@ -76,7 +76,7 @@ auth:
 
     **Identity:** Mozilla accounts, not Portcullis. Firefox has no way to use Keycloak or LLDAP for Sync (the self-hosted Mozilla accounts stack has no external OIDC login and is not published as an image), so the access group decides only who may register a uid, not who signs in to Firefox: whoever holds a listed Mozilla account can sync. Sync data is end-to-end encrypted with keys derived from the Mozilla account: this server, and whoever controls it, can't read it.
 
-    **Self-hosted Mozilla accounts** (porelli/firefox-sync's fxa-mono option) are not offered: they need an SMTP server, MySQL and Redis, three more public hosts, a 5 GB image and 3–4 GB of RAM, and they are a second, password-based account system on the internet that Portcullis can't gate (Firefox calls the accounts API anonymously too). A separate template may add them later.
+    **Self-hosted Mozilla accounts** (porelli/firefox-sync's fxa-mono option) are not part of this template: they need a mail server, MySQL and Redis, four more hosts, a 5 GB image and about 4 GB of RAM, and they are a second, password-based account system. The separate template `firefox-sync-fxa` (Firefox Sync + own accounts) runs them, with sign-up limited to the access group's verified emails.
 
     **The allowlist** uses firefox-sync's table (`sync_allowed_accounts`) with a stricter trigger: it raises (no row, no token) instead of skipping the row, and an empty list refuses everybody instead of turning the allowlist off.
 

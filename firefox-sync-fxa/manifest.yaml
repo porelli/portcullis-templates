@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../schema/manifest.schema.json
 name: Firefox Sync + own accounts
-description: Firefox Sync with self-hosted Mozilla accounts (accounts, API, profile, Sync storage, admin UI); nothing depends on Mozilla
+description: Firefox Sync with its own self-hosted Mozilla accounts, for the access group by verified email; nothing depends on Mozilla
 icon: "\U0001F98A"
 category: productivity
 tags: [firefox, sync, bookmarks, browser, mozilla, accounts]
@@ -8,11 +8,14 @@ links:
   website: https://mozilla-services.github.io/syncstorage-rs/
   source: https://github.com/porelli/firefox-sync
 long_description: |
-  Firefox Sync keeps bookmarks, passwords, history, open tabs and add-ons in step across a person's Firefox browsers. This template runs the whole stack on your server, Mozilla's account service included, so nothing depends on Mozilla.
+  Firefox Sync keeps bookmarks, passwords, history, open tabs and add-ons in step across a person's Firefox browsers, on desktop and phone. This template runs the whole stack on your server, Mozilla's account service included, so nothing depends on Mozilla and the data is stored only on your server.
 
-  Who may have an account is the instance's access group, matched by each person's verified Portcullis email. The account pages and the admin UI sit behind Portcullis sign-in; only what Firefox needs stays open.
+  Sync data is end-to-end encrypted with keys from each person's account: the server stores it but can't read it.
 
-  The stack needs about 4 GB of RAM, and its accounts image is about 5 GB.
+  Portcullis decides who may have an account: the instance's access group, matched by each person's verified Portcullis email. The accounts of people who leave the group are disabled and signed out, and the account pages and the admin UI sit behind Portcullis sign-in.
+
+  Needs about 4 GB of RAM and 18 GB of disk (upstream's sizes), plus about 5 GB for Mozilla's accounts image.
+
 instances: multi
 
 # Upstream's figures (porelli/firefox-sync docs/accounts.md#requirements and
@@ -37,18 +40,49 @@ auth:
   access_group: users_firefox-sync-fxa
   admin_group: admin_firefox-sync-fxa
   notes: |
-    Firefox Sync with its own, self-hosted Mozilla accounts (porelli/firefox-sync's fxa-mono stack). The account pages and the admin UI are behind Portcullis sign-in.
+    Firefox Sync with its own, self-hosted Mozilla accounts: Firefox signs in and syncs on this server, and nothing depends on Mozilla. Only members of the instance's access group with a **verified** Portcullis email can have an account.
 
-    **Admin UI** (porelli/firefox-sync's admin UI): on its own host (default `firefox-sync-fxa-admin.<domain>`), behind two sign-ins. First Portcullis sign-in, and only members of the instance's **admin group** get past the gateway (members of the access group alone get 403). Then the admin UI's own OpenID Connect sign-in with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only members of the instance's **admin group** (`admin_firefox-sync-fxa`, from the `groups` claim; never by email, which is user-editable and unverified). No password sign-in (`POST /login` answers 403), no trusted identity header, no mail of its own, no update check.
+    **Hosts** (the default instance's names; each instance has its own, shown on its page):
 
-    - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*, `ADMIN_ACCESS_EXTERNAL`): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and the admin UI's forms for them are refused. Its database user `ffs_admin` can't write them directly.
-    - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. None of them reaches past the access group: **enable refuses an account whose email isn't on the access list** ("not on the access list managed elsewhere"), and **deleting an account leaves the sign-up allowlist alone** (a member whose account was deleted can sign up again). The Connect a device page gives `identity.fxaccounts.autoconfig.uri` = the accounts host.
+    - Behind Portcullis sign-in: `firefox-sync-fxa-accounts.<domain>`, the account pages (sign-up, sign-in, settings), for the access group; and `firefox-sync-fxa-admin.<domain>`, the admin UI, for the admin group only.
+    - Open to the internet, because Firefox calls them in the background without cookies: `firefox-sync-fxa-api.<domain>` (the accounts API), `firefox-sync-fxa-profile.<domain>` (profiles and avatars), `firefox-sync-fxa.<domain>` (Sync storage, each request signed with the account's own keys) and `firefox-sync-fxa-pairing.<domain>` (an encrypted relay for pairing a phone by QR code).
+    - On the accounts host, the start page `/`, `/.well-known/fxa-client-configuration`, `/.well-known/change-password` and `/metrics-flow` stay open too: Firefox reads them before anyone has signed in.
+    - Every open host is rate-limited; creating an account and getting a Sync token have a stricter limit.
 
-    **Who may have an account:** the members of the instance's access group with a **verified** Portcullis email (People: verified by a code or by an admin). `fxa-access-sync` writes their emails to the sign-up allowlist at every start and whenever the group changes. Someone who leaves the group (or whose email changes or stops being verified) is taken off the list and their account is disabled and signed out everywhere; when they come back it is enabled again. An account an admin disabled stays disabled while its owner stays in the group; leaving the group and coming back enables it again, also one an admin had disabled before the person left. Emails are compared byte for byte and must be plain ASCII, so a look-alike address (an accent or a full-width letter) never matches a member's. An account's email can't be changed or a second one added in the account pages. A member without a verified email can't sign up. If the data file can't be read, nothing changes and the run is reported as failed.
+    **Who may have an account:** the members of the instance's access group with a **verified** Portcullis email. Each person verifies their email with a code sent to it (this needs the server's mail provider): verify it on your People page. An admin can also mark someone else's email verified there. A member without a verified email can't sign up: no verified email, no account. `fxa-access-sync` writes the verified emails to the sign-up list at every start and whenever the group changes.
 
-    **Mail:** the sign-up and sign-in codes go through the server's mail provider (Settings, Mail) by default, or through another SMTP server (the Mail settings). Without one the accounts server doesn't start: `fxa-mail-check` stops it and says why. STARTTLS is required, never opportunistic: a server that doesn't offer it gets no mail and no password.
+    - Someone who leaves the group, or whose email changes or stops being verified, is taken off the list. Their account is disabled and signed out everywhere. Tokens Firefox already holds can keep working for up to about 1 h.
+    - When they come back, their account is enabled again, even one an admin disabled before the person left.
+    - An account an admin disables stays disabled while its owner stays in the group: routine runs never enable it.
+    - If the list delivered by Portcullis can't be read, nothing changes and the run is reported as failed.
 
-    **What runs:** Mozilla's accounts (auth, content, profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.2 on PostgreSQL and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>).
+    **Admin UI** (porelli/firefox-sync's admin UI), for the instance's **admin group** only. Others get 403 at the gateway, members of the access group included. After the Portcullis sign-in, the admin UI signs in by OpenID Connect with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only the admin group (`admin_firefox-sync-fxa`, from the `groups` claim, never by email). There is no password sign-in.
+
+    - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and their forms answer 403. The account cap is the instance setting **Maximum accounts**.
+    - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. **Enable refuses an account whose email isn't on the list** ("not on the access list managed elsewhere"). **Deleting an account leaves the list alone**, so a member whose account was deleted can sign up again.
+    - Its Connect a device page shows the Firefox setup below with this server's values.
+
+    **Mail:** the sign-up and sign-in codes go out through the server's mail provider (Settings, Mail) by default, at most 10 messages a minute and 60 an hour; or through another SMTP server (the instance's Mail settings). Without either, the accounts server doesn't start, and `fxa-mail-check` says why.
+
+    - STARTTLS on 587 is required, never opportunistic: a server that doesn't offer it gets no mail and never sees the password. Use TLS from the start on 465. TLS on 587 or STARTTLS on 465 stops the start.
+    - The mail server's certificate is checked against the server's CA bundle (`certs/ca-bundle.crt`: the host's system CAs, Portcullis's own CA, and Let's Encrypt staging while `ACME_STAGING=true`). For a mail server with a self-signed certificate, add its CA to the host's system trust store, run `./portcullis config apply --bundle-only`, then restart the instance.
+
+    **What's refused, and why:**
+
+    - **Adding a second email or changing an account's email** is refused at the gateway (403). An account's email is its Portcullis email, and access follows that email.
+    - **Passwordless sign-in and Google or Apple sign-in** are refused (403). Every account is created through the sign-up gate, which checks the list.
+    - **Email addresses that aren't plain ASCII** are refused by the accounts database. Emails are compared byte for byte, so a look-alike address (an accent or a full-width letter) never matches a member's. An existing account with such an email is disabled and signed out at every start.
+
+    **Backups:** the `fxa-keys` volume holds the accounts' signing keys; a Hub instance backup copies it with the databases. Losing it signs everyone out: every Firefox must sign in again.
+
+    **Firefox setup** (the accounts URL is the instance's accounts host, `https://firefox-sync-fxa-accounts.<domain>` for the default one). Sign out of Firefox first, if it's signed in.
+
+    - **Desktop:** in `about:config`, set `identity.fxaccounts.autoconfig.uri` to the accounts URL. Restart Firefox, then sign in and turn on Sync.
+    - **Android:** Settings, About Firefox, tap the logo 5 times. Back in Settings, open Sync Debug and set **Custom Mozilla account server** to the accounts URL. Leave **Custom Sync server** empty. Restart Firefox when it asks, then sign in.
+    - **iOS:** in Settings, tap the version number 5 times. Open Advanced Sync Settings, turn on **Use Custom FxA Content Server** and set **Custom Account Content Server URI** to the accounts URL. Then sign in.
+    - A phone can also pair from a signed-in desktop (Settings, Sync, Connect another device) once its accounts URL is set.
+
+    **What runs:** Mozilla's accounts (auth, content and profile servers, v1.350.0) on MySQL with Redis, the pairing channel server, syncstorage-rs 0.25.2 on PostgreSQL, and porelli/firefox-sync's admin UI and sign-up gate, as built by porelli/firefox-sync (`links.source`; upstream <https://github.com/mozilla/fxa> and <https://github.com/mozilla-services/syncstorage-rs>). `fxa-gate`, an nginx that answers only Traefik, is in front of every host; no other service of the instance is reachable from other apps.
 
 # The accounts' mail (sign-up and sign-in codes, notices): the server's mail
 # provider by default (the Hub's PORTCULLIS_MAIL_SENDER_*, contracts §19.14).
@@ -230,7 +264,7 @@ keycloak_clients:
     name: Firefox Sync + own accounts admin UI
 
 urls:
-  - label: Accounts (identity.fxaccounts.autoconfig.uri)
+  - label: Accounts (Firefox's identity.fxaccounts.autoconfig.uri)
     url: "https://{{HOST_FIREFOX_SYNC_FXA_ACCOUNTS}}"
   - label: Admin UI
     url: "https://{{HOST_FIREFOX_SYNC_FXA_ADMIN}}/"
@@ -257,4 +291,4 @@ tests:
     boot_timeout: 900
 
 ai:
-  unsupported: "Signs people in with its own Mozilla accounts, not Portcullis identities; no MCP server known"
+  unsupported: "Signs people in with its own Mozilla accounts, not Portcullis identities, and Sync data is end-to-end encrypted; no MCP server known (surveyed 2026-11-26)"

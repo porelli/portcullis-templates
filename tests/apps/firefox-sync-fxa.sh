@@ -1353,6 +1353,40 @@ grep -q 'the state file is unreadable' <<< "$OUT" && pass "access-sync.sh: an un
   && pass "access-sync.sh: the state file is 0600, no temporary file left" || fail "access-sync.sh: state file mode / leftovers: $(ls -la "$AS_TMP/state")"
 rm -rf "$AS_TMP"
 
+# ── The texts (Task 17) ──
+# notes_render: auth.notes and long_description pass validate.py's Markdown
+# lint (the Hub's notes rules, contract §3). It needs tests/requirements.txt
+# (markdown-it-py), which Lint installs; without it this says so and Lint's
+# validate.py run is the check.
+if python3 -c 'import markdown_it, yaml' 2> /dev/null; then
+  NR=$(python3 - "$MANIFEST" <<'PY'
+import sys
+sys.path.insert(0, "tests")
+import yaml
+from validate import notes_problems
+m = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for field, text in (("auth.notes", m["auth"]["notes"]), ("long_description", m["long_description"])):
+    for code, msg in notes_problems(text):
+        print(f"{field}: {code}: {msg}")
+PY
+  ) || NR="the lint itself failed: $NR"
+  [ -z "$NR" ] && pass "notes_render: auth.notes and long_description pass the notes lint" || fail "notes_render: $NR"
+else
+  info "notes_render: markdown-it-py isn't installed here; Lint's validate.py checks it"
+fi
+# long_description_resources: upstream's sizes, word for word.
+LD=$(yq -r '.long_description' "$MANIFEST")
+grep -qF 'Needs about 4 GB of RAM and 18 GB of disk (upstream'"'"'s sizes), plus about 5 GB for Mozilla'"'"'s accounts image.' <<< "$LD" \
+  && pass "long_description_resources: the RAM, disk and image sizes" || fail "long_description_resources: the sentence is missing"
+# notes_verified_email: an account needs a verified email, verified on the
+# People page.
+NOTES=$(yq -r '.auth.notes' "$MANIFEST")
+if grep -qF '**verified**' <<< "$NOTES" && grep -qF 'verify it on your People page' <<< "$NOTES"; then
+  pass "notes_verified_email: the notes say a verified email is needed, and where to verify it"
+else
+  fail "notes_verified_email: no **verified** email / 'verify it on your People page' in auth.notes"
+fi
+
 FXA_DONE=1
 if [ "${STATIC_ONLY:-}" = 1 ]; then
   exit 0
