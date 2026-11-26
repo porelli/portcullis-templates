@@ -13,17 +13,18 @@
 #
 # Hosts (Host header, as Traefik routed it):
 #   accounts  -> fxa-content-internal:3030 (the account pages)
-#   api       -> fxa-auth-internal:9000; every path that normalises to
-#                /v1/account/create (any case, trailing parts) goes to the
-#                sign-up gate, ffs-admin-internal:8081, as exactly
-#                /v1/account/create
+#   api       -> fxa-auth-internal:9000; exactly /v1/account/create goes
+#                to the sign-up gate, ffs-admin-internal:8081, any other
+#                spelling of it is 404; the other routes that create
+#                accounts (passwordless, linked_account) are 403
 #   profile   -> fxa-profile-internal:1111; /img/ -> fxa-profile-static-
 #                internal:1112 with the prefix stripped
 #   sync      -> firefox-sync-fxa-internal:8000 (bodies up to 10 MB)
 #   admin     -> ffs-admin-internal:8080, only for the instance's admin
 #                group (below); the admin UI's sign-up and allowlist forms
 #                answer 403 here
-#   pairing   -> fxa-pairing-internal:8000 (websockets)
+#   pairing   -> fxa-pairing-internal:8000 (websockets: the only host that
+#                passes an Upgrade; elsewhere one is 400)
 #   any other -> 421
 # Host and Traefik's X-Forwarded-For are passed unchanged (the accounts'
 # rate limits key on the client address Traefik put there:
@@ -151,13 +152,29 @@ up_pairing=$(target pairing fxa-pairing-internal 8000)
 # One forward-auth cookie out of Cookie per pass.
 strip='"~*^(?<pre>.*?)(?:^|;)[ \t]*(?:_oauth2_proxy|__Host-portcullis_ext)[^=;]*=[^;]*(?<post>.*)$" "$pre$post";'
 
-# proxy <keep Authorization: 1|0>: the request headers of every server block.
+# proxy <keep Authorization: 1|0> <protocol upgrades: 1|0>: the request
+# headers of every server block. Only the pairing host passes an Upgrade
+# (its websockets); everywhere else a request that asks for one (websocket,
+# h2c) is refused, and Upgrade / Connection never reach the service, so no
+# connection can turn into a tunnel past the gate's per-request rules.
 proxy() {
   cat << EOF
   proxy_http_version 1.1;
   proxy_set_header Host \$http_host;
+EOF
+  if [ "$2" = 1 ]; then
+    cat << EOF
   proxy_set_header Upgrade \$http_upgrade;
   proxy_set_header Connection \$connection_upgrade;
+EOF
+  else
+    cat << EOF
+  if (\$http_upgrade) { return 400 "fxa-gate: no protocol upgrade on this host\\n"; }
+  proxy_set_header Upgrade "";
+  proxy_set_header Connection "";
+EOF
+  fi
+  cat << EOF
   proxy_set_header X-Forwarded-For \$http_x_forwarded_for;
   proxy_set_header X-Forwarded-Proto https;
   proxy_set_header X-Forwarded-Access-Token "";
@@ -178,6 +195,8 @@ events { worker_connections 1024; }
 http {
   access_log off;
   server_tokens off;
+  # The gate's own refusals (return ... "text") say who refused.
+  default_type text/plain;
   client_body_temp_path $run/body;
   proxy_temp_path $run/proxy;
   fastcgi_temp_path $run/fastcgi;
@@ -216,19 +235,31 @@ http {
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_ACCOUNTS};
-$(proxy 0)
+$(proxy 0 0)
     set \$pc_up ${up_content};
     location / { proxy_pass \$pc_up; }
   }
 
-  # The accounts API; sign-ups only through the sign-up gate.
+  # The accounts API; accounts are created only through the sign-up gate.
+  # Sign-up: exactly /v1/account/create (Traefik's rate-limit-auth router)
+  # to the sign-up gate; any other spelling that normalises to it (trailing
+  # slash or suffix, case, //, %-encoding, dot segments) is 404 here, so it
+  # reaches neither fxa-auth nor the looser API router's rate limit. The
+  # other ways fxa-auth v1.350.0 creates an account (db.createAccount
+  # callers: passwordless confirm_code, linked_account login) are refused.
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_API};
-$(proxy 1)
+$(proxy 1 0)
     set \$pc_up ${up_auth};
     set \$pc_signup ${up_signup};
-    location ~* ^/v1/account/create { proxy_pass \$pc_signup/v1/account/create\$is_args\$args; }
+    location ~* ^/v1/account/create {
+      if (\$request_uri !~ "^/v1/account/create(?:\\?|\$)") { return 404 "fxa-gate: not found\\n"; }
+      proxy_pass \$pc_signup/v1/account/create\$is_args\$args;
+    }
+    location ~* ^/v1/(account/passwordless|linked_account)(?:/|\$) {
+      return 403 "fxa-gate: accounts are created through the sign-up gate only\\n";
+    }
     location / { proxy_pass \$pc_up; }
   }
 
@@ -236,7 +267,7 @@ $(proxy 1)
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_PROFILE};
-$(proxy 1)
+$(proxy 1 0)
     set \$pc_up ${up_profile};
     set \$pc_static ${up_static};
     location /img/ {
@@ -251,7 +282,7 @@ $(proxy 1)
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_SYNC};
     client_max_body_size 10m;
-$(proxy 1)
+$(proxy 1 0)
     set \$pc_up ${up_sync};
     location / { proxy_pass \$pc_up; }
   }
@@ -262,11 +293,12 @@ $(proxy 1)
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_ADMIN};
-    if (\$pc_admin != 1) { return 403; }
-$(proxy 0)
+    if (\$pc_admin != 1) { return 403 "fxa-gate: the admin UI is for the instance's admin group only\\n"; }
+$(proxy 0 0)
     set \$pc_up ${up_admin};
-    location ~* ^/accounts/(signups|max-accounts|invite|allowlist/remove)/*\$ { return 403; }
-    location ~* ^/sync/(max-users/*\$|allowlist(/|\$)) { return 403; }
+    set \$pc_managed "fxa-gate: who may sign up and sync is managed in Portcullis, not in the admin UI\\n";
+    location ~* ^/accounts/(signups|max-accounts|invite|allowlist/remove)/*\$ { return 403 "\$pc_managed"; }
+    location ~* ^/sync/(max-users/*\$|allowlist(/|\$)) { return 403 "\$pc_managed"; }
     location / { proxy_pass \$pc_up; }
   }
 
@@ -276,7 +308,7 @@ $(proxy 0)
     server_name ${GATE_HOST_PAIRING};
     proxy_read_timeout 1h;
     proxy_send_timeout 1h;
-$(proxy 1)
+$(proxy 1 1)
     set \$pc_up ${up_pairing};
     location / { proxy_pass \$pc_up; }
   }

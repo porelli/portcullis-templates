@@ -226,6 +226,8 @@ tests:
       host: "{{HOST_FIREFOX_SYNC_FXA_ADMIN}}"
       reach: /auth/login
       text: "Access managed elsewhere"
+      # A member's refusal is fxa-gate's own (the admin group at the gateway).
+      refused: "fxa-gate: the admin UI is for the instance's admin group only"
       wait: 60
     boot_timeout: 900
 

@@ -584,6 +584,11 @@ class TestSigninAdminHost(FxACase):
         errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
         self.assertTrue(any("admin" in e and "host" in e for e in errors), errors)
 
+    def test_refused_only_on_admin(self) -> None:
+        m = BASE_MANIFEST.replace("      text: \"{{username}}\"", "      text: \"{{username}}\"\n      refused: \"gate\"")
+        errors, _ = self.check_template(self.write_template(m, self.COMPOSE))
+        self.assertTrue(any("signed_in.refused" in e for e in errors), errors)
+
     def test_host_only_on_admin(self) -> None:
         m = BASE_MANIFEST.replace("      text: \"{{username}}\"", "      text: \"{{username}}\"\n      host: \"{{HOST_DEMO_ADMIN}}\"")
         errors, _ = self.check_template(self.write_template(m, self.COMPOSE))

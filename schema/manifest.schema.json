@@ -1029,6 +1029,11 @@
           "pattern": "^\\{\\{HOST_[A-Z0-9_]+\\}\\}$",
           "description": "admin only: run the check on this host router instead of tests.signin.host (an admin UI on a host of its own); the outsider must be refused there too"
         },
+        "refused": {
+          "type": "string",
+          "minLength": 1,
+          "description": "admin only: text the member's refusal must show (who refuses, e.g. the app's gate), so member_not_admin can't pass on another refusal"
+        },
         "text": {
           "type": "string",
           "minLength": 1,

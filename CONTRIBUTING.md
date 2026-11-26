@@ -259,6 +259,7 @@ tests:
       text: "Access Control List"
       # host: "{{HOST_APP_ADMIN}}"  # optional: an admin UI on a host of its own (firefox-sync-fxa);
       #                             # the outsider must then get group-gate's 403 there too
+      # refused: "fxa-gate: ..."    # optional: the text a member's refusal must show (who refuses)
     password: "why a password field is expected"   # e.g. a documented break-glass login
     setup:                       # optional: post-start steps an admin would do (e.g. an API key setting)
       - {service: headscale, command: [headscale, apikeys, create], save_env: HEADSCALE_API_KEY}   # user: run as

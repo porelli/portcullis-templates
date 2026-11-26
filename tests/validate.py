@@ -2267,9 +2267,10 @@ def check_signin_test(t: Template, r: Report) -> None:
             if t.host_vars and var not in t.host_vars:
                 r.error(t.m_where, f"tests.signin.{key} {host} is not a host router of compose.yml",
                         f"use one of {', '.join('{{HOST_' + v[len('PORTCULLIS_HOST_'):] + '}}' for v in sorted(t.host_vars))}")
-    if isinstance(si.get("signed_in"), dict) and "host" in si["signed_in"]:
-        r.error(t.m_where, "tests.signin.signed_in.host: the sign-in host is tests.signin.host",
-                f"host is for tests.signin.admin only (an admin UI on a host of its own); {SIGNIN_HINT}")
+    for key in ("host", "refused"):
+        if isinstance(si.get("signed_in"), dict) and key in si["signed_in"]:
+            r.error(t.m_where, f"tests.signin.signed_in.{key}: only tests.signin.admin takes {key}",
+                    f"the sign-in host is tests.signin.host; {key} belongs to the admin check; {SIGNIN_HINT}")
     env_keys = {e.get("key") for e in m.get("env") or [] if isinstance(e, dict)} | set(settings_env_names(m))
     for st in si.get("setup") or []:
         if isinstance(st, dict) and st.get("save_env") and st["save_env"] not in env_keys:

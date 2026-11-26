@@ -424,7 +424,7 @@ for want in 'cidr_ok "$src" || ' '  allow ${src};' '  deny all;' 'proxy_set_head
             'proxy_set_header X-Auth-Request-Access-Token "";' "echo '  proxy_set_header Authorization \"\";'" \
             'proxy_set_header Cookie \$pc_cookie;' 'if (\$pc_cookie_left) { return 400; }' '_oauth2_proxy|__Host-portcullis_ext' \
             'proxy_set_header X-Forwarded-For \$http_x_forwarded_for;' 'proxy_set_header Host \$http_host;' \
-            'map \$http_x_auth_request_groups \$pc_admin ' 'if (\$pc_admin != 1) { return 403; }' 'return 421;'; do
+            'map \$http_x_auth_request_groups \$pc_admin ' 'if (\$pc_admin != 1) { return 403 ' 'if (\$http_upgrade) { return 400 ' 'return 421;'; do
   grep -qF -- "$want" "$GATE_SH" || bad="$bad [$want]"
 done
 grep -qE '\b(set_real_ip_from|real_ip_header|real_ip_recursive)\b' "$GATE_SH" && bad="$bad [realip]"
@@ -1021,15 +1021,51 @@ OUT=$(gt $T_IP -H "Host: $GH_API" -H 'Authorization: Hawk id="x"' -H 'Cookie: _o
   && pass "gate_routes: api -> fxa-auth-internal:9000, Firefox's own Authorization kept, the forward-auth cookie stripped" \
   || fail "gate_routes: api: $OUT"
 bad=""
-for p in /v1/account/create /v1/account/create/ //v1/account/create /v1//account/create '/v1/account/create?keys=true' \
-         /V1/Account/Create /v1/account/%63reate /v1/./account/create /v1/x/../account/create /v1/account/create.json; do
+for p in /v1/account/create '/v1/account/create?keys=true'; do
   OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
-  want="uri=/v1/account/create"
-  case "$p" in *'?keys=true') want="uri=/v1/account/create?keys=true" ;; esac
-  case "$OUT" in "up=main port=8081 $want host="*" [200]") ;; *) bad="$bad $p($OUT)" ;; esac
+  case "$OUT" in "up=main port=8081 uri=$p host="*" [200]") ;; *) bad="$bad $p($OUT)" ;; esac
 done
-[ -z "$bad" ] && pass "signup_path_variants: every spelling of /v1/account/create (trailing slash, //, case, %-encoding, dot segments, a suffix) goes to the sign-up gate (ffs-admin-internal:8081) as exactly /v1/account/create" \
-  || fail "signup_path_variants: not to the sign-up gate:$bad"
+[ -z "$bad" ] && pass "signup_path_variants: exactly /v1/account/create (with or without a query) goes to the sign-up gate (ffs-admin-internal:8081)" \
+  || fail "signup_path_variants: the canonical path not to the sign-up gate:$bad"
+bad=""
+for p in /v1/account/create/ //v1/account/create /v1//account/create /V1/Account/Create /v1/account/%63reate \
+         /v1/./account/create /v1/x/../account/create /v1/account/create.json /v1/account/create/x '/v1/account/create/?keys=true' \
+         /v1/account/create%2F; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  [ "$OUT" = "fxa-gate: not found
+ [404]" ] || bad="$bad $p($OUT)"
+done
+[ -z "$bad" ] && pass "signup_path_variants: every other spelling of /v1/account/create (trailing slash, a suffix, //, case, %-encoding, dot segments) -> the gate's 404, never fxa-auth or the sign-up gate" \
+  || fail "signup_path_variants: not refused by the gate:$bad"
+# account_creation_routes: the other routes of fxa-auth v1.350.0 that call
+# db.createAccount (passwordless confirm_code, linked_account login) and
+# their siblings: the gate's 403, any spelling.
+bad=""
+for p in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/account/passwordless/resend_code \
+         /v1/linked_account/login /v1/linked_account/unlink /V1/Linked_Account/Login //v1/linked_account/login \
+         /v1/account/%70asswordless/confirm_code /v1/account/passwordless; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  [ "$OUT" = "fxa-gate: accounts are created through the sign-up gate only
+ [403]" ] || bad="$bad $p($OUT)"
+done
+[ -z "$bad" ] && pass "account_creation_routes: passwordless and linked-account (third-party) sign-in / sign-up -> the gate's 403, every spelling" \
+  || fail "account_creation_routes: not refused:$bad"
+OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G/v1/account/passwordlessx")
+case "$OUT" in "up=main port=9000 "*) pass "account_creation_routes: a neighbouring path (/v1/account/passwordlessx) still reaches fxa-auth" ;; *) fail "account_creation_routes: neighbour: $OUT" ;; esac
+# no_upgrade_tunnel (I1): only the pairing host passes an Upgrade.
+bad=""
+for h in "$GH_ACC" "$GH_API" "$GH_PROF" "$GH_SYNC" "$GH_ADMIN"; do
+  for u in h2c websocket; do
+    OUT=$(gt $T_IP -H "Host: $h" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' -H 'Connection: Upgrade, HTTP2-Settings' \
+      -H "Upgrade: $u" -H 'HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA' "$G/")
+    [ "$OUT" = "fxa-gate: no protocol upgrade on this host
+ [400]" ] || bad="$bad $h/$u($OUT)"
+  done
+done
+[ -z "$bad" ] && pass "no_upgrade_tunnel: Upgrade: h2c / websocket on the accounts, API, profile, Sync and admin hosts -> the gate's 400 (no tunnel past its rules)" \
+  || fail "no_upgrade_tunnel:$bad"
+OUT=$(gt $T_IP -H "Host: $GH_API" -H 'Connection: keep-alive, Upgrade' "$G/v1/x")
+case "$OUT" in *"upgrade= [200]") pass "no_upgrade_tunnel: without an Upgrade header no Upgrade reaches the service" ;; *) fail "no_upgrade_tunnel: $OUT" ;; esac
 OUT=$(gt $T_IP -H "Host: $GH_API" "$G/v1/account/login")
 case "$OUT" in "up=main port=9000 uri=/v1/account/login "*) pass "gate_routes: api /v1/account/login -> fxa-auth (not the sign-up gate)" ;; *) fail "gate_routes: api login: $OUT" ;; esac
 OUT=$(gt $T_IP -H "Host: $GH_PROF" -H 'Authorization: Bearer fxa' "$G/v1/profile")
@@ -1054,11 +1090,16 @@ for g in "admin_firefox-sync-fxa=200" "users_firefox-sync-fxa,admin_firefox-sync
          "xadmin_firefox-sync-fxa=403" "admin_firefox-sync-fxa2,users=403" "admin_firefox-sync-fxa;x=403" "admin_.*=403"; do
   want=${g##*=} g=${g%=*}
   if [ -n "$g" ]; then
-    OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ADMIN" -H "X-Auth-Request-Groups: $g" -H 'Authorization: Bearer kc' "$G/")
+    OUT=$(gt $T_IP -H "Host: $GH_ADMIN" -H "X-Auth-Request-Groups: $g" -H 'Authorization: Bearer kc' "$G/")
   else
-    OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ADMIN" -H 'Authorization: Bearer kc' "$G/")
+    OUT=$(gt $T_IP -H "Host: $GH_ADMIN" -H 'Authorization: Bearer kc' "$G/")
   fi
-  [ "$OUT" = " [$want]" ] || bad="$bad '$g'->$OUT(want $want)"
+  if [ "$want" = 403 ]; then
+    [ "$OUT" = "fxa-gate: the admin UI is for the instance's admin group only
+ [403]" ] || bad="$bad '$g'->$OUT(want the gate's 403)"
+  else
+    case "$OUT" in "up=main port=8080 "*" [200]") ;; *) bad="$bad '$g'->$OUT(want 200)" ;; esac
+  fi
 done
 [ -z "$bad" ] && pass "admin_group_only: the admin host answers only when X-Auth-Request-Groups lists admin_firefox-sync-fxa exactly (missing, the access group alone, other case, prefixes, suffixes, a path form, a regex: 403)" \
   || fail "admin_group_only:$bad"
@@ -1069,8 +1110,9 @@ for p in /accounts/signups /accounts/max-accounts /accounts/invite /accounts/all
          /sync/allowlist/allow /sync/allowlist/reject /sync/allowlist/remove /accounts/signups/ /Accounts/Signups \
          //accounts/signups /accounts/%73ignups /accounts/./invite /sync/allowlist; do
   for m in POST GET; do
-    OUT=$(gt $T_IP -o /dev/null -X $m -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
-    [ "$OUT" = " [403]" ] || bad="$bad $m:$p->$OUT"
+    OUT=$(gt $T_IP -X $m -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+    [ "$OUT" = "fxa-gate: who may sign up and sync is managed in Portcullis, not in the admin UI
+ [403]" ] || bad="$bad $m:$p->$OUT"
   done
 done
 for p in /accounts/0123/disable /users/0123/delete /connect /sync/allowlistx /accounts/signupsx; do
@@ -1812,6 +1854,16 @@ fi
 KEYS=$(docker exec portcullis-fxa-redis-1 redis-cli --scan --pattern '*203.0.113*' 2>&1 || echo "<redis-cli failed>")
 [ -z "$KEYS" ] && pass "spoofed_xff_same_key: no rate-limit key holds a spoofed address (redis --scan '*203.0.113*' empty)" \
   || fail "spoofed_xff_same_key: keys with a spoofed address: $(head -c 300 <<< "$KEYS")"
+# Positive control: the per-address keys of these logins exist, under the
+# client's real address as Traefik saw it (rate-limit:<type>:ip_email=<ip>_<email>:accountLogin:...).
+RLK=$(docker exec portcullis-fxa-redis-1 redis-cli --scan --pattern "rate-limit:*:ip_email=*$RL_USER*:accountLogin:*" 2>&1 || true)
+RL_IPS=$(sed -n 's/^rate-limit:[a-z]*:ip_email=\([0-9.]*\)_.*/\1/p' <<< "$RLK" | sort -u | tr '\n' ' ')
+IPK=$(docker exec portcullis-fxa-redis-1 redis-cli --scan --pattern "rate-limit:*:ip=${RL_IPS%% *}:accountLogin:*" 2>&1 || true)
+if [ -n "$RLK" ] && [[ "$RL_IPS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\ $ ]] && [[ "$RL_IPS" != 203.0.113.* ]] && [ -n "$IPK" ]; then
+  pass "spoofed_xff_same_key: positive control: the login attempts' ip_email and ip keys exist, under one real address (${RL_IPS% }), none spoofed"
+else
+  fail "spoofed_xff_same_key: positive control: ip_email keys '$(head -c 300 <<< "$RLK")', addresses '$RL_IPS', ip keys '$(head -c 200 <<< "$IPK")'"
+fi
 
 # sync_body_2_5mb: a 2.5 MB body reaches the Sync server (Hawk refuses it),
 # never the gate's 413. A numeric uid: syncstorage-rs answers 404 for a
@@ -1827,22 +1879,61 @@ code=$(curl -sk --http1.1 --max-time 5 --resolve "$G_PAIR_HOST:443:127.0.0.1" -o
   -H "Origin: https://$G_ACC_HOST" "https://$G_PAIR_HOST/v1/ws/" 2>/dev/null || true)
 [ "${code:0:3}" = 101 ] && pass "pairing_websocket: wss://$G_PAIR_HOST/v1/ws/ upgrade -> 101" || fail "pairing_websocket: -> ${code:-none}"
 
-# signup_path_variants_refused: an address not on the sign-up allowlist,
-# through Traefik, on every spelling of the sign-up path: never 200, no account.
+# signup_path_variants_refused / account_creation_routes: an address not on
+# the sign-up allowlist, through Traefik. Exactly /v1/account/create goes to
+# the sign-up gate (refused); every other spelling is the gate's 404 (or,
+# where Traefik's path sanitising merges the slashes first, it arrives as
+# the canonical path: the same answer as the canonical request); the other
+# account-creating routes are the gate's 403. Never 200, never an account.
+NB_BODY="{\"email\":\"nobody@example.org\",\"authPW\":\"$(printf '0%.0s' $(seq 1 64))\"}"
+api_post() {  # $1 path, $2 body -> "<status> <body>"
+  local out
+  out=$(curl -sk --path-as-is --max-time 15 --resolve "$API_HOST:443:127.0.0.1" -H 'Content-Type: application/json' \
+    -d "$2" -w '\n%{http_code}' "https://$API_HOST$1" 2>/dev/null || printf '\n000')
+  printf '%s %s' "$(tail -1 <<< "$out")" "$(sed '$d' <<< "$out" | tr -d '\n' | head -c 300)"
+}
+CANON=$(api_post /v1/account/create "$NB_BODY")
+case "$CANON" in 200*) fail "signup_path_variants_refused: /v1/account/create -> 200 for an address off the allowlist" ;;
+  *) pass "signup_path_variants_refused: /v1/account/create (the sign-up gate) refuses nobody@example.org: ${CANON:0:160}" ;; esac
 bad=""
-for path in /v1/account/create/ //v1/account/create /v1//account/create '/v1/account/create?keys=true' /v1/account/create; do
-  code=$(curl -sk --path-as-is --max-time 15 --resolve "$API_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
-    -H 'Content-Type: application/json' -d "{\"email\":\"nobody@example.org\",\"authPW\":\"$(printf '0%.0s' $(seq 1 64))\"}" \
-    "https://$API_HOST$path" || echo 000)
-  [ "$code" != 200 ] || bad="$bad $path->200"
-  codes_sv="${codes_sv:-} $path=$code"
+for path in /v1/account/create/ /V1/Account/Create /v1/account/%63reate /v1/account/create.json '/v1/account/create/?keys=true' \
+            //v1/account/create /v1//account/create; do
+  OUT=$(api_post "$path" "$NB_BODY")
+  if [ "$OUT" = "404 fxa-gate: not found" ]; then
+    sv="${sv:-} $path=gate-404"
+  elif [ "$OUT" = "$CANON" ] && case "$path" in *//*) true ;; *) false ;; esac; then
+    sv="${sv:-} $path=merged-by-traefik"
+  else
+    bad="$bad $path->${OUT:0:120}"
+  fi
+done
+[ -z "$bad" ] && pass "signup_path_variants_refused: every other spelling -> the gate's 404 (never fxa-auth):$sv" \
+  || fail "signup_path_variants_refused:$bad"
+bad=""
+for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_code /v1/linked_account/login; do
+  OUT=$(api_post "$path" "{\"email\":\"nobody@example.org\",\"code\":\"12345678\",\"provider\":\"google\",\"idToken\":\"x\"}")
+  [ "$OUT" = "403 fxa-gate: accounts are created through the sign-up gate only" ] || bad="$bad $path->${OUT:0:120}"
+done
+[ -z "$bad" ] && pass "account_creation_routes: passwordless send / confirm and linked_account login -> the gate's 403" \
+  || fail "account_creation_routes:$bad"
+# Routes that reach fxa-auth and act on existing accounts only.
+bad=""
+for path in /v1/account/login '/v1/account/login?keys=true' /v1/password/forgot/send_otp /v1/account/status; do
+  OUT=$(api_post "$path" "$NB_BODY")
+  case "$OUT" in 200*) case "$path" in /v1/account/status) ;; *) bad="$bad $path->200" ;; esac ;; esac
+  rt="${rt:-} $path=${OUT%% *}"
 done
 ROWS=$(echo "SELECT COUNT(*) FROM fxa.accounts WHERE normalizedEmail = 'nobody@example.org';" | mysql_root 2>&1)
 if [ -z "$bad" ] && [ "$ROWS" = 0 ]; then
-  pass "signup_path_variants_refused: nobody@example.org never 200 ($codes_sv), no fxa.accounts row"
+  pass "account_creation_routes: nobody@example.org after every route above (and login, login?keys, forgot-password, status:$rt): no fxa.accounts row"
 else
-  fail "signup_path_variants_refused:$bad; fxa.accounts rows for nobody@example.org: $ROWS ($codes_sv)"
+  fail "account_creation_routes:$bad; fxa.accounts rows for nobody@example.org: $ROWS ($rt)"
 fi
+# I1 live: an Upgrade on the API host never reaches fxa-auth; pairing's does.
+code=$(curl -sk --http1.1 --max-time 5 --resolve "$API_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  "https://$API_HOST/v1/account/status" 2>/dev/null || true)
+[ "$code" = 400 ] && pass "no_upgrade_tunnel: a websocket upgrade on the API host through Traefik -> 400" || fail "no_upgrade_tunnel: API host upgrade -> ${code:-none}"
 
 # ══ Admin (Task 16), live: the admin UI as the instance starts it, then a
 # probe of the same image and environment that signs in at a stand-in

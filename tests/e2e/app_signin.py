@@ -31,7 +31,8 @@ reported, not fatal; if it passes, the run fails so the marker gets removed.
 
 `admin.host` runs the admin check on another host router (an admin UI on a
 host of its own); the outsider must then be refused there too (group-gate's
-403), and the member's "not admin" is checked there.
+403), and the member's "not admin" is checked there; `admin.refused` is
+the text that member's refusal must show (who refused).
 
 Per-app preparation: tests/e2e/prep/<app>.sh <work dir>, when it exists,
 runs before the app starts (with PROJECT_DIR, TEMPLATES_DIR,
@@ -1167,6 +1168,13 @@ def run_role(browser, role: str, host: str, user: str = "") -> None:
             record("member", ok, f"{user}: {ev}{pw_note}", xf, flow.page, flow.seen, flow.marks)
             if ok and SIGNIN.get("admin"):
                 is_admin, aev = flow.check(SIGNIN["admin"], admin_host(host))
+                refused = (SIGNIN["admin"] or {}).get("refused")
+                if not is_admin and refused:
+                    # Who refused: the page must be that refusal (e.g. the
+                    # app's gate, not the app's own sign-in turning it away).
+                    said = subst(refused, user).lower() in body_text(flow.page).lower()
+                    aev += f"; refusal {refused!r} {'shown' if said else 'NOT shown'}"
+                    is_admin = not said
                 record("member_not_admin", not is_admin, f"{user} admin check: {aev}")
             return
         # admin
