@@ -3025,13 +3025,15 @@ REF=$(printf '%s\n' "SET NAMES utf8mb4;" "SELECT CONCAT_WS('|', IFNULL(ffs.signu
 [ "$REF" = "ok|policy|policy|policy|0" ] && pass "lookalike_refused: ffs.signup_refusal: $ALICE allowed; alice@exámple.org, alíce@example.org, alice@ｅxample.org (full-width) refused ('policy'); a direct match finds no row" \
   || fail "lookalike_refused: signup_refusal / match: $REF (want ok|policy|policy|policy|0)"
 ACCTS_BEFORE=$(echo "SELECT COUNT(*) FROM fxa.accounts;" | mysql_root 2>&1)
+# PyFxA refuses a non-ASCII email itself (its key-stretching salt), so the
+# sign-up request goes as raw JSON, the way any other client could send it.
+AUTHPW=$(printf '0%.0s' $(seq 1 64))
 for who in "alice@exámple.org" "alice@ｅxample.org"; do
-  OUT=$(acc_client signup "$who" || true)
-  if [ "$(jget "$OUT" .step)" = create ] && [ "$(jget "$OUT" .http)" = 400 ]; then
-    pass "lookalike_refused: the sign-up of $who through Traefik -> 400 (errno $(jget "$OUT" .errno))"
-  else
-    fail "lookalike_refused: the sign-up of $who: $(redact "$OUT")"
-  fi
+  OUT=$(api_post /v1/account/create "{\"email\":\"$who\",\"authPW\":\"$AUTHPW\"}")
+  case "$OUT" in
+    "400 "*) pass "lookalike_refused: the sign-up of $who through Traefik -> ${OUT:0:120}" ;;
+    *) fail "lookalike_refused: the sign-up of $who: ${OUT:0:200}" ;;
+  esac
 done
 NONASCII=$(echo "SELECT CONCAT((SELECT COUNT(*) FROM fxa.accounts), ':', (SELECT COUNT(*) FROM fxa.accounts WHERE CHAR_LENGTH(CONVERT(normalizedEmail USING utf8mb4)) <> LENGTH(CONVERT(normalizedEmail USING utf8mb4))));" | mysql_root 2>&1)
 [ "$NONASCII" = "$ACCTS_BEFORE:0" ] && pass "lookalike_refused: no fxa.accounts row appeared ($ACCTS_BEFORE accounts, none with a non-ASCII email)" \
