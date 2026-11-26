@@ -236,7 +236,21 @@ fi
 # db-guard.sh (Task 13 fix round 1, C1): with a stub mysql, the statements
 # that make ffs compare byte for byte and the ASCII-only triggers.
 GUARD_SH="$(dirname "$COMPOSE")/db-guard.sh"
-if SQL=$(PATH="$DBU_TMP:$PATH" MYSQL_HOST=localhost sh "$GUARD_SH" 2>&1); then
+# A stub that logs every statement and answers the check of existing rows
+# with STUB_UIDS.
+mkdir -p "$DBU_TMP/guard"
+cat > "$DBU_TMP/guard/mysql" << 'STUB'
+#!/bin/sh
+in=$(cat)
+printf '%s\n' "$in" >> "$STUB_LOG"
+case "$in" in *"SELECT DISTINCT LOWER(HEX(uid))"*) [ -z "${STUB_UIDS:-}" ] || printf '%s\n' $STUB_UIDS ;; esac
+STUB
+chmod +x "$DBU_TMP/guard/mysql"
+guard_run() {  # $1 uids the check answers -> the script's output; the SQL in $DBU_TMP/guard.sql
+  : > "$DBU_TMP/guard.sql"
+  PATH="$DBU_TMP/guard:$PATH" STUB_LOG="$DBU_TMP/guard.sql" STUB_UIDS="$1" MYSQL_HOST=localhost sh "$GUARD_SH" 2>&1
+}
+if OUT=$(guard_run "") && SQL=$(cat "$DBU_TMP/guard.sql"); then
   bad=""
   for want in "CREATE DATABASE IF NOT EXISTS ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
               "ALTER DATABASE ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
@@ -254,9 +268,40 @@ if SQL=$(PATH="$DBU_TMP:$PATH" MYSQL_HOST=localhost sh "$GUARD_SH" 2>&1); then
     && [ "$(grep -c 'NOT (CAST(NEW.normalizedEmail AS BINARY) <=> CAST(OLD.normalizedEmail AS BINARY))' <<< "$SQL")" = 2 ] || bad="$bad [conditions]"
   [ -z "$bad" ] && pass "db-guard.sh C1: ffs and its allowlist column utf8mb4_bin; INSERT / UPDATE triggers on fxa.accounts and fxa.emails refuse a non-ASCII email (updates only when it changes)" \
     || fail "db-guard.sh C1: missing:$bad"
+  [ "$OUT" = "db-guard: ffs compares emails byte for byte (utf8mb4_bin); fxa.accounts and fxa.emails take plain ASCII emails only; 0 accounts with a non-ASCII email disabled and signed out" ] \
+    && grep -q 'SELECT DISTINCT LOWER(HEX(uid)) FROM (SELECT uid FROM fxa.accounts WHERE .* UNION SELECT uid FROM fxa.emails WHERE ' <<< "$SQL" \
+    && ! grep -q 'revokeAccountTokens_1' <<< "$SQL" \
+    && pass "db-guard.sh: the check of existing accounts and emails; none found: nothing disabled ('$OUT')" \
+    || fail "db-guard.sh: no non-ASCII account: $OUT"
 else
-  fail "db-guard.sh: the script failed with the stub mysql: $SQL"
+  fail "db-guard.sh: the script failed with the stub mysql: $OUT"
 fi
+U1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 U2=0123456789abcdef0123456789abcdef
+if OUT=$(guard_run "$U1 $U2") && SQL=$(cat "$DBU_TMP/guard.sql"); then
+  bad=""
+  for u in $U1 $U2; do
+    for want in "UPDATE fxa.accounts SET disabledAt = FLOOR(UNIX_TIMESTAMP(NOW(3)) * 1000) WHERE uid = UNHEX('$u') AND disabledAt IS NULL;" \
+                "CALL fxa.revokeAccountTokens_1(UNHEX('$u'));" "DELETE FROM fxa_oauth.codes WHERE userId = UNHEX('$u');" \
+                "DELETE FROM fxa_oauth.refreshTokens WHERE userId = UNHEX('$u');" "DELETE FROM fxa_oauth.tokens WHERE userId = UNHEX('$u');"; do
+      grep -qxF "$want" <<< "$SQL" || bad="$bad [$want]"
+    done
+  done
+  [ -z "$bad" ] && grep -q '; 2 accounts with a non-ASCII email disabled and signed out$' <<< "$OUT" && ! grep -q '@' <<< "$OUT" \
+    && pass "db-guard.sh: existing non-ASCII accounts: each disabled (disabledAt kept if set) and signed out as ffs.sign_out_all does; the count logged, no address" \
+    || fail "db-guard.sh: existing accounts: $OUT;$bad"
+else
+  fail "db-guard.sh: with two accounts found: $OUT"
+fi
+if OUT=$(guard_run "x');DROP_TABLE"); then
+  fail "db-guard.sh: an unexpected answer of the check was accepted: $OUT"
+else
+  grep -q 'an unexpected uid from the check: stopping' <<< "$OUT" && ! grep -q 'revokeAccountTokens_1' "$DBU_TMP/guard.sql" \
+    && pass "db-guard.sh: an answer of the check that isn't a uid stops the job (fails closed), nothing run with it" \
+    || fail "db-guard.sh: unexpected uid: $OUT"
+fi
+printf '#!/bin/sh\ncat > /dev/null\nexit 1\n' > "$DBU_TMP/guard/mysql"
+if OUT=$(guard_run ""); then fail "db-guard.sh: a failing database let the job pass: $OUT"
+else pass "db-guard.sh: a failing database stops the job (fails closed)"; fi
 rm -rf "$DBU_TMP"
 GD='.services["fxa-db-guard"]'
 [ "$(yq -o=json -I=0 "$GD.entrypoint" "$COMPOSE")" = '["/bin/sh","/portcullis-bin/db-guard.sh"]' ] \
@@ -1214,24 +1259,25 @@ CALL ffs.disable_account_by_email('carol@example.org');" \
 printf '%s\n' bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 echo carol@example.org > "$AS_TMP/stub/noacct"
 OUT=$(as_run "$(adoc bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
-as_case "routine run (no such account ignored, the leaver without one dropped from the state)" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
+as_case "routine run (no such account ignored, the leaver without one kept in the state)" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT"
 grep -q '(1 without an account)' <<< "$OUT" && pass "access-sync.sh: routine run: 'no such account' counted, not an error" \
   || fail "access-sync.sh: routine run: $OUT"
 # rejoin_enables: alice back: her row, then her account enabled.
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
 as_case "rejoin" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
-  "CALL ffs.enable_account_by_email('alice@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}' "$OUT"
+  "CALL ffs.disable_account_by_email('carol@example.org');
+CALL ffs.enable_account_by_email('alice@example.org');" \
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
 # admin_disable_survives: the next run with the same file enables nobody (a
 # member an admin disabled stays disabled).
 printf '%s\n' alice@example.org bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
 as_case "admin_disable_survives (same file again)" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
-  "" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}' "$OUT"
+  "CALL ffs.disable_account_by_email('carol@example.org');" \
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
 # A failed call (anything but "no such account") or a failed transaction:
 # exit 1, the state as it was (the next run does it all again).
 STATE1=$(as_state)
@@ -1244,16 +1290,17 @@ OUT=$(as_run "$(adoc bob=bob@example.org)")
 # A deadlock on the first try: that call alone again, then applied.
 echo deadlock-once > "$AS_TMP/stub/fail"
 rm -f "$AS_TMP/stub/deadlocked"
+: > "$AS_TMP/stub/noacct"
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
 if [ "${OUT##*$'\n'}" = rc=0 ] && [ "$(as_calls)" = 3 ] && grep -q '1 calls failed (ERROR 1213 (40001)): trying again' <<< "$OUT" \
-    && [ "$(cat "$AS_TMP/stub/call.3.sql")" = "CALL ffs.disable_account_by_email('shared@example.org');
+    && [ "$(cat "$AS_TMP/stub/call.3.sql")" = "CALL ffs.disable_account_by_email('carol@example.org');
 SELECT 'portcullis-access-calls';" ] \
-    && [ "$(as_state)" = '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["shared@example.org"]}' ]; then
+    && [ "$(as_state)" = '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org","shared@example.org"]}' ]; then
   pass "access-sync.sh: a deadlocked call is tried again alone, then the run is applied"
 else
   fail "access-sync.sh: deadlock retry: $(tr '\n' ' ' <<< "$OUT"); calls $(as_calls); state $(as_state)"
 fi
-printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":[]}\n' > "$AS_STATE"
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
 echo tx > "$AS_TMP/stub/fail"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
 [ "${OUT##*$'\n'}" = rc=1 ] && [ "$(as_calls)" = 1 ] && [ "$(as_state)" = "$STATE1" ] && grep -q 'nothing changed' <<< "$OUT" \
@@ -1268,9 +1315,10 @@ DELETE FROM ffs.signup_allowlist;
 $TX_TAIL" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('bob@example.org');
+CALL ffs.disable_account_by_email('carol@example.org');
 CALL ffs.disable_account_by_email('o''neil@example.org');
 CALL ffs.disable_account_by_email('shared@example.org');" \
-  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT"
+  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","carol@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT"
 # state_lost_still_disables: no state, carol's row in the database only.
 rm -f "$AS_STATE"
 : > "$AS_TMP/stub/noacct"
@@ -3103,6 +3151,61 @@ ST=$(docker exec "$ACCESS_C" stat -c '%a %u' /state/applied.json 2>&1 || true)
 [ "$ST" = "600 10001" ] && pass "access: the state file is 0600, owned by 10001 (fxa-keys-owner handed it the new volume)" \
   || fail "access: the state file: $ST"
 
+# leaver_without_account (fix round 1): dave is listed but never signs up,
+# then leaves: he stays in state.removed; his sign-up is refused (the run
+# deleted his row before anything else); an account created for him anyway
+# (stand-in: his row put back by root just for the sign-up, then deleted)
+# is disabled by the next routine run.
+DAVE=dave@example.org
+people alice="$ALICE2" bob="$BOB" dave="$DAVE"
+hook_ok "leaver_without_account" membership_change || true
+people alice="$ALICE2" bob="$BOB"
+hook_ok "leaver_without_account" membership_change || true
+if [ "$(acct "$DAVE")" = "0:x:x" ] && [ "$(access_state | jq -r '.removed | index("dave@example.org") != null' 2>/dev/null)" = true ]; then
+  pass "leaver_without_account: $DAVE left without an account and stays in state.removed"
+else
+  fail "leaver_without_account: $DAVE $(acct "$DAVE"), the state $(access_state)"
+fi
+OUT=$(acc_client signup "$DAVE" || true)
+[ "$(jget "$OUT" .step)" = create ] && [ "$(jget "$OUT" .http)" = 400 ] && [ "$(acct "$DAVE")" = "0:x:x" ] \
+  && pass "leaver_without_account: $DAVE's sign-up after he left -> 400 (errno $(jget "$OUT" .errno)), no account" \
+  || fail "leaver_without_account: $DAVE's sign-up: $(redact "$OUT"); account $(acct "$DAVE")"
+printf "INSERT IGNORE INTO ffs.signup_allowlist (entry) VALUES ('%s');\n" "$DAVE" | mysql_root > /dev/null || true
+OUT=$(acc_client signup "$DAVE" || true)
+printf "DELETE FROM ffs.signup_allowlist WHERE entry = '%s';\n" "$DAVE" | mysql_root > /dev/null || true
+if [ "$(acct "$DAVE")" = "1:0:1" ]; then
+  hook_ok "leaver_without_account" start || true
+  [ "$(acct "$DAVE")" = "1:1:1" ] && [ "$(allowlist)" = "$ALICE2,$BOB" ] \
+    && pass "leaver_without_account: an account created for $DAVE anyway is disabled by the next routine run" \
+    || fail "leaver_without_account: after the run $DAVE is $(acct "$DAVE"), the allowlist '$(allowlist)'"
+else
+  fail "leaver_without_account: the stand-in sign-up of $DAVE: $(redact "$OUT"); account $(acct "$DAVE"); $(signup_diag)"
+fi
+
+# existing_nonascii_disabled (fix round 1): accounts whose email (fxa.accounts)
+# or one of whose emails (fxa.emails) isn't plain ASCII, made behind the
+# triggers' back (dropped for this), enabled: fxa-db-guard's next run
+# disables both and signs them out, logs the count only, and puts the
+# triggers back.
+GUARD_C=portcullis-fxa-db-guard-1
+SYNC_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$SYNC_USER';" | mysql_root 2>/dev/null || true)
+DAVE_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$DAVE';" | mysql_root 2>/dev/null || true)
+printf '%s\n' "SET NAMES utf8mb4;" \
+  "DROP TRIGGER fxa.portcullis_ascii_email_accounts_update;" "DROP TRIGGER fxa.portcullis_ascii_email_emails_update;" \
+  "UPDATE fxa.accounts SET email = 'dave@exämple.org', normalizedEmail = 'dave@exämple.org', disabledAt = NULL WHERE uid = UNHEX('$DAVE_UID');" \
+  "UPDATE fxa.emails SET email = 'sync@ｅxample.org', normalizedEmail = 'sync@ｅxample.org' WHERE uid = UNHEX('$SYNC_UID');" \
+  "UPDATE fxa.accounts SET disabledAt = NULL WHERE uid = UNHEX('$SYNC_UID');" | mysql_root > /dev/null 2>&1 || fail "existing_nonascii_disabled: the stand-in rows couldn't be made"
+state_of() { echo "SELECT CONCAT(IFNULL(disabledAt IS NOT NULL, 'x'), ':', (SELECT COUNT(*) FROM fxa.sessionTokens WHERE uid = UNHEX('$1'))) FROM fxa.accounts WHERE uid = UNHEX('$1');" | mysql_root 2>&1; }
+B1=$(state_of "$DAVE_UID"); B2=$(state_of "$SYNC_UID")
+GOUT=$(timeout 120 docker start -a "$GUARD_C" 2>&1) && GRC=0 || GRC=$?
+TRIGS=$(echo "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'fxa' AND TRIGGER_NAME LIKE 'portcullis\_ascii\_email\_%';" | mysql_root 2>&1)
+if [ "$GRC" = 0 ] && [ "${B1%%:*}:${B2%%:*}" = "0:0" ] && [ "$(state_of "$DAVE_UID")" = "1:0" ] && [ "$(state_of "$SYNC_UID")" = "1:0" ] \
+    && grep -q '; 2 accounts with a non-ASCII email disabled and signed out$' <<< "$GOUT" && ! grep -q '@' <<< "$GOUT" && [ "$TRIGS" = 4 ]; then
+  pass "existing_nonascii_disabled: fxa-db-guard disabled and signed out both accounts (a non-ASCII account email, a non-ASCII fxa.emails row), logged the count only, and the 4 triggers are back"
+else
+  fail "existing_nonascii_disabled: guard exit $GRC '$(tail -1 <<< "$GOUT")'; dave $B1 -> $(state_of "$DAVE_UID"), sync user $B2 -> $(state_of "$SYNC_UID"); triggers $TRIGS"
+fi
+
 # ffs_access_grants: exactly what access-sync.sh needs (porelli's fxa-policy
 # grants, its EXECUTE on ffs.delete_account_by_email taken away by
 # fxa-db-users): no global, schema, role, proxy or grant option.
@@ -3177,15 +3280,15 @@ case "$HOOK_OUTS$(docker logs "$ACCESS_C" 2>&1)" in *"$FXA_ACCESS_DB_PASSWORD"*)
 # The checks below look at every run's output: at least one "applied" line
 # per successful run (a lost output fails them, never passes them).
 APPLIED=$(grep -c 'access-sync: applied' <<< "$HOOK_OUTS" || true)
-if [ "$HOOK_OK_N" -lt 13 ] || [ "$APPLIED" -lt "$HOOK_OK_N" ]; then
+if [ "$HOOK_OK_N" -lt 16 ] || [ "$APPLIED" -lt "$HOOK_OK_N" ]; then
   fail "access: the hook outputs weren't all collected ($APPLIED applied lines for $HOOK_OK_N successful runs)"
 else
   pass "access: every successful run's output collected ($APPLIED applied lines, $HOOK_OK_N runs)"
 fi
-[ -z "$bad" ] && [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 13 ] \
+[ -z "$bad" ] && [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 16 ] \
   && pass "access secret: ffs_access's password on no container's argv, in no hook output or log" \
   || fail "access secret: found in:$bad (or outputs missing)"
-if [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 13 ] && ! grep -q '@' <<< "$HOOK_OUTS"; then
+if [ "$APPLIED" -ge "$HOOK_OK_N" ] && [ "$HOOK_OK_N" -ge 16 ] && ! grep -q '@' <<< "$HOOK_OUTS"; then
   pass "access: the hook's outputs give counts, never an email ($APPLIED applied runs)"
 else
   fail "access: a hook output names an email, or outputs are missing: $(grep '@' <<< "$HOOK_OUTS" | head -1)"

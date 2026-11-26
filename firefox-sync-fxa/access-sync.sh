@@ -13,8 +13,7 @@
 #                -> their rows deleted, then ffs.disable_account_by_email
 #   joins    = new - db -> inserted (every member's row made sure of)
 #   rejoins  = new & state.removed -> ffs.enable_account_by_email
-#   state    = {listed: new, removed: (state.removed + leaves) - new
-#               - the leavers without an account}
+#   state    = {listed: new, removed: (state.removed + leaves) - new}
 #
 # Every run (start and membership_change) disables every account of a
 # non-member it knows of, not only on a transition; "no such account" is
@@ -332,15 +331,15 @@ done
 ndis=$(grep -c '' "$work/leaves")
 noacct_dis=$(grep -c '^D ' "$work/noacct")
 noacct_en=$(grep -c '^E ' "$work/noacct")
-sed -n 's/^D //p' "$work/noacct" | sort -u > "$work/gone"
 
 # ── the state, atomically ──
 state_dir=$(dirname "$STATE_FILE")
 tmp="$state_dir/.applied.json.$$"
 json_list() { sed 's/.*/"&"/' "$1" | paste -sd, -; }
-# A leaver without an account ("no such account") isn't kept: none can
-# appear under that email while it is off the allowlist.
-sort -u "$work/removed" "$work/leaves" | comm -23 - "$work/new" | comm -23 - "$work/gone" > "$work/removed.next"
+# A leaver without an account stays in removed too, until they rejoin: an
+# account created after all (a sign-up that was under way, or by another
+# path) is disabled by the next run.
+sort -u "$work/removed" "$work/leaves" | comm -23 - "$work/new" > "$work/removed.next"
 if ! printf '{"version":1,"listed":[%s],"removed":[%s]}\n' "$(json_list "$work/new")" "$(json_list "$work/removed.next")" > "$tmp" \
     || ! mv -f "$tmp" "$STATE_FILE"; then
   rm -f "$tmp"
