@@ -1054,13 +1054,17 @@ adoc() {
     people: ($ARGS.positional | map(capture("^(?<k>[^=]*)=(?<v>.*)$") | {key: .k, value: {email: .v}}) | from_entries),
     groups: {}, entries: {}}' --args "$@"
 }
-# as_run <data | "<missing>"> [NAME=value...]: the script's exit status and
+# as_run <data | "<missing>" | "<as written>"> [NAME=value...]: the script's exit status and
 # output ("rc=<n>" last).
 as_run() {
   local data=$1
   shift
   rm -f "$AS_TMP"/stub/call.*
-  if [ "$data" = "<missing>" ]; then rm -f "$AS_TMP/access.json"; else printf '%s' "$data" > "$AS_TMP/access.json"; fi
+  case "$data" in
+    "<missing>") rm -f "$AS_TMP/access.json" ;;
+    "<as written>") ;;
+    *) printf '%s' "$data" > "$AS_TMP/access.json" ;;
+  esac
   env -i PATH="$AS_TMP/bin:$PATH" STUB_DIR="$AS_TMP/stub" MYSQL_HOST=fxa-db MYSQL_PWD=pw-access-unit \
     PORTCULLIS_INSTANCE=firefox-sync-fxa FXA_ACCESS_FILE="$AS_TMP/access.json" FXA_ACCESS_STATE="$AS_STATE" "$@" \
     "$AS_SH" "$ACCESS_SH" < /dev/null 2>&1
@@ -1134,6 +1138,8 @@ as_refused "NaN" '{"version":NaN,"instance":"firefox-sync-fxa","people":{}}'
 as_refused "nested too deep" "{\"version\":1,\"instance\":\"firefox-sync-fxa\",\"people\":{},\"x\":$(printf '[%.0s' $(seq 1 40))$(printf ']%.0s' $(seq 1 40))}"
 as_refused "larger than 4 MiB" "$(head -c 4194305 /dev/zero | tr '\0' ' ')$(adoc a=a@example.org)"
 as_refused "MYSQL_PWD unset" "$(adoc a=a@example.org)" MYSQL_PWD=
+printf '{"version":1,"instance":"firefox-sync-fxa","people":{"a":{"email":"a\000@example.org"}}}' > "$AS_TMP/access.json"
+as_refused "a NUL byte" "<as written>"
 rm -f "$AS_STATE"
 # join_allows / first run without a state: every member's row, the rows of
 # non-members deleted and their accounts disabled; emails lowercased,
@@ -1331,6 +1337,30 @@ done
   || fail "account_creation_routes: not refused:$bad"
 OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G/v1/account/passwordlessx")
 case "$OUT" in "up=main port=9000 "*) pass "account_creation_routes: a neighbouring path (/v1/account/passwordlessx) still reaches fxa-auth" ;; *) fail "account_creation_routes: neighbour: $OUT" ;; esac
+# email_change_routes (Task 13): adding a secondary email or making one
+# primary (fxa-auth v1.350.0 lib/routes/emails.js, and the older routes the
+# auth client names) is the gate's 403, any spelling; what sign-up, sign-in
+# and the account pages need still reaches fxa-auth.
+EMAIL_REFUSED="fxa-gate: an account's email is its Portcullis email: it can't be added or changed here"
+bad=""
+for p in /v1/mfa/recovery_email /v1/mfa/recovery_email/ /v1/mfa/recovery_email/destroy /v1/mfa/recovery_email/set_primary \
+         /v1/mfa/recovery_email/secondary/verify_code /v1/mfa/recovery_email/secondary/resend_code /V1/MFA/Recovery_Email/Set_Primary \
+         //v1/mfa/recovery_email/set_primary /v1/mfa/%72ecovery_email/set_primary /v1/x/../mfa/recovery_email \
+         /v1/recovery_email /v1/recovery_email/ /v1/recovery_email/set_primary /v1/recovery_email/destroy \
+         /v1/recovery_email/secondary/verify_code /v1/recovery_email/secondary/resend_code /v1/recovery_email//set_primary; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  [ "$OUT" = "$EMAIL_REFUSED
+ [403]" ] || bad="$bad $p($OUT)"
+done
+[ -z "$bad" ] && pass "email_change_routes: adding, removing or making primary an email (mfa/recovery_email*, recovery_email, set_primary, secondary/*) -> the gate's 403, every spelling" \
+  || fail "email_change_routes: not refused:$bad"
+bad=""
+for p in /v1/recovery_email/status /v1/recovery_email/verify_code /v1/recovery_email/resend_code /v1/recovery_emails /v1/mfa/otp/request; do
+  OUT=$(gt $T_IP -X POST -H "Host: $GH_API" "$G$p")
+  case "$OUT" in "up=main port=9000 "*) ;; *) bad="$bad $p($OUT)" ;; esac
+done
+[ -z "$bad" ] && pass "email_change_routes: recovery_email/status, verify_code, resend_code (sign-up and sign-in), recovery_emails (the list) and mfa/otp still reach fxa-auth" \
+  || fail "email_change_routes: refused what sign-up / sign-in need:$bad"
 # no_upgrade_tunnel (I1): only the pairing host passes an Upgrade.
 bad=""
 for h in "$GH_ACC" "$GH_API" "$GH_PROF" "$GH_SYNC" "$GH_ADMIN"; do
@@ -2031,7 +2061,7 @@ for c in $(docker ps -aq); do
   esac
 done
 [ -z "$bad" ] && pass "first_sync: the account password on no container's argv" || fail "first_sync: the account password on argv:$bad"
-rm -rf "$MAIL_DIR"
+# The catcher and its MAIL_DIR stay for the access section's sign-ups.
 unset FXA_PASSWORD
 
 # ══ fxa-gate (Task 12), live: the real gate behind core's Traefik, from
@@ -2201,6 +2231,13 @@ for path in /v1/account/passwordless/send_code /v1/account/passwordless/confirm_
 done
 [ -z "$bad" ] && pass "account_creation_routes: passwordless send / confirm, linked_account login, account/stub, finish_setup, set_password -> the gate's 403" \
   || fail "account_creation_routes:$bad"
+bad=""
+for path in /v1/mfa/recovery_email /v1/mfa/recovery_email/set_primary /v1/mfa/recovery_email/secondary/verify_code /v1/recovery_email/set_primary; do
+  OUT=$(api_post "$path" '{"email":"nobody-else@example.org","code":"12345678"}')
+  [ "$OUT" = "403 fxa-gate: an account's email is its Portcullis email: it can't be added or changed here" ] || bad="$bad $path->${OUT:0:120}"
+done
+[ -z "$bad" ] && pass "email_change_routes: through Traefik, adding a secondary email or setting the primary one -> the gate's 403" \
+  || fail "email_change_routes (live):$bad"
 # The pinned image itself: the stub-account routes are gone from fxa-auth
 # (404 straight at it, inside its container), the others are its own.
 bad=""
@@ -2753,6 +2790,8 @@ rm -rf "$PROBE_DIR"
 section "Firefox Sync + own accounts (access, live)"
 ACCESS_C=portcullis-fxa-access-sync-1
 read -r -a HOOK_CMD <<< "$(yq -r '.hooks[] | select(.name == "access-sync") | .command | join(" ")' "$MANIFEST")"
+# No account cap here (external_used set 5): the access group decides.
+unset MAX_ACCOUNTS
 ACC_OVR=$(mktemp)
 write_appfiles_override "$APP_ID" access "$(adoc)" "$ACC_OVR"
 # One override (the Hub's): the data file's mount added to the test's.
@@ -2795,10 +2834,15 @@ access_state() { docker exec "$ACCESS_C" cat /state/applied.json 2>/dev/null || 
 FXA_PASSWORD=$(openssl rand -hex 16)
 [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$FXA_PASSWORD"
 export FXA_PASSWORD
-MAIL_DIR=$(mktemp -d)
+# The sync section's catcher (and its MAIL_DIR) still runs: the auth
+# server's SMTP pool keeps talking to it.
 ACC_SESS=$(mktemp -d)
-chmod 0777 "$MAIL_DIR" "$ACC_SESS"
-CATCHER_MAIL_DIR="$MAIL_DIR" start_catcher "$EXT_USER" "$EXT_PW" 1 || true
+chmod 0777 "$ACC_SESS"
+[ "$(docker inspect -f '{{.State.Running}}' "$CATCHER" 2>/dev/null)" = true ] || CATCHER_MAIL_DIR="$MAIL_DIR" start_catcher "$EXT_USER" "$EXT_PW" 1 || true
+MAXA=$(max_accounts_setting)
+[ "$MAXA" = unlimited ] && pass "access: no account cap (ffs.settings max_accounts unlimited)" || fail "access: max_accounts '$MAXA'"
+signup_diag() { printf 'catcher: %s; auth: %s' "$(docker logs "$CATCHER" 2>&1 | grep -v '^MESSAGE' | tail -4 | tr '\n' ' ')" \
+  "$(redact "$(docker logs --tail 40 "$AUTH_C" 2>&1 | grep -iE 'mail|smtp|error' | tail -4 | tr '\n' ' ')")"; }
 acc_client() {  # fxa_client.py through Traefik, as fxa_client(), keeping signup's session (FXA_STATE_DIR)
   docker run --rm --network portcullis-proxy --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges:true \
     --user 10001:10001 -v "$PWD/tests/fxa_client.py:/portcullis-test/fxa_client.py:ro" -v "$MAIL_DIR:/mail:ro" -v "$ACC_SESS:/sessions" \
@@ -2835,7 +2879,7 @@ for who in "$ALICE" "$BOB"; do
   if [ "$(jget "$OUT" .verified)" = true ] && [ "$(acct "$who")" = "1:0:1" ]; then
     pass "join_allows: $who signed up through Traefik, verified with the mailed code: an enabled, verified account"
   else
-    fail "join_allows: $who: $(redact "$OUT"); account $(acct "$who")"
+    fail "join_allows: $who: $(redact "$OUT"); account $(acct "$who"); $(signup_diag)"
   fi
 done
 OUT=$(acc_client session-status "$ALICE" || true)
@@ -2859,7 +2903,7 @@ grep -q '^ERROR 1644 (45000).*: not on the access list managed elsewhere' <<< "$
 # Every run (defence in depth): an account of a non-member enabled behind
 # the sync's back is disabled again, a member's deleted row comes back, by a
 # routine run with the file unchanged.
-echo "UPDATE fxa.accounts SET disabledAt = NULL WHERE normalizedEmail = '$ALICE'; DELETE FROM ffs.signup_allowlist WHERE entry = '$BOB';" | mysql_root > /dev/null
+echo "UPDATE fxa.accounts SET disabledAt = NULL WHERE normalizedEmail = '$ALICE'; DELETE FROM ffs.signup_allowlist WHERE entry = '$BOB';" | mysql_root > /dev/null || true
 hook_ok "nonmember_disabled_every_run" start || true
 [ "$(acct "$ALICE")" = "1:1:1" ] && pass "nonmember_disabled_every_run: $ALICE, enabled behind the sync's back, is disabled again by a routine run" \
   || fail "nonmember_disabled_every_run: $ALICE is $(acct "$ALICE")"
@@ -2875,7 +2919,7 @@ hook_ok "rejoin_enables" membership_change || true
 
 # admin_disable_survives: an admin disables bob, who stays listed: routine
 # runs (either trigger, the file unchanged) leave him disabled.
-echo "CALL ffs.disable_account_by_email('$BOB');" | mysql_root > /dev/null
+echo "CALL ffs.disable_account_by_email('$BOB');" | mysql_root > /dev/null || fail "admin_disable_survives: the admin's disable of $BOB failed"
 hook_ok "admin_disable_survives" membership_change || true
 hook_ok "admin_disable_survives" start || true
 [ "$(acct "$BOB")" = "1:1:1" ] && [ "$(acct "$ALICE")" = "1:0:1" ] && [ "$(allowlist)" = "$ALICE,$BOB" ] \
@@ -2928,7 +2972,7 @@ hook_ok "duplicates" membership_change || true
 people alice="$ALICE2" bob="$BOB" carol="$CAROL"
 hook_ok "state_lost_still_disables" membership_change || true
 OUT=$(acc_client signup "$CAROL" || true)
-[ "$(jget "$OUT" .verified)" = true ] && [ "$(acct "$CAROL")" = "1:0:1" ] || fail "state_lost_still_disables: $CAROL's sign-up: $(redact "$OUT")"
+[ "$(jget "$OUT" .verified)" = true ] && [ "$(acct "$CAROL")" = "1:0:1" ] || fail "state_lost_still_disables: $CAROL's sign-up: $(redact "$OUT"); $(signup_diag)"
 STATE_VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/state"}}{{.Name}}{{end}}{{end}}' "$ACCESS_C" 2>/dev/null || true)
 docker rm -f "$ACCESS_C" > /dev/null 2>&1 || true
 [ -n "$STATE_VOL" ] && docker volume rm "$STATE_VOL" > /dev/null 2>&1 || fail "state_lost_still_disables: couldn't remove the state volume '$STATE_VOL'"

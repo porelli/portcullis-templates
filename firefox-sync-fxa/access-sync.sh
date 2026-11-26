@@ -225,6 +225,8 @@ plain() {
 [ -f "$ACCESS_FILE" ] && [ -r "$ACCESS_FILE" ] || die "the data file $ACCESS_FILE is missing or unreadable"
 size=$(wc -c < "$ACCESS_FILE" | tr -d ' ') || die "the data file can't be read"
 [ "$size" -le "$MAX_BYTES" ] 2> /dev/null || die "the data file is larger than $MAX_BYTES bytes"
+# awk may drop a NUL byte: none is valid JSON outside a string either.
+[ "$(tr -d '\000' < "$ACCESS_FILE" | wc -c | tr -d ' ')" = "$size" ] || die "the data file holds a NUL byte"
 if ! json_read "$ACCESS_FILE" access > "$work/access"; then
   die "the data file isn't a valid version 1 data file of this instance ($(sed -n 's/^ERR //p' "$work/access" | head -1))"
 fi

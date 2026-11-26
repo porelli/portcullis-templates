@@ -17,7 +17,8 @@
 #                to the sign-up gate, ffs-admin-internal:8081, any other
 #                spelling of it is 404; the other routes that create
 #                accounts (passwordless, linked_account, the old stub-account
-#                routes) are 403
+#                routes) are 403, and so are the routes that add an email to
+#                an account or change its primary email (below)
 #   profile   -> fxa-profile-internal:1111; /img/ -> fxa-profile-static-
 #                internal:1112 with the prefix stripped
 #   sync      -> firefox-sync-fxa-internal:8000 (bodies up to 10 MB)
@@ -251,6 +252,15 @@ $(proxy 0 0)
   # and so are the stub-account routes older releases had (account/stub,
   # finish_setup, set_password: gone in v1.350.0, refused in case an image
   # brings them back; no first-party sign-up uses them).
+  # An account's email is the access sync's key (the member's verified
+  # Portcullis email): the routes that add a secondary email or make one
+  # primary (v1.350.0 lib/routes/emails.js: mfa/recovery_email,
+  # mfa/recovery_email/destroy, mfa/recovery_email/set_primary,
+  # mfa/recovery_email/secondary/verify_code and resend_code; and the older
+  # recovery_email, recovery_email/set_primary, recovery_email/secondary/*
+  # the auth client still names) are 403. Sign-up and sign-in keep
+  # recovery_email/status, verify_code and resend_code, and the account
+  # pages recovery_emails (the list).
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_API};
@@ -263,6 +273,9 @@ $(proxy 1 0)
     }
     location ~* ^/v1/(account/(passwordless|stub|finish_setup|set_password)|linked_account)(?:/|\$) {
       return 403 "fxa-gate: accounts are created through the sign-up gate only\\n";
+    }
+    location ~* ^/v1/(mfa/recovery_email(?:/|\$)|recovery_email(?:/*\$|/+(?:set_primary|destroy|secondary)(?:/|\$))) {
+      return 403 "fxa-gate: an account's email is its Portcullis email: it can't be added or changed here\\n";
     }
     location / { proxy_pass \$pc_up; }
   }
