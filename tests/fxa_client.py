@@ -20,6 +20,12 @@ stand-in resolves them to Traefik), trusting Portcullis's CA bundle
   session-status <email>    the session token signup / session saved (FXA_STATE_DIR)
                             asks /session/status: its HTTP status (200, or
                             401 once the account is disabled)
+  access-token <email>      sign in and get an OAuth access token with the
+                            Sync scope, as Firefox holds one; kept 0600 in
+                            FXA_STATE_DIR, never printed
+  access-verify <email>     the saved access token to the accounts server's
+                            /v1/verify (what the tokenserver asks): its HTTP
+                            status (200 while valid, 4xx once revoked)
 
 The password comes from FXA_PASSWORD only, never argv. With FXA_STATE_DIR
 set, signup keeps the new session (uid and session token) in a 0600 file
@@ -185,6 +191,40 @@ def cmd_session_status(address):
     return out({"uid": saved["uid"], "http": 200}, True)
 
 
+def access_file(address):
+    name = hashlib.sha256(address.lower().encode()).hexdigest()[:32]
+    return os.path.join(env("FXA_STATE_DIR"), f"access-{name}.json")
+
+
+def cmd_access_token(address):
+    session = login(address)
+    token = oauth_token(session, SYNC_SCOPE)
+    fd = os.open(access_file(address), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"uid": session.uid, "token": token}, f)
+    return out({"uid": session.uid, "saved": True}, True)
+
+
+def cmd_access_verify(address):
+    try:
+        with open(access_file(address)) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return out({"error": "no saved access token (access-token first)"}, False)
+    url = env("FXA_AUTH_URL", "http://fxa-auth:9000").rstrip("/") + "/v1/verify"
+    resp = requests.post(url, json={"token": saved["token"]}, timeout=TIMEOUT)
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    result = {"uid": saved["uid"], "http": resp.status_code, "errno": body.get("errno")}
+    if resp.status_code == 200:
+        result["user_matches"] = body.get("user") == saved["uid"]
+        scope = body.get("scope") or []
+        result["scope_sync"] = SYNC_SCOPE in (scope.split() if isinstance(scope, str) else scope)
+    return out(result, resp.status_code == 200)
+
+
 def login(address):
     seen = mail_files()
     session = auth_client().login(address, password())
@@ -288,12 +328,13 @@ def cmd_foreign_token(address):
 
 
 COMMANDS = {"signup": cmd_signup, "sync": cmd_sync, "foreign-token": cmd_foreign_token,
-            "session": cmd_session, "session-status": cmd_session_status}
+            "session": cmd_session, "session-status": cmd_session_status,
+            "access-token": cmd_access_token, "access-verify": cmd_access_verify}
 
 
 def main(argv):
     if len(argv) != 2 or argv[0] not in COMMANDS or "@" not in argv[1]:
-        return usage("usage: fxa_client.py signup|sync|foreign-token|session|session-status <email> (password in FXA_PASSWORD)")
+        return usage("usage: fxa_client.py signup|sync|foreign-token|session|session-status|access-token|access-verify <email> (password in FXA_PASSWORD)")
     try:
         return COMMANDS[argv[0]](argv[1])
     except (ClientError, ServerError) as e:

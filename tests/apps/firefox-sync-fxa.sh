@@ -35,7 +35,7 @@ COMPOSE=$(_find_compose "$APP_ID") || { fail "compose.yml not found for $APP_ID"
 MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
 
 FXA_IMAGE=ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
-ADMIN_IMAGE=ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
+ADMIN_IMAGE=ghcr.io/porelli/firefox-sync:admin-a3227424a9c6@sha256:34ad815d983a740e838eb277c6e59b5a09246b9a6dfd508d830e5b3b91c42918
 SYNC_IMAGE=ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.2@sha256:e31d2d17d136f5e87ccd1c88ba6e53270c3c11d1c321d22d7d31c9ed5e3d623d
 SYNC_INIT_IMAGE=ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T171959@sha256:a43d7e844d66fa6cc48d7de027038b3f9029bf46c8740cbb445a7b2cab96f8d8
 PAIRING_IMAGE=ghcr.io/porelli/firefox-sync:fxa-channelserver-1.6.0@sha256:cfc3319d79ba46bdc7b32922170bbfa5ea5eec3cb6549519ac0996309f320f74
@@ -153,6 +153,9 @@ check_env fxa-auth CLIENT_ADDRESS_DEPTH 2
 check_env ffs-admin FXA_CLIENT_ADDRESS_DEPTH 2
 check_env fxa-auth CUSTOMS_SERVER_URL none
 check_env fxa-auth FXA_EXPIRATION_ACCESS_TOKEN "60 minutes"
+check_env fxa-auth ACCESS_TOKEN_REDIS_HOST fxa-redis
+# The admin UI revokes the queued accounts' access tokens in that Redis.
+check_env ffs-admin FXA_REDIS fxa-redis:6379
 check_env fxa-policy FXA_SIGNUPS allowlist
 check_env fxa-policy FXA_ACCESS_DB_PASSWORD '${FXA_ACCESS_DB_PASSWORD:?FXA_ACCESS_DB_PASSWORD must be set}'
 # Typed as compose reads them: strings where upstream quotes them.
@@ -272,7 +275,7 @@ if OUT=$(guard_run "") && SQL=$(cat "$DBU_TMP/guard.sql"); then
     || fail "db-guard.sh C1: missing:$bad"
   [ "$OUT" = "db-guard: ffs compares emails byte for byte (utf8mb4_bin); fxa.accounts and fxa.emails take plain ASCII emails only; 0 accounts with a non-ASCII email disabled and signed out" ] \
     && grep -q 'SELECT DISTINCT LOWER(HEX(uid)) FROM (SELECT uid FROM fxa.accounts WHERE .* UNION SELECT uid FROM fxa.emails WHERE ' <<< "$SQL" \
-    && ! grep -q 'revokeAccountTokens_1' <<< "$SQL" \
+    && ! grep -q 'CALL ' <<< "$SQL" \
     && pass "db-guard.sh: the check of existing accounts and emails; none found: nothing disabled ('$OUT')" \
     || fail "db-guard.sh: no non-ASCII account: $OUT"
 else
@@ -282,14 +285,14 @@ U1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 U2=0123456789abcdef0123456789abcdef
 if OUT=$(guard_run "$U1 $U2") && SQL=$(cat "$DBU_TMP/guard.sql"); then
   bad=""
   for u in $U1 $U2; do
-    for want in "UPDATE fxa.accounts SET disabledAt = FLOOR(UNIX_TIMESTAMP(NOW(3)) * 1000) WHERE uid = UNHEX('$u') AND disabledAt IS NULL;" \
-                "CALL fxa.revokeAccountTokens_1(UNHEX('$u'));" "DELETE FROM fxa_oauth.codes WHERE userId = UNHEX('$u');" \
-                "DELETE FROM fxa_oauth.refreshTokens WHERE userId = UNHEX('$u');" "DELETE FROM fxa_oauth.tokens WHERE userId = UNHEX('$u');"; do
-      grep -qxF "$want" <<< "$SQL" || bad="$bad [$want]"
-    done
+    grep -qxF "CALL ffs.disable_account(UNHEX('$u'));" <<< "$SQL" || bad="$bad [CALL ffs.disable_account $u]"
   done
+  # porelli's procedure only (its ffs.sign_out_all queues the account in
+  # ffs.pending_revocations for the admin UI): no sign-out SQL of its own.
+  grep -qE 'disabledAt =|revokeAccountTokens_1|fxa_oauth|pending_revocations' <<< "$SQL" && bad="$bad [own sign-out SQL]"
+  [ "$(grep -c '^CALL ' <<< "$SQL")" = 2 ] || bad="$bad [CALL count]"
   [ -z "$bad" ] && grep -q '; 2 accounts with a non-ASCII email disabled and signed out$' <<< "$OUT" && ! grep -q '@' <<< "$OUT" \
-    && pass "db-guard.sh: existing non-ASCII accounts: each disabled (disabledAt kept if set) and signed out as ffs.sign_out_all does; the count logged, no address" \
+    && pass "db-guard.sh: existing non-ASCII accounts: each disabled and signed out by CALL ffs.disable_account (its ffs.sign_out_all queues the access tokens' revocation), nothing else; the count logged, no address" \
     || fail "db-guard.sh: existing accounts: $OUT;$bad"
 else
   fail "db-guard.sh: with two accounts found: $OUT"
@@ -297,7 +300,7 @@ fi
 if OUT=$(guard_run "x');DROP_TABLE"); then
   fail "db-guard.sh: an unexpected answer of the check was accepted: $OUT"
 else
-  grep -q 'an unexpected uid from the check: stopping' <<< "$OUT" && ! grep -q 'revokeAccountTokens_1' "$DBU_TMP/guard.sql" \
+  grep -q 'an unexpected uid from the check: stopping' <<< "$OUT" && ! grep -q 'CALL ' "$DBU_TMP/guard.sql" \
     && pass "db-guard.sh: an answer of the check that isn't a uid stops the job (fails closed), nothing run with it" \
     || fail "db-guard.sh: unexpected uid: $OUT"
 fi
@@ -3005,20 +3008,22 @@ WANT_GRANTS=$(printf '%s\n' "global USAGE" \
   "routine ffs.signup_allowed FUNCTION Execute" "routine ffs.signup_refusal FUNCTION Execute" \
   "table ffs.account_security SELECT" "table ffs.database_sizes SELECT" "table ffs.devices SELECT" "table ffs.emails SELECT" \
   "table ffs.ffs_setup_migrations SELECT" "table ffs.ffs_setup_state SELECT" "table ffs.schema_levels SELECT" \
+  "table ffs.pending_revocations DELETE" "table ffs.pending_revocations SELECT" \
   "table ffs.security_events SELECT" "table ffs.sessions SELECT" "table ffs.settings SELECT" "table ffs.signup_allowlist SELECT" \
   | LC_ALL=C sort)
 if [ "$GRANTS" = "$WANT_GRANTS" ]; then
-  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere, less confirm_email / confirm_session (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema, role, proxy or grant option)"
+  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere, less confirm_email / confirm_session (SELECT only on ffs.settings / ffs.signup_allowlist, SELECT + DELETE on ffs.pending_revocations, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema, role, proxy or grant option)"
 else
   fail "ffs_admin_grants: differ:
 $(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
 fi
 # The server's own account of it: every line a plain GRANT ... ON ... TO
-# ffs_admin (a granted role has no ON), no WITH GRANT OPTION; 25 lines =
-# USAGE, the 11 tables / views, one for the 5 columns, the 12 routines
+# ffs_admin (a granted role has no ON), no WITH GRANT OPTION; 26 lines =
+# USAGE, the 12 tables / views (ffs.pending_revocations: SELECT, DELETE on
+# one line, porelli a322742), one for the 5 columns, the 12 routines
 # (porelli's 14 without confirm_email / confirm_session: fxa-db-users).
 SHOWN=$(printf '%s\n' "SHOW GRANTS FOR 'ffs_admin'@'%';" | mysql_root 2>&1)
-if [ "$(grep -c . <<< "$SHOWN")" = 25 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
+if [ "$(grep -c . <<< "$SHOWN")" = 26 ] && grep -qxF 'GRANT SELECT, DELETE ON `ffs`.`pending_revocations` TO `ffs_admin`@`%`' <<< "$SHOWN" && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
     && ! grep -vqE '^GRANT .+ ON .+ TO `ffs_admin`@`%`$' <<< "$SHOWN"; then
   pass "ffs_admin_grants: SHOW GRANTS: $(grep -c . <<< "$SHOWN") GRANT ... ON lines, no role, no WITH GRANT OPTION"
 else
@@ -3040,6 +3045,8 @@ for stmt in "INSERT INTO ffs.signup_allowlist (entry) VALUES ('fxa-admin-test@$D
             "SELECT count(*) FROM fxa.sessionTokens" \
             "UPDATE fxa.accounts SET disabledAt = 1" \
             "DROP TRIGGER fxa.ffs_signup_policy" \
+            "INSERT INTO ffs.pending_revocations (uid, requested_at) VALUES (UNHEX('$FXA_UID'), 0)" \
+            "UPDATE ffs.pending_revocations SET requested_at = 0" \
             "CREATE USER 'portcullis_x'@'%'"; do
   OUT=$(ffs_admin_sql <<< "$stmt;" || true)
   if grep -Eqi 'ERROR (1142|1143|1044|1045|1227|1370|1419)|command denied|access denied' <<< "$OUT"; then
@@ -3212,6 +3219,46 @@ acc_client() {  # fxa_client.py through Traefik, as fxa_client(), keeping signup
     --entrypoint python3 "$SYNC_IMAGE" -I -B /portcullis-test/fxa_client.py "$@" 2>&1 | tail -1
 }
 ALICE=alice@example.org BOB=bob@example.org CAROL=carol@example.org ALICE2=alice2@example.org SHARED=shared@example.org
+# held_token <label> <email>: the account signs in and holds an OAuth access
+# token with the Sync scope, as a signed-in Firefox does (fxa-auth v1.350.0
+# keeps access tokens in its Redis only); /v1/verify, which the tokenserver
+# asks, accepts it for that account.
+held_token() {
+  local out v
+  [ "$(docker inspect -f '{{.State.Running}}' "$ADMIN_C" 2>/dev/null)" = true ] \
+    || fail "$1: ffs-admin isn't running (it revokes the access tokens of the accounts signed out)"
+  out=$(acc_client access-token "$2" || true)
+  v=$(acc_client access-verify "$2" || true)
+  if [ "$(jget "$out" .saved)" = true ] && [ "$(jget "$v" .http)" = 200 ] && [ "$(jget "$v" .user_matches)" = true ] \
+      && [ "$(jget "$v" .scope_sync)" = true ]; then
+    pass "$1: $2 holds an access token with the Sync scope: /v1/verify through Traefik -> 200, its own uid"
+  else
+    fail "$1: $2's access token: $(redact "$out"); verify $(redact "$v")"
+  fi
+}
+# token_refused <label> <email> <uid>: right after the sign-out, /v1/verify
+# refuses the held token within 30 s (ffs.sign_out_all queued the account
+# in ffs.pending_revocations; the running admin UI revokes it in Redis every
+# 5 s and deletes the row).
+token_refused() {
+  local t0 v code el pend
+  t0=$(date +%s)
+  while :; do
+    v=$(acc_client access-verify "$2" || true)
+    code=$(jget "$v" .http)
+    case "$code" in 4[0-9][0-9]) break ;; esac
+    [ $(( $(date +%s) - t0 )) -ge 30 ] && break
+    sleep 2
+  done
+  el=$(( $(date +%s) - t0 ))
+  pend=$(echo "SELECT COUNT(*) FROM ffs.pending_revocations WHERE uid = UNHEX('$3');" | mysql_root 2>&1)
+  case "$code" in
+    4[0-9][0-9])
+      [ "$pend" = 0 ] && pass "$1: $2's held access token refused by /v1/verify after ${el}s (HTTP $code, errno $(jget "$v" .errno)): the admin UI revoked it in Redis and took the account off ffs.pending_revocations" \
+        || fail "$1: $2's token refused after ${el}s, but ffs.pending_revocations still has '$pend' rows for the account" ;;
+    *) fail "$1: $2's held access token still answers after ${el}s: $(redact "$v"); ffs.pending_revocations rows for the account: $pend; admin UI: $(docker logs --tail 5 "$ADMIN_C" 2>&1 | grep -i revok | tr '\n' ' ')" ;;
+  esac
+}
 
 # nonmember_refused: an empty list (the first run: every row of before goes,
 # the accounts on it are disabled) -> alice's sign-up is refused, no account.
@@ -3275,14 +3322,18 @@ OUT=$(acc_client session-status "$ALICE" || true)
 
 # leave_disables: alice leaves -> her row goes, her account is disabled and
 # signed out (her session token 401); the admin UI can't enable her again.
+# leaver_token_revoked (porelli a322742): the access token she holds is
+# refused by /v1/verify within 30 s of the run, while the admin UI runs.
+ALICE_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$ALICE';" | mysql_root 2>/dev/null || true)
+held_token "leaver_token_revoked" "$ALICE"
 people bob="$BOB"
 hook_ok "leave_disables" membership_change || true
+token_refused "leaver_token_revoked" "$ALICE" "$ALICE_UID"
 [ "$(allowlist)" = "$BOB" ] && pass "leave_disables: $ALICE's row deleted (the allowlist is $BOB)" || fail "leave_disables: the allowlist is '$(allowlist)'"
 [ "$(acct "$ALICE")" = "1:1:1" ] && pass "leave_disables: $ALICE's account has disabledAt set" || fail "leave_disables: $ALICE is $(acct "$ALICE")"
 OUT=$(acc_client session-status "$ALICE" || true)
 [ "$(jget "$OUT" .http)" = 401 ] && pass "leave_disables: $ALICE's session token answers 401 (errno $(jget "$OUT" .errno))" \
   || fail "leave_disables: $ALICE's session: $(redact "$OUT")"
-ALICE_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$ALICE';" | mysql_root 2>/dev/null || true)
 OUT=$(ffs_admin_sql <<< "CALL ffs.enable_account(UNHEX('$ALICE_UID'));" || true)
 grep -q '^ERROR 1644 (45000).*: not on the access list managed elsewhere' <<< "$OUT" && [ "$(acct "$ALICE")" = "1:1:1" ] \
   && pass "leave_disables: the admin UI's ffs.enable_account refuses the leaver (45000 'not on the access list managed elsewhere'); still disabled" \
@@ -3473,6 +3524,7 @@ echo "UPDATE fxa.accounts SET disabledAt = NULL WHERE normalizedEmail = '$DAVE';
 OUT=$(acc_client session "$DAVE" || true)
 [ "$(jget "$OUT" .saved)" = true ] && [ "$(jget "$(acc_client session-status "$DAVE" || true)" .http)" = 200 ] \
   || fail "existing_nonascii_disabled: $DAVE's sign-in for a live session: $(redact "$OUT"); $(signup_diag)"
+held_token "nonascii_token_revoked" "$DAVE"
 SYNC_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$SYNC_USER';" | mysql_root 2>/dev/null || true)
 DAVE_UID=$(echo "SELECT LOWER(HEX(uid)) FROM fxa.accounts WHERE normalizedEmail = '$DAVE';" | mysql_root 2>/dev/null || true)
 printf '%s\n' "SET NAMES utf8mb4;" \
@@ -3485,6 +3537,9 @@ B1=$(state_of "$DAVE_UID"); B2=$(state_of "$SYNC_UID")
 GOUT=$(timeout 120 docker start -a "$GUARD_C" 2>&1) && GRC=0 || GRC=$?
 TRIGS=$(echo "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'fxa' AND TRIGGER_NAME LIKE 'portcullis\_ascii\_email\_%';" | mysql_root 2>&1)
 DAVE_SESSION=$(jget "$(acc_client session-status "$DAVE" || true)" .http)
+# nonascii_token_revoked: db-guard signs out through ffs.disable_account, so
+# dave is queued too and the running admin UI revokes his access token.
+token_refused "nonascii_token_revoked" "$DAVE" "$DAVE_UID"
 if [ "$GRC" = 0 ] && [ "${B1%%:*}" = 0 ] && [ "${B1#*:}" -ge 1 ] 2> /dev/null && [ "${B2%%:*}" = 0 ] \
     && [ "$(state_of "$DAVE_UID")" = "1:0" ] && [ "$(state_of "$SYNC_UID")" = "1:0" ] && [ "$DAVE_SESSION" = 401 ] \
     && grep -q '; 2 accounts with a non-ASCII email disabled and signed out$' <<< "$GOUT" && ! grep -q '@' <<< "$GOUT" && [ "$TRIGS" = 4 ]; then
@@ -3542,6 +3597,9 @@ for stmt in "UPDATE ffs.signup_allowlist SET entry = 'x@example.org'" \
             "SELECT ffs.signup_allowed('$BOB')" \
             "CREATE TEMPORARY TABLE ffs.portcullis_t (a int)" \
             "DROP TRIGGER fxa.ffs_signup_policy" \
+            "SELECT COUNT(*) FROM ffs.pending_revocations" \
+            "INSERT INTO ffs.pending_revocations (uid, requested_at) VALUES (UNHEX('00000000000000000000000000000000'), 0)" \
+            "DELETE FROM ffs.pending_revocations" \
             "CREATE USER 'portcullis_y'@'%'"; do
   OUT=$(ffs_access_sql <<< "$stmt;" || true)
   if grep -Eqi 'ERROR (1142|1143|1044|1045|1227|1370|1419)|command denied|access denied' <<< "$OUT"; then

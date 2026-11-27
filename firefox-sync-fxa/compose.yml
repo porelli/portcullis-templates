@@ -194,7 +194,7 @@ services:
   # SQLSTATE 45001 and changes nothing), and makes the allowlist's column
   # utf8mb4_bin itself (fxa-db-guard did it first: then nothing to convert).
   fxa-policy:
-    image: ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
+    image: ghcr.io/porelli/firefox-sync:admin-a3227424a9c6@sha256:34ad815d983a740e838eb277c6e59b5a09246b9a6dfd508d830e5b3b91c42918
     read_only: true
     tmpfs:
       - /tmp:size=16m
@@ -326,7 +326,9 @@ services:
       # The client IP of the rate limits: 2 = Traefik alone (fxa-gate
       # forwards Traefik's X-Forwarded-For unchanged and adds nothing).
       CLIENT_ADDRESS_DEPTH: "2"
-      # Firefox's access tokens live 60 minutes (Mozilla's default: 365).
+      # Firefox's access tokens live 60 minutes (Mozilla's default: 365):
+      # the backstop when ffs-admin isn't running to revoke a signed-out
+      # account's tokens in Redis (porelli a322742, below).
       FXA_EXPIRATION_ACCESS_TOKEN: 60 minutes
       LASTACCESSTIME_UPDATES_SAMPLE_RATE: "1"
       # Clients that never skip the sign-in code (Mozilla's defaults).
@@ -752,8 +754,18 @@ services:
   # Confirm email and Confirm this sign-in (ffs.confirm_email /
   # ffs.confirm_session) are refused at fxa-gate: an account's email is
   # proven only by the code sent to it.
+  #
+  # It also revokes access tokens (porelli a322742): fxa-auth keeps them in
+  # Redis only, where SQL can't reach. ffs.sign_out_all (Disable, Sign out
+  # everywhere, fxa-access-sync's procedures by email and its sweep,
+  # fxa-db-guard's ffs.disable_account) and ffs.delete_account queue the
+  # account in ffs.pending_revocations; the admin UI revokes the queued
+  # accounts' access tokens in Redis at its start and every 5 s, and its
+  # own buttons before the page answers. Always deployed and restarted (it
+  # is the sign-up gate too); while it's down the queue waits for its next
+  # start, and a held access token lives up to its 60 minutes.
   ffs-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
+    image: ghcr.io/porelli/firefox-sync:admin-a3227424a9c6@sha256:34ad815d983a740e838eb277c6e59b5a09246b9a6dfd508d830e5b3b91c42918
     read_only: true
     tmpfs:
       - /tmp:size=64m
@@ -797,6 +809,9 @@ services:
       # As fxa-policy set it (shown on the overview).
       FXA_MAX_ACCOUNTS: ${MAX_ACCOUNTS:-unlimited}
       FXA_AUTH_UPSTREAM: http://fxa-auth:9000
+      # The accounts' Redis (upstream's default, spelled out): the access
+      # tokens of the accounts queued in ffs.pending_revocations go here.
+      FXA_REDIS: fxa-redis:6379
       FXA_ACCOUNT_EVENTS: "false"
       FXA_CLIENT_ADDRESS_DEPTH: "2"
       FXA_ACCESS_TOKEN_LIFETIME: 60 minutes
@@ -929,11 +944,15 @@ services:
       SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
       SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
       # The Sync (storage) token lives 15 minutes, not syncstorage-rs's 1 h
-      # (tokenserver token_duration): a disabled account's sign-out can't
-      # take back an OAuth access token Firefox holds (up to 60 minutes,
-      # FXA_EXPIRATION_ACCESS_TOKEN), so its Sync access ends at most about
-      # 75 minutes after the disable. Firefox asks the tokenserver again
-      # when its token expires.
+      # (tokenserver token_duration): nothing revokes a Sync token already
+      # issued (the storage checks only its signature and expiry). The
+      # access token Firefox holds is revoked by ffs-admin about 5 s after a
+      # disable, and the tokenserver trusts an access token it already
+      # verified for up to 5 more minutes (PyFxA's cache): Sync access ends
+      # at most about 20 minutes after the disable while ffs-admin runs.
+      # While it's down the access token lives until ffs-admin's next start,
+      # or up to 60 minutes (FXA_EXPIRATION_ACCESS_TOKEN). Firefox asks the
+      # tokenserver again when its token expires.
       SYNC_TOKENSERVER__TOKEN_DURATION: "900"
     healthcheck:
       test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/__heartbeat__"]

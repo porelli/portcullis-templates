@@ -30,9 +30,13 @@
 # (c) Accounts stored before (b), or behind its back: every account whose
 #     email or normalizedEmail, or any of whose fxa.emails rows, isn't plain
 #     ASCII is disabled (disabledAt kept when already set) and signed out
-#     everywhere, as ffs.disable_account / ffs.sign_out_all do it
-#     (fxa.revokeAccountTokens_1, then its OAuth codes, refresh and access
-#     tokens). Only the count is logged, never an address; the start goes on.
+#     everywhere by porelli's own ffs.disable_account (root may call it; it
+#     exists from fxa-policy's run at an earlier start: an account exists
+#     only after one). Its ffs.sign_out_all ends the sessions and OAuth
+#     codes, refresh and access tokens in the database and queues the
+#     account in ffs.pending_revocations (porelli a322742), so the admin UI,
+#     which starts after this, revokes its access tokens in Redis too. Only
+#     the count is logged, never an address; the start goes on.
 #
 # The SQL goes to mysql on stdin and the root password in MYSQL_PWD: no
 # secret in argv. Fails closed: any error (the check of (c) included) stops
@@ -83,14 +87,7 @@ for u in $uids; do
     *[!0-9a-f]* | "") echo "db-guard: an unexpected uid from the check: stopping" >&2; exit 1 ;;
   esac
   [ "${#u}" = 32 ] || { echo "db-guard: an unexpected uid from the check: stopping" >&2; exit 1; }
-  printf '%s\n' \
-    "UPDATE fxa.accounts SET disabledAt = FLOOR(UNIX_TIMESTAMP(NOW(3)) * 1000) WHERE uid = UNHEX('$u') AND disabledAt IS NULL;" \
-    "CALL fxa.revokeAccountTokens_1(UNHEX('$u'));" \
-    "START TRANSACTION;" \
-    "DELETE FROM fxa_oauth.codes WHERE userId = UNHEX('$u');" \
-    "DELETE FROM fxa_oauth.refreshTokens WHERE userId = UNHEX('$u');" \
-    "DELETE FROM fxa_oauth.tokens WHERE userId = UNHEX('$u');" \
-    "COMMIT;" | sql
+  printf "CALL ffs.disable_account(UNHEX('%s'));\n" "$u" | sql
   n=$((n + 1))
 done
 

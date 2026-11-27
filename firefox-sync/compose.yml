@@ -256,7 +256,7 @@ services:
   # read-only and refuses every change of them server side; its database
   # reader can't write them either (guard.sql).
   firefox-sync-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
+    image: ghcr.io/porelli/firefox-sync:admin-a3227424a9c6@sha256:34ad815d983a740e838eb277c6e59b5a09246b9a6dfd508d830e5b3b91c42918
     read_only: true
     tmpfs:
       - /tmp:size=64m
