@@ -86,7 +86,7 @@ services:
   # One-shot: a fresh named volume's mountpoint is root-owned (the scratch
   # image has no /app/vikunja/files); hand it to uid 1000. Only chown.
   vikunja-perms:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     # A non-zero gid (vikunja's group): Kubernetes refuses root's group 0.
     user: "0:1000"
     read_only: true
@@ -101,7 +101,7 @@ services:
     restart: "no"
 
   vikunja-db:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     user: "70:70"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
