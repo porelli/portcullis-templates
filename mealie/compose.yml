@@ -138,7 +138,7 @@ services:
     restart: "no"
 
   mealie-db:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     # The image's postgres user (alpine uid 70) owns PGDATA in the image, so
     # a fresh volume is writable without the entrypoint's root step.
     user: "70:70"
