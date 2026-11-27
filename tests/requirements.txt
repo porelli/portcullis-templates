@@ -1,6 +1,6 @@
 # Static validation (tests/validate.py). Dependabot keeps these current.
 jsonschema==4.26.0
-PyYAML==6.0.3
+PyYAML==6.0.4
 google-re2==1.1.20251105
 markdown-it-py==4.3.0
 defusedxml==0.7.1
