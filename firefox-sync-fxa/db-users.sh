@@ -17,6 +17,17 @@
 # made with ADMIN_ACCESS_EXTERNAL only) (IF EXISTS: a grant already gone is
 # fine; a missing ffs_access fails the job).
 #
+# And the admin UI's ffs_admin loses EXECUTE on ffs.confirm_email and
+# ffs.confirm_session, the procedures behind its Confirm email and Confirm
+# this sign-in (porelli/firefox-sync 68ea7b8; it has no other procedure that
+# marks an email or a sign-in verified). This template always runs with
+# access managed elsewhere (ADMIN_ACCESS_EXTERNAL=1 in fxa-policy and
+# ffs-admin): an account's email is its member's verified Portcullis email,
+# proven only by the code sent to it, so an admin can't vouch for one.
+# fxa-gate refuses those routes too; this is the database's side. The admin
+# UI's setup check looks at ffs_admin's writes on ffs.settings and
+# ffs.signup_allowlist only, so it doesn't miss these grants.
+#
 # Nothing else: no GRANT OPTION, no server-wide privilege (SUPER, EVENT,
 # CREATE USER, FILE), no TRIGGER, CREATE ROUTINE, ALTER ROUTINE or DDL, and
 # no right on ffs (the sign-up policy, the allowlist and its procedures).
@@ -59,6 +70,9 @@ user() {  # $1 user, $2 password, $3... databases
   user fxa_auth "$FXA_AUTH_DB_PASSWORD" fxa fxa_oauth pushbox
   user fxa_profile "$FXA_PROFILE_DB_PASSWORD" fxa_profile
   printf "REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.delete_account_by_email FROM 'ffs_access'@'%%';\n"
+  for p in confirm_email confirm_session; do
+    printf "REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.%s FROM 'ffs_admin'@'%%';\n" "$p"
+  done
 } | mysql --protocol=tcp -h "${MYSQL_HOST:?}" -u root --batch --silent
 
-echo "db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set; ffs_access narrowed (no delete_account_by_email)"
+echo "db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set; ffs_access narrowed (no delete_account_by_email); ffs_admin can't confirm an email or a sign-in (no confirm_email, confirm_session)"

@@ -223,9 +223,11 @@ ALTER USER 'fxa_profile'@'%' IDENTIFIED BY 'p2';
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'fxa_profile'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON \`fxa\\_profile\`.* TO 'fxa_profile'@'%';
 REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.delete_account_by_email FROM 'ffs_access'@'%';
-db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set; ffs_access narrowed (no delete_account_by_email)"
+REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.confirm_email FROM 'ffs_admin'@'%';
+REVOKE IF EXISTS EXECUTE ON PROCEDURE ffs.confirm_session FROM 'ffs_admin'@'%';
+db-users: fxa_auth (fxa, fxa_oauth, pushbox) and fxa_profile (fxa_profile) set; ffs_access narrowed (no delete_account_by_email); ffs_admin can't confirm an email or a sign-in (no confirm_email, confirm_session)"
   if [ "$SQL" = "$WANT_SQL" ]; then
-    pass "db-users.sh M1/M3: exactly CREATE, ALTER, REVOKE and the DML + EXECUTE grants on fxa, fxa\\_oauth, pushbox (fxa_auth) and fxa\\_profile (fxa_profile); ffs_access loses EXECUTE on ffs.delete_account_by_email"
+    pass "db-users.sh M1/M3: exactly CREATE, ALTER, REVOKE and the DML + EXECUTE grants on fxa, fxa\\_oauth, pushbox (fxa_auth) and fxa\\_profile (fxa_profile); ffs_access loses EXECUTE on ffs.delete_account_by_email, ffs_admin on ffs.confirm_email / ffs.confirm_session"
   else
     fail "db-users.sh M1/M3: generated SQL differs from the expected statements:
 $(diff <(echo "$WANT_SQL") <(echo "$SQL") || true)"
@@ -2336,6 +2338,12 @@ OUT=$(fxa_client sync "$SYNC_USER" || true)
 EP=$(jget "$OUT" '.api_endpoint // ""')
 if [ "$(jget "$OUT" .token_http)" = 200 ] && [[ "$EP" =~ ^https://${SYNC_HOST//./\\.}/1\.5/[0-9]+$ ]]; then
   pass "first_sync: OAuth token with the Sync scope -> tokenserver 200, api_endpoint $EP (the Sync host)"
+  # Final fix follow-up: the Sync token lives 900 s (Firefox asks again when
+  # it expires); a second exchange (a renewal) answers 200 too.
+  OUT2=$(fxa_client sync "$SYNC_USER" || true)
+  [ "$(jget "$OUT" .duration)" = 900 ] && [ "$(jget "$OUT2" .token_http)" = 200 ] && [ "$(jget "$OUT2" .duration)" = 900 ] \
+    && pass "first_sync: the Sync token's duration is 900 s (SYNC_TOKENSERVER__TOKEN_DURATION); a renewed token answers 200, 900 s again" \
+    || fail "first_sync: token duration $(jget "$OUT" .duration), renewal $(jget "$OUT2" .token_http) / $(jget "$OUT2" .duration) (want 900, 200 / 900)"
 else
   fail "first_sync: tokenserver: $(redact "$OUT")"
 fi
@@ -2989,7 +2997,6 @@ GRANTS=$(printf '%s\n' "SELECT CONCAT('global ', PRIVILEGE_TYPE) FROM informatio
 WANT_GRANTS=$(printf '%s\n' "global USAGE" \
   "column fxa.accounts.createdAt SELECT" "column fxa.accounts.disabledAt SELECT" "column fxa.accounts.email SELECT" \
   "column fxa.accounts.emailVerified SELECT" "column fxa.accounts.uid SELECT" \
-  "routine ffs.confirm_email PROCEDURE Execute" "routine ffs.confirm_session PROCEDURE Execute" \
   "routine ffs.delete_account PROCEDURE Execute" "routine ffs.delete_unconfirmed PROCEDURE Execute" \
   "routine ffs.disable_account PROCEDURE Execute" "routine ffs.enable_account PROCEDURE Execute" \
   "routine ffs.prune PROCEDURE Execute" "routine ffs.remove_recovery_key PROCEDURE Execute" \
@@ -3001,16 +3008,17 @@ WANT_GRANTS=$(printf '%s\n' "global USAGE" \
   "table ffs.security_events SELECT" "table ffs.sessions SELECT" "table ffs.settings SELECT" "table ffs.signup_allowlist SELECT" \
   | LC_ALL=C sort)
 if [ "$GRANTS" = "$WANT_GRANTS" ]; then
-  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema, role, proxy or grant option)"
+  pass "ffs_admin_grants: exactly porelli's set with access managed elsewhere, less confirm_email / confirm_session (SELECT only on ffs.settings / ffs.signup_allowlist, 5 columns of fxa.accounts, ffs's views and procedures; no global, schema, role, proxy or grant option)"
 else
   fail "ffs_admin_grants: differ:
 $(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
 fi
 # The server's own account of it: every line a plain GRANT ... ON ... TO
-# ffs_admin (a granted role has no ON), no WITH GRANT OPTION; 27 lines =
-# USAGE, the 11 tables / views, one for the 5 columns, the 14 routines.
+# ffs_admin (a granted role has no ON), no WITH GRANT OPTION; 25 lines =
+# USAGE, the 11 tables / views, one for the 5 columns, the 12 routines
+# (porelli's 14 without confirm_email / confirm_session: fxa-db-users).
 SHOWN=$(printf '%s\n' "SHOW GRANTS FOR 'ffs_admin'@'%';" | mysql_root 2>&1)
-if [ "$(grep -c . <<< "$SHOWN")" = 27 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
+if [ "$(grep -c . <<< "$SHOWN")" = 25 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
     && ! grep -vqE '^GRANT .+ ON .+ TO `ffs_admin`@`%`$' <<< "$SHOWN"; then
   pass "ffs_admin_grants: SHOW GRANTS: $(grep -c . <<< "$SHOWN") GRANT ... ON lines, no role, no WITH GRANT OPTION"
 else
@@ -3026,6 +3034,8 @@ for stmt in "INSERT INTO ffs.signup_allowlist (entry) VALUES ('fxa-admin-test@$D
             "CALL ffs.disable_account_by_email('$SYNC_USER')" \
             "CALL ffs.delete_account_by_email('$SYNC_USER')" \
             "CALL ffs.disable_accounts_not_allowed(0)" \
+            "CALL ffs.confirm_email(UNHEX('$FXA_UID'))" \
+            "CALL ffs.confirm_session(UNHEX('$FXA_UID'), UNHEX(SHA2('x', 256)))" \
             "SELECT authSalt FROM fxa.accounts LIMIT 1" \
             "SELECT count(*) FROM fxa.sessionTokens" \
             "UPDATE fxa.accounts SET disabledAt = 1" \

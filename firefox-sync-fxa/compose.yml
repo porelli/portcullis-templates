@@ -928,6 +928,13 @@ services:
       SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS: "2"
       SYNC_TOKENSERVER__FXA_WEBHOOK_ENABLED: "false"
       SYNC_TOKENSERVER__FXA_DELETE_DATA_ENABLED: "false"
+      # The Sync (storage) token lives 15 minutes, not syncstorage-rs's 1 h
+      # (tokenserver token_duration): a disabled account's sign-out can't
+      # take back an OAuth access token Firefox holds (up to 60 minutes,
+      # FXA_EXPIRATION_ACCESS_TOKEN), so its Sync access ends at most about
+      # 75 minutes after the disable. Firefox asks the tokenserver again
+      # when its token expires.
+      SYNC_TOKENSERVER__TOKEN_DURATION: "900"
     healthcheck:
       test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/__heartbeat__"]
       interval: 30s
