@@ -1055,7 +1055,7 @@ services:
   # database, owned by its role and closed to every other. Passwords reach
   # psql through the environment (\getenv), never argv.
   firefox-sync-fxa-init:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     user: "70:70"
     read_only: true
     tmpfs:
@@ -1089,7 +1089,7 @@ services:
     restart: "no"
 
   firefox-sync-fxa-db:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     user: "70:70"
     tmpfs:
       - /tmp:size=64m
