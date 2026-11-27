@@ -186,11 +186,15 @@ services:
   # then takes its EXECUTE on ffs.delete_account_by_email away). Access
   # managed elsewhere: with ADMIN_ACCESS_EXTERNAL and FXA_ACCESS_DB_PASSWORD
   # it forces FXA_SIGNUPS=allowlist, and the admin UI's procedures leave who
-  # has access alone (enable refuses an email off the list, delete keeps the
-  # list); the list is fxa-access-sync's alone, so FXA_SIGNUP_ALLOWLIST is
-  # never set.
+  # has access alone (enable refuses an account whose current primary email
+  # is off the list, delete keeps the list); the list is fxa-access-sync's
+  # alone, so FXA_SIGNUP_ALLOWLIST is never set. With the mode it also makes
+  # ffs.disable_accounts_not_allowed(p_max), ffs_access's sweep (by the
+  # current primary email, with a brake: more than p_max refuses with
+  # SQLSTATE 45001 and changes nothing), and makes the allowlist's column
+  # utf8mb4_bin itself (fxa-db-guard did it first: then nothing to convert).
   fxa-policy:
-    image: ghcr.io/porelli/firefox-sync:admin-213576ce106e@sha256:432aba9c2f7a5b9293cdd1fb5fed1be92f1ba4f08c83dc56a6e73d7005f96d2d
+    image: ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
     read_only: true
     tmpfs:
       - /tmp:size=16m
@@ -741,12 +745,15 @@ services:
   # Sync's max users are read-only here: the admin UI refuses its forms for
   # them, and its database user ffs_admin (fxa-policy) can't write them
   # directly. Its incident procedures (porelli's SECURITY DEFINER ones) don't
-  # reach past it either: ffs.enable_account refuses an account whose email
-  # the sign-up policy refuses (SQLSTATE 45000 "not on the access list
-  # managed elsewhere", a leaver's included), and ffs.delete_account leaves
-  # the account's allowlist row alone.
+  # reach past it either: ffs.enable_account refuses an account whose current
+  # primary email the sign-up policy refuses (SQLSTATE 45000 "not on the
+  # access list managed elsewhere", a leaver's included: the sweep's rule),
+  # and ffs.delete_account leaves the account's allowlist row alone. Its
+  # Confirm email and Confirm this sign-in (ffs.confirm_email /
+  # ffs.confirm_session) are refused at fxa-gate: an account's email is
+  # proven only by the code sent to it.
   ffs-admin:
-    image: ghcr.io/porelli/firefox-sync:admin-213576ce106e@sha256:432aba9c2f7a5b9293cdd1fb5fed1be92f1ba4f08c83dc56a6e73d7005f96d2d
+    image: ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
     read_only: true
     tmpfs:
       - /tmp:size=64m

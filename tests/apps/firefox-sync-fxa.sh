@@ -35,7 +35,7 @@ COMPOSE=$(_find_compose "$APP_ID") || { fail "compose.yml not found for $APP_ID"
 MANIFEST="$(dirname "$COMPOSE")/manifest.yaml"
 
 FXA_IMAGE=ghcr.io/porelli/firefox-sync:fxa-mono-v1.350.0@sha256:0ec0804fe9a021496faffd78d64ae90c014ee4fa1b0ed228451e84df30a77d73
-ADMIN_IMAGE=ghcr.io/porelli/firefox-sync:admin-213576ce106e@sha256:432aba9c2f7a5b9293cdd1fb5fed1be92f1ba4f08c83dc56a6e73d7005f96d2d
+ADMIN_IMAGE=ghcr.io/porelli/firefox-sync:admin-68ea7b80db3a@sha256:bab736d6a61e74221a44ca6f23ced3457f901dd67a8bf584a29ccdd25846c717
 SYNC_IMAGE=ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-0.25.2@sha256:e31d2d17d136f5e87ccd1c88ba6e53270c3c11d1c321d22d7d31c9ed5e3d623d
 SYNC_INIT_IMAGE=ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-0.25.1-20261124T171959@sha256:a43d7e844d66fa6cc48d7de027038b3f9029bf46c8740cbb445a7b2cab96f8d8
 PAIRING_IMAGE=ghcr.io/porelli/firefox-sync:fxa-channelserver-1.6.0@sha256:cfc3319d79ba46bdc7b32922170bbfa5ea5eec3cb6549519ac0996309f320f74
@@ -254,7 +254,7 @@ if OUT=$(guard_run "") && SQL=$(cat "$DBU_TMP/guard.sql"); then
   bad=""
   for want in "CREATE DATABASE IF NOT EXISTS ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
               "ALTER DATABASE ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;" \
-              "CREATE TABLE IF NOT EXISTS ffs.signup_allowlist (entry VARCHAR(255) PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" \
+              "CREATE TABLE IF NOT EXISTS ffs.signup_allowlist (entry VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" \
               "ALTER TABLE ffs.signup_allowlist MODIFY entry VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;"; do
     grep -qxF "$want" <<< "$SQL" || bad="$bad [$want]"
   done
@@ -480,8 +480,14 @@ PAIRING_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-pairing"] // ""' "$MANI
 [ "$PAIRING_REASON" = "An encrypted relay for pairing a phone by QR code; it can't read what it relays." ] \
   && pass "host_reasons: firefox-sync-fxa-pairing text matches" || fail "host_reasons: firefox-sync-fxa-pairing text is '$PAIRING_REASON'"
 ACCOUNTS_REASON=$(yq -r '.hosts.reasons["firefox-sync-fxa-accounts"] // ""' "$MANIFEST")
-[ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
-  && pass "host_reasons: firefox-sync-fxa-accounts text matches" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
+[ "$ACCOUNTS_REASON" = "Firefox reads the accounts configuration and a flow id (/metrics-flow) and opens the start and change-password pages without cookies; everything else on this host is behind sign-in." ] \
+  && pass "host_reasons: firefox-sync-fxa-accounts text matches (it names /metrics-flow)" || fail "host_reasons: firefox-sync-fxa-accounts text is '$ACCOUNTS_REASON'"
+# hosts_immutable (final review I1): the Sync, API and accounts hostnames,
+# which the stored data and every Firefox depend on; profile, pairing and
+# admin may change.
+IMM=$(yq -r '.hosts.immutable // [] | sort | join(" ")' "$MANIFEST")
+[ "$IMM" = "firefox-sync-fxa firefox-sync-fxa-accounts firefox-sync-fxa-api" ] \
+  && pass "hosts_immutable: exactly the Sync, accounts and API hosts" || fail "hosts_immutable: '$IMM'"
 
 # ── fxa-gate (Task 12): the Traefik-only nginx gate, static ──
 GATE_SH="$(dirname "$COMPOSE")/fxa-gate.sh"
@@ -1096,7 +1102,9 @@ fi
 # access-sync.sh against a stub mysql (prints what the database would and
 # keeps every call's argv, MYSQL_PWD and SQL), under the host's sh (dash in
 # CI; ACCESS_SYNC_SH picks another). STUB: db = the allowlist's rows,
-# noacct = emails without an account, fail = tx | calls.
+# noacct = emails without an account, fail = tx | calls | warning;
+# sweep = how many accounts the sweep would disable (default 0), sweepfail
+# = deadlock-once | missing (no such procedure).
 AS_SH="${ACCESS_SYNC_SH:-sh}"
 AS_TMP=$(mktemp -d)
 mkdir -p "$AS_TMP/bin" "$AS_TMP/stub" "$AS_TMP/state"
@@ -1115,6 +1123,24 @@ if grep -q '^START TRANSACTION;$' "$d/call.$i.sql"; then
   fi
   cat "$d/db" 2> /dev/null
   echo portcullis-access-committed
+  exit 0
+fi
+if grep -q 'disable_accounts_not_allowed' "$d/call.$i.sql"; then
+  pmax=$(sed -n 's/^CALL ffs.disable_accounts_not_allowed(\(-*[0-9]*\));$/\1/p' "$d/call.$i.sql")
+  n=$(cat "$d/sweep" 2> /dev/null || echo 0)
+  case "$(cat "$d/sweepfail" 2> /dev/null)" in
+    missing) echo "ERROR 1305 (42000) at line 1: PROCEDURE ffs.disable_accounts_not_allowed does not exist" >&2; exit 1 ;;
+    deadlock-once)
+      if [ ! -e "$d/swept-deadlock" ]; then
+        : > "$d/swept-deadlock"
+        echo "ERROR 1213 (40001) at line 1: Deadlock found when trying to get lock; try restarting transaction" >&2; exit 1
+      fi ;;
+  esac
+  if [ "$n" -gt "$pmax" ]; then
+    echo "ERROR 1644 (45001) at line 1: disable_accounts_not_allowed: $n accounts would be disabled, more than p_max $pmax" >&2; exit 1
+  fi
+  echo "$n"
+  echo portcullis-access-swept
   exit 0
 fi
 ln=0 rc=0
@@ -1162,10 +1188,18 @@ as_run() {
 }
 as_calls() { find "$AS_TMP/stub" -name 'call.*.sql' | grep -c . || true; }
 as_state() { cat "$AS_STATE" 2> /dev/null || echo "<none>"; }
-as_case() {  # $1 name, $2 want SQL of the transaction ("" = none), $3 want calls ("" = none), $4 want state, $5 output
-  local name=$1 out=$5 got_tx got_calls
+# as_file <marker>: the last stub call whose SQL holds the marker ("" = none).
+as_file() { grep -l -F -- "$1" "$AS_TMP"/stub/call.*.sql 2> /dev/null | sort -t. -k2,2n | tail -1; }
+as_case() {  # $1 name, $2 want SQL of the transaction ("" = none), $3 want calls ("" = none), $4 want state, $5 output, $6 want p_max
+  local name=$1 out=$5 got_tx got_calls cf sf
   got_tx=$( [ -f "$AS_TMP/stub/call.1.sql" ] && cat "$AS_TMP/stub/call.1.sql" || true)
-  got_calls=$( [ -f "$AS_TMP/stub/call.2.sql" ] && sed '$d' "$AS_TMP/stub/call.2.sql" || true)
+  cf=$(as_file "SELECT 'portcullis-access-calls';")
+  sf=$(as_file "SELECT 'portcullis-access-swept';")
+  got_calls=$( [ -n "$cf" ] && sed '$d' "$cf" || true)
+  [ -n "$sf" ] && [ "$(cat "$sf")" = "CALL ffs.disable_accounts_not_allowed($6);
+SELECT 'portcullis-access-swept';" ] && [ "$sf" = "$AS_TMP/stub/call.$(as_calls).sql" ] \
+    && pass "access-sync.sh: $name: the sweep last, p_max $6 (the expected non-members + 2)" \
+    || fail "access-sync.sh: $name: the sweep: ${sf:-<none>} $( [ -n "$sf" ] && tr '\n' ' ' < "$sf") (want p_max $6, the last call of $(as_calls))"
   if [ "${out##*$'\n'}" != rc=0 ]; then fail "access-sync.sh: $name: $out"; return 0; fi
   [ "$got_tx" = "$2" ] && pass "access-sync.sh: $name: the transaction's SQL" || fail "access-sync.sh: $name: transaction SQL:
 $(diff <(echo "$2") <(echo "$got_tx") || true)"
@@ -1244,14 +1278,16 @@ OUT=$(as_run "$(adoc alice=' Alice@Example.ORG ' bob=bob@example.org odd="o'neil
   bad="x y@example.org" inj="a');DROP TABLE ffs.settings;--@example.org" uni="é@example.org" ctl=$'a\tb@example.org' long="$LONG" dq='a"b@example.org')")
 as_case "first run" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT" 3
 grep -q '6 emails left out' <<< "$OUT" && pass "access-sync.sh: first run: 6 emails that aren't plain addresses left out (counted, not logged)" \
   || fail "access-sync.sh: first run: left-out count: $OUT"
-ARGV=$(cat "$AS_TMP/stub/call.1.argv" "$AS_TMP/stub/call.2.argv")
-if [ "$(head -1 "$AS_TMP/stub/call.1.argv")" = --no-defaults ] && grep -qx ffs_access <<< "$ARGV" && grep -qx -- --force "$AS_TMP/stub/call.2.argv" \
-    && ! grep -qx -- --force "$AS_TMP/stub/call.1.argv" && ! grep -q 'pw-access-unit' <<< "$ARGV" \
-    && [ "$(cat "$AS_TMP/stub/call.1.pwd")" = pw-access-unit ] && [ "$(cat "$AS_TMP/stub/call.2.pwd")" = pw-access-unit ]; then
-  pass "access-sync.sh: mysql --no-defaults as ffs_access, the password in MYSQL_PWD only (on no argv); the transaction without --force (any error ends it), the calls with"
+ARGV=$(cat "$AS_TMP/stub/call.1.argv" "$AS_TMP/stub/call.2.argv" "$AS_TMP/stub/call.3.argv")
+if [ "$(head -1 "$AS_TMP/stub/call.1.argv")" = --no-defaults ] && [ "$(head -1 "$AS_TMP/stub/call.3.argv")" = --no-defaults ] \
+    && grep -qx ffs_access <<< "$ARGV" && grep -qx -- --force "$AS_TMP/stub/call.2.argv" \
+    && ! grep -qx -- --force "$AS_TMP/stub/call.1.argv" && ! grep -qx -- --force "$AS_TMP/stub/call.3.argv" && ! grep -q 'pw-access-unit' <<< "$ARGV" \
+    && [ "$(cat "$AS_TMP/stub/call.1.pwd")" = pw-access-unit ] && [ "$(cat "$AS_TMP/stub/call.2.pwd")" = pw-access-unit ] \
+    && [ "$(cat "$AS_TMP/stub/call.3.pwd")" = pw-access-unit ]; then
+  pass "access-sync.sh: mysql --no-defaults as ffs_access, the password in MYSQL_PWD only (on no argv); the transaction and the sweep without --force (any error ends them), the calls with"
 else
   fail "access-sync.sh: mysql argv / MYSQL_PWD: $(tr '\n' ' ' <<< "$ARGV")"
 fi
@@ -1262,7 +1298,7 @@ OUT=$(as_run "$(adoc bob=bob@example.org odd="o'neil@example.org" s1=shared@exam
 as_case "leave" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT" 3
 # Every run: a routine run with nothing changed disables the non-members it
 # knows again ("no such account" ignored) and enables nobody.
 printf '%s\n' bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
@@ -1271,7 +1307,7 @@ OUT=$(as_run "$(adoc bob=bob@example.org odd="o'neil@example.org" s1=shared@exam
 as_case "routine run (no such account ignored, the leaver without one kept in the state)" "$(tx_for bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('alice@example.org');
 CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["alice@example.org","carol@example.org"]}' "$OUT" 2
 grep -q '(1 without an account)' <<< "$OUT" && pass "access-sync.sh: routine run: 'no such account' counted, not an error" \
   || fail "access-sync.sh: routine run: $OUT"
 # rejoin_enables: alice back: her row, then her account enabled.
@@ -1279,14 +1315,14 @@ OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@exa
 as_case "rejoin" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('carol@example.org');
 CALL ffs.enable_account_by_email('alice@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT" 2
 # admin_disable_survives: the next run with the same file enables nobody (a
 # member an admin disabled stays disabled).
 printf '%s\n' alice@example.org bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org" s1=shared@example.org)")
 as_case "admin_disable_survives (same file again)" "$(tx_for alice@example.org bob@example.org "o''neil@example.org" shared@example.org)" \
   "CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}' "$OUT" 2
 # A failed call (anything but "no such account") or a failed transaction:
 # exit 1, the state as it was (the next run does it all again).
 STATE1=$(as_state)
@@ -1309,7 +1345,7 @@ echo deadlock-once > "$AS_TMP/stub/fail"
 rm -f "$AS_TMP/stub/deadlocked"
 : > "$AS_TMP/stub/noacct"
 OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
-if [ "${OUT##*$'\n'}" = rc=0 ] && [ "$(as_calls)" = 3 ] && grep -q '1 calls failed (ERROR 1213 (40001)): trying again' <<< "$OUT" \
+if [ "${OUT##*$'\n'}" = rc=0 ] && [ "$(as_calls)" = 4 ] && grep -q '1 calls failed (ERROR 1213 (40001)): trying again' <<< "$OUT" \
     && [ "$(cat "$AS_TMP/stub/call.3.sql")" = "CALL ffs.disable_account_by_email('carol@example.org');
 SELECT 'portcullis-access-calls';" ] \
     && [ "$(as_state)" = '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org","shared@example.org"]}' ]; then
@@ -1317,6 +1353,57 @@ SELECT 'portcullis-access-calls';" ] \
 else
   fail "access-sync.sh: deadlock retry: $(tr '\n' ' ' <<< "$OUT"); calls $(as_calls); state $(as_state)"
 fi
+# The sweep (porelli's ffs.disable_accounts_not_allowed): after every call,
+# its count in the log; p_max = the run's expected non-members + 2.
+: > "$AS_TMP/stub/fail"
+printf '%s\n' alice@example.org bob@example.org "o'neil@example.org" > "$AS_TMP/stub/db"
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
+STATE_S=$(as_state)
+echo 1 > "$AS_TMP/stub/sweep"
+OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
+SF=$(as_file "SELECT 'portcullis-access-swept';")
+if [ "${OUT##*$'\n'}" = rc=0 ] && [ "$SF" = "$AS_TMP/stub/call.3.sql" ] && grep -q ', 1 disabled by the sweep (current primary email off the list; brake p_max 2)' <<< "$OUT" \
+    && ! grep -q '@' <<< "$OUT"; then
+  pass "access-sync.sh: sweep_after_calls: the sweep runs after the calls (p_max 2 with nobody expected), its count logged (1)"
+else
+  fail "access-sync.sh: sweep_after_calls: $(tr '\n' ' ' <<< "$OUT"); sweep file ${SF:-<none>}"
+fi
+# sweep_brake_exits_1: more than p_max would be disabled -> the sweep changes
+# nothing (the stub's 45001), the run fails at once (one sweep call, never a
+# higher p_max), the counts only in the log, the state as it was.
+echo 5 > "$AS_TMP/stub/sweep"
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
+OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org)")
+NSWEEP=$(grep -l -F 'disable_accounts_not_allowed' "$AS_TMP"/stub/call.*.sql | wc -l | tr -d ' ')
+if [ "${OUT##*$'\n'}" = rc=1 ] && [ "$NSWEEP" = 1 ] && [ "$(as_state)" = "$STATE_S" ] \
+    && [ "$(cat "$(as_file "SELECT 'portcullis-access-swept';")")" = "CALL ffs.disable_accounts_not_allowed(3);
+SELECT 'portcullis-access-swept';" ] \
+    && grep -qF "the sweep's brake refused: 5 accounts would be disabled by their current primary email, more than p_max 3 (1 expected + 2); it disabled none" <<< "$OUT" \
+    && ! grep -q '@' <<< "$OUT"; then
+  pass "access-sync.sh: sweep_brake_exits_1: 5 > p_max 3 (1 expected + 2): exit 1 after one sweep call (no retry, no higher p_max), counts only, the state unchanged"
+else
+  fail "access-sync.sh: sweep_brake_exits_1: $(tr '\n' ' ' <<< "$OUT"); sweeps $NSWEEP; state $(as_state)"
+fi
+# A deadlocked sweep is tried again with the same p_max; one that keeps
+# failing (no such procedure: an image without it) is exit 1 after 3 tries.
+echo 0 > "$AS_TMP/stub/sweep"
+echo deadlock-once > "$AS_TMP/stub/sweepfail"
+rm -f "$AS_TMP/stub/swept-deadlock"
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
+OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
+NSWEEP=$(grep -l -F 'CALL ffs.disable_accounts_not_allowed(2);' "$AS_TMP"/stub/call.*.sql | wc -l | tr -d ' ')
+[ "${OUT##*$'\n'}" = rc=0 ] && [ "$NSWEEP" = 2 ] && grep -q 'the sweep failed (ERROR 1213 (40001)): trying again' <<< "$OUT" \
+  && pass "access-sync.sh: a deadlocked sweep is tried again with the same p_max (2), then the run is applied" \
+  || fail "access-sync.sh: sweep deadlock: $(tr '\n' ' ' <<< "$OUT"); sweeps with p_max 2: $NSWEEP"
+echo missing > "$AS_TMP/stub/sweepfail"
+printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
+OUT=$(as_run "$(adoc alice=alice@example.org bob=bob@example.org odd="o'neil@example.org")")
+NSWEEP=$(grep -l -F 'disable_accounts_not_allowed' "$AS_TMP"/stub/call.*.sql | wc -l | tr -d ' ')
+[ "${OUT##*$'\n'}" = rc=1 ] && [ "$NSWEEP" = 3 ] && [ "$(as_state)" = "$STATE_S" ] && grep -q 'the sweep still failed after 3 tries (ERROR 1305 (42000))' <<< "$OUT" \
+  && pass "access-sync.sh: a sweep that keeps failing (no such procedure): 3 tries, exit 1, the state unchanged" \
+  || fail "access-sync.sh: sweep missing: $(tr '\n' ' ' <<< "$OUT"); sweeps $NSWEEP; state $(as_state)"
+rm -f "$AS_TMP/stub/sweepfail" "$AS_TMP/stub/sweep"
+printf '%s\n' alice@example.org bob@example.org "o'neil@example.org" shared@example.org > "$AS_TMP/stub/db"
 printf '{"version":1,"listed":["alice@example.org","bob@example.org","o'"'"'neil@example.org","shared@example.org"],"removed":["carol@example.org"]}\n' > "$AS_STATE"
 echo tx > "$AS_TMP/stub/fail"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
@@ -1335,19 +1422,19 @@ CALL ffs.disable_account_by_email('bob@example.org');
 CALL ffs.disable_account_by_email('carol@example.org');
 CALL ffs.disable_account_by_email('o''neil@example.org');
 CALL ffs.disable_account_by_email('shared@example.org');" \
-  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","carol@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT"
+  '{"version":1,"listed":[],"removed":["alice@example.org","bob@example.org","carol@example.org","o'"'"'neil@example.org","shared@example.org"]}' "$OUT" 6
 # state_lost_still_disables: no state, carol's row in the database only.
 rm -f "$AS_STATE"
 : > "$AS_TMP/stub/noacct"
 printf '%s\n' bob@example.org carol@example.org > "$AS_TMP/stub/db"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
 as_case "state_lost_still_disables" "$(tx_for bob@example.org)" "CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org"],"removed":["carol@example.org"]}' "$OUT" 3
 # An unreadable state is no state (from the database alone), never a stop.
 echo garbage > "$AS_STATE"
 OUT=$(as_run "$(adoc bob=bob@example.org)")
 as_case "an unreadable state" "$(tx_for bob@example.org)" "CALL ffs.disable_account_by_email('carol@example.org');" \
-  '{"version":1,"listed":["bob@example.org"],"removed":["carol@example.org"]}' "$OUT"
+  '{"version":1,"listed":["bob@example.org"],"removed":["carol@example.org"]}' "$OUT" 3
 grep -q 'the state file is unreadable' <<< "$OUT" && pass "access-sync.sh: an unreadable state is reported" || fail "access-sync.sh: unreadable state: $OUT"
 [ "$(find "$AS_TMP/state" -name 'applied.json' -perm 0600 | wc -l | tr -d ' ')" = 1 ] && [ -z "$(find "$AS_TMP/state" -name '.applied*')" ] \
   && pass "access-sync.sh: the state file is 0600, no temporary file left" || fail "access-sync.sh: state file mode / leftovers: $(ls -la "$AS_TMP/state")"
@@ -1614,6 +1701,29 @@ for p in /accounts/0123/disable /users/0123/delete /connect /sync/allowlistx /ac
 done
 [ -z "$bad" ] && pass "admin_forms_403: the admin UI's sign-up and allowlist forms (and their confirmation pages) answer 403 at the gate, every spelling; its other pages pass" \
   || fail "admin_forms_403:$bad"
+# admin_confirm_403 (final review I2): Confirm email and Confirm this sign-in
+# (porelli/firefox-sync 68ea7b8 admin/web.go: POST /accounts/{uid}/confirm-email,
+# its page GET /accounts/{uid}/confirm-email, POST and GET
+# /users/{uid}/sessions/{ref}/confirm) answer the gate's 403, every spelling;
+# the account's other actions and pages still pass.
+bad=""
+CONFIRM_403="fxa-gate: an account's email is proven only by the code sent to it: the admin UI can't confirm an email or a sign-in
+ [403]"
+for p in /accounts/0123/confirm-email /accounts/0123/confirm-email/ /accounts/0123/Confirm-Email //accounts/0123/confirm-email \
+         /accounts/0123/confirm%2Demail /ACCOUNTS/0123/confirm-email /users/0123/sessions/ab12/confirm /users/0123/sessions/ab12/confirm/ \
+         /Users/0123/Sessions/ab12/CONFIRM /users//0123/sessions/ab12/confirm /users/0123/sessions/ab12/%63onfirm; do
+  for m in POST GET; do
+    OUT=$(gt $T_IP -X $m -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+    [ "$OUT" = "$CONFIRM_403" ] || bad="$bad $m:$p->$OUT"
+  done
+done
+for p in /accounts/0123/disable /accounts/0123/enable /accounts/0123/sign-out-all /users/0123/sessions/ab12/sign-out \
+         /accounts/0123/confirm-emailx /users/0123/sessions/ab12/confirmx /users/0123; do
+  OUT=$(gt $T_IP -o /dev/null -X POST -H "Host: $GH_ADMIN" -H 'X-Auth-Request-Groups: admin_firefox-sync-fxa' "$G$p")
+  [ "$OUT" = " [200]" ] || bad="$bad other:$p->$OUT"
+done
+[ -z "$bad" ] && pass "admin_confirm_403: the admin UI's Confirm email and Confirm this sign-in (forms and pages) answer the gate's 403, every spelling; disable, enable, sign-out and the account page pass" \
+  || fail "admin_confirm_403:$bad"
 OUT=$(gt $T_IP -o /dev/null -H 'Host: other.fxa-gate.test' "$G/")
 [ "$OUT" = " [421]" ] && pass "gate_routes: an unknown host -> 421" || fail "gate_routes: unknown host: $OUT"
 OUT=$(gt $T_IP -o /dev/null -H "Host: $GH_ACC" -H "Cookie: $(printf '_oauth2_proxy_%s=x; ' 1 2 3 4 5 6 7)" "$G/")
@@ -1643,6 +1753,21 @@ OUT=$(docker run --rm --network none "${GATE_RUN[@]}" "${GATE_ENV[@]}" -e "GATE_
 case "$OUT" in *"exit=1 "*) case "$OUT" in *"fxa-gate: "*) ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac ;; *) bad="$bad [a control character in the group: $OUT]" ;; esac
 [ -z "$bad" ] && pass "gate_fails_closed: a bad source range, hostname, duplicate host, admin group or port stops the gate (exit 1, nginx never starts)" \
   || fail "gate_fails_closed:$bad"
+# gate_logs_no_query (final review M3): the account pages' mail links carry
+# codes and tokens in the query. A refused peer (deny: an error-level line)
+# and an upstream that is down (a 502: an error-level line) leave nothing in
+# the gate's log that names the request: no access log, the error log at
+# crit.
+docker stop "$GT-pairing" > /dev/null 2>&1 || true
+PROBE="fxa-gate-log-probe-$$"
+OUT1=$(gt 10.254.78.3 -o /dev/null -H "Host: $GH_ACC" "$G/complete_reset_password?token=$PROBE&code=$PROBE")
+OUT2=$(gt $T_IP -o /dev/null -H "Host: $GH_PAIR" "$G/v1/ws/?code=$PROBE")
+GLOG=$(docker logs "$GT-gate" 2>&1 || true)
+if [ "$OUT1" = " [403]" ] && [ "${OUT2#* }" != "[200]" ] && ! grep -qF "$PROBE" <<< "$GLOG" && ! grep -q 'request: "' <<< "$GLOG"; then
+  pass "gate_logs_no_query: a refused peer ($OUT1) and an upstream that is down ($OUT2) leave no request line or query in the gate's log"
+else
+  fail "gate_logs_no_query: $OUT1 / $OUT2; the log: $(grep -c . <<< "$GLOG") lines, probe $(grep -cF "$PROBE" <<< "$GLOG" || true), request lines $(grep -c 'request: "' <<< "$GLOG" || true)"
+fi
 docker rm -f "$GT-main" "$GT-pairing" "$GT-gate" > /dev/null 2>&1 || true
 docker network rm "$GT_NET" > /dev/null 2>&1 || true
 
@@ -2809,6 +2934,24 @@ for form in "${FORMS[@]}"; do
   [ "${OUT%% *}" = 403 ] && pass "allowlist_read_only: POST $1 through the gate -> 403 (signed-in admin, valid CSRF token)" \
     || fail "allowlist_read_only: POST $1 through the gate -> ${OUT:0:120} (want 403)"
 done
+# admin_confirm_403 (final review I2), live: the signed-in admin with a
+# valid CSRF token gets the gate's 403 for Confirm email and Confirm this
+# sign-in (form and page) on a real account; the account is unchanged.
+SESS_REF=$(printf '%s' "$FXA_UID" | sha256sum | cut -c1-64)
+ACCT_BEFORE=$(printf "SELECT CONCAT(emailVerified, ':', IFNULL(disabledAt, 'x')) FROM fxa.accounts WHERE uid = UNHEX('%s');\n" "$FXA_UID" | mysql_root 2>&1)
+bad=""
+for req in "POST /accounts/$FXA_UID/confirm-email" "GET /accounts/$FXA_UID/confirm-email" \
+           "POST /users/$FXA_UID/sessions/$SESS_REF/confirm" "GET /users/$FXA_UID/sessions/$SESS_REF/confirm"; do
+  set -- $req
+  if [ "$1" = POST ]; then OUT=$(ag "$ADMIN_GROUP_M" -d "csrf=$CSRF&sessions=$SESS_REF" "http://10.254.79.20:8080$2")
+  else OUT=$(ag "$ADMIN_GROUP_M" "http://10.254.79.20:8080$2"); fi
+  [ "$OUT" = "403 fxa-gate: an account's email is proven only by the code sent to it: the admin UI can't confirm an email or a sign-in " ] \
+    || bad="$bad [$1 ${2%%/*}…: ${OUT:0:120}]"
+done
+ACCT_AFTER=$(printf "SELECT CONCAT(emailVerified, ':', IFNULL(disabledAt, 'x')) FROM fxa.accounts WHERE uid = UNHEX('%s');\n" "$FXA_UID" | mysql_root 2>&1)
+[ -z "$bad" ] && [ -n "$ACCT_BEFORE" ] && [ "$ACCT_BEFORE" = "$ACCT_AFTER" ] \
+  && pass "admin_confirm_403: through the gate, Confirm email and Confirm this sign-in (POST and their pages) -> the gate's 403 for the signed-in admin (valid CSRF token); the account unchanged" \
+  || fail "admin_confirm_403 (live):$bad; account $ACCT_BEFORE -> $ACCT_AFTER"
 docker rm -f "$AG" > /dev/null 2>&1 || true
 docker network disconnect "$AG_NET" "$PROBE_C" > /dev/null 2>&1 || true
 docker network rm "$AG_NET" > /dev/null 2>&1 || true
@@ -2882,6 +3025,7 @@ for stmt in "INSERT INTO ffs.signup_allowlist (entry) VALUES ('fxa-admin-test@$D
             "UPDATE ffs.settings SET value = '0' WHERE name = 'max_accounts'" \
             "CALL ffs.disable_account_by_email('$SYNC_USER')" \
             "CALL ffs.delete_account_by_email('$SYNC_USER')" \
+            "CALL ffs.disable_accounts_not_allowed(0)" \
             "SELECT authSalt FROM fxa.accounts LIMIT 1" \
             "SELECT count(*) FROM fxa.sessionTokens" \
             "UPDATE fxa.accounts SET disabledAt = 1" \
@@ -3033,6 +3177,9 @@ acct() {  # $1 email -> <accounts>:<disabled 1/0, x = none>:<email verified, x =
 }
 accounts_state() { echo "SELECT COALESCE(GROUP_CONCAT(CONCAT(normalizedEmail, '=', disabledAt IS NOT NULL) ORDER BY normalizedEmail), '') FROM fxa.accounts;" | mysql_root 2>&1; }
 access_state() { docker exec "$ACCESS_C" cat /state/applied.json 2>/dev/null || echo "<none>"; }
+ffs_access_sql() {  # SQL on stdin, as ffs_access (its password through the environment)
+  MYSQL_PWD="$FXA_ACCESS_DB_PASSWORD" docker exec -i -e MYSQL_PWD "$DB_C" mysql -uffs_access -h127.0.0.1 --protocol=tcp -N -B 2>&1
+}
 FXA_PASSWORD=$(openssl rand -hex 16)
 [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$FXA_PASSWORD"
 export FXA_PASSWORD
@@ -3146,6 +3293,56 @@ hook_ok "rejoin_enables" membership_change || true
 [ "$(allowlist)" = "$ALICE,$BOB" ] && [ "$(acct "$ALICE")" = "1:0:1" ] \
   && pass "rejoin_enables: $ALICE listed again and her account enabled (disabledAt NULL)" \
   || fail "rejoin_enables: the allowlist '$(allowlist)', $ALICE $(acct "$ALICE")"
+
+# email_changed_in_fxa_swept (porelli/firefox-sync 68ea7b8's sweep): alice, a
+# member, gets another primary email behind fxa-gate's back (stand-in: root
+# updates her fxa.emails row; fxa.accounts keeps the sign-up email, so the
+# procedures by email still find her as $ALICE). The sweep decides by the
+# current primary email: as ffs_access its brake first (p_max 0 -> SQLSTATE
+# 45001, nothing changed; NULL -> 45000), then a routine run of the hook
+# disables her and ends her live session; she stays listed. The admin UI's
+# Enable asks the same rule (refused while her primary email is off the
+# list, allowed once it is back), and later runs keep her enabled.
+ALICE_ELSE=alice-elsewhere@example.org
+OUT=$(acc_client session "$ALICE" || true)
+[ "$(jget "$OUT" .saved)" = true ] && [ "$(jget "$(acc_client session-status "$ALICE" || true)" .http)" = 200 ] \
+  || fail "email_changed_in_fxa_swept: $ALICE's sign-in for a live session: $(redact "$OUT"); $(signup_diag)"
+primary_of() { printf "SELECT COALESCE(GROUP_CONCAT(normalizedEmail), '') FROM fxa.emails WHERE uid = UNHEX('%s') AND isPrimary = 1;\n" "$1" | mysql_root 2>&1; }
+set_primary() {  # $1 uid, $2 email -> rows changed
+  printf "UPDATE fxa.emails SET email = '%s', normalizedEmail = '%s' WHERE uid = UNHEX('%s') AND isPrimary = 1; SELECT ROW_COUNT();\n" "$2" "$2" "$1" | mysql_root 2>&1
+}
+CH=$(set_primary "$ALICE_UID" "$ALICE_ELSE")
+if [ "$CH" = 1 ] && [ "$(primary_of "$ALICE_UID")" = "$ALICE_ELSE" ] && [ "$(acct "$ALICE")" = "1:0:1" ]; then
+  pass "email_changed_in_fxa_swept: $ALICE's primary email is now $ALICE_ELSE (fxa.emails), her sign-up email unchanged (fxa.accounts), still enabled"
+else
+  fail "email_changed_in_fxa_swept: the stand-in change: rows $CH, primary $(primary_of "$ALICE_UID"), $ALICE $(acct "$ALICE")"
+fi
+OUT=$(ffs_access_sql <<< "CALL ffs.disable_accounts_not_allowed(0);" || true)
+grep -qx 'ERROR 1644 (45001) at line 1: disable_accounts_not_allowed: 1 accounts would be disabled, more than p_max 0' <<< "$OUT" && [ "$(acct "$ALICE")" = "1:0:1" ] \
+  && pass "sweep_brake: as ffs_access, p_max 0 with 1 to disable -> ERROR 1644 (45001) '$(sed 's/^ERROR [^:]*: //' <<< "$OUT")'; nothing disabled" \
+  || fail "sweep_brake: p_max 0: $OUT; $ALICE $(acct "$ALICE")"
+OUT=$(ffs_access_sql <<< "CALL ffs.disable_accounts_not_allowed(NULL);" || true)
+grep -q '^ERROR 1644 (45000)' <<< "$OUT" && [ "$(acct "$ALICE")" = "1:0:1" ] \
+  && pass "sweep_brake: a NULL p_max -> SQLSTATE 45000, nothing disabled" || fail "sweep_brake: NULL p_max: $OUT; $ALICE $(acct "$ALICE")"
+OUT=$(ffs_admin_sql <<< "CALL ffs.enable_account(UNHEX('$ALICE_UID'));" || true)
+grep -q '^ERROR 1644 (45000).*: not on the access list managed elsewhere' <<< "$OUT" \
+  && pass "email_changed_in_fxa_swept: the admin UI's ffs.enable_account asks her current primary email ($ALICE_ELSE, off the list): refused" \
+  || fail "email_changed_in_fxa_swept: ffs_admin's enable with the primary email off the list: $OUT"
+SWEEP_OUT=$(access_hook start)
+printf '%s\n' "$SWEEP_OUT" | sed '$d' | grep -q 'access-sync: applied' && HOOK_OK_N=$((HOOK_OK_N + 1))
+if [ "${SWEEP_OUT##*$'\n'}" = rc=0 ] && grep -q ', 1 disabled by the sweep (current primary email off the list; brake p_max 2)' <<< "$SWEEP_OUT" \
+    && [ "$(acct "$ALICE")" = "1:1:1" ] && [ "$(allowlist)" = "$ALICE,$BOB" ] && [ "$(acct "$BOB")" = "1:0:1" ] \
+    && [ "$(jget "$(acc_client session-status "$ALICE" || true)" .http)" = 401 ]; then
+  pass "email_changed_in_fxa_swept: a routine run's sweep disabled $ALICE (1 disabled, p_max 2) and ended her session (401); she stays listed, $BOB untouched"
+else
+  fail "email_changed_in_fxa_swept: $(tr '\n' ' ' <<< "$SWEEP_OUT"); $ALICE $(acct "$ALICE"), $BOB $(acct "$BOB"), the allowlist '$(allowlist)'"
+fi
+CH=$(set_primary "$ALICE_UID" "$ALICE")
+OUT=$(ffs_admin_sql <<< "CALL ffs.enable_account(UNHEX('$ALICE_UID'));" || true)
+hook_ok "email_changed_in_fxa_swept" membership_change || true
+[ "$CH" = 1 ] && ! grep -qi error <<< "$OUT" && [ "$(acct "$ALICE")" = "1:0:1" ] \
+  && pass "email_changed_in_fxa_swept: her primary email back on the list, the admin UI's Enable works again and the next run's sweep keeps her enabled" \
+  || fail "email_changed_in_fxa_swept: restored (rows $CH): enable '$OUT', $ALICE $(acct "$ALICE")"
 
 # admin_disable_survives: an admin disables bob, who stays listed: routine
 # runs (either trigger, the file unchanged) leave him disabled.
@@ -3305,9 +3502,10 @@ GRANTS=$(printf '%s\n' "SELECT CONCAT('global ', PRIVILEGE_TYPE) FROM informatio
   | mysql_root 2>&1 | LC_ALL=C sort)
 WANT_GRANTS=$(printf '%s\n' "global USAGE" \
   "routine ffs.disable_account_by_email PROCEDURE Execute" "routine ffs.enable_account_by_email PROCEDURE Execute" \
+  "routine ffs.disable_accounts_not_allowed PROCEDURE Execute" \
   "table ffs.signup_allowlist DELETE" "table ffs.signup_allowlist INSERT" "table ffs.signup_allowlist SELECT" | LC_ALL=C sort)
 if [ "$GRANTS" = "$WANT_GRANTS" ]; then
-  pass "ffs_access_grants: exactly SELECT, INSERT, DELETE on ffs.signup_allowlist and EXECUTE on ffs.disable_account_by_email / enable_account_by_email (no delete_account_by_email; no global, schema, column, role, proxy or grant option)"
+  pass "ffs_access_grants: exactly SELECT, INSERT, DELETE on ffs.signup_allowlist and EXECUTE on ffs.disable_account_by_email / enable_account_by_email / disable_accounts_not_allowed (the sweep; no delete_account_by_email; no global, schema, column, role, proxy or grant option)"
 else
   fail "ffs_access_grants: differ:
 $(diff <(echo "$WANT_GRANTS") <(echo "$GRANTS") || true)"
@@ -3316,15 +3514,12 @@ ACC_USERS=$(echo "SELECT CONCAT(COUNT(*), ':', COALESCE(GROUP_CONCAT(Host), ''))
 [ "$ACC_USERS" = "1:%" ] && pass "ffs_access_grants: one ffs_access account only ('ffs_access'@'%')" \
   || fail "ffs_access_grants: ffs_access accounts: $ACC_USERS"
 SHOWN=$(printf '%s\n' "SHOW GRANTS FOR 'ffs_access'@'%';" | mysql_root 2>&1)
-if [ "$(grep -c . <<< "$SHOWN")" = 4 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
+if [ "$(grep -c . <<< "$SHOWN")" = 5 ] && ! grep -q 'GRANT OPTION' <<< "$SHOWN" \
     && ! grep -vqE '^GRANT .+ ON .+ TO `ffs_access`@`%`$' <<< "$SHOWN"; then
-  pass "ffs_access_grants: SHOW GRANTS: 4 GRANT ... ON lines (USAGE, the table, the two procedures), no role, no WITH GRANT OPTION"
+  pass "ffs_access_grants: SHOW GRANTS: 5 GRANT ... ON lines (USAGE, the table, the three procedures), no role, no WITH GRANT OPTION"
 else
   fail "ffs_access_grants: SHOW GRANTS: $(tr '\n' ';' <<< "$SHOWN")"
 fi
-ffs_access_sql() {  # SQL on stdin, as ffs_access (its password through the environment)
-  MYSQL_PWD="$FXA_ACCESS_DB_PASSWORD" docker exec -i -e MYSQL_PWD "$DB_C" mysql -uffs_access -h127.0.0.1 --protocol=tcp -N -B 2>&1
-}
 for stmt in "UPDATE ffs.signup_allowlist SET entry = 'x@example.org'" \
             "TRUNCATE ffs.signup_allowlist" \
             "SELECT value FROM ffs.settings" \

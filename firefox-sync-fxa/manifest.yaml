@@ -48,10 +48,13 @@ auth:
     - Open to the internet, because Firefox calls them in the background without cookies: `firefox-sync-fxa-api.<domain>` (the accounts API), `firefox-sync-fxa-profile.<domain>` (profiles and avatars), `firefox-sync-fxa.<domain>` (Sync storage, each request signed with the account's own keys) and `firefox-sync-fxa-pairing.<domain>` (an encrypted relay for pairing a phone by QR code).
     - On the accounts host, the start page `/`, `/.well-known/fxa-client-configuration`, `/.well-known/change-password` and `/metrics-flow` stay open too: Firefox reads them before anyone has signed in.
     - Every open host is rate-limited; creating an account and getting a Sync token have a stricter limit.
+    - **The Sync, API and accounts hostnames are fixed** once the instance exists. The Sync data depends on them: the Sync server keeps every account as `<account id>@<API host>` on its node, the Sync host, and every Firefox keeps the accounts and API addresses it was set up with. A new name would leave every Sync store behind and every Firefox calling the old addresses. The profile, pairing and admin hostnames can change. A change of Portcullis's main domain moves none of the instance's hostnames. A restore into a new instance id keeps the archive's fixed hostnames, so the old instance must be gone first; the other three get the new id's own. Other fixed hostnames mean a new instance, with new accounts.
 
     **Who may have an account:** the members of the instance's access group with a **verified** Portcullis email. Each person verifies their email with a code sent to it (this needs the server's mail provider): verify it on your People page. An admin can also mark someone else's email verified there. A member without a verified email can't sign up: no verified email, no account. `fxa-access-sync` writes the verified emails to the sign-up list at every start and whenever the group changes.
 
-    - Someone who leaves the group, or whose email changes or stops being verified, is taken off the list. Their account is disabled and signed out everywhere. Tokens Firefox already holds can keep working for up to about 1 h.
+    - Someone who leaves the group, or whose email changes or stops being verified, is taken off the list. Their account is disabled and signed out everywhere. Firefox can keep syncing for up to about 2 hours after that: the sign-out can't take back an access token Firefox already holds (it lasts up to 60 minutes), and the Sync token Firefox gets for it lasts another hour.
+    - Every run also disables and signs out any enabled account whose **current** primary email isn't on the list. An account's email can't be changed here, but if one was changed some other way, this catches it.
+    - That sweep has a brake: if it would disable more accounts than the run expects (the people who left, plus 2), it disables none. The run is then reported as failed with the numbers only, and isn't tried with a higher limit. Check the accounts in the admin UI.
     - When they come back, their account is enabled again, even one an admin disabled before the person left.
     - An account an admin disables stays disabled while its owner stays in the group: routine runs never enable it.
     - If the list delivered by Portcullis can't be read, nothing changes and the run is reported as failed.
@@ -59,7 +62,8 @@ auth:
     **Admin UI** (porelli/firefox-sync's admin UI), for the instance's **admin group** only. Others get 403 at the gateway, members of the access group included. After the Portcullis sign-in, the admin UI signs in by OpenID Connect with Portcullis's Keycloak (client `firefox-sync-fxa-admin`, redirect URI exactly `https://<admin host>/auth/callback`), which admits only the admin group (`admin_firefox-sync-fxa`, from the `groups` claim, never by email). There is no password sign-in.
 
     - **Portcullis decides who may sign up and sync, not the admin UI** (*access managed elsewhere*): the sign-up policy, its allowlist, invitations, the account cap and Sync's max users are shown read-only, and their forms answer 403. The account cap is the instance setting **Maximum accounts**.
-    - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. **Enable refuses an account whose email isn't on the list** ("not on the access list managed elsewhere"). **Deleting an account leaves the list alone**, so a member whose account was deleted can sign up again.
+    - Kept for incidents: monitoring, the event log, account pages and notes, per-account sign-out, disable and enable, deleting an account, and the Sync data tools. **Enable refuses an account whose current primary email isn't on the list** ("not on the access list managed elsewhere"). **Deleting an account leaves the list alone**, so a member whose account was deleted can sign up again.
+    - **Confirm email and Confirm this sign-in are refused** (403 at the gateway). Only the code sent to the address proves an account's email, so an admin can't vouch for one. Someone who signed up with a member's address, or signed in with a stolen password, would get in without that mailbox.
     - Its Connect a device page shows the Firefox setup below with this server's values.
 
     **Mail:** the sign-up and sign-in codes go out through the server's mail provider (Settings, Mail) by default, at most 10 messages a minute and 60 an hour; or through another SMTP server (the instance's Mail settings). Without either, the accounts server doesn't start, and `fxa-mail-check` says why.
@@ -70,6 +74,7 @@ auth:
     **What's refused, and why:**
 
     - **Adding a second email or changing an account's email** is refused at the gateway (403). An account's email is its Portcullis email, and access follows that email.
+    - **Confirming an email or a sign-in in the admin UI** is refused at the gateway (403): only the code sent to the address counts.
     - **Passwordless sign-in and Google or Apple sign-in** are refused (403). Every account is created through the sign-up gate, which checks the list.
     - **Email addresses that aren't plain ASCII** are refused by the accounts database. Emails are compared byte for byte, so a look-alike address (an accent or a full-width letter) never matches a member's. An existing account with such an email is disabled and signed out at every start.
 
@@ -89,13 +94,22 @@ auth:
 mail_sender:
   label: Firefox accounts
 
+# The hostnames the stored data depends on (the Hub refuses to change them
+# once the instance exists; validate.py's IMMUTABLE_HOSTS keeps them here):
+# the Sync host (the tokenserver's node URL, SYNC_TOKENSERVER__INIT_NODE_URL:
+# every Sync user's data is on that node), the API host (the tokenserver
+# keys each user as <fxa uid>@<API host>, SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN;
+# the OAuth ISSUER; Firefox keeps the API URL it discovered) and the
+# accounts host (Firefox's identity.fxaccounts.autoconfig.uri, the OpenID
+# issuer). Profile, pairing and admin stay changeable.
 hosts:
+  immutable: [firefox-sync-fxa, firefox-sync-fxa-api, firefox-sync-fxa-accounts]
   reasons:
     firefox-sync-fxa: "Firefox syncs in the background, without cookies; each request is signed with the account's own keys."
     firefox-sync-fxa-api: "Firefox and the account pages call the accounts API in the background, without cookies; the sign-up list decides who may create an account."
     firefox-sync-fxa-profile: "Firefox loads account profiles and avatars in the background, without cookies."
     firefox-sync-fxa-pairing: "An encrypted relay for pairing a phone by QR code; it can't read what it relays."
-    firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
+    firefox-sync-fxa-accounts: "Firefox reads the accounts configuration and a flow id (/metrics-flow) and opens the start and change-password pages without cookies; everything else on this host is behind sign-in."
 
 # Who may have an account: the access group's verified emails (option
 # access_email), delivered to fxa-access-sync, whose hook (access-sync.sh)

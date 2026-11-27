@@ -23,8 +23,9 @@
 #                internal:1112 with the prefix stripped
 #   sync      -> firefox-sync-fxa-internal:8000 (bodies up to 10 MB)
 #   admin     -> ffs-admin-internal:8080, only for the instance's admin
-#                group (below); the admin UI's sign-up and allowlist forms
-#                answer 403 here
+#                group (below); the admin UI's sign-up and allowlist forms,
+#                and its Confirm email / Confirm this sign-in, answer 403
+#                here
 #   pairing   -> fxa-pairing-internal:8000 (websockets: the only host that
 #                passes an Upgrade; elsewhere one is 400)
 #   any other -> 421
@@ -52,6 +53,14 @@
 # cookies included; the browser sends them to every host of the domain) are
 # removed on every host; a Cookie header that still names one after six
 # passes is refused (400).
+#
+# Logs: no access log, and the error log at crit only. nginx's error lines
+# carry the request line with its query ("request: \"GET /...?...\""), and
+# the account pages' mail links carry codes and tokens in the query
+# (/complete_reset_password?token=&code=, /report_signin?unblockCode=,
+# /verify_secondary_email?code=); an upstream connect failure or a deny is
+# logged at error, so below crit nothing with a request line is written.
+# The services' own logs and health checks say when an upstream is down.
 #
 # Upstreams: names that /etc/hosts carries (Kubernetes: the alias Services'
 # stable cluster addresses, hostAliases) are resolved once at start; any
@@ -195,10 +204,11 @@ EOF
 cat > "$run/nginx.conf" << EOF
 worker_processes 1;
 pid $run/nginx.pid;
-error_log stderr warn;
+error_log stderr crit;
 events { worker_connections 1024; }
 http {
   access_log off;
+  log_not_found off;
   server_tokens off;
   # The gate's own refusals (return ... "text") say who refused.
   default_type text/plain;
@@ -318,6 +328,15 @@ $(proxy 1 0)
   # The admin UI: the admin group only; access is managed elsewhere, so its
   # sign-up and allowlist forms (and their confirmation pages) are refused
   # here too (the admin UI and ffs_admin's grants refuse them underneath).
+  # So are Confirm email (POST /accounts/{uid}/confirm-email, its page GET
+  # /accounts/{uid}/confirm-email: ffs.confirm_email) and Confirm this
+  # sign-in (POST and GET /users/{uid}/sessions/{ref}/confirm:
+  # ffs.confirm_session), porelli/firefox-sync 68ea7b8 admin/web.go: an
+  # account's email is its member's verified Portcullis email, proven only by
+  # the code sent to it, so an admin can't vouch for one (someone who signed
+  # up with a member's address, or a sign-in with a phished password, would
+  # get in without the mailbox). The admin UI has no other route that marks
+  # an email or a sign-in verified (/security/unblock lifts a rate limit).
   server {
     listen ${GATE_LISTEN};
     server_name ${GATE_HOST_ADMIN};
@@ -327,6 +346,9 @@ $(proxy 0 0)
     set \$pc_managed "fxa-gate: who may sign up and sync is managed in Portcullis, not in the admin UI\\n";
     location ~* ^/accounts/(signups|max-accounts|invite|allowlist/remove)/*\$ { return 403 "\$pc_managed"; }
     location ~* ^/sync/(max-users/*\$|allowlist(/|\$)) { return 403 "\$pc_managed"; }
+    location ~* ^/(accounts/[^/]+/confirm-email|users/[^/]+/sessions/[^/]+/confirm)/*\$ {
+      return 403 "fxa-gate: an account's email is proven only by the code sent to it: the admin UI can't confirm an email or a sign-in\\n";
+    }
     location / { proxy_pass \$pc_up; }
   }
 

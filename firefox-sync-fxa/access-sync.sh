@@ -14,6 +14,25 @@
 #   joins    = new - db -> inserted (every member's row made sure of)
 #   rejoins  = new & state.removed -> ffs.enable_account_by_email
 #   state    = {listed: new, removed: (state.removed + leaves) - new}
+#   then the sweep: CALL ffs.disable_accounts_not_allowed(p_max), with
+#     p_max = |(db + state.listed) - new| + 2
+#
+# The CALLs by email find an account by the email it signed up with
+# (fxa.accounts keeps it; a change of the primary email touches fxa.emails
+# only). The sweep (porelli/firefox-sync's, access managed elsewhere)
+# decides by each enabled account's CURRENT primary email: it disables and
+# signs out every enabled account whose primary email the allowlist no
+# longer allows (one whose email was changed behind fxa-gate's back, an
+# account made by another path). It runs last, after the allowlist's commit
+# and the enables, so an account enabled here whose primary email is off the
+# list is disabled again (ffs.enable_account's rule). p_max, its brake, is
+# the number of accounts this run itself expects to be of non-members (the
+# rows and the last run's members that aren't members now; the CALLs by
+# email have usually disabled them already) plus a margin of 2: if more
+# would be disabled, the sweep refuses (SQLSTATE 45001) and changes
+# nothing, and the run fails with the counts only; it is never tried again
+# with a higher p_max (an allowlist the policy reads wrongly, or accounts
+# nobody expected, are for an admin to look at).
 #
 # Every run (start and membership_change) disables every account of a
 # non-member it knows of, not only on a transition; "no such account" is
@@ -27,13 +46,15 @@
 # ^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+$ (at most 254 characters), its
 # quotes doubled; one that doesn't is left out (that person is no member
 # here). The allowlist changes are one transaction; the accounts are then
-# disabled / enabled one CALL each (porelli's procedures commit by
-# themselves: sign_out_all starts its own transaction). The state is written
-# atomically after both, so a failed run is redone in full by the next.
+# disabled / enabled one CALL each, then swept (porelli's procedures commit
+# by themselves: sign_out_all starts its own transaction, the sweep commits
+# each account it disables). The state is written atomically after all of
+# them, so a failed run is redone in full by the next.
 #
 # Exit 0: applied. Exit 1: refused or failed: before the transaction
 # nothing changed; after it the allowlist is applied and a disable / enable
-# failed 3 times (the next run redoes them). Logs counts only, never an email or a password. The
+# or the sweep failed 3 times, or the sweep's brake refused (the next run
+# redoes them). Logs counts only, never an email or a password. The
 # password reaches mysql only through MYSQL_PWD (the service's environment),
 # never argv.
 #
@@ -332,6 +353,38 @@ ndis=$(grep -c '' "$work/leaves")
 noacct_dis=$(grep -c '^D ' "$work/noacct")
 noacct_en=$(grep -c '^E ' "$work/noacct")
 
+# ── the sweep: every enabled account whose current primary email the
+# allowlist refuses, at most p_max of them (else none: its brake). A brake
+# refusal is final for this run; another failure (a deadlock, a lost
+# connection) is tried again with the same p_max, up to ACCESS_TRIES times
+# in all (it is idempotent: what it disabled stays disabled) ──
+SWEEP_MARGIN=2
+expected=$(sort -u "$work/db" "$work/listed" | comm -23 - "$work/new" | grep -c '')
+p_max=$((expected + SWEEP_MARGIN))
+BRAKE_RE='^ERROR 1644 \(45001\) at line [0-9]+: disable_accounts_not_allowed: [0-9]+ accounts would be disabled, more than p_max [0-9]+$'
+printf "CALL ffs.disable_accounts_not_allowed(%d);\nSELECT 'portcullis-access-swept';\n" "$p_max" > "$work/sweep.sql"
+try=1
+while :; do
+  my < "$work/sweep.sql" > "$work/sweep.out" 2> "$work/sweep.err"
+  if [ "$(tail -n 1 "$work/sweep.out")" = portcullis-access-swept ] && [ "$(grep -c '' "$work/sweep.out")" = 2 ]; then
+    swept=$(head -n 1 "$work/sweep.out")
+    case "$swept" in "" | *[!0-9]*) ;; *) break ;; esac
+  fi
+  if grep -q -E "$BRAKE_RE" "$work/sweep.err"; then
+    would=$(grep -E "$BRAKE_RE" "$work/sweep.err" | head -1 | sed 's/.*: \([0-9]*\) accounts would be disabled.*/\1/')
+    say "the sweep's brake refused: $would accounts would be disabled by their current primary email, more than p_max $p_max ($expected expected + $SWEEP_MARGIN); it disabled none; the allowlist and the disables / enables by email are applied; not tried again with a higher p_max: check the accounts in the admin UI"
+    exit 1
+  fi
+  why=$(sed 's/ at line [0-9]*: .*//; s/: .*//' "$work/sweep.err" | head -1)
+  if [ "$try" -ge "$ACCESS_TRIES" ]; then
+    say "the sweep still failed after $try tries (${why:-no answer}); the allowlist is applied, the next run sweeps again"
+    exit 1
+  fi
+  say "the sweep failed (${why:-no answer}): trying again"
+  sleep $((try * ${FXA_ACCESS_BACKOFF:-2}))
+  try=$((try + 1))
+done
+
 # ── the state, atomically ──
 state_dir=$(dirname "$STATE_FILE")
 tmp="$state_dir/.applied.json.$$"
@@ -347,5 +400,5 @@ if ! printf '{"version":1,"listed":[%s],"removed":[%s]}\n' "$(json_list "$work/n
   exit 1
 fi
 
-say "applied: $(grep -c '' "$work/new") listed ($joined new rows, $left left since the last run, $((rows_before - $(grep -c '' "$work/new") + joined)) rows removed), $((ndis - noacct_dis)) accounts of non-members disabled or kept disabled ($noacct_dis without an account), $(($(grep -c '' "$work/rejoins") - noacct_en)) re-enabled, $skipped emails left out (not a plain address)"
+say "applied: $(grep -c '' "$work/new") listed ($joined new rows, $left left since the last run, $((rows_before - $(grep -c '' "$work/new") + joined)) rows removed), $((ndis - noacct_dis)) accounts of non-members disabled or kept disabled ($noacct_dis without an account), $(($(grep -c '' "$work/rejoins") - noacct_en)) re-enabled, $swept disabled by the sweep (current primary email off the list; brake p_max $p_max), $skipped emails left out (not a plain address)"
 exit 0

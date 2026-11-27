@@ -13,8 +13,9 @@
 # fxa-access-sync: its EXECUTE on ffs.delete_account_by_email taken away.
 # What is left is what access-sync.sh needs: SELECT, INSERT, DELETE on
 # ffs.signup_allowlist and EXECUTE on ffs.disable_account_by_email /
-# ffs.enable_account_by_email (IF EXISTS: a grant already gone is fine; a
-# missing ffs_access fails the job).
+# ffs.enable_account_by_email / ffs.disable_accounts_not_allowed (the sweep,
+# made with ADMIN_ACCESS_EXTERNAL only) (IF EXISTS: a grant already gone is
+# fine; a missing ffs_access fails the job).
 #
 # Nothing else: no GRANT OPTION, no server-wide privilege (SUPER, EVENT,
 # CREATE USER, FILE), no TRIGGER, CREATE ROUTINE, ALTER ROUTINE or DDL, and

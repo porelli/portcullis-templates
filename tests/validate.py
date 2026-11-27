@@ -197,6 +197,27 @@ GATED_CLIENT_ROUTERS = {
 # Listed here so the declaration can't be dropped from these templates.
 IMMUTABLE_HOSTS = {
     "matrix": {"matrix": "Synapse's server_name is the homeserver hostname and is part of every user and room id"},
+    "firefox-sync-fxa": {
+        "firefox-sync-fxa": "the tokenserver's node URL is the Sync hostname; every account's Sync data is on that node",
+        "firefox-sync-fxa-api": "the tokenserver keys every Sync user as <uid>@<API hostname> (FXA_EMAIL_DOMAIN) and it is "
+                                "the OAuth issuer; Firefox keeps the API URL it discovered",
+        "firefox-sync-fxa-accounts": "every Firefox is set up with the accounts URL (identity.fxaccounts.autoconfig.uri) "
+                                     "and it is the OpenID issuer",
+    },
+}
+# Host routers that must keep portcullis-auth + portcullis-groups although
+# their host has a hosts.reasons entry (app-id -> router -> why). The
+# per-host exemption of check_routers can't tell a mixed host (open paths,
+# the rest behind sign-in: firefox-sync-fxa's accounts host) from a host
+# that is open as a whole and also has stricter path routers (its Sync and
+# API hosts: rate-limit-auth on /1.0/ and /v1/account/create): both have
+# open path routers and a reason. So the mixed host's own router is pinned
+# by name.
+GATED_HOST_ROUTERS = {
+    "firefox-sync-fxa": {
+        "firefox-sync-fxa-accounts": "the account pages (sign-up, sign-in, settings) are for the access group; only "
+                                     "the accounts host's open path routers skip sign-in",
+    },
 }
 # Never protect a password form or a setup wizard with these: Traefik's path
 # matching differs from the app's (case, repeated slashes, /index.php).
@@ -2536,6 +2557,11 @@ def check_routers(t: Template, routers: Dict[str, Dict[str, str]], r: Report) ->
         if not any(any(prefix_covers(p, ap) for p in ps) for _, ps in gated):
             r.error(t.m_where, f"auth.admin_paths {ap}: no router with {AUTH_MW},{GROUPS_MW} serves this path",
                     "group-gate only sees requests on routers that use portcullis-groups@docker; add a PathPrefix router for it")
+
+    for gr, why in sorted(GATED_HOST_ROUTERS.get(t.id, {}).items()):
+        if not any(n == gr and ps == ["/"] for n, ps in gated):
+            r.error(t.c_where, f"security regression: router {gr} must be a host router with {AUTH_MW},{GROUPS_MW}",
+                    f"{why}; its host's hosts.reasons entry exempts its path routers, not this one")
 
     for gr in sorted(GATED_CLIENT_ROUTERS.get(t.id, set())):
         if not any(n == gr and ps == ["/"] for n, ps in gated):

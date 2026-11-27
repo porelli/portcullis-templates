@@ -1,7 +1,13 @@
 #!/bin/sh
 # fxa-db-guard, one-shot at every start, after fxa-migrations and before
 # fxa-policy (porelli's fxa-init): the accounts database compares emails
-# byte for byte, until porelli/firefox-sync does it itself.
+# byte for byte. porelli/firefox-sync does it itself since 68ea7b8 (the
+# allowlist's column utf8mb4_bin, its routines in utf8mb4_bin, TRIM + LOWER,
+# beyond ASCII only an entry that spells it out); this stays as defence in
+# depth, and doesn't get in its way: the table is made here with porelli's
+# DDL and the column changed with porelli's own ALTER, so fxa-policy finds
+# it utf8mb4 / utf8mb4_bin already and converts nothing (allowlistBinary
+# looks at the column first). Running it again changes nothing.
 #
 # Why: MySQL 9's default collation (utf8mb4_0900_ai_ci) is accent- and
 # width-insensitive. Under it the sign-up allowlist's row alice@example.org
@@ -15,7 +21,7 @@
 #     database's collation when it is made, so ffs.signup_refusal compares
 #     entry = normalized byte for byte, and so does the sign-up gate's query
 #     (the column's collation wins over its parameter's). The table is made
-#     here first, with porelli's DDL, when it doesn't exist yet.
+#     here first, with porelli's DDL (68ea7b8), when it doesn't exist yet.
 # (b) Triggers on fxa.accounts and fxa.emails refuse an email or
 #     normalizedEmail that isn't plain ASCII, on insert and on any update
 #     that changes one (an account already stored is never locked out of its
@@ -58,7 +64,7 @@ sql() { mysql --no-defaults --protocol=tcp -h "${MYSQL_HOST:?}" -u root --batch 
 {
   echo "CREATE DATABASE IF NOT EXISTS ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
   echo "ALTER DATABASE ffs CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
-  echo "CREATE TABLE IF NOT EXISTS ffs.signup_allowlist (entry VARCHAR(255) PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
+  echo "CREATE TABLE IF NOT EXISTS ffs.signup_allowlist (entry VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
   echo "ALTER TABLE ffs.signup_allowlist MODIFY entry VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;"
   echo "DELIMITER //"
   for t in accounts emails; do

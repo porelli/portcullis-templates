@@ -595,5 +595,67 @@ class TestSigninAdminHost(FxACase):
         self.assertTrue(any("signed_in" in e and "host" in e for e in errors), errors)
 
 
+class TestFxaPinnedHosts(FxACase):
+    """Final review I1 / M1 on the real template: the hostnames the stored
+    data depends on stay hosts.immutable, and the accounts host's own router
+    keeps Portcullis sign-in although its host has a reason."""
+
+    REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def load_real(self, compose=None, manifest=None) -> list[str]:
+        import shutil
+        import yaml
+        dst = os.path.join(self.tmp.name, "firefox-sync-fxa")
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(os.path.join(self.REPO, "firefox-sync-fxa"), dst)
+        for name, mutate in (("compose.yml", compose), ("manifest.yaml", manifest)):
+            if mutate is None:
+                continue
+            path = os.path.join(dst, name)
+            with open(path, encoding="utf-8") as f:
+                doc = yaml.safe_load(f)
+            mutate(doc)
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True)
+        errors, _ = self.check_template(v.Template("firefox-sync-fxa"))
+        return errors
+
+    def test_real_template_passes(self) -> None:
+        errors = self.load_real()
+        self.assertFalse([e for e in errors if "immutable" in e or "firefox-sync-fxa-accounts" in e], errors)
+
+    def test_immutable_hosts_required(self) -> None:
+        for host in ("firefox-sync-fxa", "firefox-sync-fxa-api", "firefox-sync-fxa-accounts"):
+            def drop(m, host=host):
+                m["hosts"]["immutable"].remove(host)
+            errors = self.load_real(manifest=drop)
+            self.assertTrue(any(f"hosts.immutable must list {host}" in e for e in errors), (host, errors))
+
+    def test_profile_pairing_admin_may_change(self) -> None:
+        self.assertNotIn("firefox-sync-fxa-profile", v.IMMUTABLE_HOSTS["firefox-sync-fxa"])
+        self.assertNotIn("firefox-sync-fxa-pairing", v.IMMUTABLE_HOSTS["firefox-sync-fxa"])
+        self.assertNotIn("firefox-sync-fxa-admin", v.IMMUTABLE_HOSTS["firefox-sync-fxa"])
+
+    def accounts_mws(self, mws: str) -> list[str]:
+        def set_mws(c):
+            c["services"]["fxa-gate"]["labels"]["traefik.http.routers.firefox-sync-fxa-accounts.middlewares"] = mws
+        return self.load_real(compose=set_mws)
+
+    def test_accounts_router_open_fails(self) -> None:
+        errors = self.accounts_mws("rate-limit@file,security-headers@file")
+        self.assertTrue(any("router firefox-sync-fxa-accounts must be a host router with portcullis-auth@docker,portcullis-groups@docker" in e
+                            for e in errors), errors)
+
+    def test_accounts_router_auth_without_groups_fails(self) -> None:
+        errors = self.accounts_mws("portcullis-auth@docker,security-headers@file")
+        self.assertTrue(any("firefox-sync-fxa-accounts" in e and "group membership would not be enforced" in e for e in errors), errors)
+        self.assertTrue(any("router firefox-sync-fxa-accounts must be a host router" in e for e in errors), errors)
+
+    def test_open_hosts_stay_open(self) -> None:
+        # The Sync and API hosts are open as a whole (with stricter path
+        # routers): no pin there.
+        self.assertEqual(set(v.GATED_HOST_ROUTERS["firefox-sync-fxa"]), {"firefox-sync-fxa-accounts"})
+
+
 if __name__ == "__main__":
     unittest.main()
