@@ -109,8 +109,8 @@ fi
 # The internet-facing server: same image as the migrations, runs none, app role.
 IMG_APP=$(yq -r '.services["firefox-sync"].image' "$COMPOSE")
 IMG_MIG=$(yq -r '.services["firefox-sync-migrate"].image' "$COMPOSE")
-if [ "$IMG_APP" = "$IMG_MIG" ] && [[ "$IMG_APP" == *:syncstorage-rs-postgres-0.25.1@sha256:* ]]; then
-  pass "firefox-sync and firefox-sync-migrate run the same image (syncstorage-rs 0.25.1)"
+if [ "$IMG_APP" = "$IMG_MIG" ] && [[ "$IMG_APP" == *:syncstorage-rs-postgres-0.25.2@sha256:* ]]; then
+  pass "firefox-sync and firefox-sync-migrate run the same image (syncstorage-rs 0.25.2)"
 else
   fail "image mismatch: $IMG_APP vs $IMG_MIG"
 fi
