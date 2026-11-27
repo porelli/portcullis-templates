@@ -4,7 +4,7 @@
 #   -> gitea-auth (Portcullis OAuth2 source, client secret) -> gitea.
 services:
   gitea:
-    image: gitea/gitea:28.3.0-rootless@sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d
+    image: gitea/gitea:28.4.0-rootless@sha256:15ab7fadb44981a2b781f40c712cad07066197f395100ea1c6326e14e5bb073a
     # Git over SSH is a per-instance choice (setting GITEA_SSH_ENABLED, off
     # by default): Gitea's built-in SSH server only listens when it is on,
     # and SSH clone URLs / SSH key settings are hidden otherwise. Then the
@@ -156,7 +156,7 @@ services:
   # Same image, volumes and database settings as gitea; the image's
   # entrypoint writes app.ini from the GITEA__* variables first.
   gitea-migrate:
-    image: gitea/gitea:28.3.0-rootless@sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d
+    image: gitea/gitea:28.4.0-rootless@sha256:15ab7fadb44981a2b781f40c712cad07066197f395100ea1c6326e14e5bb073a
     entrypoint: ["/usr/bin/dumb-init", "--", "/usr/local/bin/docker-entrypoint.sh"]
     command: ["/bin/sh", "/portcullis/setup.sh"]
     environment:
