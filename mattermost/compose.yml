@@ -174,7 +174,7 @@ services:
     restart: "no"
 
   mattermost-db:
-    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     user: "70:70"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
